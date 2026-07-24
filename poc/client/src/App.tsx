@@ -14,6 +14,15 @@ type LoggedEvent = {
   message?: string;
 };
 
+type ProjectSessionInfo = {
+  id: string;
+  participants: string[];
+  driverName: string | null;
+  intent: string | null;
+  lastActivityTs: string | null;
+  ended: boolean;
+};
+
 const SERVER_URL = "ws://localhost:3001";
 
 function getIdentity(): { id: string; name: string } {
@@ -36,10 +45,14 @@ export default function App() {
   const [errors, setErrors] = useState<string[]>([]);
   const [input, setInput] = useState("");
   const [connected, setConnected] = useState(false);
+  const [projectSessions, setProjectSessions] = useState<ProjectSessionInfo[]>(
+    [],
+  );
   const wsRef = useRef<WebSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const sessionId =
-    new URLSearchParams(window.location.search).get("session") ?? "demo";
+  const params = new URLSearchParams(window.location.search);
+  const sessionId = params.get("session") ?? "demo";
+  const projectId = params.get("project") ?? "default";
 
   useEffect(() => {
     const ws = new WebSocket(SERVER_URL);
@@ -47,7 +60,14 @@ export default function App() {
     ws.onopen = () => {
       setConnected(true);
       ws.send(
-        JSON.stringify({ type: "join", sessionId, userId, name, lastSeq: 0 }),
+        JSON.stringify({
+          type: "join",
+          sessionId,
+          projectId,
+          userId,
+          name,
+          lastSeq: 0,
+        }),
       );
     };
     ws.onmessage = (e) => {
@@ -55,29 +75,32 @@ export default function App() {
         const msg = JSON.parse(e.data);
         if (msg.type === "event") setEvents((prev) => [...prev, msg.event]);
         if (msg.type === "error") setErrors((prev) => [...prev, msg.message]);
+        if (msg.type === "project") setProjectSessions(msg.sessions);
       } catch {
         return;
       }
     };
     ws.onclose = () => setConnected(false);
     return () => ws.close();
-  }, [sessionId, userId, name]);
+  }, [projectId, sessionId, userId, name]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [events]);
 
-  const { driverId, participants } = useMemo(() => {
+  const { driverId, participants, myIntent } = useMemo(() => {
     let driverId: string | null = null;
     const participants = new Map<string, string>();
+    let myIntent: string | null = null;
     for (const ev of events) {
       if (ev.type === "presence_join" && ev.userId && ev.name)
         participants.set(ev.userId, ev.name);
       if (ev.type === "presence_leave" && ev.userId)
         participants.delete(ev.userId);
       if (ev.type === "control_change" && ev.userId) driverId = ev.userId;
+      if (ev.type === "intent_update") myIntent = ev.text ?? null;
     }
-    return { driverId, participants };
+    return { driverId, participants, myIntent };
   }, [events]);
 
   const isDriver = driverId === userId;
@@ -97,7 +120,8 @@ export default function App() {
     <div className="app">
       <header>
         <h1>
-          Multiplayer AI — session <code>{sessionId}</code>
+          Multiplayer AI — session <code>{sessionId}</code> · project{" "}
+          <code>{projectId}</code>
         </h1>
         <div className="status">
           <span className={connected ? "dot on" : "dot off"} />
@@ -115,52 +139,92 @@ export default function App() {
         ))}
       </div>
 
-      <main className="transcript">
-        {events.map((ev) => {
-          switch (ev.type) {
-            case "user_message":
-              return (
-                <div key={ev.seq} className="msg user">
-                  <b>{participants.get(ev.userId ?? "") ?? ev.userId}:</b>{" "}
-                  {ev.text}
+      {myIntent && <div className="my-intent">🎯 {myIntent}</div>}
+
+      <div className="workspace">
+        <main className="transcript">
+          {events.map((ev) => {
+            switch (ev.type) {
+              case "user_message":
+                return (
+                  <div key={ev.seq} className="msg user">
+                    <b>{participants.get(ev.userId ?? "") ?? ev.userId}:</b>{" "}
+                    {ev.text}
+                  </div>
+                );
+              case "agent_text_delta":
+                return (
+                  <div key={ev.seq} className="msg agent">
+                    {ev.text}
+                  </div>
+                );
+              case "tool_call":
+                return (
+                  <div key={ev.seq} className="msg tool">
+                    ⚙ {ev.toolName}({JSON.stringify(ev.input)})
+                  </div>
+                );
+              case "tool_result":
+                return (
+                  <div key={ev.seq} className="msg tool">
+                    ↳ {ev.output?.slice(0, 300)}
+                  </div>
+                );
+              case "control_change":
+                return (
+                  <div key={ev.seq} className="msg system">
+                    🛞 {participants.get(ev.userId ?? "") ?? ev.userId} took the
+                    wheel
+                  </div>
+                );
+              case "agent_error":
+                return (
+                  <div key={ev.seq} className="msg error">
+                    ⚠ {ev.message}
+                  </div>
+                );
+              case "intent_update":
+                return (
+                  <div key={ev.seq} className="msg system">
+                    🎯 agent intent: {ev.text}
+                  </div>
+                );
+              default:
+                return null;
+            }
+          })}
+          <div ref={bottomRef} />
+        </main>
+        <aside className="teammates">
+          <h2>Project: {projectId}</h2>
+          {projectSessions
+            .filter((s) => s.id !== sessionId)
+            .map((s) => (
+              <a
+                key={s.id}
+                className={s.ended ? "teammate ended" : "teammate"}
+                href={`?project=${projectId}&session=${s.id}`}
+              >
+                <div className="teammate-id">
+                  {s.id} {s.ended ? "(ended)" : ""}
                 </div>
-              );
-            case "agent_text_delta":
-              return (
-                <div key={ev.seq} className="msg agent">
-                  {ev.text}
+                <div className="teammate-intent">
+                  {s.intent ?? "no declared intent yet"}
                 </div>
-              );
-            case "tool_call":
-              return (
-                <div key={ev.seq} className="msg tool">
-                  ⚙ {ev.toolName}({JSON.stringify(ev.input)})
+                <div className="teammate-meta">
+                  {s.participants.join(", ") || "empty"}
+                  {s.driverName ? ` · 🛞 ${s.driverName}` : ""}
+                  {s.lastActivityTs
+                    ? ` · ${new Date(s.lastActivityTs).toLocaleTimeString()}`
+                    : ""}
                 </div>
-              );
-            case "tool_result":
-              return (
-                <div key={ev.seq} className="msg tool">
-                  ↳ {ev.output?.slice(0, 300)}
-                </div>
-              );
-            case "control_change":
-              return (
-                <div key={ev.seq} className="msg system">
-                  🛞 {participants.get(ev.userId ?? "") ?? ev.userId} took the wheel
-                </div>
-              );
-            case "agent_error":
-              return (
-                <div key={ev.seq} className="msg error">
-                  ⚠ {ev.message}
-                </div>
-              );
-            default:
-              return null;
-          }
-        })}
-        <div ref={bottomRef} />
-      </main>
+              </a>
+            ))}
+          {projectSessions.filter((s) => s.id !== sessionId).length === 0 && (
+            <div className="teammate-empty">No other sessions yet</div>
+          )}
+        </aside>
+      </div>
 
       {errors.length > 0 && (
         <div className="msg error">⚠ {errors.at(-1)}</div>

@@ -21,3 +21,15 @@ footer { display: flex; gap: 8px; padding: 12px 0; }
 footer input { flex: 1; padding: 10px; border-radius: 6px; border: 1px solid #262b38; background: #171a21; color: inherit; }
 footer button { padding: 10px 18px; border-radius: 6px; border: none; background: #3b82f6; color: white; cursor: pointer; }
 footer button.wheel { background: #2b4a2f; flex: 1; }
+.workspace { flex: 1; display: flex; gap: 12px; min-height: 0; }
+.workspace .transcript { flex: 1; }
+.teammates { width: 240px; overflow-y: auto; border: 1px solid #262b38; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.teammates h2 { font-size: 0.9rem; margin: 0 0 4px; color: #8fa3c0; }
+.teammate { display: block; background: #171a21; border: 1px solid #262b38; border-radius: 6px; padding: 8px; text-decoration: none; color: inherit; }
+.teammate:hover { border-color: #3b82f6; }
+.teammate.ended { opacity: 0.55; }
+.teammate-id { font-family: monospace; font-size: 0.8rem; color: #8fa3c0; }
+.teammate-intent { font-size: 0.9rem; margin: 4px 0; }
+.teammate-meta { font-size: 0.75rem; color: #6b7280; }
+.teammate-empty { font-size: 0.85rem; color: #6b7280; }
+.my-intent { font-size: 0.9rem; color: #b9a44c; padding: 2px 0 8px; }
