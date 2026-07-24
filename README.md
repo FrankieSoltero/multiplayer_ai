@@ -28,7 +28,12 @@ for dev teams. See `docs/research-report.md` for the research and
 
 ## Run the v3 full-capabilities demo
 
-Setup is the same as v2 (demo-setup.sh, `AGENT_WORKDIR_ROOT`, two tabs). New in v3:
+Setup is the same as v2 (demo-setup.sh, `AGENT_WORKDIR_ROOT`, two tabs), except
+the server start line for v3 is:
+
+`cd poc/server && AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees AGENT_SKILLS=auth-migration-guide npm run dev`
+
+New in v3:
 
 - Agents have the full Claude Code tool set (Bash, subagents, web tools,
   project skills). Test/type-check/read-only-git commands run without asking;
@@ -37,6 +42,9 @@ Setup is the same as v2 (demo-setup.sh, `AGENT_WORKDIR_ROOT`, two tabs). New in 
   teammate decide a pending request (drop in just to approve something).
 - The demo repo ships a project skill (`.claude/skills/auth-migration-guide/`);
   ask the ana agent to "migrate auth to JWT" and it should consult the skill.
+  Skills default to none, for isolation from the host CLI's own built-in
+  skills; `AGENT_SKILLS` names the comma-separated project skills to expose
+  for the demo, and agents can also read `.claude/skills/*/SKILL.md` directly.
 
 ## Tests
 

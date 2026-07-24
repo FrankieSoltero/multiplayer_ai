@@ -105,3 +105,99 @@ describe("buildCanUseTool", () => {
     expect(result?.behavior).toBe("deny");
   });
 });
+
+describe("buildCanUseTool worktree containment (file-writing tools)", () => {
+  it("auto-approves Write with a relative file_path inside the worktree, without asking the driver", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = "/tmp/wt/ana";
+    const result = await buildCanUseTool(hooks)(
+      "Write",
+      { file_path: "src/x.ts" },
+      opts(),
+    );
+    expect(result).toEqual({ behavior: "allow" });
+    expect(calls.length).toBe(0);
+  });
+
+  it("auto-approves Write with an absolute file_path inside the worktree, without asking the driver", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = "/tmp/wt/ana";
+    const result = await buildCanUseTool(hooks)(
+      "Write",
+      { file_path: "/tmp/wt/ana/src/x.ts" },
+      opts(),
+    );
+    expect(result).toEqual({ behavior: "allow" });
+    expect(calls.length).toBe(0);
+  });
+
+  it("routes Write with an absolute file_path outside the worktree to the driver", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = "/tmp/wt/ana";
+    const result = await buildCanUseTool(hooks)(
+      "Write",
+      { file_path: "/Users/someone/src/x.ts" },
+      opts(),
+    );
+    expect(result?.behavior).toBe("deny");
+    expect(calls.length).toBe(1);
+    expect(calls[0].toolName).toBe("Write");
+  });
+
+  it("routes Write with a traversal path that resolves outside the worktree to the driver", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = "/tmp/wt/ana";
+    const result = await buildCanUseTool(hooks)(
+      "Write",
+      { file_path: "../escape.ts" },
+      opts(),
+    );
+    expect(result?.behavior).toBe("deny");
+    expect(calls.length).toBe(1);
+  });
+
+  it("routes Edit to the driver when hooks.workdir is not set", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    // no hooks.workdir set
+    const result = await buildCanUseTool(hooks)(
+      "Edit",
+      { file_path: "src/x.ts" },
+      opts(),
+    );
+    expect(result?.behavior).toBe("deny");
+    expect(calls.length).toBe(1);
+    expect(calls[0].toolName).toBe("Edit");
+  });
+
+  it("routes Write with a missing file_path to the driver", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = "/tmp/wt/ana";
+    const result = await buildCanUseTool(hooks)("Write", {}, opts());
+    expect(result?.behavior).toBe("deny");
+    expect(calls.length).toBe(1);
+  });
+
+  it("routes Write with a non-string file_path to the driver", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = "/tmp/wt/ana";
+    const result = await buildCanUseTool(hooks)(
+      "Write",
+      { file_path: 42 },
+      opts(),
+    );
+    expect(result?.behavior).toBe("deny");
+    expect(calls.length).toBe(1);
+  });
+
+  it("still routes Bash normally when hooks.workdir is set (containment is scoped to file tools)", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = "/tmp/wt/ana";
+    const result = await buildCanUseTool(hooks)(
+      "Bash",
+      { command: "git status" },
+      opts(),
+    );
+    expect(result).toEqual({ behavior: "allow" });
+    expect(calls.length).toBe(0);
+  });
+});

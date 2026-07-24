@@ -81,32 +81,49 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
       ),
     ],
   });
+  const workdir = hooks.workdir ?? process.env.AGENT_WORKDIR ?? process.cwd();
+  // Env-driven skill allowlist: `skills: "all"` previously exposed the host
+  // CLI's own BUILT-IN skills (dataviz, update-config, loop, schedule, ...)
+  // to the agent — an isolation leak reproduced live. An empty array hides
+  // every skill by default (matching the settingSources: [] isolation
+  // below); ops opt specific project skills in per-demo via
+  // AGENT_SKILLS=comma,separated,names (matching SKILL.md name/dir, or
+  // plugin:skill).
+  const skillNames = (process.env.AGENT_SKILLS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   return query({
     prompt: prompts,
     options: {
       model: "claude-opus-4-8",
       systemPrompt:
-        "You are a shared agent in a multiplayer project. Multiple teammates watch this session live and may hand control between them mid-task; other teammates run their own sessions in the same project. Keep responses focused. The FIRST thing you do when given a new task — before any other tool call — is call the set_intent tool with one short sentence describing what you are about to work on. Update it whenever your direction changes. Do this without being asked. Your working directory is your own git worktree on your own branch — you may implement changes directly with Write/Edit when asked to build; your edits never touch teammates' worktrees, but overlapping changes will collide later at merge time. A <teammates> block in a prompt describes what other sessions in the project are doing — take it into account: avoid conflicting with in-flight work, keep your footprint on shared files minimal when a teammate is mid-change there, and say so when a merge conflict looks likely. You have the full tool set including Bash, subagents, and web tools. Most Bash commands and other powerful tools pause until the teammate currently driving approves them in the UI — the whole session sees each request and decision, so prefer batching related commands and say briefly what a command is for before running it. Test/type-check/read-only-git commands run without approval. If a request is denied, adapt your approach or explain what you need instead of retrying the same call. If the project provides skills, use the Skill tool when one clearly matches the task.",
+        `You are a shared agent in a multiplayer project. Multiple teammates watch this session live and may hand control between them mid-task; other teammates run their own sessions in the same project. Keep responses focused. The FIRST thing you do when given a new task — before any other tool call — is call the set_intent tool with one short sentence describing what you are about to work on. Update it whenever your direction changes. Do this without being asked. Your working directory is your own git worktree on your own branch — you may implement changes directly with Write/Edit when asked to build; your edits never touch teammates' worktrees, but overlapping changes will collide later at merge time. A <teammates> block in a prompt describes what other sessions in the project are doing — take it into account: avoid conflicting with in-flight work, keep your footprint on shared files minimal when a teammate is mid-change there, and say so when a merge conflict looks likely. You have the full tool set including Bash, subagents, and web tools. Most Bash commands and other powerful tools pause until the teammate currently driving approves them in the UI — the whole session sees each request and decision, so prefer batching related commands and say briefly what a command is for before running it. Test/type-check/read-only-git commands run without approval. If a request is denied, adapt your approach or explain what you need instead of retrying the same call. If the project provides skills, use the Skill tool when one clearly matches the task. Your worktree root is ${workdir} — create and edit files ONLY inside it, using relative paths or absolute paths under that root. File edits inside your worktree run without approval; writes outside it require driver approval.`,
       allowedTools: [
         "Read",
         "Glob",
         "Grep",
-        "Write",
-        "Edit",
         "mcp__awareness__set_intent",
       ],
-      // Full Claude Code built-in tool set. `allowedTools` below auto-approves
-      // only the file tools + set_intent; every other call (Bash, Task,
-      // WebSearch, WebFetch, TodoWrite, ...) routes through canUseTool =
-      // the driver approval gate, except allowlisted Bash prefixes
-      // (see permissions.ts).
+      // Full Claude Code built-in tool set. `allowedTools` above auto-approves
+      // only the READ-ONLY file tools + set_intent; Write/Edit/NotebookEdit
+      // are deliberately NOT here — a live incident had the agent
+      // Write-ing outside its worktree, auto-run because Write was
+      // blanket-allowed here with no path check. They now route through
+      // canUseTool, which auto-approves only when the path resolves inside
+      // hooks.workdir (see permissions.ts) and otherwise asks the driver.
+      // Every other call (Bash, Task, WebSearch, WebFetch, TodoWrite, ...)
+      // also routes through canUseTool = the driver approval gate, except
+      // allowlisted Bash prefixes (see permissions.ts).
       tools: { type: "preset", preset: "claude_code" },
       canUseTool: buildCanUseTool(hooks),
       // Skills come from the project the agent works in (its worktree cwd
       // has .claude/skills/ checked in) — the single, explicit re-opening of
       // the settingSources isolation below. This option also enables the
-      // Skill tool; do not add 'Skill' to allowedTools.
-      skills: "all",
+      // Skill tool; do not add 'Skill' to allowedTools. Default is an empty
+      // allowlist (no skills visible) — see the isolation-leak note above
+      // skillNames; set AGENT_SKILLS to opt specific project skills in.
+      skills: skillNames,
       permissionMode: "default",
       mcpServers: { awareness },
       // Isolate this demo agent from the operator's local Claude Code config:
@@ -117,7 +134,7 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
       // (project/user/local) — full isolation, not just MCP.
       strictMcpConfig: true,
       settingSources: [],
-      cwd: hooks.workdir ?? process.env.AGENT_WORKDIR ?? process.cwd(),
+      cwd: workdir,
     },
     // Cast at the SDK boundary only — see Global Constraints. The real
     // `query()` return type (`Query`, an AsyncGenerator over a 30+ member

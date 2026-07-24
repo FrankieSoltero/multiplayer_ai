@@ -1,14 +1,18 @@
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import path from "node:path";
 import type { DriverHooks } from "./agentDriver.js";
 
 /**
  * Driver approval gate — pure logic (no AgentDriver instance needed).
  *
- * `allowedTools` auto-approves the read/write file tools and set_intent;
- * every OTHER tool call reaches the SDK's `canUseTool` callback. Bash
- * commands matching one of these prefixes are trivially safe (tests, type
- * checks, read-only git) and auto-approve so agents can verify their own
- * work without pausing the session; everything else asks the driver.
+ * `allowedTools` auto-approves only the READ-ONLY file tools (Read, Glob,
+ * Grep) plus set_intent; every OTHER tool call reaches the SDK's
+ * `canUseTool` callback below. Bash commands matching one of these prefixes
+ * are trivially safe (tests, type checks, read-only git) and auto-approve so
+ * agents can verify their own work without pausing the session; Write/Edit/
+ * NotebookEdit auto-approve only when the target path resolves inside the
+ * agent's own worktree (see `isContainedWrite` below); everything else asks
+ * the driver.
  */
 export const AUTO_APPROVED_BASH_PREFIXES = [
   "npx vitest",
@@ -38,6 +42,37 @@ export function isAutoApprovedBash(command: string): boolean {
 }
 
 /**
+ * File-writing tools eligible for worktree-containment auto-approval.
+ * Live incident: an agent issued Write({file_path:"/Users/.../auth.ts"})
+ * OUTSIDE its worktree, into the operator's home directory, and it ran
+ * without any approval because Write/Edit were blanket-auto-approved via
+ * `allowedTools` (no path check at all). Write/Edit are no longer in
+ * `allowedTools` (see agentDriver.ts); this containment check is what lets
+ * in-worktree edits stay fast (no driver round-trip) while anything that
+ * would touch the operator's filesystem outside the worktree still requires
+ * explicit driver approval.
+ */
+const FILE_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
+
+/**
+ * True if `input.file_path` is a string that resolves (relative to
+ * `workdir`, or as-is if already absolute) to a path inside `workdir`.
+ * Fails toward `false` (→ ask the driver) for any ambiguous case: no
+ * workdir, missing/non-string file_path, or a resolved path outside the
+ * worktree (including `../` traversal).
+ */
+function isContainedWrite(workdir: string | undefined, input: unknown): boolean {
+  if (!workdir) return false;
+  const filePath = (input as { file_path?: unknown }).file_path;
+  if (typeof filePath !== "string") return false;
+  const workdirResolved = path.resolve(workdir);
+  const resolved = path.resolve(workdir, filePath);
+  return (
+    resolved === workdirResolved || resolved.startsWith(workdirResolved + path.sep)
+  );
+}
+
+/**
  * Bridge the SDK's canUseTool callback to the driver-approval hook.
  * MUST always resolve to a PermissionResult — returning null tells the SDK
  * "the response was sent out-of-band" and blocks the tool forever
@@ -48,6 +83,9 @@ export function buildCanUseTool(hooks: DriverHooks): CanUseTool {
   return async (toolName, input, options) => {
     const command = (input as { command?: unknown }).command;
     if (toolName === "Bash" && typeof command === "string" && isAutoApprovedBash(command)) {
+      return { behavior: "allow" };
+    }
+    if (FILE_WRITE_TOOLS.has(toolName) && isContainedWrite(hooks.workdir, input)) {
       return { behavior: "allow" };
     }
     try {
