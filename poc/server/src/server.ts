@@ -1,33 +1,97 @@
 import { createServer } from "node:http";
+import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { AgentDriver, runAgentQuery, type RunQuery } from "./agentDriver.js";
+import { buildTeammateDigest, summarizeSession } from "./digest.js";
+import {
+  Project,
+  projectSnapshot,
+  SLUG,
+  type ProjectSessionEntry,
+} from "./project.js";
 import { Session } from "./session.js";
 
 const MAX_PROMPT_LENGTH = 4000;
-
-interface SessionEntry {
-  session: Session;
-  driver: AgentDriver;
-}
+const PROJECT_PUSH_INTERVAL_MS = 1000;
 
 interface ClientContext {
-  entry: SessionEntry;
+  project: Project;
+  entry: ProjectSessionEntry;
   userId: string;
   unsubscribe: () => void;
 }
 
+const INTERESTING = new Set([
+  "intent_update",
+  "presence_join",
+  "presence_leave",
+  "user_message",
+]);
+
 export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
   const runQuery = opts.runQuery ?? runAgentQuery;
-  const sessions = new Map<string, SessionEntry>();
+  const projects = new Map<string, Project>();
+  const lastPush = new Map<Project, number>();
+  const pushTimers = new Map<Project, NodeJS.Timeout>();
 
-  function getOrCreate(id: string): SessionEntry {
-    let entry = sessions.get(id);
+  function pushProject(project: Project): void {
+    const payload = JSON.stringify(projectSnapshot(project));
+    for (const watcher of project.watchers) {
+      if (watcher.readyState === WebSocket.OPEN) watcher.send(payload);
+    }
+    lastPush.set(project, Date.now());
+  }
+
+  function schedulePush(project: Project): void {
+    if (pushTimers.has(project)) return; // trailing push already queued
+    const elapsed = Date.now() - (lastPush.get(project) ?? 0);
+    if (elapsed >= PROJECT_PUSH_INTERVAL_MS) {
+      pushProject(project);
+      return;
+    }
+    const timer = setTimeout(() => {
+      pushTimers.delete(project);
+      pushProject(project);
+    }, PROJECT_PUSH_INTERVAL_MS - elapsed);
+    pushTimers.set(project, timer);
+  }
+
+  function getOrCreateProject(projectId: string): Project {
+    let project = projects.get(projectId);
+    if (!project) {
+      project = new Project(projectId);
+      projects.set(projectId, project);
+    }
+    return project;
+  }
+
+  function getOrCreateSession(
+    project: Project,
+    sessionId: string,
+  ): ProjectSessionEntry {
+    let entry = project.sessions.get(sessionId);
     if (!entry) {
-      const session = new Session(id);
-      entry = { session, driver: new AgentDriver(session, runQuery) };
-      sessions.set(id, entry);
+      const session = new Session(sessionId);
+      const root = process.env.AGENT_WORKDIR_ROOT;
+      const workdir = root ? path.join(root, sessionId) : undefined;
+      entry = { session, driver: new AgentDriver(session, runQuery, workdir) };
+      project.sessions.set(sessionId, entry);
+      // Project-level awareness: any interesting event on any member session
+      // schedules a throttled snapshot push to the whole project.
+      session.subscribe((event) => {
+        if (INTERESTING.has(event.type)) schedulePush(project);
+      });
     }
     return entry;
+  }
+
+  function digestFor(project: Project, sessionId: string): string {
+    const others = [...project.sessions.entries()]
+      .filter(([id]) => id !== sessionId)
+      .map(([id, entry]) =>
+        summarizeSession(id, entry.session.eventsFrom(0), entry.driver.isDead),
+      );
+    return buildTeammateDigest(others);
   }
 
   const httpServer = createServer();
@@ -66,9 +130,18 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
         ) {
           return sendError("join requires sessionId, userId, name");
         }
-        const entry = getOrCreate(msg.sessionId);
+        const projectId =
+          typeof msg.projectId === "string" ? msg.projectId : "default";
+        if (!SLUG.test(projectId) || !SLUG.test(msg.sessionId)) {
+          return sendError(
+            "projectId and sessionId must be 1-40 chars of a-z, 0-9, -",
+          );
+        }
+        const project = getOrCreateProject(projectId);
+        const entry = getOrCreateSession(project, msg.sessionId);
         // Replay first, then subscribe, then join — single-threaded, so no gap.
-        const from = Number.isInteger(msg.lastSeq) && msg.lastSeq >= 0 ? msg.lastSeq : 0;
+        const from =
+          Number.isInteger(msg.lastSeq) && msg.lastSeq >= 0 ? msg.lastSeq : 0;
         for (const event of entry.session.eventsFrom(from)) {
           ws.send(JSON.stringify({ type: "event", event }));
         }
@@ -77,8 +150,12 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
             ws.send(JSON.stringify({ type: "event", event }));
           }
         });
-        ctx = { entry, userId: msg.userId, unsubscribe };
+        ctx = { project, entry, userId: msg.userId, unsubscribe };
+        project.watchers.add(ws);
         entry.session.join(msg.userId, msg.name.slice(0, 40));
+        // Immediate personal snapshot so the sidebar isn't blank until the
+        // next throttled push.
+        ws.send(JSON.stringify(projectSnapshot(project)));
         return;
       }
 
@@ -94,7 +171,12 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
         if (!ctx.entry.session.canPrompt(ctx.userId)) {
           return sendError("you are not driving — take the wheel first");
         }
-        ctx.entry.driver.sendPrompt(ctx.userId, msg.text);
+        const digest = digestFor(ctx.project, ctx.entry.session.id);
+        ctx.entry.driver.sendPrompt(
+          ctx.userId,
+          msg.text,
+          digest || undefined,
+        );
         return;
       }
 
@@ -109,6 +191,7 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
     ws.on("close", () => {
       if (ctx) {
         ctx.unsubscribe();
+        ctx.project.watchers.delete(ws);
         ctx.entry.session.leave(ctx.userId);
         ctx = null;
       }
@@ -123,6 +206,8 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
     port,
     close: () =>
       new Promise<void>((resolve, reject) => {
+        for (const timer of pushTimers.values()) clearTimeout(timer);
+        pushTimers.clear();
         for (const client of wss.clients) client.terminate();
         httpServer.close((err) => (err ? reject(err) : resolve()));
       }),

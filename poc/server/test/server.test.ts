@@ -165,3 +165,87 @@ describe("WebSocket hub", () => {
     wsNeg.close();
   });
 });
+
+describe("project awareness", () => {
+  const intentEchoRun: RunQuery = async function* (prompts, hooks) {
+    for await (const prompt of prompts) {
+      hooks.onIntent("Migrating auth to JWT");
+      yield {
+        type: "assistant",
+        content: [
+          { type: "text", text: `echo: ${prompt.message.content[0].text}` },
+        ],
+      };
+    }
+  };
+
+  it("rejects invalid project/session slugs", async () => {
+    const server = await startServer({ port: 0, runQuery: intentEchoRun });
+    close = server.close;
+    const ws1 = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws1, seen);
+    ws1.send(
+      JSON.stringify({
+        type: "join",
+        projectId: "demo",
+        sessionId: "../oops",
+        userId: "u1",
+        name: "Ana",
+      }),
+    );
+    await wait(100);
+    expect(seen.some((m) => m.type === "error")).toBe(true);
+    ws1.close();
+  });
+
+  it("pushes project snapshots with intent across sessions and injects the digest", async () => {
+    const server = await startServer({ port: 0, runQuery: intentEchoRun });
+    close = server.close;
+
+    // Ana joins session "ana" in project "demo" and prompts (agent declares intent)
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(
+      JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }),
+    );
+    wsAna.send(JSON.stringify({ type: "prompt", text: "migrate auth" }));
+    await wait(200);
+
+    // Ben joins a DIFFERENT session in the same project
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(
+      JSON.stringify({ type: "join", projectId: "demo", sessionId: "ben", userId: "u2", name: "Ben" }),
+    );
+    await wait(200);
+
+    // Ben's immediate project snapshot includes Ana's session and intent
+    const projectMsgs = seenBen.filter((m) => m.type === "project");
+    expect(projectMsgs.length).toBeGreaterThan(0);
+    const anaEntry = projectMsgs
+      .at(-1)
+      .sessions.find((s: any) => s.id === "ana");
+    expect(anaEntry.intent).toBe("Migrating auth to JWT");
+
+    // Ben prompts: the digest (with Ana's intent) is injected into HIS prompt
+    wsBen.send(JSON.stringify({ type: "prompt", text: "add rate limiting" }));
+    await wait(300);
+    const benEcho = seenBen
+      .map((m) => m.event)
+      .find((e) => e?.type === "agent_text_delta" && e.text.includes("echo:"));
+    expect(benEcho.text).toContain("<teammates>");
+    expect(benEcho.text).toContain("Migrating auth to JWT");
+    expect(benEcho.text).toContain("add rate limiting");
+    // Ben's own transcript logs the raw text only
+    const benUserMsg = seenBen
+      .map((m) => m.event)
+      .find((e) => e?.type === "user_message");
+    expect(benUserMsg.text).toBe("add rate limiting");
+
+    wsAna.close();
+    wsBen.close();
+  });
+});

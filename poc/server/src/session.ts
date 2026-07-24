@@ -35,6 +35,13 @@ export class Session {
     return this.currentDriverId;
   }
 
+  get participantList(): { userId: string; name: string }[] {
+    return [...this.participants.entries()].map(([userId, name]) => ({
+      userId,
+      name,
+    }));
+  }
+
   join(userId: string, name: string): void {
     this.participants.set(userId, name);
     this.append({ type: "presence_join", userId, name });
