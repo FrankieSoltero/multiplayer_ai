@@ -33,3 +33,40 @@ describe("Session event log", () => {
     expect(received[0].seq).toBe(0);
   });
 });
+
+describe("Steering lock", () => {
+  it("makes the first joiner the driver and logs presence + control events", () => {
+    const s = new Session("s1");
+    s.join("u1", "Ana");
+    expect(s.driverId).toBe("u1");
+    const types = s.eventsFrom(0).map((e) => e.type);
+    expect(types).toEqual(["presence_join", "control_change"]);
+  });
+
+  it("does not change the driver when a second user joins", () => {
+    const s = new Session("s1");
+    s.join("u1", "Ana");
+    s.join("u2", "Ben");
+    expect(s.driverId).toBe("u1");
+  });
+
+  it("transfers the wheel on takeWheel and gates canPrompt on the driver", () => {
+    const s = new Session("s1");
+    s.join("u1", "Ana");
+    s.join("u2", "Ben");
+    expect(s.canPrompt("u2")).toBe(false);
+    s.takeWheel("u2");
+    expect(s.driverId).toBe("u2");
+    expect(s.canPrompt("u2")).toBe(true);
+    expect(s.canPrompt("u1")).toBe(false);
+  });
+
+  it("clears the driver when the driver leaves and logs presence_leave", () => {
+    const s = new Session("s1");
+    s.join("u1", "Ana");
+    s.leave("u1");
+    expect(s.driverId).toBeNull();
+    const last = s.eventsFrom(0).at(-1);
+    expect(last?.type).toBe("presence_leave");
+  });
+});
