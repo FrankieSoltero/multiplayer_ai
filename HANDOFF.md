@@ -1,26 +1,25 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-24, just before v2 execution start.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-24, v3 execution COMPLETE (branch merge-ready, held for user review).*
 
-## 0. NEWEST DIRECTION (v3, user-stated 2026-07-24, not yet designed)
+## 0. WHERE WE ARE (v3 done; game-feel design is next)
 
-User wants three things next, in this order of activity:
-1. **Full Claude Code capabilities in sessions** — "all the things I get in Claude Code, skill access and all of that": Bash, subagents/Task, WebSearch/WebFetch, and Skills available to the per-session agents. Key tensions to design: (a) Bash = arbitrary command execution → needs a driver-approval flow over the wire (canUseTool → UI approve/deny buttons) or sandboxing; (b) we deliberately isolate agents from personal config (settingSources: [] + strictMcpConfig, commit bc4fd36) — skills must come back as an explicit opt-in (project-scoped skills dir, maybe `skills` / preset options in the Agent SDK; `tools: {type:"preset", preset:"claude_code"}` and `systemPrompt: {type:"preset"...}` exist in sdk.d.ts). **DESIGN APPROVED + SPEC WRITTEN:** `docs/superpowers/specs/2026-07-24-full-capabilities-design.md` (Bash = driver-approval gate with allowlist; skills = project-scoped `.claude/skills/`; new events permission_request/permission_decision; wire msg `{type:"permission"}`; full tool preset). **Stopped exactly at: spec committed, implementation plan NOT yet written.** Next: writing-plans skill → `docs/superpowers/plans/` → subagent-driven execution on `feature/project-hub` (same SDD process, ledger `.superpowers/sdd/progress.md`), research-refresh agents in parallel, live acceptance via Playwright. User is ALSO still personally reviewing the v2+write-access branch — collect any feedback before/while executing v3.
-2. **Further multiplayer-AI research** — refresh sweep + deeper dive on harness-side competitors (Zed agent collab, GitHub Ace maturity, Amp/Factory evolution); fold v2/v3 findings into docs/research-report.md.
-3. **Video-game-feel design pass** — user's explicit aesthetic direction for the UI once capabilities land ("I would also like for the design aspect to feel like a video game"). Use frontend-design skill + the deferred visual-polish backlog (.app max-width, etc.). NOT yet — after capabilities.
-
-v3 experiment already proven (uncommitted to docs): write-access run — two agents built real code in parallel worktrees; Ben's agent proactively minimized footprint on the shared file, predicted the exact merge conflict and its resolution; merge test confirmed. Write-access commit: 489b27d on feature/project-hub. Ideas surfaced: agents can't test their own code (Bash off), agent-assisted merge as phase-3 candidate.
+Three things were queued after v2. Status now:
+1. **Full Claude Code capabilities + driver approval gate (v3)** — ✅ **COMPLETE** on `feature/project-hub` (commits `85a3999..6735d4e`). Full `claude_code` tool preset; Bash/Write-outside-worktree/etc. gated by a per-request driver Approve/Deny that is itself multiplayer (any teammate can take the wheel to decide a pending request); allowlisted safe commands auto-run; file writes contained to the agent's worktree; project skills via `AGENT_SKILLS`. 60/60 server tests, tsc clean, client builds. Live Playwright acceptance PASSED all four scenarios. Final whole-branch review (fable): **Merge-ready**.
+2. **Research refresh** — ✅ **COMPLETE** — dated addendum appended to `docs/research-report.md` (commit `970e062`). Headlines: Amp shipped "Multiplayer" 2026-07-22; Warp Remote Control clears the co-drive bar (≥3 shipping now); VS Code 1.129 shipped Microsoft's Agent Host Protocol (meets the report's NO-GO precondition sooner than expected); Windsurf→Devin Desktop; GitHub Ace now live technical preview. No competitor combines our shared-session + take-the-wheel + agent-awareness + multiplayer-approval-gate stack. Conditional GO survives; incumbent clock faster.
+3. **Video-game-feel design pass** — ⏳ **NOT STARTED** — this is the next work item. User's explicit aesthetic: "design aspect to feel like a video game" (session-as-party/lobby, avatars, intents as quest-log, project minimap — captured in the v3 spec §4). Use frontend-design skill + deferred visual-polish backlog (`.app` max-width 860px squeezes transcript+sidebar; duplicate sidebar filter; tool_call renders alongside its permission card — mergeable). Do this AFTER the user ratifies v3 (below).
 
 ## 1. Goal & current task
 
-**Project goal:** Startup exploration of YC's Fall 2026 "Multiplayer AI" RFS (dev-tools vertical). v1 (DONE, merged to main) proved one shared live agent session. **Current task: execute the v2 plan** — "Project Hub with Agent-Side Awareness": multiple engineers each drive their own agent session in their own git worktree within one project; agents declare intent via a `set_intent` MCP tool and receive a `<teammates>` digest of other sessions at prompt time.
+**Project goal:** Startup exploration of YC's Fall 2026 "Multiplayer AI" RFS (dev-tools vertical). v1 (merged to main) = one shared live agent session. v2 = project hub with agent-side awareness. v3 = full CC capabilities behind a multiplayer driver-approval gate. **Current task: v3 is built and merge-ready; awaiting the user's verdict on the branch + three ratification items, then the game-feel design pass.**
 
 ## 2. Status
 
-- v1: **complete** — merged to main at `ad791fb`, 19/19 tests, live Playwright acceptance PASSED.
-- Research report: **complete** — `docs/research-report.md` (conditional GO).
-- v2 spec + plan: **committed** (`df1c713`, `b5235d4`), user-approved.
-- v2 execution: **COMPLETE on `feature/project-hub`** (8 commits, 82f1cd9..4a4faff): all 6 tasks done + reviewed; live acceptance PASSED decisively (Ben's agent unprompted flagged the concrete conflict with Ana's in-flight work); 31/31 server tests, tsc clean, client builds. Live runs caught + fixed: agent inheriting personal MCP servers (strictMcpConfig + settingSources []), skipped set_intent (first-action mandate), stale sidebar on agent_error/control_change. **Stopped exactly at: user chose to review the branch personally (Option 3 — keep as-is). Branch `feature/project-hub` is unmerged, preserved at 4a4faff. Next session: collect the user's review feedback, address it (subagent-driven, with re-review), then re-offer merge/PR. Do NOT merge or delete anything until the user gives a verdict.**
+- v1: **complete** — merged to main at `ad791fb`, 19/19 tests, live acceptance PASSED.
+- Research report + v3 addendum: **complete** — `docs/research-report.md` (conditional GO, faster incumbent clock).
+- v2: **COMPLETE, unmerged** on `feature/project-hub` (…4a4faff) — user was reviewing it personally; still held.
+- v3 spec + plan: **committed** (`272f1f4` spec, `85a3999` plan), design user-approved.
+- v3 execution: **COMPLETE on `feature/project-hub` at `6735d4e`** (Tasks 1–6 + research). All task reviews + final whole-branch review passed; 2 live-acceptance findings fixed (worktree escape, skills leak) + 3 final-review minors fixed. 60/60 server tests, tsc clean, client builds. **Stopped exactly at: v3 complete, branch merge-ready, NOT merged. Next session: surface the three RATIFICATION ITEMS (§7) to the user, collect any review feedback on v2+v3, address it subagent-driven with re-review, then run finishing-a-development-branch (likely merge to main). Do NOT merge or delete anything until the user gives a verdict.**
 
 ## 3. Decisions + why (do not re-litigate)
 
@@ -35,51 +34,54 @@ v3 experiment already proven (uncommitted to docs): write-access run — two age
 
 ## 4. Ordered next steps
 
-1. `git checkout -b feature/project-hub` (from main at `b5235d4`).
-2. Run SDD per `docs/superpowers/plans/2026-07-24-project-hub-awareness.md` (6 tasks): for each task N — `<superpowers-skill-dir>/subagent-driven-development/scripts/task-brief docs/superpowers/plans/2026-07-24-project-hub-awareness.md N`, dispatch implementer (Task 1: sonnet — SDK boundary; 2: haiku; 3: sonnet — integration; 4: haiku; 5: haiku; 6: controller-run), then `scripts/review-package BASE HEAD`, dispatch reviewer, fix→re-review until approved, append to ledger `.superpowers/sdd/progress.md`.
-3. Task 6 acceptance is controller-run via Playwright MCP tools (two tabs, `?project=demo&session=ana|ben`); `ANTHROPIC_API_KEY` is set in this environment so real agents work.
-4. Final whole-branch review (fable/opus) with deferred-minors triage → one fix subagent → re-review.
-5. finishing-a-development-branch skill (tests → 4 options → likely merge to main per user pattern).
+1. **Surface the three §7 ratification items to the user** (they are decisions only the user makes — do not merge before they weigh in).
+2. Collect any user review feedback on the v2+v3 branch; if changes are wanted, run them subagent-driven with re-review (same process used all along), appending to ledger `.superpowers/sdd/2026-07-24-full-capabilities/progress.md`.
+3. Then `finishing-a-development-branch` skill (tests → options → likely merge to main per user pattern) for the whole `feature/project-hub` branch (v2+v3 together).
+4. **Game-feel design pass** (the actual next build): frontend-design skill; brainstorm first. Direction in v3 spec §4 + visual-polish backlog in §6 below.
 
-## 5. Files with line refs (current state on main)
+## 5. Files with line refs (current state on `feature/project-hub` @ 6735d4e)
 
-- Plan (v2, execute this): `docs/superpowers/plans/2026-07-24-project-hub-awareness.md` (full code per task; Tasks 1–6)
-- Spec (v2): `docs/superpowers/specs/2026-07-24-project-hub-awareness-design.md`
-- `poc/server/src/agentDriver.ts:31-33` RunQuery type (Task 1 changes to 2-param with hooks); `:35-60` runAgentQuery (gets MCP server + mcpServers option); `:62-88` AgentDriver ctor + sendPrompt (ctor gains workdir, sendPrompt gains contextBlock); `:65` dead flag (Task 1 adds `isDead` getter)
-- `poc/server/src/server.ts:19-31` startServer + session map (Task 3 replaces file wholesale — plan has full replacement); `:58-83` join handler; `:87-99` prompt handler
-- `poc/server/src/session.ts:8` participants Map (Task 3 adds `participantList` getter after `:36`)
-- `poc/server/src/events.ts:9` last union member (Task 1 appends `intent_update`)
-- `poc/client/src/App.tsx:41-42` URL parsing (Task 5 adds project param); `:44-64` ws effect (join gains projectId; onmessage gains project case); `:70-81` derived state (add myIntent); `:118-163` transcript (add intent_update case; wrap in `.workspace` flex with teammates aside)
-- v1 spec/plan for reference: `docs/superpowers/specs/2026-07-23-multiplayer-ai-design.md`, `docs/superpowers/plans/2026-07-23-multiplayer-ai.md`
-- SDD ledger: `.superpowers/sdd/progress.md` (gitignored via .git/info/exclude; v1 history + minors deferred list lives here)
-- Skill scripts: `/Users/franciscosoltero/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/{task-brief,review-package}`
+- v3 plan: `docs/superpowers/plans/2026-07-24-full-capabilities.md`; v3 spec: `docs/superpowers/specs/2026-07-24-full-capabilities-design.md`
+- `poc/server/src/permissions.ts` (NEW) — `AUTO_APPROVED_BASH_PREFIXES` + `isAutoApprovedBash` (:17-42, shell-metachar guard); `isContainedWrite`/`FILE_WRITE_TOOLS` (:66-79, reads `file_path ?? notebook_path`); `buildCanUseTool` (SDK canUseTool bridge — never returns null; containment branch before driver-ask; abort→deny backstop)
+- `poc/server/src/agentDriver.ts` — `DriverHooks.onPermissionRequest(toolName,input,signal?)` + `onPermissionError` (~:32-52); `runAgentQuery` options (~:70-120: `tools:{preset:"claude_code"}`, `canUseTool`, `skills` from `AGENT_SKILLS`, system prompt states worktree root, `allowedTools` = Read/Glob/Grep/set_intent only — Write/Edit removed); `AgentDriver.resolvePermission` + `denyOnAbort` + `denyAllPending` (flush on stream death, ~:290-304); `pendingPermissions` map
+- `poc/server/src/server.ts` — `INTERESTING` gains permission_request/decision (:24-32); `{type:"permission"}` wire handler (~:192-209, driver-at-decision-time via `canPrompt`)
+- `poc/server/src/events.ts:9-12` — union has permission_request/permission_decision
+- `poc/client/src/App.tsx` — `permissionDecisions` map in derived-state memo (~:91-109); `sendPermission` (~:125); permission_request card + permission_decision line in transcript switch; `App.css` `.msg.permission` styles
+- `poc/scripts/demo-setup.sh` — creates `.claude/skills/auth-migration-guide/SKILL.md` before worktree-add (both worktrees get it)
+- SDD ledger (THIS increment): `.superpowers/sdd/2026-07-24-full-capabilities/progress.md`; task/fix reports + acceptance evidence in same dir (`task-6-report.md`, `final-fixes-report.md`, research-*.md). v1/v2 ledger is the OLD flat `.superpowers/sdd/progress.md`.
+- Skill scripts: `/Users/franciscosoltero/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/{task-brief,review-package,sdd-workspace}`
 
 ## 6. Gotchas / constraints
 
-- **`Docs/` == `docs/`** on this macOS FS — always write lowercase `docs/` (git tracks that casing).
-- **SDD reviewers sometimes derail into a GitHub-PR workflow** — every reviewer prompt must say "LOCAL review, no gh, your final message IS the review, read-only". One v1 reviewer also stalled on SendMessage resume; prefer fresh reviewer dispatches over resuming.
-- **v1 fakes stay assignable** after RunQuery gains the hooks param (fewer-params functions are assignable in TS) — do not "fix" them.
-- **Existing v1 tests must pass unmodified** (21 tests after v2 Task 1-2 additions; v1 baseline was 19).
-- The client has **no auto-reconnect**; server restart (tsx watch on edit) drops tabs — reload tabs during acceptance.
-- zod v4 required for `tool()` shapes (`npm install zod` in poc/server is plan Task 1 Step 1).
-- Background security scans fire on commits touching server.ts — missing-auth findings are spec-accepted PoC scope; don't churn on them.
-- `.superpowers/` is git-excluded; review packages/briefs/reports live there and survive nothing — the ledger is the recovery map (`git log` corroborates).
-- Demo worktrees: `poc/scripts/demo-setup.sh` creates `poc/demo-project` + `poc/demo-worktrees/{ana,ben}`; server needs `AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees`.
+- **`Docs/` == `docs/`** on this macOS FS — always write lowercase `docs/`.
+- **SDD reviewers must be told**: "LOCAL review, no gh, final message IS the review, read-only". Prefer fresh reviewer dispatches over SendMessage-resume.
+- **Test fakes stay assignable** as `RunQuery` gains params (fewer-params functions assignable in TS) — do not "fix" them. Existing tests pass unmodified; append-only.
+- **`canUseTool` must NEVER return null** — fail-closed per sdk.d.ts: null blocks the tool forever. Always a PermissionResult.
+- **`skills` option is a listing FILTER, not discovery** — project skills are NOT discovered under `settingSources:[]` (that's ratification item 3). `AGENT_SKILLS` default empty = no skills listed; the demo agent reads `.claude/skills/*/SKILL.md` directly via grep (works today, proven in acceptance).
+- **Bash allowlist + in-worktree Write = a documented two-hop escape** (agent authors `package.json` test script / `vitest.config` / `tsc --outDir` / `git --output`, then runs the allowlisted command → runs outside worktree, no approval). Accepted PoC residual risk (README documents it); OS sandboxing is out of scope. Do NOT silently "fix" by editing the allowlist — that's ratification item 2.
+- Client has **no auto-reconnect**; a server restart drops tabs — reload during acceptance. If ports 3001/5173-4 are stale from a prior session, `kill $(lsof -tiTCP:<port> -sTCP:LISTEN)` first. Client picked **5174** last run because 5173 was occupied — check the vite banner for the real port.
+- Background security scans fire on server commits — missing-auth findings are spec-accepted PoC scope; don't churn.
+- `.superpowers/` is git-excluded; reports/briefs live there — the ledger + `git log` is the recovery map.
+- Demo: `poc/scripts/demo-setup.sh` → `poc/demo-worktrees/{ana,ben}`; server needs `AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees` and (for the skill demo) `AGENT_SKILLS=auth-migration-guide`.
 
-## 7. Open questions
+## 7. Open questions / RATIFICATION ITEMS for the user
 
-- Whether the live agent reliably calls `set_intent` from the system-prompt instruction alone — Task 6 acceptance will tell; if it doesn't, options are stronger prompt wording or forcing an intent on first prompt. Not resolvable before live testing.
-- Whether `tools: [...]` restriction coexists cleanly with `mcpServers` tools in the installed SDK (typed OK per sdk.d.ts, unverified live). Task 6 verifies; fallback is dropping `tools` and using `disallowedTools`.
-- v2 report update (research-report.md §3 mentions only v1) — decide at final review whether to append a v2 findings paragraph or leave for a later pass.
+These are the three things to put in front of the user before merging (all recorded, none blocking the build):
+1. **Write/Edit auto-approval is now worktree-containment-conditional**, not unconditional as the v3 spec text said. Forced by a reproduced live Critical (an agent wrote to `~/src/auth.ts`, outside its worktree). The final review endorsed the deviation as strictly safer. User ratifies keeping it.
+2. **Bash allowlist residual-risk acceptance** — the two-hop escape above. Options: accept in writing as PoC scope (README already documents it — recommended), or narrow the list (cheapest cut: drop `npm test`). Do not change the list without the user's call — the six prefixes are spec-mandated.
+3. **Project-skill discovery under `settingSources:[]`** — currently discovery doesn't happen; the agent greps SKILL.md directly. Options: `settingSources:["project"]` scoped to the worktree (reopens that repo's project settings/CLAUDE.md — arguably matches the spec's "project-scoped opt-in"), a local `plugins:[{type:'local',path}]` wrapper, or accept the grep fallback. User picks the direction.
+
+Carried minor (non-blocking): unused `_reason` param on `denyAllPending` (cosmetic).
 
 ## 8. Resume & verify
 
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
 git checkout feature/project-hub
-git log --oneline | head -3        # expect 4a4faff (final fix), bc4fd36, 94b5d29
-cat .superpowers/sdd/progress.md   # v1 AND v2 complete through final review; branch merge-ready
-cd poc/server && npx vitest run    # expect 31 passed (31); main still has 19
+git log --oneline | head -3        # expect 6735d4e, 6527dd4, af5b7be
+cat .superpowers/sdd/2026-07-24-full-capabilities/progress.md   # v3 complete through final review; merge-ready
+cd poc/server && npx vitest run    # expect 60 passed (60); main still has 19
+cd ../client && npm run build      # clean
 ```
 
-Branch: `feature/project-hub` exists, complete, unmerged — user is reviewing it personally. Trust the ledger + `git log` over memory. Demo: `poc/scripts/demo-setup.sh`, then server with `AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees npm run dev` (poc/server), client `npm run dev` (poc/client), URLs `?project=demo&session=ana` / `session=ben`.
+Branch: `feature/project-hub` = v1(merged separately)+v2+v3, complete, **unmerged**, merge-ready, held for the user's verdict on §7. Trust the ledger + `git log` over memory. Demo: `poc/scripts/demo-setup.sh`, then server `AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees AGENT_SKILLS=auth-migration-guide npm run dev` (poc/server), client `npm run dev` (poc/client); URLs `?project=demo&session=ana` / `session=ben`. Acceptance walkthrough: allowlisted cmd auto-runs; a `&&`/non-allowlisted cmd or an out-of-worktree Write raises a 🔐 card; only the current driver decides; take-the-wheel lets a teammate decide a pending card.
