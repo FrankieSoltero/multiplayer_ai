@@ -19,7 +19,17 @@ export const AUTO_APPROVED_BASH_PREFIXES = [
   "git log",
 ];
 
+// Shell metacharacters (chaining `;` `&` `|`, redirection `<` `>`, command
+// substitution/backtick/variable-expansion `` ` `` `$` — covers `$(...)`,
+// `${...}`, `$VAR` — line continuation/escaping `\`, and embedded newlines).
+// Allowlisting a prefix means "this exact simple command", never "any
+// pipeline or composite command that starts with it" — a command containing
+// any of these always falls through to driver approval, even if it starts
+// with an allowlisted prefix (e.g. `git status && rm -rf /`).
+const SHELL_METACHARACTERS = /[;&|<>`$\\]|\n/;
+
 export function isAutoApprovedBash(command: string): boolean {
+  if (SHELL_METACHARACTERS.test(command)) return false;
   return AUTO_APPROVED_BASH_PREFIXES.some(
     (prefix) =>
       command === prefix ||
@@ -42,7 +52,7 @@ export function buildCanUseTool(hooks: DriverHooks): CanUseTool {
     }
     try {
       const decision = await Promise.race([
-        hooks.onPermissionRequest(toolName, input),
+        hooks.onPermissionRequest(toolName, input, options.signal),
         abortsToDeny(options.signal),
       ]);
       if (decision === "allow") return { behavior: "allow" };

@@ -351,4 +351,38 @@ describe("driver approval gate", () => {
       .filter((e) => e.type === "permission_decision");
     expect(decisions.length).toBe(1);
   });
+
+  it("closes out a pending request when the SDK aborts it, denying it and marking the audit trail as system", async () => {
+    const controller = new AbortController();
+    const abortRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _prompt of prompts) {
+        const decision = await hooks.onPermissionRequest(
+          "Bash",
+          { command: "rm -rf x" },
+          controller.signal,
+        );
+        yield {
+          type: "assistant",
+          content: [{ type: "text", text: `decision: ${decision}` }],
+        };
+      }
+    };
+    const session = new Session("s-perm-abort");
+    const driver = new AgentDriver(session, abortRun);
+    driver.sendPrompt("u1", "clean the build dir");
+
+    const request = await waitForEvent(session, "permission_request");
+    controller.abort();
+
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({
+      requestId: request.requestId,
+      decision: "deny",
+      userId: "system",
+    });
+    const echoed = await waitForEvent(session, "agent_text_delta");
+    expect(echoed.text).toBe("decision: deny");
+
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(false);
+  });
 });

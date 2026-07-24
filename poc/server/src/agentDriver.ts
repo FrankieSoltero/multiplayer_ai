@@ -43,6 +43,7 @@ export interface DriverHooks {
   onPermissionRequest: (
     toolName: string,
     input: unknown,
+    signal?: AbortSignal,
   ) => Promise<"allow" | "deny">;
   /** Surface a permission-flow failure into the session log (agent_error). */
   onPermissionError?: (message: string) => void;
@@ -142,19 +143,44 @@ export class AgentDriver {
       run(this.prompts, {
         onIntent: (text) =>
           this.session.append({ type: "intent_update", text: text.slice(0, 200) }),
-        onPermissionRequest: (toolName, input) => {
+        onPermissionRequest: (toolName, input, signal) => {
           const requestId = randomUUID();
+          let resolve!: (d: "allow" | "deny") => void;
+          const pending = new Promise<"allow" | "deny">((res) => {
+            resolve = res;
+          });
           // Register the resolver BEFORE appending, so a subscriber that
           // decides synchronously on seeing the event still finds it.
-          const pending = new Promise<"allow" | "deny">((resolve) =>
-            this.pendingPermissions.set(requestId, resolve),
-          );
+          this.pendingPermissions.set(requestId, resolve);
           this.session.append({
             type: "permission_request",
             requestId,
             toolName,
             input,
           });
+          // The SDK aborts canUseTool calls (e.g. the underlying tool_use
+          // was interrupted/superseded) independently of any driver
+          // decision. Without this, an abort leaves the entry in
+          // pendingPermissions forever: resolvePermission would still
+          // "succeed" against a request nothing is listening to anymore,
+          // and the UI would show a stale, dead approval card.
+          if (signal) {
+            const denyOnAbort = () => {
+              // delete() returns false if resolvePermission (or a prior
+              // abort) already closed this request out — don't double-log
+              // or double-resolve.
+              if (!this.pendingPermissions.delete(requestId)) return;
+              this.session.append({
+                type: "permission_decision",
+                requestId,
+                decision: "deny",
+                userId: "system",
+              });
+              resolve("deny");
+            };
+            if (signal.aborted) denyOnAbort();
+            else signal.addEventListener("abort", denyOnAbort, { once: true });
+          }
           return pending;
         },
         onPermissionError: (message) =>
