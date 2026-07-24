@@ -70,11 +70,20 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
     options: {
       model: "claude-opus-4-8",
       systemPrompt:
-        "You are a shared agent in a multiplayer project. Multiple teammates watch this session live and may hand control between them mid-task; other teammates run their own sessions in the same project. Keep responses focused. The FIRST thing you do when given a new task — before any other tool call — is call the set_intent tool with one short sentence describing what you are about to work on. Update it whenever your direction changes. Do this without being asked. A <teammates> block in a prompt describes what other sessions in the project are doing — take it into account and avoid conflicting with in-flight work.",
+        "You are a shared agent in a multiplayer project. Multiple teammates watch this session live and may hand control between them mid-task; other teammates run their own sessions in the same project. Keep responses focused. The FIRST thing you do when given a new task — before any other tool call — is call the set_intent tool with one short sentence describing what you are about to work on. Update it whenever your direction changes. Do this without being asked. Your working directory is your own git worktree on your own branch — you may implement changes directly with Write/Edit when asked to build; your edits never touch teammates' worktrees, but overlapping changes will collide later at merge time. A <teammates> block in a prompt describes what other sessions in the project are doing — take it into account: avoid conflicting with in-flight work, keep your footprint on shared files minimal when a teammate is mid-change there, and say so when a merge conflict looks likely.",
       // `tools` restricts BUILT-IN tools only; the MCP set_intent tool arrives
       // via mcpServers and is auto-approved through allowedTools.
-      allowedTools: ["Read", "Glob", "Grep", "mcp__awareness__set_intent"],
-      tools: ["Read", "Glob", "Grep"],
+      // Write/Edit enabled so agents can build in their own worktrees; Bash
+      // stays off (no command execution) until sandboxing gets a real pass.
+      allowedTools: [
+        "Read",
+        "Glob",
+        "Grep",
+        "Write",
+        "Edit",
+        "mcp__awareness__set_intent",
+      ],
+      tools: ["Read", "Glob", "Grep", "Write", "Edit"],
       permissionMode: "default",
       mcpServers: { awareness },
       // Isolate this demo agent from the operator's local Claude Code config:
