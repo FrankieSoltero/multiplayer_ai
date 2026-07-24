@@ -26,6 +26,18 @@ for dev teams. See `docs/research-report.md` for the research and
    rate-limiting task *without mentioning Ana*. Ben's agent should acknowledge
    Ana's in-flight migration via the injected `<teammates>` digest.
 
+## Run the v3 full-capabilities demo
+
+Setup is the same as v2 (demo-setup.sh, `AGENT_WORKDIR_ROOT`, two tabs). New in v3:
+
+- Agents have the full Claude Code tool set (Bash, subagents, web tools,
+  project skills). Test/type-check/read-only-git commands run without asking;
+  any other Bash command (or Task/WebSearch/WebFetch/...) shows a 🔐 approval
+  card. Only the current driver can Approve/Deny — and taking the wheel lets a
+  teammate decide a pending request (drop in just to approve something).
+- The demo repo ships a project skill (`.claude/skills/auth-migration-guide/`);
+  ask the ana agent to "migrate auth to JWT" and it should consult the skill.
+
 ## Tests
 
 `cd poc/server && npm test`
