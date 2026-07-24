@@ -111,7 +111,7 @@ export class AgentDriver {
     return this.dead;
   }
 
-  sendPrompt(userId: string, text: string): void {
+  sendPrompt(userId: string, text: string, contextBlock?: string): void {
     if (this.dead) {
       this.session.append({
         type: "agent_error",
@@ -120,9 +120,10 @@ export class AgentDriver {
       return;
     }
     this.session.append({ type: "user_message", userId, text });
+    const promptText = contextBlock ? `${contextBlock}\n\n${text}` : text;
     this.prompts.push({
       type: "user",
-      message: { role: "user", content: [{ type: "text", text }] },
+      message: { role: "user", content: [{ type: "text", text: promptText }] },
       parent_tool_use_id: null,
     });
   }

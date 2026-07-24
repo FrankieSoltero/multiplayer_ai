@@ -250,3 +250,30 @@ describe("intent updates", () => {
     await vi.waitFor(() => expect(driver.isDead).toBe(true)); // fakeRun returns after one prompt
   });
 });
+
+describe("digest injection", () => {
+  it("prefixes the SDK prompt with the context block but logs raw text only", async () => {
+    const s = new Session("s1");
+    const echoPrompt: RunQuery = async function* (prompts) {
+      for await (const prompt of prompts) {
+        yield {
+          type: "assistant",
+          content: [
+            { type: "text", text: `SDK saw: ${prompt.message.content[0].text}` },
+          ],
+        };
+        return;
+      }
+    };
+    const driver = new AgentDriver(s, echoPrompt);
+    driver.sendPrompt("u1", "add rate limiting", "<teammates>\n- session \"ana\": Migrating auth\n</teammates>");
+    await vi.waitFor(() => {
+      const events = s.eventsFrom(0);
+      const userMsg = events.find((e) => e.type === "user_message") as { text: string };
+      const agentText = events.find((e) => e.type === "agent_text_delta") as { text: string };
+      expect(userMsg.text).toBe("add rate limiting");
+      expect(agentText.text).toContain("<teammates>");
+      expect(agentText.text).toContain("add rate limiting");
+    });
+  });
+});
