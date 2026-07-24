@@ -2,6 +2,15 @@
 
 *Living resume packet. Update in place; don't recreate. Last update: 2026-07-24, just before v2 execution start.*
 
+## 0. NEWEST DIRECTION (v3, user-stated 2026-07-24, not yet designed)
+
+User wants three things next, in this order of activity:
+1. **Full Claude Code capabilities in sessions** — "all the things I get in Claude Code, skill access and all of that": Bash, subagents/Task, WebSearch/WebFetch, and Skills available to the per-session agents. Key tensions to design: (a) Bash = arbitrary command execution → needs a driver-approval flow over the wire (canUseTool → UI approve/deny buttons) or sandboxing; (b) we deliberately isolate agents from personal config (settingSources: [] + strictMcpConfig, commit bc4fd36) — skills must come back as an explicit opt-in (project-scoped skills dir, maybe `skills` / preset options in the Agent SDK; `tools: {type:"preset", preset:"claude_code"}` and `systemPrompt: {type:"preset"...}` exist in sdk.d.ts). Brainstorm was STARTED in prior session — check conversation state; if lost, re-ask: Bash safety model (recommend driver-approval gate), skills scope (recommend project-scoped opt-in), then spec→plan→SDD as before.
+2. **Further multiplayer-AI research** — refresh sweep + deeper dive on harness-side competitors (Zed agent collab, GitHub Ace maturity, Amp/Factory evolution); fold v2/v3 findings into docs/research-report.md.
+3. **Video-game-feel design pass** — user's explicit aesthetic direction for the UI once capabilities land ("I would also like for the design aspect to feel like a video game"). Use frontend-design skill + the deferred visual-polish backlog (.app max-width, etc.). NOT yet — after capabilities.
+
+v3 experiment already proven (uncommitted to docs): write-access run — two agents built real code in parallel worktrees; Ben's agent proactively minimized footprint on the shared file, predicted the exact merge conflict and its resolution; merge test confirmed. Write-access commit: 489b27d on feature/project-hub. Ideas surfaced: agents can't test their own code (Bash off), agent-assisted merge as phase-3 candidate.
+
 ## 1. Goal & current task
 
 **Project goal:** Startup exploration of YC's Fall 2026 "Multiplayer AI" RFS (dev-tools vertical). v1 (DONE, merged to main) proved one shared live agent session. **Current task: execute the v2 plan** — "Project Hub with Agent-Side Awareness": multiple engineers each drive their own agent session in their own git worktree within one project; agents declare intent via a `set_intent` MCP tool and receive a `<teammates>` digest of other sessions at prompt time.
