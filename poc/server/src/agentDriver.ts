@@ -39,7 +39,15 @@ export const runAgentQuery: RunQuery = (prompts) =>
       model: "claude-opus-4-8",
       systemPrompt:
         "You are a shared agent in a multiplayer session. Multiple teammates watch this session live and may hand control between them mid-task. Keep responses focused.",
+      // `allowedTools` only auto-approves these tools without a permission
+      // prompt — it does NOT limit which tools are available to the model
+      // (see sdk.d.ts: "To restrict which tools are available, use the
+      // `tools` option instead."). `tools` is the knob that actually
+      // restricts the base tool set to exactly these three; both are needed
+      // so Read/Glob/Grep run unprompted and everything else (Bash, Write,
+      // Edit, ...) is unavailable rather than merely un-approved.
       allowedTools: ["Read", "Glob", "Grep"],
+      tools: ["Read", "Glob", "Grep"],
       permissionMode: "default",
       cwd: process.env.AGENT_WORKDIR ?? process.cwd(),
     },
@@ -74,53 +82,90 @@ export class AgentDriver {
   private async consume(messages: AsyncIterable<SdkMessage>): Promise<void> {
     try {
       for await (const message of messages) {
-        // Docs show content on the message; some SDK versions nest it under .message
-        const blocks = (message.content ?? message.message?.content ?? []) as {
-          type: string;
-          text?: string;
-          name?: string;
-          id?: string;
-          input?: unknown;
-          tool_use_id?: string;
-          content?: { type: string; text?: string }[];
-        }[];
-        if (message.type === "assistant") {
-          for (const block of blocks) {
-            if (block.type === "text" && block.text) {
-              this.session.append({ type: "agent_text_delta", text: block.text });
-            } else if (block.type === "tool_use" && block.name) {
-              if (block.id) this.toolNamesById.set(block.id, block.name);
-              this.session.append({
-                type: "tool_call",
-                toolName: block.name,
-                input: block.input,
-              });
-            }
-          }
-        } else if (message.type === "result" || message.type === "user") {
-          for (const block of blocks) {
-            if (block.type === "tool_result") {
-              const text = (block.content ?? [])
-                .filter((c) => c.type === "text" && c.text)
-                .map((c) => c.text)
-                .join("\n");
-              const toolName =
-                (block.tool_use_id && this.toolNamesById.get(block.tool_use_id)) ??
-                "tool";
-              this.session.append({
-                type: "tool_result",
-                toolName,
-                output: text.slice(0, 2000),
-              });
-            }
-          }
+        try {
+          this.handleMessage(message);
+        } catch (err) {
+          // Contain the failure to this one message so a single malformed
+          // message (e.g. an unexpected shape from the live SDK) doesn't
+          // kill the driver's ability to keep consuming the stream.
+          this.session.append({
+            type: "agent_error",
+            message: err instanceof Error ? err.message : String(err),
+          });
         }
       }
     } catch (err) {
+      // Fatal errors on the stream itself (e.g. the iterable throws) still
+      // need to be surfaced, but at this point the stream is done for good.
       this.session.append({
         type: "agent_error",
         message: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  private handleMessage(message: SdkMessage): void {
+    // Docs show content on the message; some SDK versions nest it under .message
+    const blocks = (message.content ?? message.message?.content ?? []) as {
+      type: string;
+      text?: string;
+      name?: string;
+      id?: string;
+      input?: unknown;
+      tool_use_id?: string;
+      content?: string | { type: string; text?: string }[];
+    }[];
+    if (message.type === "assistant") {
+      for (const block of blocks) {
+        if (block.type === "text" && block.text) {
+          this.session.append({ type: "agent_text_delta", text: block.text });
+        } else if (block.type === "tool_use" && block.name) {
+          if (block.id) this.toolNamesById.set(block.id, block.name);
+          this.session.append({
+            type: "tool_call",
+            toolName: block.name,
+            input: block.input,
+          });
+        }
+      }
+    } else if (message.type === "result" || message.type === "user") {
+      for (const block of blocks) {
+        if (block.type === "tool_result") {
+          const text = this.extractToolResultText(block.content);
+          const toolName =
+            (block.tool_use_id && this.toolNamesById.get(block.tool_use_id)) ??
+            "tool";
+          this.session.append({
+            type: "tool_result",
+            toolName,
+            output: text.slice(0, 2000),
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Live SDK `tool_result` blocks may carry `content` as a plain string
+   * instead of the documented array of content blocks. Accept either shape;
+   * anything else is genuinely malformed and is surfaced as an error so it
+   * gets logged as `agent_error` (by the per-message try/catch in `consume`)
+   * rather than silently dropped, while the driver keeps consuming the
+   * stream.
+   */
+  private extractToolResultText(
+    content: string | { type: string; text?: string }[] | undefined,
+  ): string {
+    if (content === undefined) return "";
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content
+        .filter((c) => c.type === "text" && c.text)
+        .map((c) => c.text)
+        .join("\n");
+    }
+    throw new Error(
+      `tool_result content has unsupported shape: ${typeof content}`,
+    );
   }
 }

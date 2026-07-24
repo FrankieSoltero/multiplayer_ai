@@ -43,6 +43,48 @@ const toolResultRun: RunQuery = async function* (prompts) {
   }
 };
 
+const stringToolResultRun: RunQuery = async function* (prompts) {
+  for await (const _prompt of prompts) {
+    yield {
+      type: "assistant",
+      content: [
+        { type: "tool_use", id: "t3", name: "Read", input: { file: "b.ts" } },
+      ],
+    };
+    yield {
+      type: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "t3",
+          content: "plain string tool output",
+        },
+      ],
+    };
+    return;
+  }
+};
+
+const malformedThenNormalRun: RunQuery = async function* (prompts) {
+  for await (const _prompt of prompts) {
+    yield {
+      type: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "t-missing",
+          content: 42,
+        },
+      ],
+    };
+    yield {
+      type: "assistant",
+      content: [{ type: "text", text: "still here" }],
+    };
+    return;
+  }
+};
+
 const longToolResultRun: RunQuery = async function* (prompts) {
   for await (const _prompt of prompts) {
     yield {
@@ -98,6 +140,37 @@ describe("AgentDriver", () => {
         toolName: "Read",
         output: "file contents here",
       });
+    });
+  });
+
+  it("accepts tool_result content as a plain string (live SDK shape)", async () => {
+    const s = new Session("s1");
+    const driver = new AgentDriver(s, stringToolResultRun);
+    driver.sendPrompt("u1", "read the file");
+    await vi.waitFor(() => {
+      const last = s.eventsFrom(0).at(-1);
+      expect(last?.type).toBe("tool_result");
+      expect(last).toMatchObject({
+        type: "tool_result",
+        toolName: "Read",
+        output: "plain string tool output",
+      });
+    });
+  });
+
+  it("logs an agent_error for a malformed message but keeps consuming the stream", async () => {
+    const s = new Session("s1");
+    const driver = new AgentDriver(s, malformedThenNormalRun);
+    driver.sendPrompt("u1", "do the thing");
+    await vi.waitFor(() => {
+      const types = s.eventsFrom(0).map((e) => e.type);
+      expect(types).toContain("agent_error");
+      expect(types).toContain("agent_text_delta");
+      // The error from the malformed message must not stop the driver from
+      // handling the subsequent normal message.
+      expect(types.indexOf("agent_text_delta")).toBeGreaterThan(
+        types.indexOf("agent_error"),
+      );
     });
   });
 
