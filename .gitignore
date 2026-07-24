@@ -4,3 +4,4 @@ dist/
 .DS_Store
 poc/demo-project/
 poc/demo-worktrees/
+.playwright-mcp/

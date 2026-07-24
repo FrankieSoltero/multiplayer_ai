@@ -248,4 +248,52 @@ describe("project awareness", () => {
     wsAna.close();
     wsBen.close();
   });
+
+  it("pushes a fresh project snapshot when control_change fires on another session (INTERESTING coverage)", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    // Ana joins session "sess1" in project "px1" (becomes driver automatically).
+    const ws1 = await connect(server.port);
+    collect(ws1, []);
+    ws1.send(
+      JSON.stringify({ type: "join", projectId: "px1", sessionId: "sess1", userId: "u1", name: "Ana" }),
+    );
+    await wait(50);
+
+    // Ben joins a DIFFERENT session ("sess2") in the same project and watches it.
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(
+      JSON.stringify({ type: "join", projectId: "px1", sessionId: "sess2", userId: "u2", name: "Ben" }),
+    );
+    await wait(50);
+
+    // Clear the 1000ms push-throttle window so the upcoming control_change
+    // produces an unambiguous, attributable push.
+    await wait(1100);
+    const priorProjectCount = seenBen.filter((m) => m.type === "project").length;
+
+    // A THIRD client joins session "sess1" and takes the wheel there.
+    const ws3 = await connect(server.port);
+    collect(ws3, []);
+    ws3.send(
+      JSON.stringify({ type: "join", projectId: "px1", sessionId: "sess1", userId: "u3", name: "Cara" }),
+    );
+    await wait(50);
+    ws3.send(JSON.stringify({ type: "take_wheel" }));
+
+    // Allow for the throttle's trailing push to fire.
+    await wait(1200);
+
+    const projectMsgs = seenBen.filter((m) => m.type === "project");
+    expect(projectMsgs.length).toBeGreaterThan(priorProjectCount);
+    const sess1Entry = projectMsgs.at(-1).sessions.find((s: any) => s.id === "sess1");
+    expect(sess1Entry.driverName).toBe("Cara");
+
+    ws1.close();
+    wsBen.close();
+    ws3.close();
+  });
 });

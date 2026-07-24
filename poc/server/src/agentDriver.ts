@@ -81,6 +81,8 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
       // it must see only the awareness MCP server passed above, never any
       // user/project/local MCP servers or settings (e.g. Google Drive,
       // Playwright, sqlite) that happen to be configured on this machine.
+      // `settingSources: []` also intentionally suppresses CLAUDE.md loading
+      // (project/user/local) — full isolation, not just MCP.
       strictMcpConfig: true,
       settingSources: [],
       cwd: hooks.workdir ?? process.env.AGENT_WORKDIR ?? process.cwd(),

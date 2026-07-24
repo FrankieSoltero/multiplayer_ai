@@ -26,6 +26,8 @@ const INTERESTING = new Set([
   "presence_join",
   "presence_leave",
   "user_message",
+  "agent_error",
+  "control_change",
 ]);
 
 export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
