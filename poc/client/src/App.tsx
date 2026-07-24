@@ -12,6 +12,8 @@ type LoggedEvent = {
   input?: unknown;
   output?: string;
   message?: string;
+  requestId?: string;
+  decision?: string;
 };
 
 type ProjectSessionInfo = {
@@ -88,10 +90,11 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [events]);
 
-  const { driverId, participants, myIntent } = useMemo(() => {
+  const { driverId, participants, myIntent, permissionDecisions } = useMemo(() => {
     let driverId: string | null = null;
     const participants = new Map<string, string>();
     let myIntent: string | null = null;
+    const permissionDecisions = new Map<string, string>();
     for (const ev of events) {
       if (ev.type === "presence_join" && ev.userId && ev.name)
         participants.set(ev.userId, ev.name);
@@ -99,8 +102,10 @@ export default function App() {
         participants.delete(ev.userId);
       if (ev.type === "control_change" && ev.userId) driverId = ev.userId;
       if (ev.type === "intent_update") myIntent = ev.text ?? null;
+      if (ev.type === "permission_decision" && ev.requestId && ev.decision)
+        permissionDecisions.set(ev.requestId, ev.decision);
     }
-    return { driverId, participants, myIntent };
+    return { driverId, participants, myIntent, permissionDecisions };
   }, [events]);
 
   const isDriver = driverId === userId;
@@ -114,6 +119,10 @@ export default function App() {
 
   function takeWheel() {
     wsRef.current?.send(JSON.stringify({ type: "take_wheel" }));
+  }
+
+  function sendPermission(requestId: string, decision: "allow" | "deny") {
+    wsRef.current?.send(JSON.stringify({ type: "permission", requestId, decision }));
   }
 
   return (
@@ -187,6 +196,54 @@ export default function App() {
                 return (
                   <div key={ev.seq} className="msg system">
                     🎯 agent intent: {ev.text}
+                  </div>
+                );
+              case "permission_request": {
+                const decided = ev.requestId
+                  ? permissionDecisions.get(ev.requestId)
+                  : undefined;
+                const cmd = (ev.input as { command?: unknown } | undefined)?.command;
+                const preview =
+                  typeof cmd === "string" ? cmd : JSON.stringify(ev.input);
+                return (
+                  <div key={ev.seq} className="msg permission">
+                    <div className="permission-title">
+                      🔐 agent wants to run <b>{ev.toolName}</b>
+                    </div>
+                    <code className="permission-input">
+                      {preview?.slice(0, 300)}
+                    </code>
+                    {decided ? (
+                      <div className="permission-outcome">
+                        {decided === "allow" ? "✅ approved" : "⛔ denied"}
+                      </div>
+                    ) : isDriver && ev.requestId ? (
+                      <div className="permission-actions">
+                        <button onClick={() => sendPermission(ev.requestId!, "allow")}>
+                          Approve
+                        </button>
+                        <button
+                          className="deny"
+                          onClick={() => sendPermission(ev.requestId!, "deny")}
+                        >
+                          Deny
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="permission-outcome">
+                        ⏳ waiting for the driver to decide…
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+              case "permission_decision":
+                return (
+                  <div key={ev.seq} className="msg system">
+                    {ev.decision === "allow" ? "✅" : "⛔"}{" "}
+                    {participants.get(ev.userId ?? "") ?? ev.userId}{" "}
+                    {ev.decision === "allow" ? "approved" : "denied"} a tool
+                    request
                   </div>
                 );
               default:

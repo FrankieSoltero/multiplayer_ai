@@ -33,3 +33,10 @@ footer button.wheel { background: #2b4a2f; flex: 1; }
 .teammate-meta { font-size: 0.75rem; color: #6b7280; }
 .teammate-empty { font-size: 0.85rem; color: #6b7280; }
 .my-intent { font-size: 0.9rem; color: #b9a44c; padding: 2px 0 8px; }
+.msg.permission { background: #2a2337; border: 1px solid #6d5aa8; display: flex; flex-direction: column; gap: 6px; }
+.permission-title { font-size: 0.9rem; }
+.permission-input { font-family: monospace; font-size: 0.8rem; background: #171a21; border-radius: 4px; padding: 6px 8px; overflow-wrap: anywhere; }
+.permission-actions { display: flex; gap: 8px; }
+.permission-actions button { padding: 6px 14px; border-radius: 6px; border: none; background: #2b4a2f; color: white; cursor: pointer; }
+.permission-actions button.deny { background: #5a2b2b; }
+.permission-outcome { font-size: 0.85rem; color: #8fa3c0; }
