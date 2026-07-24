@@ -42,9 +42,28 @@ New in v3:
   teammate decide a pending request (drop in just to approve something).
 - The demo repo ships a project skill (`.claude/skills/auth-migration-guide/`);
   ask the ana agent to "migrate auth to JWT" and it should consult the skill.
-  Skills default to none, for isolation from the host CLI's own built-in
-  skills; `AGENT_SKILLS` names the comma-separated project skills to expose
-  for the demo, and agents can also read `.claude/skills/*/SKILL.md` directly.
+  Skills default to none for isolation from the host CLI's own built-in
+  skills; `AGENT_SKILLS` is a context filter over *discovered* skills (which
+  ones get exposed to the agent), not a discovery mechanism itself — and
+  project-skill auto-discovery under the current `settingSources: []`
+  isolation is an open item, not yet verified to work end-to-end. Today the
+  demo works because the agent reads `.claude/skills/*/SKILL.md` directly
+  when asked to use the skill, which does work reliably. The filter is also
+  listing-level, not a sandbox: built-in skill files remain readable via
+  Read/Bash regardless of `AGENT_SKILLS`.
+
+### Residual risk (PoC scope)
+
+The Bash auto-approve allowlist (`npm test`, `npx vitest`, `npx tsc`, `git
+status`/`diff`/`log`) runs commands whose *behavior* an agent can still
+steer via config or scripts it authored in its own worktree — e.g. a
+`package.json` test script, `vitest.config`, `tsc --outDir`/`-p`, or a `git
+--output` argument — none of which the containment check inspects. So a
+worktree-authored file plus an allowlisted command can reach outside the
+worktree with no driver approval in the loop. OS-level sandboxing
+(containers, restricted filesystem permissions, etc.) is explicitly out of
+scope for this PoC per the spec; this is the residual boundary until that
+lands.
 
 ## Tests
 

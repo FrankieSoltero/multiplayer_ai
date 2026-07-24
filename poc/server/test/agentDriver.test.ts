@@ -385,4 +385,34 @@ describe("driver approval gate", () => {
 
     expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(false);
   });
+
+  it("flushes a still-pending permission request as a system deny when the stream ends without deciding it", async () => {
+    let capturedDecision: Promise<"allow" | "deny"> | undefined;
+    const streamDiesWhilePendingRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _prompt of prompts) {
+        capturedDecision = hooks.onPermissionRequest("Bash", {
+          command: "rm -rf x",
+        });
+        // The stream ends (e.g. the SDK query completes/closes) WITHOUT the
+        // driver ever resolving this permission request.
+        return;
+      }
+    };
+    const session = new Session("s-perm-stream-death");
+    const driver = new AgentDriver(session, streamDiesWhilePendingRun);
+    driver.sendPrompt("u1", "clean the build dir");
+
+    const request = await waitForEvent(session, "permission_request");
+    expect(capturedDecision).toBeDefined();
+    await expect(capturedDecision).resolves.toBe("deny");
+
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({
+      requestId: request.requestId,
+      decision: "deny",
+      userId: "system",
+    });
+
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(false);
+  });
 });

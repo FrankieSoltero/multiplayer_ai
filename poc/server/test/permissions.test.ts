@@ -200,4 +200,29 @@ describe("buildCanUseTool worktree containment (file-writing tools)", () => {
     expect(result).toEqual({ behavior: "allow" });
     expect(calls.length).toBe(0);
   });
+
+  it("auto-approves NotebookEdit with a notebook_path inside the worktree, without asking the driver", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = "/tmp/wt/ana";
+    const result = await buildCanUseTool(hooks)(
+      "NotebookEdit",
+      { notebook_path: "/tmp/wt/ana/notebooks/a.ipynb" },
+      opts(),
+    );
+    expect(result).toEqual({ behavior: "allow" });
+    expect(calls.length).toBe(0);
+  });
+
+  it("routes NotebookEdit with a notebook_path outside the worktree to the driver", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = "/tmp/wt/ana";
+    const result = await buildCanUseTool(hooks)(
+      "NotebookEdit",
+      { notebook_path: "/Users/someone/notebooks/a.ipynb" },
+      opts(),
+    );
+    expect(result?.behavior).toBe("deny");
+    expect(calls.length).toBe(1);
+    expect(calls[0].toolName).toBe("NotebookEdit");
+  });
 });

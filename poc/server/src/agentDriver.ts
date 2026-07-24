@@ -265,14 +265,41 @@ export class AgentDriver {
       // The stream ended normally (the SDK query completed/closed) — the
       // driver can no longer accept prompts.
       this.dead = true;
+      this.denyAllPending("stream ended");
     } catch (err) {
       // Fatal errors on the stream itself (e.g. the iterable throws) still
       // need to be surfaced, but at this point the stream is done for good.
       this.dead = true;
+      this.denyAllPending("stream failed");
       this.session.append({
         type: "agent_error",
         message: err instanceof Error ? err.message : String(err),
       });
+    }
+  }
+
+  /**
+   * Flush every still-pending permission request when the driver's stream
+   * dies (normal end or fatal error), so none is left "waiting" forever.
+   * Without this, a request pending at stream death stays in
+   * `pendingPermissions` indefinitely: nothing is listening to it anymore,
+   * yet a later `resolvePermission` call would still "succeed" against it
+   * and log a false audit event for a decision that reached no live agent.
+   * Mirrors the abort-cleanup shape in the `onPermissionRequest` hook below
+   * (system-attributed deny + permission_decision event) so the audit trail
+   * is consistent regardless of why a pending request never got a real
+   * decision.
+   */
+  private denyAllPending(_reason: string): void {
+    for (const [requestId, resolve] of this.pendingPermissions) {
+      this.pendingPermissions.delete(requestId);
+      this.session.append({
+        type: "permission_decision",
+        requestId,
+        decision: "deny",
+        userId: "system",
+      });
+      resolve("deny");
     }
   }
 

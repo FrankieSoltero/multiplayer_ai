@@ -55,15 +55,21 @@ export function isAutoApprovedBash(command: string): boolean {
 const FILE_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
 
 /**
- * True if `input.file_path` is a string that resolves (relative to
+ * True if the write target — `input.file_path` for Write/Edit, or
+ * `input.notebook_path` for NotebookEdit (the SDK's NotebookEdit input uses
+ * a different field name) — is a string that resolves (relative to
  * `workdir`, or as-is if already absolute) to a path inside `workdir`.
  * Fails toward `false` (→ ask the driver) for any ambiguous case: no
- * workdir, missing/non-string file_path, or a resolved path outside the
- * worktree (including `../` traversal).
+ * workdir, missing/non-string path, or a resolved path outside the worktree
+ * (including `../` traversal).
  */
 function isContainedWrite(workdir: string | undefined, input: unknown): boolean {
   if (!workdir) return false;
-  const filePath = (input as { file_path?: unknown }).file_path;
+  const { file_path, notebook_path } = input as {
+    file_path?: unknown;
+    notebook_path?: unknown;
+  };
+  const filePath = file_path ?? notebook_path;
   if (typeof filePath !== "string") return false;
   const workdirResolved = path.resolve(workdir);
   const resolved = path.resolve(workdir, filePath);
