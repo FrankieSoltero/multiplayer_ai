@@ -21,6 +21,12 @@ const failingRun: RunQuery = async function* (prompts) {
   }
 };
 
+// Throws before ever consuming a prompt, simulating an SDK query that dies
+// on its very first iteration (e.g. auth failure on connect).
+const immediatelyFailingRun: RunQuery = async function* () {
+  throw new Error("connection refused");
+};
+
 const toolResultRun: RunQuery = async function* (prompts) {
   for await (const _prompt of prompts) {
     yield {
@@ -171,6 +177,29 @@ describe("AgentDriver", () => {
       expect(types.indexOf("agent_text_delta")).toBeGreaterThan(
         types.indexOf("agent_error"),
       );
+    });
+  });
+
+  it("marks itself dead after the stream ends fatally, and refuses further prompts", async () => {
+    const s = new Session("s1");
+    const driver = new AgentDriver(s, immediatelyFailingRun);
+    await vi.waitFor(() => {
+      const last = s.eventsFrom(0).at(-1);
+      expect(last?.type).toBe("agent_error");
+    });
+
+    driver.sendPrompt("u1", "are you still there?");
+
+    await vi.waitFor(() => {
+      const types = s.eventsFrom(0).map((e) => e.type);
+      expect(types.filter((t) => t === "agent_error").length).toBe(2);
+    });
+    const types = s.eventsFrom(0).map((e) => e.type);
+    expect(types).not.toContain("user_message");
+    const last = s.eventsFrom(0).at(-1);
+    expect(last).toMatchObject({
+      type: "agent_error",
+      message: "agent session has ended — restart the server to continue",
     });
   });
 

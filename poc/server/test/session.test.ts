@@ -69,4 +69,14 @@ describe("Steering lock", () => {
     const last = s.eventsFrom(0).at(-1);
     expect(last?.type).toBe("presence_leave");
   });
+
+  it("hands the wheel to a remaining participant when the driver leaves", () => {
+    const s = new Session("s1");
+    s.join("u1", "Ana");
+    s.join("u2", "Ben");
+    s.leave("u1");
+    expect(s.driverId).toBe("u2");
+    const last = s.eventsFrom(0).at(-1);
+    expect(last).toMatchObject({ type: "control_change", userId: "u2" });
+  });
 });

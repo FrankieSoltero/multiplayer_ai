@@ -5,6 +5,7 @@ export class Session {
   private log: LoggedEvent[] = [];
   private subscribers = new Set<(e: LoggedEvent) => void>();
   private currentDriverId: string | null = null;
+  private participants = new Map<string, string>();
 
   constructor(id: string) {
     this.id = id;
@@ -35,13 +36,22 @@ export class Session {
   }
 
   join(userId: string, name: string): void {
+    this.participants.set(userId, name);
     this.append({ type: "presence_join", userId, name });
     if (this.currentDriverId === null) this.takeWheel(userId);
   }
 
   leave(userId: string): void {
+    this.participants.delete(userId);
     this.append({ type: "presence_leave", userId });
-    if (this.currentDriverId === userId) this.currentDriverId = null;
+    if (this.currentDriverId === userId) {
+      const nextDriverId = this.participants.keys().next().value;
+      if (nextDriverId !== undefined) {
+        this.takeWheel(nextDriverId);
+      } else {
+        this.currentDriverId = null;
+      }
+    }
   }
 
   takeWheel(userId: string): void {

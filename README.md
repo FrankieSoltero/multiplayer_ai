@@ -1,7 +1,7 @@
 # Multiplayer AI — Research + PoC
 
 Exploration of YC's Fall 2026 "Multiplayer AI" RFS: shared live agent sessions
-for dev teams. See `Docs/research-report.md` for the research and
+for dev teams. See `docs/research-report.md` for the research and
 `docs/superpowers/specs/` for the design.
 
 ## Run the PoC

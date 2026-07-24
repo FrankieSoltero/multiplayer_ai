@@ -62,6 +62,7 @@ export const runAgentQuery: RunQuery = (prompts) =>
 export class AgentDriver {
   private prompts = new AsyncQueue<SdkUserMessage>();
   private toolNamesById = new Map<string, string>();
+  private dead = false;
 
   constructor(
     private session: Session,
@@ -71,6 +72,13 @@ export class AgentDriver {
   }
 
   sendPrompt(userId: string, text: string): void {
+    if (this.dead) {
+      this.session.append({
+        type: "agent_error",
+        message: "agent session has ended — restart the server to continue",
+      });
+      return;
+    }
     this.session.append({ type: "user_message", userId, text });
     this.prompts.push({
       type: "user",
@@ -94,9 +102,13 @@ export class AgentDriver {
           });
         }
       }
+      // The stream ended normally (the SDK query completed/closed) — the
+      // driver can no longer accept prompts.
+      this.dead = true;
     } catch (err) {
       // Fatal errors on the stream itself (e.g. the iterable throws) still
       // need to be surfaced, but at this point the stream is done for good.
+      this.dead = true;
       this.session.append({
         type: "agent_error",
         message: err instanceof Error ? err.message : String(err),

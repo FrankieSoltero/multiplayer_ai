@@ -121,9 +121,11 @@ Acceptance was run by a controller via Playwright on 2026-07-24 (`task-6-report.
 - **Two tabs, one session.** Tab A prompted the agent; the agent used only Glob/Read (tool restriction enforced), streamed real tool calls and results with real tool names, and produced a correct 2-sentence summary. **Both tabs saw identical transcripts** — live shared view confirmed.
 - **Late-joiner replay.** Tab B joined late and **replayed the full log from seq 0**, arriving at identical state — the reconnection/catch-up path works.
 - **Control handoff.** Tab B **took the wheel** (`control_change` at seq 20), prompted "whats going on", and the agent replied **with shared context** — cross-user continuity on one live session confirmed. This is the RFS's "hand it off" verb, working.
-- **Automated test suite:** 15/15 tests pass; `tsc --noEmit` clean.
+- **Automated test suite:** 19/19 tests pass; `tsc --noEmit` clean.
 
 The three RFS verbs — watch, redirect, hand off — were each exercised end-to-end against a real Claude agent. The core mechanic is not speculative.
+
+Note on streaming granularity: in the PoC, agent text arrives message-granular — each `agent_text_delta` event carries a whole assistant text block, not a token stream — because the SDK's partial-message streaming is not enabled, so watchers see progress at message/tool boundaries; true token-level streaming is a production item, not a PoC gap in the core mechanic.
 
 ### 3.4 What the PoC exposed (reported honestly)
 
