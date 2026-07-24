@@ -70,13 +70,19 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
     options: {
       model: "claude-opus-4-8",
       systemPrompt:
-        "You are a shared agent in a multiplayer project. Multiple teammates watch this session live and may hand control between them mid-task; other teammates run their own sessions in the same project. Keep responses focused. When you start working on a task, and whenever your direction changes, call the set_intent tool with one short sentence describing what you are doing. A <teammates> block in a prompt describes what other sessions in the project are doing — take it into account and avoid conflicting with in-flight work.",
+        "You are a shared agent in a multiplayer project. Multiple teammates watch this session live and may hand control between them mid-task; other teammates run their own sessions in the same project. Keep responses focused. The FIRST thing you do when given a new task — before any other tool call — is call the set_intent tool with one short sentence describing what you are about to work on. Update it whenever your direction changes. Do this without being asked. A <teammates> block in a prompt describes what other sessions in the project are doing — take it into account and avoid conflicting with in-flight work.",
       // `tools` restricts BUILT-IN tools only; the MCP set_intent tool arrives
       // via mcpServers and is auto-approved through allowedTools.
       allowedTools: ["Read", "Glob", "Grep", "mcp__awareness__set_intent"],
       tools: ["Read", "Glob", "Grep"],
       permissionMode: "default",
       mcpServers: { awareness },
+      // Isolate this demo agent from the operator's local Claude Code config:
+      // it must see only the awareness MCP server passed above, never any
+      // user/project/local MCP servers or settings (e.g. Google Drive,
+      // Playwright, sqlite) that happen to be configured on this machine.
+      strictMcpConfig: true,
+      settingSources: [],
       cwd: hooks.workdir ?? process.env.AGENT_WORKDIR ?? process.cwd(),
     },
     // Cast at the SDK boundary only — see Global Constraints. The real
