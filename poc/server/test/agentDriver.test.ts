@@ -277,3 +277,78 @@ describe("digest injection", () => {
     });
   });
 });
+
+describe("driver approval gate", () => {
+  const permissionRun: RunQuery = async function* (prompts, hooks) {
+    for await (const _prompt of prompts) {
+      const decision = await hooks.onPermissionRequest("Bash", {
+        command: "rm -rf build",
+      });
+      yield {
+        type: "assistant",
+        content: [{ type: "text", text: `decision: ${decision}` }],
+      };
+    }
+  };
+
+  async function waitForEvent(
+    session: Session,
+    type: string,
+    tries = 40,
+  ): Promise<any> {
+    for (let i = 0; i < tries; i++) {
+      const ev = session.eventsFrom(0).find((e) => e.type === type);
+      if (ev) return ev;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`timed out waiting for ${type}`);
+  }
+
+  it("logs permission_request, resolves allow, and logs the decision", async () => {
+    const session = new Session("s-perm-1");
+    const driver = new AgentDriver(session, permissionRun);
+    driver.sendPrompt("u1", "clean the build dir");
+
+    const request = await waitForEvent(session, "permission_request");
+    expect(request.toolName).toBe("Bash");
+    expect(request.input).toEqual({ command: "rm -rf build" });
+    expect(typeof request.requestId).toBe("string");
+
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(true);
+
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({
+      requestId: request.requestId,
+      decision: "allow",
+      userId: "u1",
+    });
+    const echoed = await waitForEvent(session, "agent_text_delta");
+    expect(echoed.text).toBe("decision: allow");
+  });
+
+  it("passes deny through to the waiting query", async () => {
+    const session = new Session("s-perm-2");
+    const driver = new AgentDriver(session, permissionRun);
+    driver.sendPrompt("u1", "clean the build dir");
+    const request = await waitForEvent(session, "permission_request");
+    expect(driver.resolvePermission(request.requestId, "deny", "u2")).toBe(true);
+    const echoed = await waitForEvent(session, "agent_text_delta");
+    expect(echoed.text).toBe("decision: deny");
+  });
+
+  it("rejects unknown and already-decided requestIds", async () => {
+    const session = new Session("s-perm-3");
+    const driver = new AgentDriver(session, permissionRun);
+    expect(driver.resolvePermission("nope", "allow", "u1")).toBe(false);
+
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "permission_request");
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(true);
+    expect(driver.resolvePermission(request.requestId, "deny", "u1")).toBe(false);
+    // exactly one decision event
+    const decisions = session
+      .eventsFrom(0)
+      .filter((e) => e.type === "permission_decision");
+    expect(decisions.length).toBe(1);
+  });
+});

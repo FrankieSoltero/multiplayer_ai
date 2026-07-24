@@ -1,6 +1,8 @@
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AsyncQueue } from "./asyncQueue.js";
+import { buildCanUseTool } from "./permissions.js";
 import type { Session } from "./session.js";
 
 /**
@@ -31,6 +33,19 @@ export interface SdkMessage {
 
 export interface DriverHooks {
   onIntent: (text: string) => void;
+  /**
+   * Ask the session's current driver to approve a tool call. Resolves when
+   * a driver decides via AgentDriver.resolvePermission — possibly a
+   * DIFFERENT user than when the request was raised (wheel handoffs are a
+   * feature: a teammate can drop in specifically to approve something).
+   * The promise intentionally has no timeout; the agent waits.
+   */
+  onPermissionRequest: (
+    toolName: string,
+    input: unknown,
+  ) => Promise<"allow" | "deny">;
+  /** Surface a permission-flow failure into the session log (agent_error). */
+  onPermissionError?: (message: string) => void;
   workdir?: string;
 }
 
@@ -70,11 +85,7 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
     options: {
       model: "claude-opus-4-8",
       systemPrompt:
-        "You are a shared agent in a multiplayer project. Multiple teammates watch this session live and may hand control between them mid-task; other teammates run their own sessions in the same project. Keep responses focused. The FIRST thing you do when given a new task — before any other tool call — is call the set_intent tool with one short sentence describing what you are about to work on. Update it whenever your direction changes. Do this without being asked. Your working directory is your own git worktree on your own branch — you may implement changes directly with Write/Edit when asked to build; your edits never touch teammates' worktrees, but overlapping changes will collide later at merge time. A <teammates> block in a prompt describes what other sessions in the project are doing — take it into account: avoid conflicting with in-flight work, keep your footprint on shared files minimal when a teammate is mid-change there, and say so when a merge conflict looks likely.",
-      // `tools` restricts BUILT-IN tools only; the MCP set_intent tool arrives
-      // via mcpServers and is auto-approved through allowedTools.
-      // Write/Edit enabled so agents can build in their own worktrees; Bash
-      // stays off (no command execution) until sandboxing gets a real pass.
+        "You are a shared agent in a multiplayer project. Multiple teammates watch this session live and may hand control between them mid-task; other teammates run their own sessions in the same project. Keep responses focused. The FIRST thing you do when given a new task — before any other tool call — is call the set_intent tool with one short sentence describing what you are about to work on. Update it whenever your direction changes. Do this without being asked. Your working directory is your own git worktree on your own branch — you may implement changes directly with Write/Edit when asked to build; your edits never touch teammates' worktrees, but overlapping changes will collide later at merge time. A <teammates> block in a prompt describes what other sessions in the project are doing — take it into account: avoid conflicting with in-flight work, keep your footprint on shared files minimal when a teammate is mid-change there, and say so when a merge conflict looks likely. You have the full tool set including Bash, subagents, and web tools. Most Bash commands and other powerful tools pause until the teammate currently driving approves them in the UI — the whole session sees each request and decision, so prefer batching related commands and say briefly what a command is for before running it. Test/type-check/read-only-git commands run without approval. If a request is denied, adapt your approach or explain what you need instead of retrying the same call. If the project provides skills, use the Skill tool when one clearly matches the task.",
       allowedTools: [
         "Read",
         "Glob",
@@ -83,7 +94,18 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
         "Edit",
         "mcp__awareness__set_intent",
       ],
-      tools: ["Read", "Glob", "Grep", "Write", "Edit"],
+      // Full Claude Code built-in tool set. `allowedTools` below auto-approves
+      // only the file tools + set_intent; every other call (Bash, Task,
+      // WebSearch, WebFetch, TodoWrite, ...) routes through canUseTool =
+      // the driver approval gate, except allowlisted Bash prefixes
+      // (see permissions.ts).
+      tools: { type: "preset", preset: "claude_code" },
+      canUseTool: buildCanUseTool(hooks),
+      // Skills come from the project the agent works in (its worktree cwd
+      // has .claude/skills/ checked in) — the single, explicit re-opening of
+      // the settingSources isolation below. This option also enables the
+      // Skill tool; do not add 'Skill' to allowedTools.
+      skills: "all",
       permissionMode: "default",
       mcpServers: { awareness },
       // Isolate this demo agent from the operator's local Claude Code config:
@@ -108,6 +130,7 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
 export class AgentDriver {
   private prompts = new AsyncQueue<SdkUserMessage>();
   private toolNamesById = new Map<string, string>();
+  private pendingPermissions = new Map<string, (d: "allow" | "deny") => void>();
   private dead = false;
 
   constructor(
@@ -119,6 +142,23 @@ export class AgentDriver {
       run(this.prompts, {
         onIntent: (text) =>
           this.session.append({ type: "intent_update", text: text.slice(0, 200) }),
+        onPermissionRequest: (toolName, input) => {
+          const requestId = randomUUID();
+          // Register the resolver BEFORE appending, so a subscriber that
+          // decides synchronously on seeing the event still finds it.
+          const pending = new Promise<"allow" | "deny">((resolve) =>
+            this.pendingPermissions.set(requestId, resolve),
+          );
+          this.session.append({
+            type: "permission_request",
+            requestId,
+            toolName,
+            input,
+          });
+          return pending;
+        },
+        onPermissionError: (message) =>
+          this.session.append({ type: "agent_error", message }),
         workdir,
       }),
     );
@@ -143,6 +183,25 @@ export class AgentDriver {
       message: { role: "user", content: [{ type: "text", text: promptText }] },
       parent_tool_use_id: null,
     });
+  }
+
+  /**
+   * Resolve a pending permission request. Validated by the caller (server)
+   * to be the session's CURRENT driver — which may be a different user than
+   * when the request was raised. Returns false for unknown or
+   * already-decided requestIds.
+   */
+  resolvePermission(
+    requestId: string,
+    decision: "allow" | "deny",
+    userId: string,
+  ): boolean {
+    const resolve = this.pendingPermissions.get(requestId);
+    if (!resolve) return false;
+    this.pendingPermissions.delete(requestId);
+    this.session.append({ type: "permission_decision", requestId, decision, userId });
+    resolve(decision);
+    return true;
   }
 
   private async consume(messages: AsyncIterable<SdkMessage>): Promise<void> {
