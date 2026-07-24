@@ -91,4 +91,77 @@ describe("WebSocket hub", () => {
     ws1.close();
     ws2.close();
   });
+
+  it("rejects a second join on the same connection and delivers subsequent events exactly once", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws1 = await connect(server.port);
+    collect(ws1, []);
+    ws1.send(JSON.stringify({ type: "join", sessionId: "s3", userId: "u1", name: "Ana" }));
+    await wait(50);
+
+    const ws2 = await connect(server.port);
+    const seen2: any[] = [];
+    collect(ws2, seen2);
+    ws2.send(JSON.stringify({ type: "join", sessionId: "s3", userId: "u2", name: "Ben" }));
+    await wait(50);
+
+    // Second join on the already-joined ws2 connection should be rejected.
+    ws2.send(JSON.stringify({ type: "join", sessionId: "s3", userId: "u2", name: "Ben" }));
+    await wait(50);
+    expect(seen2.some((m) => m.type === "error" && m.message === "already joined")).toBe(true);
+
+    // Confirm no duplicate subscription: a subsequent event arrives exactly once.
+    seen2.length = 0;
+    ws2.send(JSON.stringify({ type: "take_wheel" }));
+    await wait(100);
+    const controlChanges = seen2.filter((m) => m.event?.type === "control_change");
+    expect(controlChanges.length).toBe(1);
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it("treats a negative lastSeq as 0 and replays the full log", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws1 = await connect(server.port);
+    collect(ws1, []);
+    ws1.send(JSON.stringify({ type: "join", sessionId: "s4", userId: "u1", name: "Ana" }));
+    ws1.send(JSON.stringify({ type: "prompt", text: "hello" }));
+    await wait(200);
+
+    const wsZero = await connect(server.port);
+    const seenZero: any[] = [];
+    collect(wsZero, seenZero);
+    wsZero.send(
+      JSON.stringify({ type: "join", sessionId: "s4", userId: "u2", name: "Ben", lastSeq: 0 })
+    );
+    await wait(150);
+
+    const wsNeg = await connect(server.port);
+    const seenNeg: any[] = [];
+    collect(wsNeg, seenNeg);
+    wsNeg.send(
+      JSON.stringify({ type: "join", sessionId: "s4", userId: "u3", name: "Cy", lastSeq: -1 })
+    );
+    await wait(150);
+
+    // Both should have replayed the same prior events (excluding each joiner's own presence_join).
+    const priorZero = seenZero
+      .filter((m) => m.event && m.event.type !== "presence_join")
+      .map((m) => m.event.type);
+    const priorNeg = seenNeg
+      .filter((m) => m.event && m.event.type !== "presence_join")
+      .map((m) => m.event.type);
+    expect(priorNeg).toEqual(priorZero);
+    expect(priorNeg).toContain("user_message");
+    expect(priorNeg).toContain("agent_text_delta");
+
+    ws1.close();
+    wsZero.close();
+    wsNeg.close();
+  });
 });

@@ -39,6 +39,14 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
     const sendError = (message: string) =>
       ws.send(JSON.stringify({ type: "error", message }));
 
+    // Without a listener, an "error" event on this socket would be an
+    // unhandled EventEmitter error and crash the whole process. Cleanup
+    // (unsubscribe/leave) is handled by the "close" handler, which always
+    // follows an "error" event on a ws socket.
+    ws.on("error", (err: NodeJS.ErrnoException) => {
+      void err?.code;
+    });
+
     ws.on("message", (raw) => {
       let msg: any;
       try {
@@ -48,6 +56,9 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
       }
 
       if (msg.type === "join") {
+        if (ctx) {
+          return sendError("already joined");
+        }
         if (
           typeof msg.sessionId !== "string" ||
           typeof msg.userId !== "string" ||
@@ -57,7 +68,7 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
         }
         const entry = getOrCreate(msg.sessionId);
         // Replay first, then subscribe, then join — single-threaded, so no gap.
-        const from = typeof msg.lastSeq === "number" ? msg.lastSeq : 0;
+        const from = Number.isInteger(msg.lastSeq) && msg.lastSeq >= 0 ? msg.lastSeq : 0;
         for (const event of entry.session.eventsFrom(from)) {
           ws.send(JSON.stringify({ type: "event", event }));
         }
