@@ -297,3 +297,110 @@ describe("project awareness", () => {
     ws3.close();
   });
 });
+
+describe("driver approval gate over the wire", () => {
+  const bashAskRun: RunQuery = async function* (prompts, hooks) {
+    for await (const prompt of prompts) {
+      const decision = await hooks.onPermissionRequest("Bash", {
+        command: "npm run build",
+      });
+      yield {
+        type: "assistant",
+        content: [{ type: "text", text: `bash: ${decision}` }],
+      };
+    }
+  };
+
+  it("broadcasts the request, rejects non-driver decisions, accepts the driver's", async () => {
+    const server = await startServer({ port: 0, runQuery: bashAskRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(JSON.stringify({ type: "join", sessionId: "p1", userId: "u1", name: "Ana" }));
+    wsAna.send(JSON.stringify({ type: "prompt", text: "build it" }));
+    await wait(200);
+
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", sessionId: "p1", userId: "u2", name: "Ben", lastSeq: 0 }));
+    await wait(200);
+
+    // Both the live watcher and the late joiner see the pending request.
+    const reqAna = seenAna.map((m) => m.event).find((e) => e?.type === "permission_request");
+    const reqBen = seenBen.map((m) => m.event).find((e) => e?.type === "permission_request");
+    expect(reqAna?.toolName).toBe("Bash");
+    expect(reqBen?.requestId).toBe(reqAna?.requestId);
+
+    // Ben (not driving) may not decide.
+    wsBen.send(JSON.stringify({ type: "permission", requestId: reqAna.requestId, decision: "allow" }));
+    await wait(100);
+    expect(seenBen.some((m) => m.type === "error" && /driver/.test(m.message))).toBe(true);
+
+    // Ana (driver) decides; everyone sees the decision and the agent proceeds.
+    wsAna.send(JSON.stringify({ type: "permission", requestId: reqAna.requestId, decision: "allow" }));
+    await wait(200);
+    const decision = seenBen.map((m) => m.event).find((e) => e?.type === "permission_decision");
+    expect(decision).toMatchObject({ requestId: reqAna.requestId, decision: "allow", userId: "u1" });
+    const echoed = seenBen.map((m) => m.event).find((e) => e?.type === "agent_text_delta");
+    expect(echoed?.text).toBe("bash: allow");
+
+    // Replaying the same decision is rejected.
+    wsAna.send(JSON.stringify({ type: "permission", requestId: reqAna.requestId, decision: "deny" }));
+    await wait(100);
+    expect(seenAna.some((m) => m.type === "error" && /unknown or already-decided/.test(m.message))).toBe(true);
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("lets a NEW driver decide a request raised under the previous driver", async () => {
+    const server = await startServer({ port: 0, runQuery: bashAskRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(JSON.stringify({ type: "join", sessionId: "p2", userId: "u1", name: "Ana" }));
+    wsAna.send(JSON.stringify({ type: "prompt", text: "build it" }));
+    await wait(200);
+    const req = seenAna.map((m) => m.event).find((e) => e?.type === "permission_request");
+    expect(req).toBeTruthy();
+
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", sessionId: "p2", userId: "u2", name: "Ben", lastSeq: 0 }));
+    await wait(100);
+    wsBen.send(JSON.stringify({ type: "take_wheel" }));
+    await wait(100);
+    wsBen.send(JSON.stringify({ type: "permission", requestId: req.requestId, decision: "deny" }));
+    await wait(200);
+
+    const decision = seenBen.map((m) => m.event).find((e) => e?.type === "permission_decision");
+    expect(decision).toMatchObject({ requestId: req.requestId, decision: "deny", userId: "u2" });
+    const echoed = seenBen.map((m) => m.event).find((e) => e?.type === "agent_text_delta");
+    expect(echoed?.text).toBe("bash: deny");
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("rejects malformed permission messages", async () => {
+    const server = await startServer({ port: 0, runQuery: bashAskRun });
+    close = server.close;
+    const ws1 = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws1, seen);
+    ws1.send(JSON.stringify({ type: "join", sessionId: "p3", userId: "u1", name: "Ana" }));
+    await wait(50);
+    ws1.send(JSON.stringify({ type: "permission", requestId: 5, decision: "allow" }));
+    ws1.send(JSON.stringify({ type: "permission", requestId: "r1", decision: "maybe" }));
+    await wait(100);
+    const errors = seen.filter((m) => m.type === "error");
+    expect(errors.length).toBeGreaterThanOrEqual(2);
+    ws1.close();
+  });
+});

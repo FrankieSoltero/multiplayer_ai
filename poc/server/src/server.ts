@@ -28,6 +28,8 @@ const INTERESTING = new Set([
   "user_message",
   "agent_error",
   "control_change",
+  "permission_request",
+  "permission_decision",
 ]);
 
 export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
@@ -184,6 +186,24 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
 
       if (msg.type === "take_wheel") {
         ctx.entry.session.takeWheel(ctx.userId);
+        return;
+      }
+
+      if (msg.type === "permission") {
+        if (
+          typeof msg.requestId !== "string" ||
+          (msg.decision !== "allow" && msg.decision !== "deny")
+        ) {
+          return sendError("permission requires requestId and decision allow|deny");
+        }
+        // Validated at DECISION time, not request time: wheel handoffs mid-
+        // request are a feature (a teammate can drop in just to approve).
+        if (!ctx.entry.session.canPrompt(ctx.userId)) {
+          return sendError("only the current driver can decide permissions — take the wheel first");
+        }
+        if (!ctx.entry.driver.resolvePermission(msg.requestId, msg.decision, ctx.userId)) {
+          return sendError("unknown or already-decided permission request");
+        }
         return;
       }
 
