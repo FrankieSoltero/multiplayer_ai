@@ -51,9 +51,13 @@ export default function App() {
       );
     };
     ws.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-      if (msg.type === "event") setEvents((prev) => [...prev, msg.event]);
-      if (msg.type === "error") setErrors((prev) => [...prev, msg.message]);
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "event") setEvents((prev) => [...prev, msg.event]);
+        if (msg.type === "error") setErrors((prev) => [...prev, msg.message]);
+      } catch {
+        return;
+      }
     };
     ws.onclose = () => setConnected(false);
     return () => ws.close();
