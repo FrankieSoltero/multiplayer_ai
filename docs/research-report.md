@@ -9,7 +9,7 @@
 
 YC's Fall 2026 Requests for Startups names a category, **"Multiplayer AI"**, authored by General Partner Aaron Epstein. Its core line:
 
-> "Anyone on a team should be able to drop into the same live agent session to watch it work, redirect it, and hand it off, the way they'd work together."
+> "Anyone on a team should be able to drop into the same live agent session to watch it work, redirect it, and hand it off, the way they'd work with any other human team member."
 > — [ycombinator.com/rfs](https://www.ycombinator.com/rfs)
 
 That sentence is a precise product spec, not a vague theme. It has three verbs — **watch**, **redirect**, **hand off** — and one hard constraint: **the same live session**. Not a shared transcript, not a Slack thread, not a read-only link. A shared, live, controllable surface.
@@ -65,7 +65,7 @@ Amp ships a feature literally named **"Multiplayer"** ([ampcode.com/manual](http
 ### 2.7 Other players
 
 - **Zed** extended its long-standing CRDT-based human-to-human collaboration (Channels) to AI agents, where an agent is "a first-class collaborator with the same write access as any human in the room" ([zed.dev/docs/ai/agent-panel](https://zed.dev/docs/ai/agent-panel), [zed.dev/docs/collaboration/overview](https://zed.dev/docs/collaboration/overview)). **Plausibly truly-multiplayer**, built from two confirmed-real official primitives, but no single official source states the combined claim outright.
-- **GitHub Next "Ace"** — an internal research prototype for "a realtime, multiplayer coding agent workspace" (shared terminal, live previews, multiplayer editing, team chat, bidirectional PR linking), in technical preview with "a few thousand" users ([githubnext.com talk](https://githubnext.com/talks/one-developer-two-dozen-agents-zero-alignment/), [maggieappleton.com/zero-alignment](https://maggieappleton.com/zero-alignment)). Not a startup — but the single strongest existing implementation of the RFS lives inside a distribution-advantaged incumbent. This is the most important competitive fact in the report.
+- **GitHub Next "Ace"** — an internal research prototype for "a realtime, multiplayer coding agent workspace" (shared terminal, live previews, multiplayer editing, team chat, bidirectional PR linking), reported as in technical preview with "a few thousand" users per the GitHub Next talk/blog ([githubnext.com talk](https://githubnext.com/talks/one-developer-two-dozen-agents-zero-alignment/), [maggieappleton.com/zero-alignment](https://maggieappleton.com/zero-alignment)) — though a second research pass could only corroborate a proposal-stage tracking issue with no assignees or PRs, and could not confirm the repo is an official, currently-active GitHub product surface. **Treat Ace's maturity and user numbers as unverified**, not settled fact. Not a startup — but if the "technical preview" characterization holds, it would be the single strongest existing implementation of the RFS, living inside a distribution-advantaged incumbent. Given the conflicting evidence, this is the most important competitive fact to keep verifying, not to assume.
 - **GitHub Copilot / VS Code** ships parallel sessions for *one* developer and a standalone app to orchestrate multiple agents for one operator ([github.blog changelog](https://github.blog/changelog/2026-07-08-github-copilot-in-visual-studio-code-june-2026-releases/)) — single-player.
 
 ### 2.8 Summary table
@@ -79,7 +79,7 @@ Amp ships a feature literally named **"Multiplayer"** ([ampcode.com/manual](http
 | **Factory.ai** | **Yes — watch/comment/take-over on live URL** | **Truly multiplayer** | [factory.ai/product/web](https://factory.ai/product/web) |
 | **Amp (Sourcegraph)** | **Yes — shared files/changes/terminal, 3h default** | **Truly multiplayer** | [ampcode.com/manual](https://ampcode.com/manual) |
 | Zed | Human+agent on same CRDT buffer via Channels | Plausibly multiplayer | [zed.dev/docs/ai/agent-panel](https://zed.dev/docs/ai/agent-panel) |
-| GitHub "Ace" | Proposed/preview — full multiplayer agent workspace | Preview (incumbent) | [githubnext.com](https://githubnext.com/talks/one-developer-two-dozen-agents-zero-alignment/) |
+| GitHub "Ace" | Proposed/preview — full multiplayer agent workspace (maturity unverified: one pass found "technical preview," another only a proposal-stage tracking issue) | Preview claim, unverified (incumbent) | [githubnext.com](https://githubnext.com/talks/one-developer-two-dozen-agents-zero-alignment/) |
 | GitHub Copilot | Parallel sessions for one dev | Single-player | [github.blog changelog](https://github.blog/changelog/2026-07-08-github-copilot-in-visual-studio-code-june-2026-releases/) |
 
 ### 2.9 Where the open wedges are
@@ -107,6 +107,8 @@ This is not a novel architecture — and that is the point. It is the direct, de
 - **Figma**: one authoritative server process per document; all clients connect to it; it owns final state. Figma explicitly rejected full CRDTs because CRDTs solve the *decentralized, no-central-authority* problem — and Figma has a central authority, so the machinery is unnecessary overhead ([figma.com/blog](https://www.figma.com/blog/how-figmas-multiplayer-technology-works/)). **Our session has a central authority too: the one process that owns the agent and its log.**
 - **ESAA-Conversational** (arXiv 2026): treat all interaction history as an immutable, append-only event log; support reconnection via replay; handoff = synthesize context from prior events and pass log access to the incoming party ([arxiv.org/pdf/2606.23752](https://arxiv.org/pdf/2606.23752)). This is, almost line-for-line, what the PoC does.
 - **Cloudflare Durable Objects**: one persistent singleton process per agent instance, with its own SQLite, automatic hibernation, and resumable WebSocket streams ([cloudflare.com/products/agents](https://www.cloudflare.com/products/agents/)) — a near-literal production substrate for "one authoritative process per session."
+
+A notable alternative surfaced in research: teams that already have a multiplayer WebSocket layer in place (e.g. **Liveblocks** or **PartyKit**) for existing real-time features can reuse that same sync layer for agent-session broadcast/replay/presence, rather than standing up a new Durable-Objects-based backend from scratch. This is a "reuse what you have" path, not a replacement recommendation — Durable Objects remains the more purpose-built substrate for teams starting fresh, but the Liveblocks/PartyKit route is a lower-friction production option worth flagging where the multiplayer plumbing already exists.
 
 ### 3.2 Turn-taking vs CRDT — and why turn-taking wins here
 
@@ -169,7 +171,7 @@ None of these are research problems. Every one has a shipping reference implemen
 
 The uncomfortable facts:
 
-- **The single strongest implementation of the RFS already exists inside GitHub/Microsoft** ("Ace"), a distribution-advantaged incumbent, in technical preview with thousands of users ([githubnext.com](https://githubnext.com/talks/one-developer-two-dozen-agents-zero-alignment/)). If GitHub ships Ace broadly, a horizontal multiplayer-coding startup is competing with the platform that hosts most of the world's code.
+- **The single strongest implementation of the RFS is reported to exist inside GitHub/Microsoft** ("Ace"), a distribution-advantaged incumbent — one research pass found a GitHub Next talk/blog describing a technical preview with "a few thousand" users ([githubnext.com](https://githubnext.com/talks/one-developer-two-dozen-agents-zero-alignment/)), while a second pass could only corroborate a proposal-stage tracking issue with no assignees or PRs and could not confirm the repo is an official, active GitHub product surface. **Ace's actual maturity is unverified** — treat "GitHub ships Ace broadly" as a real but unconfirmed risk, not an imminent, settled event. If the technical-preview characterization does hold and GitHub ships Ace broadly, a horizontal multiplayer-coding startup would be competing with the platform that hosts most of the world's code.
 - **Two products already clear the bar** (Amp, Factory), so this is not a greenfield category — it's a "be meaningfully better/different" category.
 - **The open feature requests cut both ways.** They validate demand, but they are also the incumbents' own backlog. The core mechanic is ~1 day to prototype (this PoC proves it), so it is **not itself a moat** — anyone can build the demo. The moat, if any, is in the hard parts (control semantics, multi-day durability, trust/security, workflow fit) and in distribution.
 - **Capital is already here.** Dust raised $40M (May 2026) on "multiplayer AI" branding ([sifted.eu/articles/dust-series-b-40m](https://sifted.eu/articles/dust-series-b-40m)); the enterprise layer is funded.
@@ -187,7 +189,7 @@ For a solo full-stack founder exploring a YC application, the evidence supports 
 **Concrete conditional triggers:**
 
 - **GO now** if you can differentiate on the hard parts (control-conflict semantics, multi-day durability, security/isolation, or a vertical workflow) and ship a credible demo before the **2026-07-27** application deadline — the PoC already gets you most of the way to that demo.
-- **Re-evaluate to NO-GO** if, before you commit, (a) **GitHub ships "Ace" into general availability**, or (b) **any one of Claude Code / Cursor / Codex ships live multi-human sessions** — either event collapses the horizontal wedge and you should either pivot to a vertical (#3) or stand down.
+- **Re-evaluate to NO-GO** if, before you commit, (a) **GitHub ships "Ace" into general availability** (note: Ace's current status is unverified — one source describes a technical preview, another only a proposal-stage tracking issue — so confirm it's a real, active GitHub product before treating this trigger as tripped), or (b) **any one of Claude Code / Cursor / Codex ships live multi-human sessions** — either event collapses the horizontal wedge and you should either pivot to a vertical (#3) or stand down.
 - **Time-box the decision to the deadline.** The favorable fact — no purpose-built F26 competitor exists yet — expires the moment the batch is selected. If you're going to apply, the window is now.
 
 Net: the need is real and newly sharp, the mechanic is proven buildable by one person in a day, and the *category* is validated by two shipping products and an active YC RFS — but the *moat* is not the mechanic. Go, but go narrow, go deep on the hard part, and move before the incumbents and the batch close the window.
