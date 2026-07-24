@@ -11,7 +11,7 @@
 - v1: **complete** — merged to main at `ad791fb`, 19/19 tests, live Playwright acceptance PASSED.
 - Research report: **complete** — `docs/research-report.md` (conditional GO).
 - v2 spec + plan: **committed** (`df1c713`, `b5235d4`), user-approved.
-- v2 execution: **NOT STARTED — stopped exactly here.** User chose subagent-driven execution (option 1). Next action is creating branch `feature/project-hub` and dispatching Task 1's implementer.
+- v2 execution: **COMPLETE on `feature/project-hub`** (8 commits, 82f1cd9..4a4faff): all 6 tasks done + reviewed; live acceptance PASSED decisively (Ben's agent unprompted flagged the concrete conflict with Ana's in-flight work); 31/31 server tests, tsc clean, client builds. Live runs caught + fixed: agent inheriting personal MCP servers (strictMcpConfig + settingSources []), skipped set_intent (first-action mandate), stale sidebar on agent_error/control_change. **Stopped exactly at: user chose to review the branch personally (Option 3 — keep as-is). Branch `feature/project-hub` is unmerged, preserved at 4a4faff. Next session: collect the user's review feedback, address it (subagent-driven, with re-review), then re-offer merge/PR. Do NOT merge or delete anything until the user gives a verdict.**
 
 ## 3. Decisions + why (do not re-litigate)
 
@@ -67,9 +67,10 @@
 
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
-git log --oneline | head -3        # expect b5235d4 (v2 plan), df1c713 (v2 spec), ad791fb
-cat .superpowers/sdd/progress.md   # v1 complete through final review; v2 not started
-cd poc/server && npx vitest run    # expect 19 passed (19)
+git checkout feature/project-hub
+git log --oneline | head -3        # expect 4a4faff (final fix), bc4fd36, 94b5d29
+cat .superpowers/sdd/progress.md   # v1 AND v2 complete through final review; branch merge-ready
+cd poc/server && npx vitest run    # expect 31 passed (31); main still has 19
 ```
 
-Branch: work happens on `feature/project-hub` (create if absent). If mid-execution, trust the ledger + `git log` over memory; tasks marked complete are DONE — resume at the first unmarked task.
+Branch: `feature/project-hub` exists, complete, unmerged — user is reviewing it personally. Trust the ledger + `git log` over memory. Demo: `poc/scripts/demo-setup.sh`, then server with `AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees npm run dev` (poc/server), client `npm run dev` (poc/client), URLs `?project=demo&session=ana` / `session=ben`.
