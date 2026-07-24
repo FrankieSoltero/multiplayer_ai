@@ -53,6 +53,7 @@ export const runAgentQuery: RunQuery = (prompts) =>
 
 export class AgentDriver {
   private prompts = new AsyncQueue<SdkUserMessage>();
+  private toolNamesById = new Map<string, string>();
 
   constructor(
     private session: Session,
@@ -78,7 +79,9 @@ export class AgentDriver {
           type: string;
           text?: string;
           name?: string;
+          id?: string;
           input?: unknown;
+          tool_use_id?: string;
           content?: { type: string; text?: string }[];
         }[];
         if (message.type === "assistant") {
@@ -86,6 +89,7 @@ export class AgentDriver {
             if (block.type === "text" && block.text) {
               this.session.append({ type: "agent_text_delta", text: block.text });
             } else if (block.type === "tool_use" && block.name) {
+              if (block.id) this.toolNamesById.set(block.id, block.name);
               this.session.append({
                 type: "tool_call",
                 toolName: block.name,
@@ -100,9 +104,12 @@ export class AgentDriver {
                 .filter((c) => c.type === "text" && c.text)
                 .map((c) => c.text)
                 .join("\n");
+              const toolName =
+                (block.tool_use_id && this.toolNamesById.get(block.tool_use_id)) ??
+                "tool";
               this.session.append({
                 type: "tool_result",
-                toolName: "tool",
+                toolName,
                 output: text.slice(0, 2000),
               });
             }
