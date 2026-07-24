@@ -1,4 +1,5 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
 import { AsyncQueue } from "./asyncQueue.js";
 import type { Session } from "./session.js";
 
@@ -28,28 +29,55 @@ export interface SdkMessage {
   message?: { content?: unknown[] };
 }
 
+export interface DriverHooks {
+  onIntent: (text: string) => void;
+  workdir?: string;
+}
+
 export type RunQuery = (
   prompts: AsyncIterable<SdkUserMessage>,
+  hooks: DriverHooks,
 ) => AsyncIterable<SdkMessage>;
 
-export const runAgentQuery: RunQuery = (prompts) =>
-  query({
+export const runAgentQuery: RunQuery = (prompts, hooks) => {
+  const awareness = createSdkMcpServer({
+    name: "awareness",
+    tools: [
+      tool(
+        "set_intent",
+        "Declare or update the one-sentence summary of what you are currently working on, so teammates and their agents stay aware of it. Call this when you start a task and whenever your direction changes.",
+        { text: z.string() },
+        async ({ text }) => {
+          try {
+            hooks.onIntent(text);
+            return { content: [{ type: "text", text: "intent recorded" }] };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `intent not recorded: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+            };
+          }
+        },
+      ),
+    ],
+  });
+  return query({
     prompt: prompts,
     options: {
       model: "claude-opus-4-8",
       systemPrompt:
-        "You are a shared agent in a multiplayer session. Multiple teammates watch this session live and may hand control between them mid-task. Keep responses focused.",
-      // `allowedTools` only auto-approves these tools without a permission
-      // prompt — it does NOT limit which tools are available to the model
-      // (see sdk.d.ts: "To restrict which tools are available, use the
-      // `tools` option instead."). `tools` is the knob that actually
-      // restricts the base tool set to exactly these three; both are needed
-      // so Read/Glob/Grep run unprompted and everything else (Bash, Write,
-      // Edit, ...) is unavailable rather than merely un-approved.
-      allowedTools: ["Read", "Glob", "Grep"],
+        "You are a shared agent in a multiplayer project. Multiple teammates watch this session live and may hand control between them mid-task; other teammates run their own sessions in the same project. Keep responses focused. When you start working on a task, and whenever your direction changes, call the set_intent tool with one short sentence describing what you are doing. A <teammates> block in a prompt describes what other sessions in the project are doing — take it into account and avoid conflicting with in-flight work.",
+      // `tools` restricts BUILT-IN tools only; the MCP set_intent tool arrives
+      // via mcpServers and is auto-approved through allowedTools.
+      allowedTools: ["Read", "Glob", "Grep", "mcp__awareness__set_intent"],
       tools: ["Read", "Glob", "Grep"],
       permissionMode: "default",
-      cwd: process.env.AGENT_WORKDIR ?? process.cwd(),
+      mcpServers: { awareness },
+      cwd: hooks.workdir ?? process.env.AGENT_WORKDIR ?? process.cwd(),
     },
     // Cast at the SDK boundary only — see Global Constraints. The real
     // `query()` return type (`Query`, an AsyncGenerator over a 30+ member
@@ -58,6 +86,7 @@ export const runAgentQuery: RunQuery = (prompts) =>
     // though every member we care about (assistant/user/result) is
     // compatible at runtime.
   }) as unknown as AsyncIterable<SdkMessage>;
+};
 
 export class AgentDriver {
   private prompts = new AsyncQueue<SdkUserMessage>();
@@ -67,8 +96,19 @@ export class AgentDriver {
   constructor(
     private session: Session,
     run: RunQuery = runAgentQuery,
+    workdir?: string,
   ) {
-    void this.consume(run(this.prompts));
+    void this.consume(
+      run(this.prompts, {
+        onIntent: (text) =>
+          this.session.append({ type: "intent_update", text: text.slice(0, 200) }),
+        workdir,
+      }),
+    );
+  }
+
+  get isDead(): boolean {
+    return this.dead;
   }
 
   sendPrompt(userId: string, text: string): void {

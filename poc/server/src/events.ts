@@ -6,6 +6,7 @@ export type SessionEvent =
   | { type: "control_change"; userId: string }
   | { type: "presence_join"; userId: string; name: string }
   | { type: "presence_leave"; userId: string }
-  | { type: "agent_error"; message: string };
+  | { type: "agent_error"; message: string }
+  | { type: "intent_update"; text: string };
 
 export type LoggedEvent = SessionEvent & { seq: number; ts: string };

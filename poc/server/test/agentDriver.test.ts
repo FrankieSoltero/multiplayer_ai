@@ -217,3 +217,36 @@ describe("AgentDriver", () => {
     });
   });
 });
+
+describe("intent updates", () => {
+  it("appends intent_update (truncated to 200 chars) when the SDK layer reports intent", async () => {
+    const s = new Session("s1");
+    const longIntent = "x".repeat(250);
+    const intentRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _prompt of prompts) {
+        hooks.onIntent("Migrating auth middleware to JWT");
+        hooks.onIntent(longIntent);
+        yield { type: "assistant", content: [{ type: "text", text: "done" }] };
+        return;
+      }
+    };
+    const driver = new AgentDriver(s, intentRun);
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => {
+      const intents = s
+        .eventsFrom(0)
+        .filter((e) => e.type === "intent_update") as { text: string }[];
+      expect(intents).toHaveLength(2);
+      expect(intents[0].text).toBe("Migrating auth middleware to JWT");
+      expect(intents[1].text).toHaveLength(200);
+    });
+  });
+
+  it("exposes liveness via isDead", async () => {
+    const s = new Session("s1");
+    const driver = new AgentDriver(s, fakeRun);
+    expect(driver.isDead).toBe(false);
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => expect(driver.isDead).toBe(true)); // fakeRun returns after one prompt
+  });
+});
