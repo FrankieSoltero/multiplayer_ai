@@ -1,0 +1,562 @@
+* { box-sizing: border-box; }
+
+/* ---------------------------------------------------------------------------
+   v5 — 90s gamified terminal.
+
+   Same tokens as v4 (the palette was contrast-tuned; none of it moved). What
+   changed is the SHAPE and the TYPE: panels get chunky 2px frames with a hard
+   offset shadow instead of hairlines, chrome labels get a pixel face, bars get
+   segmented, and the whole app sits inside a CRT.
+
+   Two type layers, and the split is a rule, not a preference:
+     - pixel face (--pf)  = chrome ONLY. Labels, tab names, scores, headings.
+       8-11px, caps, tracked. Never carries information that isn't also in the
+       mono layer.
+     - mono (--fm)        = every piece of real content. Transcript, code,
+       names, quest text. Unchanged from v4: 13px / 20px line.
+   --------------------------------------------------------------------------- */
+:root {
+  /* surface — v4 kept the app flat; v5 needs panels to read as NES boxes, so
+     --panel lifts one step off --bg and every frame carries an inset dark line
+     plus a hard offset shadow (--chunk). No blur anywhere: 90s shadows are
+     solid rectangles. */
+  --bg: #0b0d10;
+  --panel: #0f1216;
+  --input: #14171d;
+  --frame: #3d4655;      /* 2.04:1 — decorative rule, deliberately quiet */
+  --chunk: 4px 4px 0 #0b0d10;
+  --chunk-sm: 3px 3px 0 #0b0d10;
+
+  /* text */
+  --fg: #d8dee6;         /* 14.37:1 */
+  --dim: #828c9b;        /*  5.72:1 */
+
+  /* semantic — all clear AA on --bg */
+  --gold: #d9b86b;       /* 10.21:1  system / awareness / quest */
+  --red: #e0685f;        /*  5.85:1  errors */
+  --amber: #e0a458;      /*  8.91:1  permission gate */
+  --amber-mute: rgba(224, 164, 88, 0.42);
+  --amber-wash: rgba(224, 164, 88, 0.07);
+  --green: #7fbf7f;      /*  8.95:1  affirmative / driving */
+  --accent: #d97757;     /*  6.23:1  "you can act here" only */
+  --gold-wash: rgba(217, 184, 107, 0.08);
+  --green-wash: rgba(127, 191, 127, 0.06);
+
+  /* type */
+  --pf: "Press Start 2P", "Silkscreen", monospace;
+  --fm: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --fs: 13px;
+  --fs-sm: 12px;
+  --fs-label: 9px;       /* pixel face: 9px caps ~= 11.5px in a mono face */
+  --line: 20px;
+  --track-label: 0.06em;
+
+  /* space — 4px grid */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-6: 24px;
+
+  /* CRT — Crt.tsx flips these per intensity */
+  --crt-op: 1;
+  --crt-flick: flick 6s steps(2, end) infinite;
+  --crt-curve: 18px;
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: #07080a;           /* the room around the cabinet */
+  color: var(--fg);
+  font-family: var(--fm);
+  font-size: var(--fs);
+  line-height: var(--line);
+}
+button, input, select { font: inherit; color: inherit; }
+code, pre { font-family: var(--fm); }
+::selection { background: var(--gold); color: var(--bg); }
+
+/* Quality floor from v4: keyboard-first shell, so focus is always visible. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ------------------------------------------------------------------ chrome */
+
+/* One utility, used everywhere a pixel label appears. Deliberately no
+   text-transform: these labels sit next to project/session identifiers and
+   case-folding an identifier misrepresents it — components send caps. */
+.pix {
+  font-family: var(--pf);
+  font-size: var(--fs-label);
+  letter-spacing: var(--track-label);
+  line-height: 1.4;
+}
+.pix.sm { font-size: 8px; }
+.pix.lg { font-size: 11px; }
+.pix.xl { font-size: 15px; }
+
+.panel {
+  background: var(--panel);
+  border: 2px solid var(--frame);
+  box-shadow: inset 0 0 0 2px var(--bg);
+  padding: var(--sp-3);
+}
+.panel.raised { box-shadow: inset 0 0 0 2px var(--bg), var(--chunk); }
+.panel.gold { border-color: var(--gold); }
+.panel.green { border-color: var(--green); background: var(--green-wash); }
+.panel.accent { border-color: var(--accent); }
+.panel.ghost { border-style: dashed; opacity: 0.8; }
+
+/* chunky button — the 90s affordance. Solid offset shadow, no radius, no blur. */
+.btn {
+  font-family: var(--pf);
+  font-size: 10px;
+  letter-spacing: var(--track-label);
+  padding: 10px 12px;
+  background: transparent;
+  border: 2px solid var(--frame);
+  color: var(--dim);
+  box-shadow: var(--chunk-sm);
+  cursor: pointer;
+}
+.btn:hover { color: var(--fg); border-color: var(--accent); }
+.btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--bg); }
+.btn.green { border-color: var(--green); color: var(--green); }
+.btn.green:hover { background: rgba(127, 191, 127, 0.14); border-color: var(--green); }
+.btn.red { border-color: var(--red); color: var(--red); }
+.btn.red:hover { background: rgba(224, 104, 95, 0.14); border-color: var(--red); }
+.btn.accent { border-color: var(--accent); color: var(--accent); }
+.btn.accent:hover { background: rgba(217, 119, 87, 0.12); }
+.btn.gold { border-color: var(--gold); color: var(--gold); }
+.btn.gold:hover { background: rgba(217, 184, 107, 0.1); }
+.btn.dashed { border-style: dashed; }
+.btn.wide { width: 100%; text-align: left; }
+.btn:disabled { border-color: var(--frame); color: var(--dim); box-shadow: none; cursor: default; }
+
+.chip {
+  border: 1px solid var(--frame);
+  padding: 3px 7px;
+  font-size: var(--fs-sm);
+  color: var(--dim);
+}
+.chip.green { border-color: var(--green); color: var(--green); }
+.chip.gold { border-color: var(--gold); color: var(--gold); }
+.chip.amber { border-color: var(--amber); color: var(--amber); }
+
+/* sprite tile — a party member's glyph in a box. Colour comes from inline
+   style (identity colour), the box comes from here. */
+.sprite {
+  width: 30px; height: 30px;
+  display: grid; place-items: center;
+  background: var(--input);
+  border: 2px solid currentColor;
+}
+.sprite.lg { width: 56px; height: 56px; font-size: 26px; border-width: 3px; }
+.sprite.sm { width: 26px; height: 26px; font-size: 13px; }
+
+/* segmented bar — HP/XP/context. One fill div, notches painted on top so the
+   bar reads as discrete cells instead of a smooth web progress bar. */
+.seg {
+  position: relative;
+  height: 10px;
+  background: var(--input);
+  border: 1px solid var(--frame);
+}
+.seg.lg { height: 14px; border-width: 2px; }
+.seg-fill { position: absolute; inset: 0; background: var(--green); }
+.seg-fill.gold { background: var(--gold); }
+.seg-fill.amber { background: var(--amber); }
+.seg-fill.red { background: var(--red); }
+.seg::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(90deg, transparent 0 6px, var(--bg) 6px 8px);
+}
+.seg.lg::after {
+  background: repeating-linear-gradient(90deg, transparent 0 7px, var(--bg) 7px 9px);
+}
+
+/* discrete step pips (quest progress) */
+.steps { display: flex; gap: 3px; }
+.steps i { width: 14px; height: 8px; background: var(--input); border: 1px solid var(--frame); }
+.steps i.on { background: var(--gold); border-color: var(--gold); }
+
+/* ------------------------------------------------------------------- shell */
+
+.cabinet {
+  min-height: 100%;
+  display: flex; flex-direction: column; align-items: center;
+  gap: var(--sp-3);
+  padding: 22px 22px 44px;
+}
+.cabinet-inner {
+  width: 1296px; max-width: 100%;
+  display: flex; flex-direction: column; gap: var(--sp-3);
+}
+.marquee { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-6); flex-wrap: wrap; }
+.marquee-title {
+  font-family: var(--pf); font-size: 19px; color: var(--gold);
+  text-shadow: 3px 3px 0 var(--bg);
+}
+.marquee-title span { color: var(--accent); }
+.marquee-sub { font-family: var(--pf); font-size: var(--fs-label); color: var(--dim); letter-spacing: 0.1em; margin-top: var(--sp-2); }
+
+/* CRT — the app lives inside the glass. Overlays are pointer-events:none and
+   sit above the screen; --crt-op / --crt-flick let Crt.tsx dial them down or
+   off without unmounting anything. */
+.crt {
+  position: relative;
+  background: var(--bg);
+  border: 3px solid #23282f;
+  border-radius: var(--crt-curve);
+  box-shadow: 0 0 0 7px #101317, 0 0 70px rgba(217, 184, 107, 0.05), 0 26px 70px rgba(0, 0, 0, 0.75);
+  overflow: hidden;
+}
+.crt-screen { position: relative; padding: var(--sp-4); }
+.crt-fx { position: absolute; inset: 0; pointer-events: none; opacity: var(--crt-op); }
+.crt-scan { background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.4) 0 1px, transparent 1px 3px); }
+.crt-vig { background: radial-gradient(125% 100% at 50% 50%, transparent 52%, rgba(0, 0, 0, 0.6) 100%); }
+.crt-tint {
+  background: linear-gradient(180deg, rgba(217, 184, 107, 0.06), rgba(97, 175, 239, 0.05));
+  opacity: 1; animation: var(--crt-flick);
+}
+.crt-roll {
+  inset: 0 0 auto 0; height: 90px;
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+  animation: scanroll 8s linear infinite;
+}
+.crt-bezel {
+  border-radius: var(--crt-curve); opacity: 1;
+  box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.8), inset 0 0 6px rgba(255, 255, 255, 0.06);
+}
+.crt.off .crt-fx { display: none; }
+.crt.off { border-radius: 0; }
+
+/* a screen inside the CRT: fixed height, own scrolling, never the page's */
+.screen { height: 100%; display: flex; flex-direction: column; gap: var(--sp-2); }
+.screen-head { display: flex; align-items: center; gap: var(--sp-3); }
+.screen-head .rule { flex: 1; border-top: 1px dashed var(--frame); }
+.row { display: flex; gap: var(--sp-2); flex: 1; min-height: 0; }
+.col { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.col.grow { flex: 1; }
+.scroll { overflow-y: auto; }
+
+/* the v4 shell class, kept so nothing that references .term breaks */
+.term { display: flex; flex-direction: column; height: 100%; gap: var(--sp-2); }
+.term-frame { border: 2px solid var(--frame); background: var(--panel); box-shadow: inset 0 0 0 2px var(--bg); }
+
+/* ------------------------------------------------------------------ header */
+
+.term-header {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--dim); white-space: nowrap; overflow: hidden;
+}
+.term-header .crumb b { color: var(--fg); font-weight: 600; }
+.term-header .crumb .sep { color: var(--frame); }
+.term-header .rule { flex: 1; border-top: 1px dashed var(--frame); }
+.term-header select {
+  background: var(--input); border: 2px solid var(--frame); color: var(--accent);
+  padding: 3px 6px; cursor: pointer;
+}
+.term-header select:disabled { color: var(--dim); cursor: default; border-color: var(--frame); }
+.conn { color: var(--green); font-family: var(--pf); font-size: var(--fs-label); }
+.conn.off { color: var(--red); }
+
+/* HUD strip — the numbers the whole party watches. Every cell degrades to an
+   em dash when its datum isn't wired yet. */
+.hud { display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--sp-2); }
+.hud-cell { padding: 6px 10px; }
+.hud-cell.wide { grid-column: span 2; }
+.hud-label { display: flex; justify-content: space-between; color: var(--dim); margin-bottom: 5px; }
+.hud-val { color: var(--fg); }
+.hud-val .sub { color: var(--dim); }
+
+/* quest bar — the agent's declared objective, promoted to a quest line */
+.quest {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 2px solid var(--gold); background: var(--panel);
+  box-shadow: inset 0 0 0 2px var(--bg);
+  color: var(--gold);
+}
+.quest .label { color: var(--gold); }
+.quest .spacer { flex: 1; }
+.quest .of { color: var(--dim); }
+
+/* v4 name kept for the plain objective line */
+.objective { color: var(--gold); padding: 0 var(--sp-3) var(--sp-2); }
+.objective .label { font-family: var(--pf); font-size: var(--fs-label); }
+
+/* -------------------------------------------------------------- transcript */
+
+.transcript { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.transcript-body { flex: 1; overflow-y: auto; padding: 10px var(--sp-3); }
+
+/* Scrollback is a cell grid: consecutive lines sit on adjacent cells with no
+   leading. Separation comes from turns, not from per-line gaps. */
+.line { white-space: pre-wrap; overflow-wrap: anywhere; }
+.line + .line { margin-top: 0; }
+.line + .line:has(> .who) { margin-top: var(--sp-2); }
+.line.dim { color: var(--dim); }
+.line.gold { color: var(--gold); }
+.line.red { color: var(--red); }
+.line.green { color: var(--green); }
+.line.done { text-decoration: line-through; opacity: 0.6; }
+.line .who { font-weight: 600; }
+.cursor { color: var(--accent); animation: blink 1s steps(1, end) infinite; }
+
+/* take-the-wheel — the loudest moment in the product, so it gets the arcade
+   treatment: dashed rails, a pixel headline, and a sweep that reads as a
+   marquee rather than a web transition. */
+.wheelbanner {
+  margin: var(--sp-3) 0;
+  padding: var(--sp-2) 0;
+  border-top: 2px dashed var(--gold); border-bottom: 2px dashed var(--gold);
+  color: var(--gold);
+  background: linear-gradient(90deg, transparent 0%, rgba(217, 184, 107, 0.22) 45%, transparent 90%);
+  background-size: 220% 100%;
+  animation: sweepbg 2.4s linear infinite;
+}
+.wheelbanner .title { font-family: var(--pf); font-size: 12px; letter-spacing: 0.04em; }
+.wheelbanner .sub { margin-top: 6px; }
+
+/* permission block — the signature element and the product's highest-stakes
+   moment, so it is the one place that spends contrast. Two weights: a block you
+   can act on right now carries the wash, the 8px rail and the pulse; a decided
+   block (or one you can only watch) keeps the amber frame and recedes. */
+.perm {
+  margin: 14px 0 var(--sp-1);
+  padding: var(--sp-3) 14px;
+  border: 3px solid var(--amber-mute); border-left-width: 8px;
+  box-shadow: inset 0 0 0 2px var(--bg);
+  display: flex; flex-direction: column; gap: var(--sp-2);
+}
+.perm:has(.perm-actions) {
+  border-color: var(--amber);
+  background: var(--amber-wash);
+  box-shadow: inset 0 0 0 2px var(--bg), 5px 5px 0 var(--bg);
+}
+.perm-head { display: flex; align-items: center; gap: var(--sp-2); }
+.perm-title { font-family: var(--pf); font-size: 12px; color: var(--amber); letter-spacing: 0.04em; }
+.perm:has(.perm-actions) .perm-title { animation: pulse 1.6s ease-in-out infinite; }
+.perm-head .rule { flex: 1; border-top: 1px dashed var(--amber); opacity: 0.5; }
+.perm-timer { font-family: var(--pf); font-size: var(--fs-label); color: var(--dim); }
+.perm-what b { color: var(--amber); }
+.perm-input {
+  display: block; background: var(--input); border: 1px solid var(--frame);
+  padding: var(--sp-2) var(--sp-3); overflow-wrap: anywhere; color: var(--fg);
+}
+.perm-why { display: flex; gap: var(--sp-2); flex-wrap: wrap; color: var(--dim); }
+.perm-why .warn { color: var(--red); }
+.perm-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.perm-watchers { display: flex; gap: 5px; margin-left: auto; }
+.perm-outcome { color: var(--dim); }
+
+/* ------------------------------------------------------------- party pane */
+
+.party { width: 300px; padding: 10px; display: flex; flex-direction: column; gap: var(--sp-2); overflow-y: auto; }
+.party-title { display: flex; justify-content: space-between; align-items: baseline; color: var(--dim); }
+.party-title .lv { color: var(--green); }
+.member {
+  display: flex; flex-direction: column; gap: 3px;
+  border: 2px solid var(--frame); padding: 7px 9px;
+  color: inherit; text-decoration: none;
+}
+.member:hover { border-color: var(--accent); }
+.member.you { border-color: var(--green); background: var(--green-wash); gap: var(--sp-1); }
+/* an ended session is encoded structurally (dashed frame), not by fading it
+   until it fails contrast */
+.member.ended { opacity: 0.75; border-style: dashed; }
+.member.ended:hover { opacity: 1; }
+.member-head { font-weight: 600; }
+.member-head .role { color: var(--green); font-weight: 400; }
+.member-head .here { color: var(--dim); font-weight: 400; }
+.member-quest { color: var(--gold); font-size: var(--fs-sm); }
+.member-quest.none { color: var(--dim); }
+.member-meta { color: var(--dim); font-size: var(--fs-sm); }
+.party-foot {
+  margin-top: auto; border-top: 1px dashed var(--frame); padding-top: var(--sp-2);
+  display: flex; justify-content: space-between; color: var(--dim); font-size: var(--fs-sm);
+}
+
+/* HANDOFF §7.4 is still open: v4 hid the pane below 900px, the spec asked for a
+   summary + toggle. Unchanged here on purpose — swapping in a `.party.summary`
+   row of sprites is the ~15-line version if you want the spec behaviour. */
+@media (max-width: 900px) { .party { display: none; } }
+
+/* ------------------------------------------------------- prompt + status */
+
+.promptbar { display: flex; flex-direction: column; gap: var(--sp-1); }
+.promptbar .inputbox {
+  display: flex; gap: var(--sp-2); align-items: center;
+  padding: 10px var(--sp-3);
+  border: 2px solid var(--accent); background: var(--input);
+  box-shadow: inset 0 0 0 2px var(--bg);
+}
+.promptbar .caret { color: var(--accent); }
+.promptbar input { flex: 1; background: transparent; border: none; outline: none; }
+.promptbar .keys { color: var(--frame); }
+.statusline { display: flex; gap: var(--sp-4); padding: 2px var(--sp-3) 0; color: var(--dim); flex-wrap: wrap; }
+.statusline .driving { color: var(--green); }
+.statusline .gate { color: var(--amber); margin-left: auto; }
+
+/* ------------------------------------------------- thinking strip / arcade */
+
+.thinking {
+  padding: var(--sp-2) var(--sp-3);
+  border-color: var(--gold);
+  display: flex; flex-direction: column; gap: 6px;
+  animation: strip-in 0.3s ease-out;
+}
+.thinking.leaving { opacity: 0; transition: opacity 0.6s ease-out; }
+.thinking-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.thinking-head .who { font-family: var(--pf); font-size: var(--fs-label); color: var(--gold); animation: pulse 1.4s ease-in-out infinite; }
+.thinking-head .tool { color: var(--dim); }
+.thinking-head .rule { flex: 1; border-top: 1px dashed var(--frame); }
+.thinking-score { font-family: var(--pf); font-size: var(--fs-label); color: var(--fg); }
+.thinking-best { font-family: var(--pf); font-size: var(--fs-label); color: var(--gold); }
+.lane {
+  margin: 0; padding: var(--sp-1) 0;
+  border-top: 1px dashed var(--frame); border-bottom: 1px dashed var(--frame);
+  color: var(--fg); line-height: 1.25; overflow: hidden;
+}
+.lane.big { padding: var(--sp-3) 0; border-width: 2px; line-height: 1.3; }
+.thinking-hint { color: var(--dim); }
+.roster { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; color: var(--dim); }
+.roster-item { padding: 3px 7px; border: 1px solid var(--frame); cursor: pointer; background: transparent; color: var(--dim); }
+.roster-item:hover { color: var(--fg); border-color: var(--accent); }
+.roster-item.on { border-color: var(--gold); color: var(--gold); }
+.roster .hint { flex: 1; text-align: right; }
+
+/* cartridge cards (arcade screen) */
+.carts { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-2); }
+.cart { padding: 10px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
+.cart pre { margin: 0; line-height: 1.2; font-size: var(--fs-sm); color: var(--dim); }
+.cart.on { border-color: var(--gold); }
+.cart.on .title { color: var(--gold); }
+.cart.on pre { color: var(--fg); }
+.cart .title { font-family: var(--pf); font-size: 10px; }
+.cart .meta { color: var(--dim); font-size: var(--fs-sm); }
+.cart .slot { font-family: var(--pf); font-size: 8px; color: var(--dim); }
+.cart.on .slot { color: var(--green); }
+
+/* leaderboard */
+.board { display: flex; flex-direction: column; gap: 0; }
+.board-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px dashed var(--frame); }
+.board-row:last-child { border-bottom: none; }
+.board-row.first { background: var(--gold-wash); }
+.board-row .rank { color: var(--dim); }
+.board-row.first .rank { color: var(--gold); }
+.board-row .score { color: var(--fg); }
+.board-row.first .score { color: var(--gold); }
+.kv { display: flex; justify-content: space-between; }
+.kv .k { color: var(--dim); }
+
+/* ------------------------------------------------------- lobby / player select */
+
+.lobby { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 0 30px; }
+.lobby-hero { font-family: var(--pf); font-size: 26px; color: var(--gold); text-shadow: 4px 4px 0 var(--bg); }
+.lobby-sub { font-family: var(--pf); font-size: var(--fs-label); color: var(--dim); letter-spacing: 0.1em; }
+.lobby-cols { display: flex; gap: 14px; width: 100%; max-width: 1080px; align-items: stretch; }
+.lobby-card { flex: 1; padding: var(--sp-4); display: flex; flex-direction: column; gap: 14px; }
+.lobby-title { color: var(--dim); }
+.lobby-row { display: flex; align-items: center; gap: 10px; }
+.lobby-row .lbl { font-family: var(--pf); font-size: var(--fs-label); color: var(--dim); width: 52px; }
+.lobby-row .caret { color: var(--accent); }
+.lobby-row input {
+  flex: 1; background: var(--input); border: 2px solid var(--frame);
+  padding: 9px var(--sp-3); outline: none;
+}
+.lobby-row input:focus { border-color: var(--accent); }
+.picks { display: flex; gap: 6px; }
+.pick {
+  width: 36px; height: 36px; display: grid; place-items: center;
+  font-size: 16px; background: var(--input);
+  border: 2px solid var(--frame); cursor: pointer;
+}
+.pick.on { border-color: var(--accent); animation: bob 1.6s ease-in-out infinite; }
+.pick.swatch { width: 26px; height: 26px; }
+.pick.swatch.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); animation: none; }
+.stats { border-top: 1px dashed var(--frame); padding-top: var(--sp-3); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.stats .k { font-family: var(--pf); font-size: 8px; color: var(--dim); margin-bottom: var(--sp-1); }
+.lobby-party { color: var(--dim); }
+.lobby-enter {
+  margin-top: auto; font-family: var(--pf); font-size: 13px; padding: 14px;
+  background: transparent; border: 3px solid var(--green); color: var(--green);
+  box-shadow: var(--chunk); cursor: pointer; animation: pulse 1.8s ease-in-out infinite;
+}
+.lobby-enter:hover:not(:disabled) { background: rgba(127, 191, 127, 0.14); animation: none; }
+.lobby-enter:disabled { border-color: var(--frame); color: var(--dim); box-shadow: none; animation: none; cursor: default; }
+.lobby-foot { font-family: var(--pf); font-size: 8px; color: var(--frame); letter-spacing: 0.1em; }
+
+/* ------------------------------------------------- agent status / skills */
+
+.agentcard { width: 330px; display: flex; flex-direction: column; gap: var(--sp-3); }
+.agentcard .id { display: flex; gap: var(--sp-3); align-items: center; }
+.agentcard .id .name { font-family: var(--pf); font-size: 12px; color: var(--gold); }
+.agentcard .id .class { color: var(--dim); }
+.agentcard .sprite { animation: bob 2.4s ease-in-out infinite; }
+.bar-label { display: flex; justify-content: space-between; font-family: var(--pf); font-size: 8px; color: var(--dim); margin-bottom: 5px; }
+.fx { border-top: 1px dashed var(--frame); padding-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+.classpick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.classpick .opt { border: 2px solid var(--frame); padding: 10px; display: flex; flex-direction: column; gap: 5px; }
+.classpick .opt.on { border-color: var(--gold); background: var(--gold-wash); }
+.classpick .opt .title { font-family: var(--pf); font-size: 10px; }
+.classpick .opt.on .title { color: var(--gold); }
+.classpick .opt .meta { color: var(--dim); font-size: var(--fs-sm); }
+.toolgrid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
+.tool { border: 1px solid var(--frame); padding: 6px var(--sp-2); }
+.tool .free { color: var(--dim); }
+.tool .ok { color: var(--green); }
+.tool.gated { border-color: var(--amber); color: var(--amber); }
+
+.spellbook { width: 268px; padding: 10px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.skill { border: 2px solid var(--frame); padding: var(--sp-2) 9px; display: flex; flex-direction: column; gap: 3px; cursor: pointer; }
+.skill:hover { border-color: var(--accent); }
+.skill .meta { color: var(--dim); font-size: var(--fs-sm); }
+.skill.on { border-color: var(--gold); background: var(--gold-wash); }
+.skill.on b { color: var(--gold); }
+.skill.muted { border-style: dashed; opacity: 0.7; }
+.runtree { display: flex; flex-direction: column; gap: var(--sp-2); }
+.node { display: flex; gap: 10px; align-items: center; border: 2px solid var(--frame); padding: var(--sp-2) 10px; }
+.node .body { flex: 1; min-width: 0; }
+.node .state { font-family: var(--pf); font-size: 8px; color: var(--dim); }
+.node .meta { color: var(--dim); font-size: var(--fs-sm); }
+.node.done { border-color: var(--green); background: var(--green-wash); }
+.node.done .state { color: var(--green); }
+.node.running { border-color: var(--gold); background: var(--gold-wash); }
+.node.running .state { color: var(--gold); }
+.node.running .sprite { animation: pulse 1.4s ease-in-out infinite; }
+.node.queued { border-style: dashed; opacity: 0.8; }
+.palette { display: flex; flex-direction: column; gap: 7px; }
+.palette .field { background: var(--input); border: 2px solid var(--accent); padding: 7px 9px; }
+.cmd { border: 1px solid var(--frame); padding: 6px var(--sp-2); }
+.cmd.on { background: rgba(217, 119, 87, 0.08); }
+.cmd .meta { color: var(--dim); }
+.task { border: 1px solid var(--frame); padding: 7px var(--sp-2); }
+.task .ok { color: var(--green); font-size: var(--fs-sm); }
+.task .bad { color: var(--red); font-size: var(--fs-sm); }
+.task .meta { color: var(--dim); font-size: var(--fs-sm); }
+.note { color: var(--dim); font-size: var(--fs-sm); }
+.note.top { margin-top: auto; border-top: 1px dashed var(--frame); padding-top: var(--sp-2); }
+
+/* --------------------------------------------------------------- keyframes */
+
+@keyframes flick { 0%, 100% { opacity: 0.14; } 47% { opacity: 0.2; } 48% { opacity: 0.09; } }
+@keyframes scanroll { from { transform: translateY(-120%); } to { transform: translateY(820%); } }
+@keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes sweepbg { 0% { background-position: -140% 0; } 100% { background-position: 240% 0; } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@keyframes strip-in { from { opacity: 0; } }
+
+/* Quality floor: honour the OS "reduce motion" setting. Everything below is
+   decorative — nothing here is the only carrier of state. */
+@media (prefers-reduced-motion: reduce) {
+  .crt-tint, .crt-roll, .wheelbanner, .thinking, .thinking-head .who,
+  .perm:has(.perm-actions) .perm-title, .pick.on, .lobby-enter,
+  .agentcard .sprite, .node.running .sprite, .cursor {
+    animation: none;
+  }
+  .thinking.leaving { transition: none; }
+}
