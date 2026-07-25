@@ -1,13 +1,19 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-24, v3 execution COMPLETE (branch merge-ready, held for user review).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-24, v3 demo run live for user; pivoting into product design (Claude-Code-shell base + game-feel flourishes).*
 
-## 0. WHERE WE ARE (v3 done; game-feel design is next)
+## 0. WHERE WE ARE (v3 done + demo'd live; product design phase STARTING)
 
 Three things were queued after v2. Status now:
 1. **Full Claude Code capabilities + driver approval gate (v3)** — ✅ **COMPLETE** on `feature/project-hub` (commits `85a3999..6735d4e`). Full `claude_code` tool preset; Bash/Write-outside-worktree/etc. gated by a per-request driver Approve/Deny that is itself multiplayer (any teammate can take the wheel to decide a pending request); allowlisted safe commands auto-run; file writes contained to the agent's worktree; project skills via `AGENT_SKILLS`. 60/60 server tests, tsc clean, client builds. Live Playwright acceptance PASSED all four scenarios. Final whole-branch review (fable): **Merge-ready**.
 2. **Research refresh** — ✅ **COMPLETE** — dated addendum appended to `docs/research-report.md` (commit `970e062`). Headlines: Amp shipped "Multiplayer" 2026-07-22; Warp Remote Control clears the co-drive bar (≥3 shipping now); VS Code 1.129 shipped Microsoft's Agent Host Protocol (meets the report's NO-GO precondition sooner than expected); Windsurf→Devin Desktop; GitHub Ace now live technical preview. No competitor combines our shared-session + take-the-wheel + agent-awareness + multiplayer-approval-gate stack. Conditional GO survives; incumbent clock faster.
-3. **Video-game-feel design pass** — ⏳ **NOT STARTED** — this is the next work item. User's explicit aesthetic: "design aspect to feel like a video game" (session-as-party/lobby, avatars, intents as quest-log, project minimap — captured in the v3 spec §4). Use frontend-design skill + deferred visual-polish backlog (`.app` max-width 860px squeezes transcript+sidebar; duplicate sidebar filter; tool_call renders alongside its permission card — mergeable). Do this AFTER the user ratifies v3 (below).
+3. **Product design phase** — ⏳ **STARTING NOW** (the current work). Direction pivoted 2026-07-24 after the live demo. NOT "video game feel" alone, and NOT plain Claude-Code-clone alone — a **MIX**:
+   - **Base aesthetic = the Claude Code terminal shell** ("essentially match the same shell as claude code"): monospace, dark, boxed input, the CLI tool-call rendering style, sparse chrome. This is the frame the whole product lives in.
+   - **Game-feel flourishes layered on top.** Headline example the user gave: a **Google-Chrome-dino-style offline mini-game shown while the agent is thinking/working** (fills the wait; playable during agent turns). Plus the earlier game motifs still on the table (avatars, intents-as-quest-log, party/lobby framing) — subordinate to the shell, not replacing it.
+   - **Agent/model choice is now product vision** — "whatever agent the user chooses is thinking": the user picks which agent/model drives a session; the thinking-state mini-game and identity reflect the chosen agent. (Today the driver is hardcoded to claude-opus-4-8 in agentDriver.ts systemPrompt/model — this becomes user-selectable.)
+   - **Two deliverables the user asked for, in parallel:** (a) a **design context file to hand off to "Claude Design"** (an external design agent) — a self-contained brief with product, current UI, the mixed aesthetic, components, constraints, and what to design; (b) **test the `soltero-skills:frontend-design` skill** by actually running it on this UI and comparing/using its output. Do BOTH — the context file and a real frontend-design-skill pass.
+   - Design work starts from brainstorming (superpowers:brainstorming) to pin the mixed-aesthetic brief, which feeds both deliverables. Deferred visual-polish backlog still applies (`.app` max-width 860px squeezes transcript+sidebar; duplicate sidebar filter; tool_call renders alongside its permission card — mergeable).
+   - **Live demo was run for the user this session** (all 4 scenarios PASSED again on a fresh server): screenshots `step1-autoapprove.png`…`step4-awareness.png` in repo root. Servers may still be running (server :3001 bg, client :5173 bg) — a stale one on 3001 needed a kill first; check `lsof -tiTCP:3001`.
 
 ## 1. Goal & current task
 
