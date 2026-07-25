@@ -9,9 +9,13 @@ const idleRun: RunQuery = async function* (prompts) {
   }
 };
 
-function addSession(project: Project, id: string): Session {
+function addSession(
+  project: Project,
+  id: string,
+  skills: { name: string; description: string }[] = [],
+): Session {
   const session = new Session(id);
-  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills: [], pendingSuggests: new Map() });
+  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map() });
   return session;
 }
 
@@ -46,5 +50,16 @@ describe("projectSnapshot", () => {
     expect(benSnap.intent).toBeNull();
     expect(benSnap.driverName).toBeNull();
     expect(benSnap.lastActivityTs).toBeNull();
+  });
+
+  it("includes each session's skill roster in the snapshot", () => {
+    const project = new Project("demo");
+    addSession(project, "ana", [{ name: "auth-migration-guide", description: "Migrate cookie auth to JWT." }]);
+    addSession(project, "ben");
+    const snap = projectSnapshot(project);
+    expect(snap.sessions.find((s) => s.id === "ana")!.skills).toEqual([
+      { name: "auth-migration-guide", description: "Migrate cookie auth to JWT." },
+    ]);
+    expect(snap.sessions.find((s) => s.id === "ben")!.skills).toEqual([]);
   });
 });
