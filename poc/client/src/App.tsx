@@ -96,6 +96,14 @@ function SessionView(props: {
     send({ type: "permission", requestId, decision });
   }
 
+  function onSuggestSkill(skill: string, args: string) {
+    send({ type: "suggest_skill", skill, args });
+  }
+
+  function onDecideSkill(suggestId: string, decision: "run" | "dismiss") {
+    send({ type: "decide_skill", suggestId, decision });
+  }
+
   return (
     <div className="term">
       <Header
@@ -115,6 +123,7 @@ function SessionView(props: {
           isDriver={isDriver}
           selfId={userId}
           onPermission={sendPermission}
+          onDecideSkill={onDecideSkill}
         />
 
         <PartyPane projectId={projectId} sessionId={sessionId} sessions={projectSessions} />
@@ -129,8 +138,10 @@ function SessionView(props: {
         isDriver={isDriver}
         agentBusy={derived.agentBusy}
         watcherNames={watcherNames}
+        skills={derived.skills}
         onPrompt={onPrompt}
         onTakeWheel={onTakeWheel}
+        onSuggestSkill={onSuggestSkill}
         inputRef={inputRef}
       />
     </div>

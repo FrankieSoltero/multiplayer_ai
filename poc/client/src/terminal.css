@@ -113,12 +113,27 @@ button, input, select { font: inherit; color: inherit; }
 /* prompt bar + status line */
 .promptbar { margin-top: var(--sp-2); }
 .promptbar .inputbox {
+  position: relative;
   display: flex; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--frame); background: var(--input);
 }
 .promptbar .inputbox:focus-within { border-color: var(--accent); }
 .promptbar .caret { color: var(--accent); }
 .promptbar input { flex: 1; background: transparent; border: none; outline: none; }
+
+/* slash autocomplete — anchored above the prompt input */
+.slashmenu {
+  position: absolute; bottom: 100%; left: 0; right: 0;
+  background: var(--input); border: 1px solid var(--frame);
+  display: flex; flex-direction: column;
+}
+.slashmenu button {
+  text-align: left; padding: var(--sp-1) var(--sp-3);
+  background: none; border: 0; color: var(--fg); cursor: pointer;
+  font: inherit;
+}
+.slashmenu button:hover { background: rgba(217, 119, 87, 0.12); }
+.suggest .perm-title { color: var(--gold); }
 .promptbar button.wheel {
   width: 100%; padding: var(--sp-2) var(--sp-3); text-align: left; cursor: pointer;
   border: 1px dashed var(--frame);

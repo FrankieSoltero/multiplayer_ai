@@ -8,12 +8,13 @@ export function Transcript(props: {
   events: LoggedEvent[]; derived: DerivedState; isDriver: boolean;
   selfId: string;
   onPermission: (requestId: string, decision: "allow" | "deny") => void;
+  onDecideSkill: (suggestId: string, decision: "run" | "dismiss") => void;
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [props.events]);
-  const { participants, permissionDecisions, lastIntentSeq } = props.derived;
+  const { participants, permissionDecisions, lastIntentSeq, suggestDecisions } = props.derived;
   const nameOf = (id?: string) => (id && participants.get(id)?.name) ?? id ?? "?";
   const colorOf = (id?: string) => (id && participants.get(id)?.color) ?? "var(--fg)";
 
@@ -114,6 +115,31 @@ export function Transcript(props: {
       }
       case "permission_decision":
         return null; // folded into the request block via permissionDecisions
+      case "skill_suggest": {
+        const decided = ev.suggestId ? suggestDecisions.get(ev.suggestId) : undefined;
+        return (
+          <div key={ev.seq} className="perm suggest">
+            <div className="perm-title">
+              ⚡ {nameOf(ev.userId)} suggests <b>/{ev.skill}</b>
+              {ev.args && <span className="dim"> {ev.args.slice(0, 120)}</span>}
+            </div>
+            {decided ? (
+              <div className="perm-outcome">
+                {decided.decision === "run" ? "⚡ run" : "✕ dismissed"} by {nameOf(decided.userId)}
+              </div>
+            ) : props.isDriver && ev.suggestId ? (
+              <div className="perm-actions">
+                <button onClick={() => props.onDecideSkill(ev.suggestId!, "run")}>run</button>
+                <button className="deny" onClick={() => props.onDecideSkill(ev.suggestId!, "dismiss")}>dismiss</button>
+              </div>
+            ) : (
+              <div className="perm-outcome">⏳ driver deciding…</div>
+            )}
+          </div>
+        );
+      }
+      case "skill_decision":
+        return null; // folded into the suggest chip via suggestDecisions
       default:
         return null; // presence_join/leave, turn_end: no transcript line
     }
