@@ -1,4 +1,4 @@
-export const GLYPHS = ["■", "▲", "●", "✦", "◆", "♠"] as const;
+export const GLYPHS = ["■", "▲", "●", "✦", "◆", "♠", "★"] as const;
 export const IDENTITY_COLORS = [
   "#e06c75", "#61afef", "#98c379", "#e5c07b", "#c678dd", "#56b6c2",
 ] as const;

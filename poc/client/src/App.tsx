@@ -160,7 +160,14 @@ function SessionView(props: {
           onDecidePlan={onDecidePlan}
         />
 
-        <PartyPane projectId={projectId} sessionId={sessionId} sessions={projectSessions} />
+        <PartyPane
+          projectId={projectId}
+          sessionId={sessionId}
+          sessions={projectSessions}
+          participants={derived.participants}
+          driverId={derived.driverId}
+          selfId={userId}
+        />
         <TodoPanel todos={derived.todos} />
       </div>
 
