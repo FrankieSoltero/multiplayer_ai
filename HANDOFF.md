@@ -37,8 +37,8 @@ Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration. v1–v4 merged to m
 
 1. DONE: user chose push + PR; branch pushed, PR open against main (merge happens on GitHub when user is ready). Screenshots deleted per user choice.
 2. **USER: remaining batched decisions** (§7, items 1–6 and 8–10) — present when convenient; none block the PR.
-3. **Queued user ask:** unzip `Multiplayer AI 90s Terminal UI.zip` (repo root) into scratchpad, study, then discuss application (restyle v5a UI? feeds v5b? separate cycle). Brainstorm → spec; frontend-design skill relevant. No restyle without a spec.
-4. v5b (game roster + party high score) when the user wants it — fresh spec/plan cycle.
+3. **v5c restyle cycle (USER-CHOSEN 2026-07-25, next up):** brainstorm → spec → plan porting the 90s-terminal repo-patch ONTO the v5a client, after PR #2 merges. Zip studied (extracted at scratchpad/ui-blueprints/repo-patch; re-extract from the repo-root zip in a fresh session — scratchpad is session-scoped). KEY FACT: the patch targets the v4 client — its terminal.css has none of the 15 v5a class blocks (subagent/skillcard/slashmenu/planmode/todopanel) and its Transcript (161 ln) / PromptBar (48 ln) lack v5a logic (groups, skill cards, PlanCard, autocomplete) — so it's a PORT, not a file replace. Its README's copy-map order (index.html+css first, then components one at a time), optional-prop degradation (`—` when absent), and wire-work list (HUD data, party best, game roster, AgentStatus HP/MP, SkillsPanel) are the spec's raw material; wire-work items overlap v5b and stay deferred. frontend-design + brainstorming skills apply. No restyle without a spec.
+4. v5b (game roster + party high score) when the user wants it — fresh spec/plan cycle (the patch's ThinkingStrip/arcade chrome anticipates it).
 
 ## 5. Files with line refs (HEAD 3527d9a)
 
@@ -61,7 +61,7 @@ Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration. v1–v4 merged to m
 
 Carried v3: (1) worktree-containment Write/Edit approval; (2) Bash-allowlist two-hop residual risk; (3) skill discovery under settingSources:[] confirmed broken — accept self-recovery or investigate SDK versions.
 Carried v4: (4) party pane <900px hide (TodoPanel same); (5) stale skill name in v4 spec text; (6) 4 structural polish items in frontend-design-skill-notes. ~~(7) screenshots~~ RESOLVED 2026-07-25: user chose DROP — all three deleted.
-New v5a: (8) deferred minors marked DEFER in §3 triage — schedule post-merge or drop; (9) meta-tools bypassing the permission gate — accept or raise upstream; (10) suggest-chip args preview 120/500 chars on an approval surface — widen to 300+ or accept; (11) `Multiplayer AI 90s Terminal UI.zip` — how blueprints map to work (restyle v5a? feeds v5b? separate cycle) — ask after studying it.
+New v5a: (8) deferred minors marked DEFER in §3 triage — schedule post-merge or drop; (9) meta-tools bypassing the permission gate — accept or raise upstream; (10) suggest-chip args preview 120/500 chars on an approval surface — widen to 300+ or accept. ~~(11) zip mapping~~ RESOLVED 2026-07-25: user chose a dedicated v5c restyle cycle (see §4 step 3). Patch-internal opens for the v5c brainstorm: party pane <900px (`.party.summary` sprite row ~15 lines vs display:none), 7th `★` sprite into identity.ts, HUD/AgentStatus/SkillsPanel wire events.
 
 ## 8. Resume & verify
 
