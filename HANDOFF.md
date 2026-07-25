@@ -17,7 +17,11 @@ Three things were queued after v2. Status now:
 
 ## 1. Goal & current task
 
-**Project goal:** Startup exploration of YC's Fall 2026 "Multiplayer AI" RFS (dev-tools vertical). v1 (merged to main) = one shared live agent session. v2 = project hub with agent-side awareness. v3 = full CC capabilities behind a multiplayer driver-approval gate. **Current task: v3 is built and merge-ready; awaiting the user's verdict on the branch + three ratification items, then the game-feel design pass.**
+**Project goal:** Startup exploration of YC's Fall 2026 "Multiplayer AI" RFS (dev-tools vertical). v1 (merged to main) = one shared live agent session. v2 = project hub with agent-side awareness. v3 = full CC capabilities behind a multiplayer driver-approval gate — built, demo'd live, merge-ready.
+
+**CURRENT TASK (start here): the product design phase — see §0 item 3 for the full direction.** We had just invoked `superpowers:brainstorming` to pin the mixed-aesthetic brief when the user asked to hard-reset context (see below). NOTHING was decided in that brainstorm yet — resume by re-invoking `superpowers:brainstorming` and driving it per §0 item 3 (Claude-Code-shell base + game-feel flourishes incl. the thinking-state mini-game + agent/model choice). The brainstorm feeds two deliverables: (a) a design context file for "Claude Design"; (b) a real `soltero-skills:frontend-design` pass on the UI. v3 ratification (§7) is a still-open SECONDARY thread — mention it, don't let it block design.
+
+**PROCESS NOTE from the user (2026-07-24):** when the context-watch hook fires the handoff reminder (~40%), treat it as a HARD STOP — refresh HANDOFF, tell the user to `/clear`, and END THE TURN. Do not keep working in an overflowing context (this session ran to ~107% before resetting — that's the failure mode to avoid). The hook only *reminds*; the discipline is: handoff → instruct clear → stop.
 
 ## 2. Status
 
@@ -40,10 +44,10 @@ Three things were queued after v2. Status now:
 
 ## 4. Ordered next steps
 
-1. **Surface the three §7 ratification items to the user** (they are decisions only the user makes — do not merge before they weigh in).
-2. Collect any user review feedback on the v2+v3 branch; if changes are wanted, run them subagent-driven with re-review (same process used all along), appending to ledger `.superpowers/sdd/2026-07-24-full-capabilities/progress.md`.
-3. Then `finishing-a-development-branch` skill (tests → options → likely merge to main per user pattern) for the whole `feature/project-hub` branch (v2+v3 together).
-4. **Game-feel design pass** (the actual next build): frontend-design skill; brainstorm first. Direction in v3 spec §4 + visual-polish backlog in §6 below.
+1. **Resume the design brainstorm** — invoke `superpowers:brainstorming`; drive it to a written design spec per §0 item 3. Key open questions to pin: exact scope of "match the Claude Code shell" (which shell elements — the boxed prompt, monospace transcript, tool-call glyphs, status line?); how the thinking-state mini-game triggers/dismisses and whether it's per-session or global; what "agent/model choice" means concretely (a picker at join? which models?); how game-feel and terminal-minimalism coexist without the game undercutting the pro-tool feel. Brainstorming's terminal state is `writing-plans` — but the user ALSO wants a design context file + a frontend-design skill test, so treat those as deliverables of the design phase alongside the spec.
+2. **Produce the design context file for "Claude Design"** — a self-contained brief (suggest `docs/design/claude-design-brief.md`): product one-pager, current UI state (point at `poc/client/src/App.tsx` + `App.css` and the `step1..4` screenshots), the mixed aesthetic, component inventory, the thinking-state mini-game concept, agent-choice concept, hard constraints (self-contained, theme-aware, the event/wire model it must render), and an explicit "what to design" list.
+3. **Test `soltero-skills:frontend-design`** — run it on this UI, capture what it produces, compare against the context-file approach; keep whichever is better (or merge).
+4. **Then** (secondary): surface §7 v3 ratification items; `finishing-a-development-branch` for `feature/project-hub` (v2+v3) when the user's ready to merge.
 
 ## 5. Files with line refs (current state on `feature/project-hub` @ 6735d4e)
 
@@ -91,3 +95,5 @@ cd ../client && npm run build      # clean
 ```
 
 Branch: `feature/project-hub` = v1(merged separately)+v2+v3, complete, **unmerged**, merge-ready, held for the user's verdict on §7. Trust the ledger + `git log` over memory. Demo: `poc/scripts/demo-setup.sh`, then server `AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees AGENT_SKILLS=auth-migration-guide npm run dev` (poc/server), client `npm run dev` (poc/client); URLs `?project=demo&session=ana` / `session=ben`. Acceptance walkthrough: allowlisted cmd auto-runs; a `&&`/non-allowlisted cmd or an out-of-worktree Write raises a 🔐 card; only the current driver decides; take-the-wheel lets a teammate decide a pending card.
+
+**IMMEDIATE RESUME (design phase):** `git log --oneline | head -1` should show the HANDOFF-pivot commit. The current UI to reshape is `poc/client/src/App.tsx` (253 lines) + `poc/client/src/App.css` (36 lines) — plain dark theme today, `.app` max-width 860px. Screenshots of the live product: repo-root `step1-autoapprove.png`…`step4-awareness.png`. Start the design phase by invoking `superpowers:brainstorming` and driving it per §0 item 3 and §4. No decisions are locked yet — the brainstorm is a blank slate.
