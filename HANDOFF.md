@@ -1,18 +1,25 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (afternoon): v4 merge-ready + LIVE co-walkthrough done with the user; two live-feedback fixes landed (96f73b0 opt-in dino game, 5336f3c turn_end-per-result fix for queued-prompt busy deadlock, 71/71 server tests). Awaiting user's merge choice (menu presented: merge local / PR / keep) + §7 decisions.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (afternoon): v2+v3+v4 MERGED to main via PR #1 (github.com/FrankieSoltero/multiplayer_ai, private; merge 1c6330d; 71/71+12/12+build verified on main). Branch deleted. CURRENT TASK: v5 design phase — brainstorm below.*
 
-## 0. WHERE WE ARE (v4 executed; final review + user decisions remain)
+## 0. WHERE WE ARE — v5 DESIGN PHASE (starting)
 
-1. **v3 (full CC capabilities + driver approval gate)** — ✅ complete + merge-ready (see §7 ratification items, still open).
-2. **v4 (product design: "Terminal, but multiplayer")** — ✅ **ALL 12 TASKS COMPLETE** via subagent-driven development on `feature/project-hub`, commits `992440b..` (spec `992440b`, plan `8291274`, impl `8bbcbd6..7b17151`, acceptance pending commit). Live Playwright acceptance PASSED all 5 scenarios (lobby, terminal shell, thinking-strip dino game mid-turn, gated-command approval with `a` key, take-the-wheel + model switch to sonnet observed cross-tab). Server 68/68 tests, client 11/11, builds clean.
-3. **What v4 shipped:** faithful Claude-Code terminal shell (terminal.css, no bubbles); Transcript with CC glyphs + amber 🔐 permission blocks + wheel-flourish + quest-log intents; PARTY pane; ThinkingStrip playable dino game (pure engine `game/dino.ts`); Lobby (name/glyph/color, live `peek` party preview, `?name=` bypass); per-session driver-picked agent/model (server `set_model`→`model_change`, SDK `Query.setModel`, between-turns only); `turn_end` event; presence glyph/color. Design deliverables: `docs/design/claude-design-brief.md` (self-contained brief for "Claude Design") + `docs/design/frontend-design-skill-notes.md` (real frontend-design skill test — verdict: useful as post-build critique/quality floor, weak for direction-setting against a pinned brief).
+**User's v5 asks (2026-07-25, verbatim intent):**
+1. **Real agent-harness functionality** — "add all the functionality of an actual agent harness, like being able to call skills and workflows and other things along that line." Scope to pin in brainstorming: skills invocation (beyond the current AGENT_SKILLS listing), workflows/subagent orchestration, and what else qualifies (slash commands? hooks? plan mode? background tasks?).
+2. **Multiple games to choose from** in the thinking strip (dino is the first; add a small selectable roster).
+3. **Party-wide shared high score** — "keeping a highscore amongst everyone in the party." NOTE: v4 deliberately made game state local-only and listed "broadcast game state" as a NON-GOAL; v5 reverses that intentionally → needs wire/event design (e.g. a game_score event or project-level scoreboard) and a decision on per-session vs per-project scope.
+
+**v5 backlog candidates to raise during brainstorming (carried from v4):** party pane <900px summary+toggle (spec gap, user decision pending); 4 structural polish items in docs/design/frontend-design-skill-notes.md; spec text still names soltero-skills:frontend-design (real: frontend-design:frontend-design); stream-death-mid-turn leaves busy stuck until next prompt (parked minor).
+
+**Process:** start with superpowers:brainstorming (one question at a time), likely decompose into two sub-projects (harness capabilities vs games/scoreboard) -> spec -> writing-plans -> subagent-driven-development. All v1-v4 decisions stand (section 3).
+
+**Live demo stack may still be running:** server :3001 (AGENT_WORKDIR_ROOT+AGENT_SKILLS), vite :5173; demo worktree ana has committed landing/future pages (54ad577).
 
 ## 1. Goal & current task
 
 **Project goal:** YC Fall 2026 "Multiplayer AI" RFS exploration (dev-tools). v1 merged; v2+v3+v4 on `feature/project-hub`, unmerged.
 
-**CURRENT TASK:** finish the SDD loop for the v4 plan: (a) commit acceptance artifacts (v4-*.png + this HANDOFF), (b) dispatch the FINAL whole-branch review (most capable model, range `3cd6515..HEAD`, point it at the ledger's deferred-minor/parked lines), (c) one fix wave + one scoped re-review if findings, (d) surface the batched USER DECISIONS (§7), then `finishing-a-development-branch`.
+**CURRENT TASK:** v5 design phase per section 0 — resume by invoking superpowers:brainstorming and driving it from the section-0 asks. v4 is DONE and merged; do not reopen it.
 
 **PROCESS NOTE (2026-07-24, user):** when the context-watch hook fires (~40%), HARD STOP — refresh HANDOFF, tell user to `/clear`, end the turn.
 
