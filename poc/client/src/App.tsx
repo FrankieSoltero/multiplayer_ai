@@ -133,6 +133,16 @@ function SessionView(props: {
     send({ type: "decide_plan", requestId, decision });
   }
 
+  // last tool_call of the in-flight turn — derivable, no server change
+  let currentTool: string | undefined;
+  if (derived.agentBusy) {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.type === "turn_end") break;
+      if (e.type === "tool_call") { currentTool = e.toolName; break; }
+    }
+  }
+
   return (
     <div className="term">
       <Header
@@ -171,7 +181,7 @@ function SessionView(props: {
         <TodoPanel todos={derived.todos} />
       </div>
 
-      <ThinkingStrip busy={derived.agentBusy} modelLabel={MODEL_LABELS[derived.model] ?? derived.model} />
+      <ThinkingStrip busy={derived.agentBusy} modelLabel={MODEL_LABELS[derived.model] ?? derived.model} currentTool={currentTool} />
 
       {errors.length > 0 && <div className="line red">⚠ {errors.at(-1)}</div>}
 
