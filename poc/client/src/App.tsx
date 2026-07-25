@@ -7,6 +7,7 @@ import { useSessionSocket } from "./useSessionSocket";
 import { Header } from "./components/Header";
 import { PromptBar } from "./components/PromptBar";
 import { Transcript } from "./components/Transcript";
+import { PartyPane } from "./components/PartyPane";
 
 export default function App() {
   const [userId] = useState(loadOrCreateUserId);
@@ -82,29 +83,7 @@ export default function App() {
           onPermission={sendPermission}
         />
 
-        <aside className="party term-frame">
-          <div className="line dim">project: {projectId}</div>
-          {projectSessions
-            .filter((s) => s.id !== sessionId)
-            .map((s) => (
-              <a key={s.id} className="line" href={`?project=${projectId}&session=${s.id}`}>
-                <div>
-                  {s.id} {s.ended ? "(ended)" : ""}
-                </div>
-                <div className="dim">{s.intent ?? "no declared intent yet"}</div>
-                <div className="dim">
-                  {s.participants.join(", ") || "empty"}
-                  {s.driverName ? ` · 🛞 ${s.driverName}` : ""}
-                  {s.lastActivityTs
-                    ? ` · ${new Date(s.lastActivityTs).toLocaleTimeString()}`
-                    : ""}
-                </div>
-              </a>
-            ))}
-          {projectSessions.filter((s) => s.id !== sessionId).length === 0 && (
-            <div className="line dim">no other sessions yet</div>
-          )}
-        </aside>
+        <PartyPane projectId={projectId} sessionId={sessionId} sessions={projectSessions} />
       </div>
 
       {errors.length > 0 && <div className="line red">⚠ {errors.at(-1)}</div>}

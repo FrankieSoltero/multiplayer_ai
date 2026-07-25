@@ -92,4 +92,17 @@ button, input, select { font: inherit; color: inherit; }
 
 /* party pane (Task 8), thinking strip (Task 9), lobby (Task 10) add their
    sections below this line */
+
+/* party pane */
+.party { width: 280px; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.party-title { color: var(--dim); letter-spacing: 0.12em; font-size: 11px; }
+.member { display: block; border: 1px solid var(--frame); border-radius: 4px; padding: 6px 8px; color: inherit; text-decoration: none; }
+.member:hover { border-color: var(--accent); }
+.member.ended { opacity: 0.5; }
+.member-head { font-weight: 600; }
+.member-head .here { color: var(--dim); font-weight: 400; }
+.member-quest { color: var(--gold); font-size: 12px; margin: 2px 0; }
+.member-quest.none { color: var(--dim); }
+.member-meta { color: var(--dim); font-size: 11px; }
+
 @media (max-width: 900px) { .party { display: none; } }
