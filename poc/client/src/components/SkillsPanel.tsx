@@ -1,0 +1,109 @@
+import { useState } from "react";
+import type { ProjectSessionInfo } from "../types";
+import { suiteFromSessions } from "../skillSuite";
+
+/** ?screen=skills — the party's skill surface. Real data everywhere it exists:
+ *  suite = union of session rosters (Task 10 wire), palette = this session's
+ *  roster, sub-quests = this session's real subagent groups. The patch's
+ *  background-tasks section is dropped (nothing behind it — spec §4). */
+export function SkillsPanel(props: {
+  sessions: ProjectSessionInfo[];
+  sessionId: string;
+  roster: { name: string; description: string }[];
+  subruns: { label: string; status: "running" | "done"; rows: number }[];
+}) {
+  const suite = suiteFromSessions(props.sessions);
+  const [selected, setSelected] = useState<string | null>(null);
+  const active = suite.find((s) => s.name === selected) ?? suite[0];
+
+  return (
+    <div className="screen">
+      <div className="screen-head">
+        <span className="pix xl" style={{ color: "var(--gold)" }}>SKILLS &amp; WORKFLOWS</span>
+        <span className="rule" />
+        <span style={{ color: "var(--dim)" }}>every skill the party&apos;s sessions bring</span>
+      </div>
+
+      <div className="row">
+        <div className="spellbook panel">
+          <div className="pix" style={{ color: "var(--dim)" }}>SKILL SUITE · {suite.length}</div>
+          {suite.map((s) => (
+            <button
+              key={s.name}
+              className={"skill" + (s.name === active?.name ? " on" : "")}
+              onClick={() => setSelected(s.name)}
+              style={{ textAlign: "left", background: "transparent" }}
+            >
+              <div><b>{s.name}</b></div>
+              <div className="meta">{s.sources.map((src) => src.sessionId).join(" · ")}</div>
+            </button>
+          ))}
+          {suite.length === 0 && <div className="note">no skills in any session yet</div>}
+          <div className="note top">union of every session&apos;s roster · tagged by session</div>
+        </div>
+
+        <div className="col grow">
+          <div className="panel">
+            <div className="screen-head" style={{ marginBottom: 8, flexWrap: "wrap" }}>
+              <span className="pix lg" style={{ color: "var(--gold)" }}>{active?.name ?? "—"}</span>
+              <span className="rule" />
+            </div>
+            {active && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                {active.sources.map((src) => (
+                  <span key={src.sessionId} className="chip gold">
+                    {src.sessionId}{src.driverName ? ` · 🛞 ${src.driverName}` : ""}
+                  </span>
+                ))}
+              </div>
+            )}
+            {active?.description
+              ? <div>&ldquo;{active.description}&rdquo;</div>
+              : <div className="note">no description in this skill&apos;s SKILL.md</div>}
+          </div>
+
+          <div className="panel col grow scroll">
+            <div className="screen-head">
+              <span className="pix" style={{ color: "var(--gold)" }}>✦ SUB-QUESTS THIS SESSION</span>
+              <span className="rule" />
+              <span className="note">
+                {props.subruns.length} spawned · {props.subruns.filter((r) => r.status === "running").length} running
+              </span>
+            </div>
+            <div className="runtree">
+              {props.subruns.map((n, i) => (
+                <div key={i} className={`node ${n.status}`}>
+                  <span
+                    className="sprite sm"
+                    style={{ color: n.status === "done" ? "var(--green)" : "var(--gold)" }}
+                  >
+                    {n.status === "done" ? "●" : "✦"}
+                  </span>
+                  <div className="body">
+                    <div><b>{n.label}</b></div>
+                    <div className="meta">{n.rows} transcript rows</div>
+                  </div>
+                  <span className="state">{n.status.toUpperCase()}</span>
+                </div>
+              ))}
+              {props.subruns.length === 0 && <div className="note">no subagents spawned yet</div>}
+            </div>
+          </div>
+        </div>
+
+        <div className="col" style={{ width: 300 }}>
+          <div className="panel accent palette">
+            <div className="pix" style={{ color: "var(--accent)" }}>COMMAND PALETTE · /</div>
+            {props.roster.map((s) => (
+              <div key={s.name} className="cmd">
+                <b>/{s.name}</b> <span className="meta">{s.description}</span>
+              </div>
+            ))}
+            {props.roster.length === 0 && <div className="note">this session has no skills equipped</div>}
+            <div className="note top">passenger / suggests · driver / runs</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

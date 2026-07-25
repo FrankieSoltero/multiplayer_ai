@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import "./terminal.css";
-import { deriveState } from "./derive";
+import { deriveState, deriveTranscriptGroups } from "./derive";
 import { hashIdentity, loadOrCreateUserId, loadProfile, saveProfile } from "./identity";
 import type { Profile } from "./identity";
 import { useSessionSocket } from "./useSessionSocket";
@@ -12,6 +12,8 @@ import { TodoPanel } from "./components/TodoPanel";
 import { ThinkingStrip } from "./components/ThinkingStrip";
 import { Lobby } from "./components/Lobby";
 import { Cabinet, Crt } from "./components/Crt";
+import { SkillsPanel } from "./components/SkillsPanel";
+import { AgentStatus } from "./components/AgentStatus";
 
 const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
 
@@ -20,6 +22,7 @@ export default function App() {
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   const sessionId = params.get("session") ?? "demo";
   const projectId = params.get("project") ?? "default";
+  const screen = params.get("screen");
 
   // Profile precedence: `?name=` URL param auto-derives a profile (glyph/color
   // hashed from userId) and skips the lobby entirely — demo scripts depend on
@@ -48,7 +51,7 @@ export default function App() {
             }}
           />
         ) : (
-          <SessionView userId={userId} sessionId={sessionId} projectId={projectId} profile={profile} />
+          <SessionView userId={userId} sessionId={sessionId} projectId={projectId} profile={profile} screen={screen} />
         )}
       </Crt>
     </Cabinet>
@@ -60,6 +63,7 @@ function SessionView(props: {
   sessionId: string;
   projectId: string;
   profile: Profile;
+  screen: string | null;
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
@@ -141,6 +145,23 @@ function SessionView(props: {
       if (e.type === "turn_end") break;
       if (e.type === "tool_call") { currentTool = e.toolName; break; }
     }
+  }
+
+  if (props.screen === "skills") {
+    const subruns = deriveTranscriptGroups(events)
+      .filter((g) => g.kind === "subagent")
+      .map((g) => ({ label: g.label, status: g.status, rows: g.events.length }));
+    return (
+      <SkillsPanel
+        sessions={projectSessions}
+        sessionId={sessionId}
+        roster={derived.skills}
+        subruns={subruns}
+      />
+    );
+  }
+  if (props.screen === "status") {
+    return <AgentStatus model={derived.model} canSetModel={canSetModel} onSetModel={onSetModel} rosterCount={derived.skills.length} />;
   }
 
   return (
