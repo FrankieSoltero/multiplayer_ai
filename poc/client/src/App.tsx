@@ -82,6 +82,14 @@ function SessionView(props: {
     [events],
   );
 
+  const gatesPending = useMemo(
+    () =>
+      events.filter(
+        (e) => e.type === "permission_request" && e.requestId && !derived.permissionDecisions.has(e.requestId),
+      ).length,
+    [events, derived.permissionDecisions],
+  );
+
   const isDriver = derived.driverId === userId;
   const canSetModel = isDriver && !derived.agentBusy;
   const planMode = derived.permissionMode === "plan";
@@ -165,6 +173,7 @@ function SessionView(props: {
         agentBusy={derived.agentBusy}
         watcherNames={watcherNames}
         skills={derived.skills}
+        gatesPending={gatesPending}
         onPrompt={onPrompt}
         onTakeWheel={onTakeWheel}
         onSuggestSkill={onSuggestSkill}

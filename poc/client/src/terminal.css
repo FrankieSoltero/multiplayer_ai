@@ -655,11 +655,3 @@ code, pre { font-family: var(--fm); }
   .party:not(.open) > :not(.pane-summary),
   .todopanel:not(.open) > :not(.pane-summary) { display: none; }
 }
-
-/* ============================================================ TEMP v5a compat
-   Keeps the PRE-PORT (v4-markup) components rendering against this css.
-   Each rule names the task that deletes it — delete only then. */
-.promptbar button.wheel {  /* TEMP — Task 6 deletes */
-  width: 100%; padding: var(--sp-2) var(--sp-3); text-align: left; cursor: pointer;
-  border: 1px dashed var(--frame); background: transparent; color: var(--gold);
-}

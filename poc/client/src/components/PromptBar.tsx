@@ -3,6 +3,7 @@ import { useState } from "react";
 export function PromptBar(props: {
   isDriver: boolean; agentBusy: boolean; watcherNames: string[];
   skills: { name: string; description: string }[];
+  gatesPending: number;
   onPrompt: (text: string) => void; onTakeWheel: () => void;
   onSuggestSkill: (skill: string, args: string) => void;
   inputRef: React.RefObject<HTMLInputElement | null>;
@@ -37,7 +38,7 @@ export function PromptBar(props: {
   return (
     <div className="promptbar">
       <div className="inputbox">
-        <span className="caret">&gt;</span>
+        <span className="caret">▸</span>
         <input
           ref={props.inputRef}
           value={text}
@@ -50,10 +51,12 @@ export function PromptBar(props: {
           }
           maxLength={4000}
         />
+        <span className="keys">⏎ send</span>
         {matches.length > 0 && (
           <div className="slashmenu">
             {matches.map((s) => (
               <button key={s.name} onClick={() => { setText(`/${s.name} `); props.inputRef.current?.focus(); }}>
+                <span className="tag">{props.isDriver ? "RUN" : "SUGGEST"}</span>
                 <b>/{s.name}</b>{s.description && <span className="dim"> — {s.description}</span>}
               </button>
             ))}
@@ -61,8 +64,8 @@ export function PromptBar(props: {
         )}
       </div>
       {!props.isDriver && (
-        <button className="wheel" onClick={props.onTakeWheel}>
-          🛞 take the wheel
+        <button className="btn gold dashed wide" onClick={props.onTakeWheel}>
+          🛞 TAKE THE WHEEL
         </button>
       )}
       <div className="statusline">
@@ -73,6 +76,9 @@ export function PromptBar(props: {
         {hint && <span className="red">{hint}</span>}
         {props.watcherNames.length > 0 && (
           <span>{props.watcherNames.join(", ")} watching</span>
+        )}
+        {props.gatesPending > 0 && (
+          <span className="gate">🔐 {props.gatesPending} gate{props.gatesPending > 1 ? "s" : ""} pending</span>
         )}
       </div>
     </div>
