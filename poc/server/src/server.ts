@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { AgentDriver, runAgentQuery, type RunQuery } from "./agentDriver.js";
 import { buildTeammateDigest, summarizeSession } from "./digest.js";
@@ -34,6 +35,8 @@ const INTERESTING = new Set([
   "control_change",
   "permission_request",
   "permission_decision",
+  "skill_suggest",
+  "skill_decision",
 ]);
 
 export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
@@ -255,6 +258,67 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
         }
         const result = ctx.entry.driver.setModel(msg.model, ctx.userId);
         if (!result.ok) return sendError(result.error);
+        return;
+      }
+
+      if (msg.type === "suggest_skill") {
+        if (typeof msg.skill !== "string") {
+          return sendError("suggest_skill requires skill");
+        }
+        const args = typeof msg.args === "string" ? msg.args.slice(0, 500) : "";
+        if (!ctx.entry.skills.some((s) => s.name === msg.skill)) {
+          return sendError("unknown skill — not in this session's roster");
+        }
+        const suggestId = randomUUID();
+        ctx.entry.session.append({
+          type: "skill_suggest",
+          suggestId,
+          userId: ctx.userId,
+          skill: msg.skill,
+          args,
+        });
+        if (ctx.entry.session.canPrompt(ctx.userId)) {
+          // Driver suggesting = driver approving: emit the decision pair so
+          // the transcript record is uniform with the passenger flow.
+          ctx.entry.session.append({
+            type: "skill_decision",
+            suggestId,
+            decision: "run",
+            userId: ctx.userId,
+          });
+          ctx.entry.driver.runSkill(msg.skill, args);
+        } else {
+          ctx.entry.pendingSuggests.set(suggestId, { skill: msg.skill, args });
+        }
+        return;
+      }
+
+      if (msg.type === "decide_skill") {
+        if (
+          typeof msg.suggestId !== "string" ||
+          (msg.decision !== "run" && msg.decision !== "dismiss")
+        ) {
+          return sendError("decide_skill requires suggestId and decision run|dismiss");
+        }
+        // Validated at DECISION time — wheel handoffs mid-suggestion are a
+        // feature, same as the permission gate above.
+        if (!ctx.entry.session.canPrompt(ctx.userId)) {
+          return sendError("only the current driver can decide suggestions — take the wheel first");
+        }
+        const pending = ctx.entry.pendingSuggests.get(msg.suggestId);
+        if (!pending) {
+          return sendError("unknown or already-decided suggestion");
+        }
+        ctx.entry.pendingSuggests.delete(msg.suggestId);
+        ctx.entry.session.append({
+          type: "skill_decision",
+          suggestId: msg.suggestId,
+          decision: msg.decision,
+          userId: ctx.userId,
+        });
+        if (msg.decision === "run") {
+          ctx.entry.driver.runSkill(pending.skill, pending.args);
+        }
         return;
       }
 

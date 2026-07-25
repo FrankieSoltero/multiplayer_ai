@@ -248,6 +248,36 @@ export class AgentDriver {
   }
 
   /**
+   * Enqueue a driver-approved skill invocation. Unlike sendPrompt this appends
+   * NO user_message — the skill_suggest/skill_decision pair (appended by the
+   * server) is the transcript record; a synthetic user row would double-log it.
+   */
+  runSkill(skill: string, args: string): void {
+    if (this.dead) {
+      this.session.append({
+        type: "agent_error",
+        message: "agent session has ended — restart the server to continue",
+      });
+      return;
+    }
+    this.pendingTurns++;
+    const argText = args ? ` with these arguments: ${args}` : "";
+    this.prompts.push({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `Invoke the project skill "${skill}" using the Skill tool${argText}, then follow the skill's instructions.`,
+          },
+        ],
+      },
+      parent_tool_use_id: null,
+    });
+  }
+
+  /**
    * Resolve a pending permission request. Validated by the caller (server)
    * to be the session's CURRENT driver — which may be a different user than
    * when the request was raised. Returns false for unknown or
