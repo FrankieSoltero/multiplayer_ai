@@ -4,8 +4,13 @@ export type SessionEvent =
   | { type: "tool_call"; toolName: string; input: unknown }
   | { type: "tool_result"; toolName: string; output: string }
   | { type: "control_change"; userId: string }
-  | { type: "presence_join"; userId: string; name: string }
+  | { type: "presence_join"; userId: string; name: string; glyph?: string; color?: string }
   | { type: "presence_leave"; userId: string }
-  | { type: "agent_error"; message: string };
+  | { type: "agent_error"; message: string }
+  | { type: "intent_update"; text: string }
+  | { type: "permission_request"; requestId: string; toolName: string; input: unknown }
+  | { type: "permission_decision"; requestId: string; decision: "allow" | "deny"; userId: string }
+  | { type: "model_change"; model: string; userId: string }
+  | { type: "turn_end" };
 
 export type LoggedEvent = SessionEvent & { seq: number; ts: string };

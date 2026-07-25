@@ -79,4 +79,11 @@ describe("Steering lock", () => {
     const last = s.eventsFrom(0).at(-1);
     expect(last).toMatchObject({ type: "control_change", userId: "u2" });
   });
+
+  it("presence_join carries optional glyph and color", () => {
+    const session = new Session("s");
+    session.join("u1", "ana", { glyph: "▲", color: "#61afef" });
+    const ev = session.eventsFrom(0).find((e) => e.type === "presence_join");
+    expect(ev).toMatchObject({ userId: "u1", name: "ana", glyph: "▲", color: "#61afef" });
+  });
 });

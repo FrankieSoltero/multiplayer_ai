@@ -195,3 +195,217 @@ For a solo full-stack founder exploring a YC application, the evidence supports 
 - **Time-box the decision to the deadline.** The favorable fact — no purpose-built F26 competitor exists yet — expires the moment the batch is selected. If you're going to apply, the window is now.
 
 Net: the need is real and newly sharp, the mechanic is proven buildable by one person in a day, and the *category* is validated by two shipping products and an active YC RFS — but the *moat* is not the mechanic. Go, but go narrow, go deep on the hard part, and move before the incumbents and the batch close the window.
+
+---
+
+## Addendum — 2026-07-24 refresh
+
+*Same-day refresh. Folds in two delta-research passes run in parallel with v3 implementation —
+`research-competitors.md` (harness-competitor deep-dive) and `research-sweep.md` (general
+sweep) — plus build evidence from this repo's own v2/v3 work. This section does not rewrite
+Sections 1–4 above; it reports what changed, adds what's new, and re-checks the thesis. Sources
+are cited inline as they were in those two files; confidence tags (confirmed / reported /
+speculative) are carried through unchanged.*
+
+### A.1 Competitor delta
+
+- **Amp's "Multiplayer" feature shipped 2026-07-22** — two days before the delta research pass,
+  and effectively concurrent with the original report's cutoff. Confirmed via a dedicated launch
+  post, [ampcode.com/news/multiplayer](https://ampcode.com/news/multiplayer), distinct from the
+  evergreen manual page the original report cited: "Turn any of your orbs into a multiplayer
+  environment from the thread's Share menu." No new detail on conflict resolution or participant
+  caps — that gap stands as originally reported.
+- **Warp's "Remote Control" clears the truly-multiplayer bar and was entirely absent from the
+  original competitive landscape.** Warp's docs (confirmed,
+  [docs.warp.dev/agent-platform/cli-agents/remote-control](https://docs.warp.dev/agent-platform/cli-agents/remote-control/),
+  updated 2026-07-23) describe sharing a live session (Claude Code, Codex, OpenCode, or Warp's own
+  Oz agent) via a link with "edit access" to send input, approve commands, or redirect the agent —
+  not merely view. A company social post claims live cursors (reported, not corroborated in the
+  docs text). **The market has moved from two shipping truly-multiplayer products to at least
+  three (Amp, Factory, Warp)** — closing the report's wedge #2 ("the hard concurrency problem the
+  leaders left open") faster than the original timeline implied, though none of the three publicly
+  document conflict resolution, participant limits, or takeover locking.
+- **Zed's "plausibly truly-multiplayer" verdict is downgraded, not confirmed.** Four official Zed
+  pages were fetched directly this pass —
+  [zed.dev/docs/ai/agent-panel](https://zed.dev/docs/ai/agent-panel),
+  [zed.dev/docs/collaboration/overview](https://zed.dev/docs/collaboration/overview),
+  [zed.dev/docs/collaboration/channels](https://zed.dev/docs/collaboration/channels),
+  [zed.dev/docs/ai/parallel-agents](https://zed.dev/docs/ai/parallel-agents) /
+  [zed.dev/blog/parallel-agents](https://zed.dev/blog/parallel-agents) — and all four describe
+  human-to-human Channels and the AI Agent Panel as **separate, non-overlapping systems**; none
+  mentions multiple simultaneous humans, driver/observer roles, or control handoff over an agent.
+  The "humans + agents share one buffer" claim traces only to tertiary SEO/review content, never to
+  zed.dev. Recommend treating Zed as **unconfirmed, evidence points toward single-player-with-sharing**
+  rather than "plausibly multiplayer."
+- **Windsurf no longer exists as an independent product.** Cognition acquired it and rebranded it
+  **Devin Desktop** on 2026-06-02 (confirmed,
+  [devin.ai/blog/windsurf-is-now-devin-desktop](https://devin.ai/blog/windsurf-is-now-devin-desktop/),
+  [cognition.com/blog/introducing-devin-desktop](https://cognition.com/blog/introducing-devin-desktop)).
+  Devin Desktop is a one-operator "cockpit for every coding agent" via the Agent Client Protocol —
+  Codex, Claude Agent, and Devin swap mid-session, with "Spaces" sharing context between them. This
+  is market consolidation, not a multiplayer-verdict change: still one-operator-many-agents, like
+  Cursor's Agents Window.
+- **GitHub Ace is now a live, gated technical preview**, not just a reported claim. The delta sweep
+  found `ace.githubnext.com` functioning with an active signup form (confirmed,
+  [ace.githubnext.com](https://ace.githubnext.com/)); the competitor deep-dive independently
+  confirmed the same URL 307-redirects to an OAuth login wall
+  ([maggieappleton.com/zero-alignment](https://maggieappleton.com/zero-alignment) talk, dated
+  2026-04-09, re-fetched). Richer mechanics confirmed this pass: "multiplayer prompting" (devs and
+  non-devs jointly directing one agent), collaborative cursor-visible plan editing, shared
+  microVM-per-git-branch sandbox, shared terminal output, live preview. The speaker's own words:
+  "It's not a prime time product yet." The community tracking issue proposing Ace-like integration
+  into core GitHub product (`github/app#123`) remains open, unassigned, zero linked PRs — **no
+  corroborated path to GitHub-product GA**, but the maturity uncertainty the original report flagged
+  has narrowed toward "real, shipping-as-preview," which **raises, not lowers**, the report's §4.2/§4.3
+  Ace risk.
+- **Cursor is doubling down on fleet management, not co-control** — reinforcing, not undercutting,
+  the original wedge-#1 caveat. Cursor 3.10 (reported, dated 2026-06-30) added Team MCP
+  distribution and pushed Teams accounts to up to 50 parallel workers, plus a new iOS app for
+  remote monitoring/steering of one user's own agents. All single-operator-fleet-management —
+  modestly de-risks "Cursor ships live co-control next" specifically, since their visible roadmap
+  energy is orchestration depth, not same-session multiplayer.
+- **Claude Code's own Agent Teams docs deliberately scope approval to one human — directly
+  relevant to this project's differentiator.** Fetched directly this pass
+  (`code.claude.com/docs/en/agent-teams`, confirmed, current as of Claude Code v2.1.178+, still
+  experimental/opt-in): multiple Claude Code instances can coordinate in one session, but *"A
+  teammate cannot approve a permission prompt or supply consent on your behalf... the classifier
+  treats an approval claim relayed from another agent as untrusted input rather than confirmation
+  from you."* Anthropic has clearly considered approval-gating in a multi-agent context and chose
+  **not** to extend it to multiple humans. No competitor surveyed treats "driver approval gate for
+  tool calls, controllable/handoffable between multiple humans" as a product feature — **it remains
+  open ground.**
+
+### A.2 Infrastructure shift: a major platform vendor just shipped the report's NO-GO precondition
+
+The single biggest new fact in the refresh: **Microsoft published a standalone "Agent Host
+Protocol" (AHP) and shipped it as the reference implementation inside VS Code 1.129 (rolling out
+~2026-07-15 to 2026-07-22)** — confirmed via
+[github.com/microsoft/agent-host-protocol](https://github.com/microsoft/agent-host-protocol),
+[code.visualstudio.com/updates/v1_129](https://code.visualstudio.com/updates/v1_129), and
+[visualstudiomagazine.com's writeup](https://visualstudiomagazine.com/articles/2026/07/16/vs-code-1129-introduces-agent-host-and-experimental-agents-window-editor.aspx).
+
+AHP's mechanics map almost 1:1 onto this PoC's architecture (§3.1 above): an authoritative host
+holds state while clients reconcile; the server assigns monotonic `serverSeq` ordering to
+mutations (≈ the PoC's `seq`); reconnection/replay happens via `lastSeenServerSeq` (≈
+replay-from-seq); "turn ownership and mutual exclusion (the mutex analogy)" (≈ the PoC's steering
+lock); simultaneous actions arbitrate first-write-wins — the same last-writer/first-writer-wins
+simplicity the report argued for over full CRDT merge (§3.2). AHP is explicitly layered under ACP
+("AHP is a coordination layer. ACP is a communication layer. They compose naturally.") and is
+substantial infrastructure, not a sketch: 736 commits, published client libraries in Rust,
+TypeScript, Kotlin, Go, and Swift, a formal release process.
+
+Today's product framing is **single-developer, cross-device continuity** — "start a task on your
+laptop, pick it back up from another machine" — **not yet confirmed multi-human.** The spec is
+explicitly silent on accounts, authentication, and "different users." That is the load-bearing
+nuance: the multi-human-specific work (identity, permissions, handoff-between-*people* UX) is
+still undone even by Microsoft — but the far harder distributed-systems substrate underneath it is
+now open-source, documented, and battle-tested inside the most widely used code editor. That
+substrate was previously this report's chief claim to differentiation-via-craft (§4.1 wedge #2); it
+is measurably less differentiated than it was a day earlier. Concretely: **the original report's
+§4.3 NO-GO-trigger precondition — "a major platform vendor ships an open, standardized multi-client
+session protocol" — has now been met, a full RFS-application-cycle before the report anticipated
+it might be.** Only an identity/permissions layer stands between AHP and genuine multi-human
+sessions in VS Code, and nothing in the spec blocks Microsoft from adding one.
+
+Two adjacent protocol developments, lower urgency but worth carrying forward for execution:
+
+- **MCP's 2026-07-28 release candidate** (reported — dated just after the sweep, not yet
+  finalized), described as "the largest revision since launch," standardizes session
+  creation/resumption/migration at the protocol level — lowers the cost of the reconnection/replay
+  work §3.6 already flags as a PoC-to-production gap. Source:
+  [blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/).
+  Elicitation rework (SEP-2260) is protocol-level plumbing for human-confirmation gates, but remains
+  single-user; MCP still does not define multi-human session semantics.
+- **CHAP (Collaborative Human-Agent Protocol)**, an academic proposal (confirmed as existing,
+  content summarized from full text,
+  [arxiv.org/pdf/2606.09751](https://arxiv.org/pdf/2606.09751), Shahid/Suttie/Black, v2
+  2026-06-23): envelopes (structured interaction containers), a handoff mechanism ("the handoff
+  between shifts becomes a portable envelope rather than a pinned message"), and audit
+  functionality, explicitly designed for multiple humans *and* multiple agents in one shared
+  context. A second, more rigorous academic anchor alongside ESAA-Conversational (§3.1) for the
+  "this is a converged-upon pattern" argument — and it adds an audit/governance angle
+  ESAA-Conversational didn't emphasize, relevant to the enterprise-control wedge (#4).
+
+### A.3 Build evidence from our own v2/v3 experiments
+
+Independent of external research, this project's own build work over the same day produced three
+concrete data points bearing directly on feasibility and differentiation:
+
+1. **v2 live acceptance — an agent unprompted flagged a real conflict from injected teammate
+   awareness.** In the controller-run Playwright acceptance for the "Project Hub" awareness
+   feature (`.superpowers/sdd/task-6-report.md`, run 2, VERDICT: PASS), two agents ran in separate
+   git worktrees under one project. Ana's agent declared intent ("Reading `src/auth.ts` to plan
+   migration from session cookies to JWT"). Ben's agent — with no mention of Ana in its own prompt
+   — received only the system's `<teammates>` digest, and **unprompted** added a "⚠️ Coordination
+   note" naming Ana's in-flight JWT migration, correctly identifying that both changes touch
+   `src/api.ts` and the request shape, and asking whether to wait, sync, or proceed. The report
+   notes this "exceeds the acceptance bar." This is a live demonstration of an agent reasoning
+   about *other connected humans'* concurrent intent — the exact capability the competitor
+   deep-dive (§A.1 above, point 8 of its headline deltas) found **no surveyed competitor**
+   implements: Amp and Factory give shared view/access, Ace gives shared prompting/cursors, but
+   none describe an agent reasoning about what other connected humans are currently trying to do.
+2. **Write-access experiment (commit `489b27d`, "feat: enable Write/Edit for agents in their own
+   worktrees") — two agents built real code in parallel.** With Write/Edit enabled per-agent
+   (Bash still off), two agents worked concurrently in isolated git worktrees on the same project.
+   One agent proactively minimized its footprint on a file it detected a teammate was mid-change
+   on — the system prompt's instruction to "keep your footprint on shared files minimal when a
+   teammate is mid-change there, and say so when a merge conflict looks likely" (added in that same
+   commit) was followed in practice, not just specified. The agent predicted the exact merge
+   conflict its parallel changes would cause and its resolution; a subsequent merge test confirmed
+   the prediction was correct. This is build-time evidence, not a controller-scripted acceptance
+   run, so treat it as **internal/reported** rather than a formally logged acceptance artifact — but
+   it is tied to a real, inspectable commit and a real merge outcome.
+3. **v3 (in progress) — full Claude Code capabilities behind a driver approval gate where approval
+   is itself a multiplayer feature.** Per the v3 design
+   (`docs/superpowers/specs/2026-07-24-full-capabilities-design.md`) and implementation plan
+   (`docs/superpowers/plans/2026-07-24-full-capabilities.md`), agents gain the full `claude_code`
+   tool preset (Bash, Task/subagents, WebSearch/WebFetch, project-scoped Skills) with Bash and other
+   powerful tools routed through a `canUseTool` gate: pending requests are logged as shared
+   `permission_request`/`permission_decision` events visible to everyone in the session, and
+   **any teammate who takes the wheel can decide a pending request** — approval, and the ability to
+   hand off *who* gets to approve, is a controllable, handoffable, multiplayer primitive. As of this
+   refresh, Tasks 1–2 are complete and committed (`08099cf` bash-allowlist/event types, `c2185c7`
+   permission gate + full tool preset + project skills, both reviewed); Tasks 3–6 (server wire
+   message, client approval cards, demo skill, live acceptance) are not yet built. This combination —
+   full-capability agents plus a multiplayer-native approval gate — is, per the competitor deep-dive
+   (§A.1, Claude Code Agent Teams point and headline delta #8), **not shipped by any surveyed
+   competitor**: Anthropic's own Agent Teams docs explicitly scope approval to one human by design.
+
+### A.4 Thesis check: does the conditional GO survive?
+
+**Yes, but the clock is running faster than the original report could see.** Nothing in either
+delta pass overturns the core findings: the need is real, the mechanic is proven and cheap to
+build (now demonstrated twice more — v2's live conflict-flagging and the v3 write-access
+experiment), and Claude Code, Cursor, and OpenAI Codex still have not shipped live multi-human
+sessions as of 2026-07-24 (research-sweep.md §4, point 4). The original conditional-GO
+recommendation (§4.3) — proceed on wedge #2 or #3, not a thin wrapper on wedge #1, with hard
+concurrency/handoff semantics as the defensible ground — is, if anything, **reinforced**: even the
+newest entrants (Warp, Amp's dedicated launch) still don't publicly document conflict resolution,
+participant caps, or takeover locking, and no competitor treats tool-approval as a controllable
+multiplayer primitive — exactly the ground this project's v3 work is building on.
+
+What changed is the **speed of the incumbent-risk clock**, concretely:
+
+- The original NO-GO trigger's *precondition* — "a major platform vendor ships an open,
+  standardized multi-client session protocol" — **has now been met** (VS Code's AHP), roughly a
+  full RFS-application-cycle before the report anticipated. It is not itself a NO-GO event (AHP is
+  still single-developer, identity-agnostic), but it removes the single hardest remaining technical
+  barrier between a fourth major incumbent (Microsoft/GitHub/VS Code) and true multi-human sessions.
+- GitHub Ace has moved from "unverified, possibly just a proposal" to "live, gated technical
+  preview with working signup" — the risk the original report flagged as needing continuous
+  re-verification has moved further toward real, though GA still has not happened.
+- The count of shipping truly-multiplayer products has grown from two (Amp, Factory) to at least
+  three (adding Warp) within the same week the original report was written — the "not yet crowded"
+  framing is already measurably less true one week later.
+
+**What would flip this to NO-GO now**, restated against the faster clock: (1) Microsoft/GitHub adds
+an identity/permissions layer to AHP and ships multi-human sessions in VS Code or Copilot — this is
+now a smaller lift than it was, since the state-sync substrate is done; (2) GitHub ships Ace to
+general availability rather than gated technical preview; (3) any of Claude Code, Cursor, or Codex
+ships live multi-human co-control — Claude Code's Agent Teams approval-scoping decision (§A.1)
+suggests Anthropic specifically has considered and declined this so far, which is mild evidence
+against imminent risk from that one vendor, but not from the other two, and not from Microsoft.
+**None of the three triggers has tripped as of 2026-07-24.** If proceeding, the correct read of
+this refresh is: move faster, keep building on wedge #2/#3 (control semantics, driver-approval-gate
+as a multiplayer primitive, teammate-intent-aware agents), and treat the current window as
+narrower than it looked a week ago rather than as comfortably open.

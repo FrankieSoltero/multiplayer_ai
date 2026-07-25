@@ -1,5 +1,9 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { AsyncQueue } from "./asyncQueue.js";
+import { MODELS, DEFAULT_MODEL, type ModelKey } from "./models.js";
+import { buildCanUseTool } from "./permissions.js";
 import type { Session } from "./session.js";
 
 /**
@@ -28,28 +32,115 @@ export interface SdkMessage {
   message?: { content?: unknown[] };
 }
 
+export interface DriverHooks {
+  onIntent: (text: string) => void;
+  /**
+   * Ask the session's current driver to approve a tool call. Resolves when
+   * a driver decides via AgentDriver.resolvePermission — possibly a
+   * DIFFERENT user than when the request was raised (wheel handoffs are a
+   * feature: a teammate can drop in specifically to approve something).
+   * The promise intentionally has no timeout; the agent waits.
+   */
+  onPermissionRequest: (
+    toolName: string,
+    input: unknown,
+    signal?: AbortSignal,
+  ) => Promise<"allow" | "deny">;
+  /** Surface a permission-flow failure into the session log (agent_error). */
+  onPermissionError?: (message: string) => void;
+  workdir?: string;
+}
+
+export type RunQueryResult = AsyncIterable<SdkMessage> & {
+  /** Present on the real SDK Query (sdk.d.ts Query.setModel); absent on plain test fakes. */
+  setModel?(model: string): Promise<void>;
+};
+
 export type RunQuery = (
   prompts: AsyncIterable<SdkUserMessage>,
-) => AsyncIterable<SdkMessage>;
+  hooks: DriverHooks,
+) => RunQueryResult;
 
-export const runAgentQuery: RunQuery = (prompts) =>
-  query({
+export const runAgentQuery: RunQuery = (prompts, hooks) => {
+  const awareness = createSdkMcpServer({
+    name: "awareness",
+    tools: [
+      tool(
+        "set_intent",
+        "Declare or update the one-sentence summary of what you are currently working on, so teammates and their agents stay aware of it. Call this when you start a task and whenever your direction changes.",
+        { text: z.string() },
+        async ({ text }) => {
+          try {
+            hooks.onIntent(text);
+            return { content: [{ type: "text", text: "intent recorded" }] };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `intent not recorded: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+            };
+          }
+        },
+      ),
+    ],
+  });
+  const workdir = hooks.workdir ?? process.env.AGENT_WORKDIR ?? process.cwd();
+  // Env-driven skill allowlist: `skills: "all"` previously exposed the host
+  // CLI's own BUILT-IN skills (dataviz, update-config, loop, schedule, ...)
+  // to the agent — an isolation leak reproduced live. An empty array hides
+  // every skill by default (matching the settingSources: [] isolation
+  // below); ops opt specific project skills in per-demo via
+  // AGENT_SKILLS=comma,separated,names (matching SKILL.md name/dir, or
+  // plugin:skill).
+  const skillNames = (process.env.AGENT_SKILLS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return query({
     prompt: prompts,
     options: {
-      model: "claude-opus-4-8",
+      model: MODELS[DEFAULT_MODEL].id,
       systemPrompt:
-        "You are a shared agent in a multiplayer session. Multiple teammates watch this session live and may hand control between them mid-task. Keep responses focused.",
-      // `allowedTools` only auto-approves these tools without a permission
-      // prompt — it does NOT limit which tools are available to the model
-      // (see sdk.d.ts: "To restrict which tools are available, use the
-      // `tools` option instead."). `tools` is the knob that actually
-      // restricts the base tool set to exactly these three; both are needed
-      // so Read/Glob/Grep run unprompted and everything else (Bash, Write,
-      // Edit, ...) is unavailable rather than merely un-approved.
-      allowedTools: ["Read", "Glob", "Grep"],
-      tools: ["Read", "Glob", "Grep"],
+        `You are a shared agent in a multiplayer project. Multiple teammates watch this session live and may hand control between them mid-task; other teammates run their own sessions in the same project. Keep responses focused. The FIRST thing you do when given a new task — before any other tool call — is call the set_intent tool with one short sentence describing what you are about to work on. Update it whenever your direction changes. Do this without being asked. Your working directory is your own git worktree on your own branch — you may implement changes directly with Write/Edit when asked to build; your edits never touch teammates' worktrees, but overlapping changes will collide later at merge time. A <teammates> block in a prompt describes what other sessions in the project are doing — take it into account: avoid conflicting with in-flight work, keep your footprint on shared files minimal when a teammate is mid-change there, and say so when a merge conflict looks likely. You have the full tool set including Bash, subagents, and web tools. Most Bash commands and other powerful tools pause until the teammate currently driving approves them in the UI — the whole session sees each request and decision, so prefer batching related commands and say briefly what a command is for before running it. Test/type-check/read-only-git commands run without approval. If a request is denied, adapt your approach or explain what you need instead of retrying the same call. If the project provides skills, use the Skill tool when one clearly matches the task. Your worktree root is ${workdir} — create and edit files ONLY inside it, using relative paths or absolute paths under that root. File edits inside your worktree run without approval; writes outside it require driver approval.`,
+      allowedTools: [
+        "Read",
+        "Glob",
+        "Grep",
+        "mcp__awareness__set_intent",
+      ],
+      // Full Claude Code built-in tool set. `allowedTools` above auto-approves
+      // only the READ-ONLY file tools + set_intent; Write/Edit/NotebookEdit
+      // are deliberately NOT here — a live incident had the agent
+      // Write-ing outside its worktree, auto-run because Write was
+      // blanket-allowed here with no path check. They now route through
+      // canUseTool, which auto-approves only when the path resolves inside
+      // hooks.workdir (see permissions.ts) and otherwise asks the driver.
+      // Every other call (Bash, Task, WebSearch, WebFetch, TodoWrite, ...)
+      // also routes through canUseTool = the driver approval gate, except
+      // allowlisted Bash prefixes (see permissions.ts).
+      tools: { type: "preset", preset: "claude_code" },
+      canUseTool: buildCanUseTool(hooks),
+      // Skills come from the project the agent works in (its worktree cwd
+      // has .claude/skills/ checked in) — the single, explicit re-opening of
+      // the settingSources isolation below. This option also enables the
+      // Skill tool; do not add 'Skill' to allowedTools. Default is an empty
+      // allowlist (no skills visible) — see the isolation-leak note above
+      // skillNames; set AGENT_SKILLS to opt specific project skills in.
+      skills: skillNames,
       permissionMode: "default",
-      cwd: process.env.AGENT_WORKDIR ?? process.cwd(),
+      mcpServers: { awareness },
+      // Isolate this demo agent from the operator's local Claude Code config:
+      // it must see only the awareness MCP server passed above, never any
+      // user/project/local MCP servers or settings (e.g. Google Drive,
+      // Playwright, sqlite) that happen to be configured on this machine.
+      // `settingSources: []` also intentionally suppresses CLAUDE.md loading
+      // (project/user/local) — full isolation, not just MCP.
+      strictMcpConfig: true,
+      settingSources: [],
+      cwd: workdir,
     },
     // Cast at the SDK boundary only — see Global Constraints. The real
     // `query()` return type (`Query`, an AsyncGenerator over a 30+ member
@@ -57,21 +148,82 @@ export const runAgentQuery: RunQuery = (prompts) =>
     // `SdkMessage` type, so a direct assignment doesn't typecheck even
     // though every member we care about (assistant/user/result) is
     // compatible at runtime.
-  }) as unknown as AsyncIterable<SdkMessage>;
+  }) as unknown as RunQueryResult;
+};
 
 export class AgentDriver {
   private prompts = new AsyncQueue<SdkUserMessage>();
   private toolNamesById = new Map<string, string>();
+  private pendingPermissions = new Map<string, (d: "allow" | "deny") => void>();
   private dead = false;
+  // Count of turns sent but not yet resolved by a matching "result" message.
+  // A boolean here would be wrong: drivers can queue prompt B while prompt A
+  // is still mid-turn (input isn't disabled), so result(A) must not flip
+  // busy/mid-turn state off while B is still outstanding — only when the
+  // count returns to zero.
+  private pendingTurns = 0;
+  private stream: RunQueryResult;
 
   constructor(
     private session: Session,
     run: RunQuery = runAgentQuery,
+    workdir?: string,
   ) {
-    void this.consume(run(this.prompts));
+    this.stream = run(this.prompts, {
+      onIntent: (text) =>
+        this.session.append({ type: "intent_update", text: text.slice(0, 200) }),
+      onPermissionRequest: (toolName, input, signal) => {
+        const requestId = randomUUID();
+        let resolve!: (d: "allow" | "deny") => void;
+        const pending = new Promise<"allow" | "deny">((res) => {
+          resolve = res;
+        });
+        // Register the resolver BEFORE appending, so a subscriber that
+        // decides synchronously on seeing the event still finds it.
+        this.pendingPermissions.set(requestId, resolve);
+        this.session.append({
+          type: "permission_request",
+          requestId,
+          toolName,
+          input,
+        });
+        // The SDK aborts canUseTool calls (e.g. the underlying tool_use
+        // was interrupted/superseded) independently of any driver
+        // decision. Without this, an abort leaves the entry in
+        // pendingPermissions forever: resolvePermission would still
+        // "succeed" against a request nothing is listening to anymore,
+        // and the UI would show a stale, dead approval card.
+        if (signal) {
+          const denyOnAbort = () => {
+            // delete() returns false if resolvePermission (or a prior
+            // abort) already closed this request out — don't double-log
+            // or double-resolve.
+            if (!this.pendingPermissions.delete(requestId)) return;
+            this.session.append({
+              type: "permission_decision",
+              requestId,
+              decision: "deny",
+              userId: "system",
+            });
+            resolve("deny");
+          };
+          if (signal.aborted) denyOnAbort();
+          else signal.addEventListener("abort", denyOnAbort, { once: true });
+        }
+        return pending;
+      },
+      onPermissionError: (message) =>
+        this.session.append({ type: "agent_error", message }),
+      workdir,
+    });
+    void this.consume(this.stream);
   }
 
-  sendPrompt(userId: string, text: string): void {
+  get isDead(): boolean {
+    return this.dead;
+  }
+
+  sendPrompt(userId: string, text: string, contextBlock?: string): void {
     if (this.dead) {
       this.session.append({
         type: "agent_error",
@@ -79,12 +231,54 @@ export class AgentDriver {
       });
       return;
     }
+    this.pendingTurns++;
     this.session.append({ type: "user_message", userId, text });
+    const promptText = contextBlock ? `${contextBlock}\n\n${text}` : text;
     this.prompts.push({
       type: "user",
-      message: { role: "user", content: [{ type: "text", text }] },
+      message: { role: "user", content: [{ type: "text", text: promptText }] },
       parent_tool_use_id: null,
     });
+  }
+
+  /**
+   * Resolve a pending permission request. Validated by the caller (server)
+   * to be the session's CURRENT driver — which may be a different user than
+   * when the request was raised. Returns false for unknown or
+   * already-decided requestIds.
+   */
+  resolvePermission(
+    requestId: string,
+    decision: "allow" | "deny",
+    userId: string,
+  ): boolean {
+    const resolve = this.pendingPermissions.get(requestId);
+    if (!resolve) return false;
+    this.pendingPermissions.delete(requestId);
+    this.session.append({ type: "permission_decision", requestId, decision, userId });
+    resolve(decision);
+    return true;
+  }
+
+  setModel(
+    key: ModelKey,
+    userId: string,
+  ): { ok: true } | { ok: false; error: string } {
+    if (this.dead) return { ok: false, error: "agent session has ended" };
+    if (this.pendingTurns > 0)
+      return { ok: false, error: "agent is mid-turn — wait for it to finish" };
+    if (!this.stream.setModel)
+      return { ok: false, error: "model switching not supported by this agent" };
+    // Fire-and-forget: the SDK call is a control request; failures surface as
+    // agent_error rather than blocking the wire handler.
+    void this.stream.setModel(MODELS[key].id).catch((err) =>
+      this.session.append({
+        type: "agent_error",
+        message: `model switch failed: ${err instanceof Error ? err.message : String(err)}`,
+      }),
+    );
+    this.session.append({ type: "model_change", model: key, userId });
+    return { ok: true };
   }
 
   private async consume(messages: AsyncIterable<SdkMessage>): Promise<void> {
@@ -105,14 +299,41 @@ export class AgentDriver {
       // The stream ended normally (the SDK query completed/closed) — the
       // driver can no longer accept prompts.
       this.dead = true;
+      this.denyAllPending("stream ended");
     } catch (err) {
       // Fatal errors on the stream itself (e.g. the iterable throws) still
       // need to be surfaced, but at this point the stream is done for good.
       this.dead = true;
+      this.denyAllPending("stream failed");
       this.session.append({
         type: "agent_error",
         message: err instanceof Error ? err.message : String(err),
       });
+    }
+  }
+
+  /**
+   * Flush every still-pending permission request when the driver's stream
+   * dies (normal end or fatal error), so none is left "waiting" forever.
+   * Without this, a request pending at stream death stays in
+   * `pendingPermissions` indefinitely: nothing is listening to it anymore,
+   * yet a later `resolvePermission` call would still "succeed" against it
+   * and log a false audit event for a decision that reached no live agent.
+   * Mirrors the abort-cleanup shape in the `onPermissionRequest` hook below
+   * (system-attributed deny + permission_decision event) so the audit trail
+   * is consistent regardless of why a pending request never got a real
+   * decision.
+   */
+  private denyAllPending(_reason: string): void {
+    for (const [requestId, resolve] of this.pendingPermissions) {
+      this.pendingPermissions.delete(requestId);
+      this.session.append({
+        type: "permission_decision",
+        requestId,
+        decision: "deny",
+        userId: "system",
+      });
+      resolve("deny");
     }
   }
 
@@ -141,6 +362,17 @@ export class AgentDriver {
         }
       }
     } else if (message.type === "result" || message.type === "user") {
+      if (message.type === "result") {
+        // A result ends the SDK's current response cycle. The SDK may fold
+        // prompts queued mid-turn into ONE cycle (one result for N prompts),
+        // so counting down per-result can leave the counter — and the
+        // client's busy signal, and the setModel gate — stuck above zero
+        // forever (reproduced live). Treat every result as end-of-turn; if
+        // a genuinely queued cycle follows, the client re-raises busy from
+        // that cycle's first activity event.
+        this.pendingTurns = 0;
+        this.session.append({ type: "turn_end" });
+      }
       for (const block of blocks) {
         if (block.type === "tool_result") {
           const text = this.extractToolResultText(block.content);

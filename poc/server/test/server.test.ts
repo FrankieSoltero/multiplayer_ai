@@ -1,7 +1,7 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import WebSocket from "ws";
 import { startServer } from "../src/server.js";
-import type { RunQuery } from "../src/agentDriver.js";
+import type { RunQuery, SdkMessage } from "../src/agentDriver.js";
 
 const echoRun: RunQuery = async function* (prompts) {
   for await (const prompt of prompts) {
@@ -163,5 +163,341 @@ describe("WebSocket hub", () => {
     ws1.close();
     wsZero.close();
     wsNeg.close();
+  });
+});
+
+describe("project awareness", () => {
+  const intentEchoRun: RunQuery = async function* (prompts, hooks) {
+    for await (const prompt of prompts) {
+      hooks.onIntent("Migrating auth to JWT");
+      yield {
+        type: "assistant",
+        content: [
+          { type: "text", text: `echo: ${prompt.message.content[0].text}` },
+        ],
+      };
+    }
+  };
+
+  it("rejects invalid project/session slugs", async () => {
+    const server = await startServer({ port: 0, runQuery: intentEchoRun });
+    close = server.close;
+    const ws1 = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws1, seen);
+    ws1.send(
+      JSON.stringify({
+        type: "join",
+        projectId: "demo",
+        sessionId: "../oops",
+        userId: "u1",
+        name: "Ana",
+      }),
+    );
+    await wait(100);
+    expect(seen.some((m) => m.type === "error")).toBe(true);
+    ws1.close();
+  });
+
+  it("pushes project snapshots with intent across sessions and injects the digest", async () => {
+    const server = await startServer({ port: 0, runQuery: intentEchoRun });
+    close = server.close;
+
+    // Ana joins session "ana" in project "demo" and prompts (agent declares intent)
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(
+      JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }),
+    );
+    wsAna.send(JSON.stringify({ type: "prompt", text: "migrate auth" }));
+    await wait(200);
+
+    // Ben joins a DIFFERENT session in the same project
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(
+      JSON.stringify({ type: "join", projectId: "demo", sessionId: "ben", userId: "u2", name: "Ben" }),
+    );
+    await wait(200);
+
+    // Ben's immediate project snapshot includes Ana's session and intent
+    const projectMsgs = seenBen.filter((m) => m.type === "project");
+    expect(projectMsgs.length).toBeGreaterThan(0);
+    const anaEntry = projectMsgs
+      .at(-1)
+      .sessions.find((s: any) => s.id === "ana");
+    expect(anaEntry.intent).toBe("Migrating auth to JWT");
+
+    // Ben prompts: the digest (with Ana's intent) is injected into HIS prompt
+    wsBen.send(JSON.stringify({ type: "prompt", text: "add rate limiting" }));
+    await wait(300);
+    const benEcho = seenBen
+      .map((m) => m.event)
+      .find((e) => e?.type === "agent_text_delta" && e.text.includes("echo:"));
+    expect(benEcho.text).toContain("<teammates>");
+    expect(benEcho.text).toContain("Migrating auth to JWT");
+    expect(benEcho.text).toContain("add rate limiting");
+    // Ben's own transcript logs the raw text only
+    const benUserMsg = seenBen
+      .map((m) => m.event)
+      .find((e) => e?.type === "user_message");
+    expect(benUserMsg.text).toBe("add rate limiting");
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("pushes a fresh project snapshot when control_change fires on another session (INTERESTING coverage)", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    // Ana joins session "sess1" in project "px1" (becomes driver automatically).
+    const ws1 = await connect(server.port);
+    collect(ws1, []);
+    ws1.send(
+      JSON.stringify({ type: "join", projectId: "px1", sessionId: "sess1", userId: "u1", name: "Ana" }),
+    );
+    await wait(50);
+
+    // Ben joins a DIFFERENT session ("sess2") in the same project and watches it.
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(
+      JSON.stringify({ type: "join", projectId: "px1", sessionId: "sess2", userId: "u2", name: "Ben" }),
+    );
+    await wait(50);
+
+    // Clear the 1000ms push-throttle window so the upcoming control_change
+    // produces an unambiguous, attributable push.
+    await wait(1100);
+    const priorProjectCount = seenBen.filter((m) => m.type === "project").length;
+
+    // A THIRD client joins session "sess1" and takes the wheel there.
+    const ws3 = await connect(server.port);
+    collect(ws3, []);
+    ws3.send(
+      JSON.stringify({ type: "join", projectId: "px1", sessionId: "sess1", userId: "u3", name: "Cara" }),
+    );
+    await wait(50);
+    ws3.send(JSON.stringify({ type: "take_wheel" }));
+
+    // Allow for the throttle's trailing push to fire.
+    await wait(1200);
+
+    const projectMsgs = seenBen.filter((m) => m.type === "project");
+    expect(projectMsgs.length).toBeGreaterThan(priorProjectCount);
+    const sess1Entry = projectMsgs.at(-1).sessions.find((s: any) => s.id === "sess1");
+    expect(sess1Entry.driverName).toBe("Cara");
+
+    ws1.close();
+    wsBen.close();
+    ws3.close();
+  });
+});
+
+describe("driver approval gate over the wire", () => {
+  const bashAskRun: RunQuery = async function* (prompts, hooks) {
+    for await (const prompt of prompts) {
+      const decision = await hooks.onPermissionRequest("Bash", {
+        command: "npm run build",
+      });
+      yield {
+        type: "assistant",
+        content: [{ type: "text", text: `bash: ${decision}` }],
+      };
+    }
+  };
+
+  it("broadcasts the request, rejects non-driver decisions, accepts the driver's", async () => {
+    const server = await startServer({ port: 0, runQuery: bashAskRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(JSON.stringify({ type: "join", sessionId: "p1", userId: "u1", name: "Ana" }));
+    wsAna.send(JSON.stringify({ type: "prompt", text: "build it" }));
+    await wait(200);
+
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", sessionId: "p1", userId: "u2", name: "Ben", lastSeq: 0 }));
+    await wait(200);
+
+    // Both the live watcher and the late joiner see the pending request.
+    const reqAna = seenAna.map((m) => m.event).find((e) => e?.type === "permission_request");
+    const reqBen = seenBen.map((m) => m.event).find((e) => e?.type === "permission_request");
+    expect(reqAna?.toolName).toBe("Bash");
+    expect(reqBen?.requestId).toBe(reqAna?.requestId);
+
+    // Ben (not driving) may not decide.
+    wsBen.send(JSON.stringify({ type: "permission", requestId: reqAna.requestId, decision: "allow" }));
+    await wait(100);
+    expect(seenBen.some((m) => m.type === "error" && /driver/.test(m.message))).toBe(true);
+
+    // Ana (driver) decides; everyone sees the decision and the agent proceeds.
+    wsAna.send(JSON.stringify({ type: "permission", requestId: reqAna.requestId, decision: "allow" }));
+    await wait(200);
+    const decision = seenBen.map((m) => m.event).find((e) => e?.type === "permission_decision");
+    expect(decision).toMatchObject({ requestId: reqAna.requestId, decision: "allow", userId: "u1" });
+    const echoed = seenBen.map((m) => m.event).find((e) => e?.type === "agent_text_delta");
+    expect(echoed?.text).toBe("bash: allow");
+
+    // Replaying the same decision is rejected.
+    wsAna.send(JSON.stringify({ type: "permission", requestId: reqAna.requestId, decision: "deny" }));
+    await wait(100);
+    expect(seenAna.some((m) => m.type === "error" && /unknown or already-decided/.test(m.message))).toBe(true);
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("lets a NEW driver decide a request raised under the previous driver", async () => {
+    const server = await startServer({ port: 0, runQuery: bashAskRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(JSON.stringify({ type: "join", sessionId: "p2", userId: "u1", name: "Ana" }));
+    wsAna.send(JSON.stringify({ type: "prompt", text: "build it" }));
+    await wait(200);
+    const req = seenAna.map((m) => m.event).find((e) => e?.type === "permission_request");
+    expect(req).toBeTruthy();
+
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", sessionId: "p2", userId: "u2", name: "Ben", lastSeq: 0 }));
+    await wait(100);
+    wsBen.send(JSON.stringify({ type: "take_wheel" }));
+    await wait(100);
+    wsBen.send(JSON.stringify({ type: "permission", requestId: req.requestId, decision: "deny" }));
+    await wait(200);
+
+    const decision = seenBen.map((m) => m.event).find((e) => e?.type === "permission_decision");
+    expect(decision).toMatchObject({ requestId: req.requestId, decision: "deny", userId: "u2" });
+    const echoed = seenBen.map((m) => m.event).find((e) => e?.type === "agent_text_delta");
+    expect(echoed?.text).toBe("bash: deny");
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("rejects malformed permission messages", async () => {
+    const server = await startServer({ port: 0, runQuery: bashAskRun });
+    close = server.close;
+    const ws1 = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws1, seen);
+    ws1.send(JSON.stringify({ type: "join", sessionId: "p3", userId: "u1", name: "Ana" }));
+    await wait(50);
+    ws1.send(JSON.stringify({ type: "permission", requestId: 5, decision: "allow" }));
+    ws1.send(JSON.stringify({ type: "permission", requestId: "r1", decision: "maybe" }));
+    await wait(100);
+    const errors = seen.filter((m) => m.type === "error");
+    expect(errors.length).toBeGreaterThanOrEqual(2);
+    ws1.close();
+  });
+});
+
+describe("set_model", () => {
+  it("driver can switch; non-driver and bad model rejected", async () => {
+    // run fake: reply then result, stream stays open (same shape as resultRun above)
+    const run: RunQuery = (prompts) => {
+      const gen = (async function* () {
+        for await (const _p of prompts) {
+          yield { type: "assistant", content: [{ type: "text", text: "ok" }] } as SdkMessage;
+          yield { type: "result" } as SdkMessage;
+        }
+      })();
+      return Object.assign(gen, { setModel: async (_m: string) => {} });
+    };
+    const server = await startServer({ port: 0, runQuery: run });
+    const a = await connect(server.port);
+    const b = await connect(server.port);
+    const aSink: any[] = []; const bSink: any[] = [];
+    collect(a, aSink); collect(b, bSink);
+    a.send(JSON.stringify({ type: "join", sessionId: "m1", userId: "ua", name: "ana", lastSeq: 0 }));
+    b.send(JSON.stringify({ type: "join", sessionId: "m1", userId: "ub", name: "ben", lastSeq: 0 }));
+    await vi.waitFor(() => expect(bSink.some((m) => m.type === "event" && m.event.type === "presence_join" && m.event.userId === "ub")).toBe(true));
+
+    b.send(JSON.stringify({ type: "set_model", model: "sonnet" })); // ub is not driving
+    await vi.waitFor(() => expect(bSink.some((m) => m.type === "error" && /driver/.test(m.message))).toBe(true));
+
+    a.send(JSON.stringify({ type: "set_model", model: "gpt-5" })); // invalid key
+    await vi.waitFor(() => expect(aSink.some((m) => m.type === "error" && /opus\|sonnet\|haiku/.test(m.message))).toBe(true));
+
+    a.send(JSON.stringify({ type: "set_model", model: "sonnet" })); // ua drives (first join)
+    await vi.waitFor(() => expect(aSink.some((m) => m.type === "event" && m.event.type === "model_change" && m.event.model === "sonnet" && m.event.userId === "ua")).toBe(true));
+    a.close(); b.close(); await server.close();
+  });
+
+  it("rejects an inherited-property model key (prototype pollution guard)", async () => {
+    // "toString" is `in MODELS` (inherited from Object.prototype) but is not
+    // an own key, so MODELS["toString"] is not a valid model entry. isModelKey
+    // must reject it the same as any other invalid key.
+    const run: RunQuery = (prompts) => {
+      const gen = (async function* () {
+        for await (const _p of prompts) {
+          yield { type: "assistant", content: [{ type: "text", text: "ok" }] } as SdkMessage;
+          yield { type: "result" } as SdkMessage;
+        }
+      })();
+      return Object.assign(gen, { setModel: async (_m: string) => {} });
+    };
+    const server = await startServer({ port: 0, runQuery: run });
+    close = server.close;
+    const a = await connect(server.port);
+    const aSink: any[] = [];
+    collect(a, aSink);
+    a.send(JSON.stringify({ type: "join", sessionId: "m2", userId: "ua", name: "ana", lastSeq: 0 }));
+    await wait(50);
+
+    a.send(JSON.stringify({ type: "set_model", model: "toString" }));
+    await vi.waitFor(() => expect(aSink.some((m) => m.type === "error" && /opus\|sonnet\|haiku/.test(m.message))).toBe(true));
+    a.close();
+  });
+});
+
+describe("identity on join and pre-join peek", () => {
+  it("join forwards validated glyph/color; junk is dropped", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    const ws = await connect(server.port);
+    const sink: any[] = []; collect(ws, sink);
+    ws.send(JSON.stringify({ type: "join", sessionId: "g1", userId: "u1", name: "ana", lastSeq: 0, glyph: "▲", color: "#61afef" }));
+    await vi.waitFor(() => expect(sink.some((m) => m.type === "event" && m.event.type === "presence_join" && m.event.glyph === "▲" && m.event.color === "#61afef")).toBe(true));
+    ws.close();
+    const ws2 = await connect(server.port);
+    const sink2: any[] = []; collect(ws2, sink2);
+    ws2.send(JSON.stringify({ type: "join", sessionId: "g2", userId: "u2", name: "ben", lastSeq: 0, glyph: "<script>", color: "red" }));
+    await vi.waitFor(() => {
+      const ev = sink2.find((m) => m.type === "event" && m.event.type === "presence_join" && m.event.userId === "u2");
+      expect(ev).toBeTruthy();
+      expect(ev.event.glyph).toBeUndefined();
+      expect(ev.event.color).toBeUndefined();
+    });
+    ws2.close(); await server.close();
+  });
+
+  it("peek returns a project snapshot without joining", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    const member = await connect(server.port);
+    member.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "p1", userId: "u1", name: "ana", lastSeq: 0 }));
+    const peeker = await connect(server.port);
+    const sink: any[] = []; collect(peeker, sink);
+    peeker.send(JSON.stringify({ type: "peek", projectId: "demo" }));
+    await vi.waitFor(() => {
+      const snap = sink.find((m) => m.type === "project");
+      expect(snap).toBeTruthy();
+      expect(snap.sessions.map((s: any) => s.id)).toContain("p1");
+    });
+    peeker.send(JSON.stringify({ type: "peek", projectId: "nope" }));
+    await vi.waitFor(() => expect(sink.filter((m) => m.type === "project").length).toBeGreaterThanOrEqual(2));
+    member.close(); peeker.close(); await server.close();
   });
 });

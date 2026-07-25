@@ -1,189 +1,136 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import "./App.css";
-
-type LoggedEvent = {
-  seq: number;
-  ts: string;
-  type: string;
-  userId?: string;
-  name?: string;
-  text?: string;
-  toolName?: string;
-  input?: unknown;
-  output?: string;
-  message?: string;
-};
-
-const SERVER_URL = "ws://localhost:3001";
-
-function getIdentity(): { id: string; name: string } {
-  let id = sessionStorage.getItem("mpai-userId");
-  if (!id) {
-    id = crypto.randomUUID();
-    sessionStorage.setItem("mpai-userId", id);
-  }
-  let name = sessionStorage.getItem("mpai-userName");
-  if (!name) {
-    name = `user-${id.slice(0, 4)}`;
-    sessionStorage.setItem("mpai-userName", name);
-  }
-  return { id, name };
-}
+import { useMemo, useRef, useState } from "react";
+import "./terminal.css";
+import { deriveState } from "./derive";
+import { hashIdentity, loadOrCreateUserId, loadProfile, saveProfile } from "./identity";
+import type { Profile } from "./identity";
+import { useSessionSocket } from "./useSessionSocket";
+import { Header, MODEL_LABELS } from "./components/Header";
+import { PromptBar } from "./components/PromptBar";
+import { Transcript } from "./components/Transcript";
+import { PartyPane } from "./components/PartyPane";
+import { ThinkingStrip } from "./components/ThinkingStrip";
+import { Lobby } from "./components/Lobby";
 
 export default function App() {
-  const [{ id: userId, name }] = useState(getIdentity);
-  const [events, setEvents] = useState<LoggedEvent[]>([]);
-  const [errors, setErrors] = useState<string[]>([]);
-  const [input, setInput] = useState("");
-  const [connected, setConnected] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
-  const sessionId =
-    new URLSearchParams(window.location.search).get("session") ?? "demo";
+  const [userId] = useState(loadOrCreateUserId);
+  const params = useMemo(() => new URLSearchParams(window.location.search), []);
+  const sessionId = params.get("session") ?? "demo";
+  const projectId = params.get("project") ?? "default";
 
-  useEffect(() => {
-    const ws = new WebSocket(SERVER_URL);
-    wsRef.current = ws;
-    ws.onopen = () => {
-      setConnected(true);
-      ws.send(
-        JSON.stringify({ type: "join", sessionId, userId, name, lastSeq: 0 }),
-      );
-    };
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg.type === "event") setEvents((prev) => [...prev, msg.event]);
-        if (msg.type === "error") setErrors((prev) => [...prev, msg.message]);
-      } catch {
-        return;
-      }
-    };
-    ws.onclose = () => setConnected(false);
-    return () => ws.close();
-  }, [sessionId, userId, name]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [events]);
-
-  const { driverId, participants } = useMemo(() => {
-    let driverId: string | null = null;
-    const participants = new Map<string, string>();
-    for (const ev of events) {
-      if (ev.type === "presence_join" && ev.userId && ev.name)
-        participants.set(ev.userId, ev.name);
-      if (ev.type === "presence_leave" && ev.userId)
-        participants.delete(ev.userId);
-      if (ev.type === "control_change" && ev.userId) driverId = ev.userId;
+  // Profile precedence: `?name=` URL param auto-derives a profile (glyph/color
+  // hashed from userId) and skips the lobby entirely — demo scripts depend on
+  // this. Otherwise fall back to a previously saved profile. If neither is
+  // present, profile stays null and the gate below renders the Lobby so the
+  // user can pick a name/glyph/color before the session socket connects.
+  const [profile, setProfile] = useState<Profile | null>(() => {
+    const nameParam = params.get("name");
+    if (nameParam) {
+      return { name: nameParam.slice(0, 40), ...hashIdentity(loadOrCreateUserId()) };
     }
-    return { driverId, participants };
-  }, [events]);
+    return loadProfile();
+  });
 
-  const isDriver = driverId === userId;
-
-  function sendPrompt() {
-    const text = input.trim();
-    if (!text || !wsRef.current) return;
-    wsRef.current.send(JSON.stringify({ type: "prompt", text }));
-    setInput("");
-  }
-
-  function takeWheel() {
-    wsRef.current?.send(JSON.stringify({ type: "take_wheel" }));
+  if (profile === null) {
+    return (
+      <Lobby
+        projectId={projectId}
+        sessionId={sessionId}
+        defaultName={`user-${userId.slice(0, 4)}`}
+        onEnter={(p) => {
+          saveProfile(p);
+          setProfile(p);
+        }}
+      />
+    );
   }
 
   return (
-    <div className="app">
-      <header>
-        <h1>
-          Multiplayer AI — session <code>{sessionId}</code>
-        </h1>
-        <div className="status">
-          <span className={connected ? "dot on" : "dot off"} />
-          {connected ? "connected" : "disconnected"}
-        </div>
-      </header>
+    <SessionView
+      userId={userId}
+      sessionId={sessionId}
+      projectId={projectId}
+      profile={profile}
+    />
+  );
+}
 
-      <div className="participants">
-        {[...participants.entries()].map(([id, pname]) => (
-          <span key={id} className={id === driverId ? "avatar driving" : "avatar"}>
-            {pname}
-            {id === driverId ? " 🛞" : ""}
-            {id === userId ? " (you)" : ""}
-          </span>
-        ))}
+function SessionView(props: {
+  userId: string;
+  sessionId: string;
+  projectId: string;
+  profile: Profile;
+}) {
+  const { userId, sessionId, projectId, profile } = props;
+
+  const { events, errors, connected, projectSessions, send } = useSessionSocket({
+    sessionId,
+    projectId,
+    userId,
+    profile,
+  });
+
+  const derived = useMemo(() => deriveState(events), [events]);
+  const isDriver = derived.driverId === userId;
+  const canSetModel = isDriver && !derived.agentBusy;
+
+  const watcherNames = [...derived.participants.entries()]
+    .filter(([id]) => id !== derived.driverId && id !== userId)
+    .map(([, p]) => p.name);
+
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  function onPrompt(text: string) {
+    send({ type: "prompt", text });
+  }
+
+  function onTakeWheel() {
+    send({ type: "take_wheel" });
+  }
+
+  function onSetModel(key: string) {
+    send({ type: "set_model", model: key });
+  }
+
+  function sendPermission(requestId: string, decision: "allow" | "deny") {
+    send({ type: "permission", requestId, decision });
+  }
+
+  return (
+    <div className="term">
+      <Header
+        projectId={projectId}
+        sessionId={sessionId}
+        model={derived.model}
+        connected={connected}
+        objective={derived.objective}
+        canSetModel={canSetModel}
+        onSetModel={onSetModel}
+      />
+
+      <div className="split">
+        <Transcript
+          events={events}
+          derived={derived}
+          isDriver={isDriver}
+          selfId={userId}
+          onPermission={sendPermission}
+        />
+
+        <PartyPane projectId={projectId} sessionId={sessionId} sessions={projectSessions} />
       </div>
 
-      <main className="transcript">
-        {events.map((ev) => {
-          switch (ev.type) {
-            case "user_message":
-              return (
-                <div key={ev.seq} className="msg user">
-                  <b>{participants.get(ev.userId ?? "") ?? ev.userId}:</b>{" "}
-                  {ev.text}
-                </div>
-              );
-            case "agent_text_delta":
-              return (
-                <div key={ev.seq} className="msg agent">
-                  {ev.text}
-                </div>
-              );
-            case "tool_call":
-              return (
-                <div key={ev.seq} className="msg tool">
-                  ⚙ {ev.toolName}({JSON.stringify(ev.input)})
-                </div>
-              );
-            case "tool_result":
-              return (
-                <div key={ev.seq} className="msg tool">
-                  ↳ {ev.output?.slice(0, 300)}
-                </div>
-              );
-            case "control_change":
-              return (
-                <div key={ev.seq} className="msg system">
-                  🛞 {participants.get(ev.userId ?? "") ?? ev.userId} took the wheel
-                </div>
-              );
-            case "agent_error":
-              return (
-                <div key={ev.seq} className="msg error">
-                  ⚠ {ev.message}
-                </div>
-              );
-            default:
-              return null;
-          }
-        })}
-        <div ref={bottomRef} />
-      </main>
+      <ThinkingStrip busy={derived.agentBusy} modelLabel={MODEL_LABELS[derived.model] ?? derived.model} />
 
-      {errors.length > 0 && (
-        <div className="msg error">⚠ {errors.at(-1)}</div>
-      )}
+      {errors.length > 0 && <div className="line red">⚠ {errors.at(-1)}</div>}
 
-      <footer>
-        {isDriver ? (
-          <>
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && sendPrompt()}
-              placeholder="You're driving — prompt the agent…"
-              maxLength={4000}
-            />
-            <button onClick={sendPrompt}>Send</button>
-          </>
-        ) : (
-          <button className="wheel" onClick={takeWheel}>
-            Take the wheel 🛞
-          </button>
-        )}
-      </footer>
+      <PromptBar
+        isDriver={isDriver}
+        agentBusy={derived.agentBusy}
+        watcherNames={watcherNames}
+        onPrompt={onPrompt}
+        onTakeWheel={onTakeWheel}
+        inputRef={inputRef}
+      />
     </div>
   );
 }

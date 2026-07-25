@@ -1,75 +1,73 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-24, just before v2 execution start.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (afternoon): v4 merge-ready + LIVE co-walkthrough done with the user; two live-feedback fixes landed (96f73b0 opt-in dino game, 5336f3c turn_end-per-result fix for queued-prompt busy deadlock, 71/71 server tests). Awaiting user's merge choice (menu presented: merge local / PR / keep) + §7 decisions.*
+
+## 0. WHERE WE ARE (v4 executed; final review + user decisions remain)
+
+1. **v3 (full CC capabilities + driver approval gate)** — ✅ complete + merge-ready (see §7 ratification items, still open).
+2. **v4 (product design: "Terminal, but multiplayer")** — ✅ **ALL 12 TASKS COMPLETE** via subagent-driven development on `feature/project-hub`, commits `992440b..` (spec `992440b`, plan `8291274`, impl `8bbcbd6..7b17151`, acceptance pending commit). Live Playwright acceptance PASSED all 5 scenarios (lobby, terminal shell, thinking-strip dino game mid-turn, gated-command approval with `a` key, take-the-wheel + model switch to sonnet observed cross-tab). Server 68/68 tests, client 11/11, builds clean.
+3. **What v4 shipped:** faithful Claude-Code terminal shell (terminal.css, no bubbles); Transcript with CC glyphs + amber 🔐 permission blocks + wheel-flourish + quest-log intents; PARTY pane; ThinkingStrip playable dino game (pure engine `game/dino.ts`); Lobby (name/glyph/color, live `peek` party preview, `?name=` bypass); per-session driver-picked agent/model (server `set_model`→`model_change`, SDK `Query.setModel`, between-turns only); `turn_end` event; presence glyph/color. Design deliverables: `docs/design/claude-design-brief.md` (self-contained brief for "Claude Design") + `docs/design/frontend-design-skill-notes.md` (real frontend-design skill test — verdict: useful as post-build critique/quality floor, weak for direction-setting against a pinned brief).
 
 ## 1. Goal & current task
 
-**Project goal:** Startup exploration of YC's Fall 2026 "Multiplayer AI" RFS (dev-tools vertical). v1 (DONE, merged to main) proved one shared live agent session. **Current task: execute the v2 plan** — "Project Hub with Agent-Side Awareness": multiple engineers each drive their own agent session in their own git worktree within one project; agents declare intent via a `set_intent` MCP tool and receive a `<teammates>` digest of other sessions at prompt time.
+**Project goal:** YC Fall 2026 "Multiplayer AI" RFS exploration (dev-tools). v1 merged; v2+v3+v4 on `feature/project-hub`, unmerged.
+
+**CURRENT TASK:** finish the SDD loop for the v4 plan: (a) commit acceptance artifacts (v4-*.png + this HANDOFF), (b) dispatch the FINAL whole-branch review (most capable model, range `3cd6515..HEAD`, point it at the ledger's deferred-minor/parked lines), (c) one fix wave + one scoped re-review if findings, (d) surface the batched USER DECISIONS (§7), then `finishing-a-development-branch`.
+
+**PROCESS NOTE (2026-07-24, user):** when the context-watch hook fires (~40%), HARD STOP — refresh HANDOFF, tell user to `/clear`, end the turn.
 
 ## 2. Status
 
-- v1: **complete** — merged to main at `ad791fb`, 19/19 tests, live Playwright acceptance PASSED.
-- Research report: **complete** — `docs/research-report.md` (conditional GO).
-- v2 spec + plan: **committed** (`df1c713`, `b5235d4`), user-approved.
-- v2 execution: **NOT STARTED — stopped exactly here.** User chose subagent-driven execution (option 1). Next action is creating branch `feature/project-hub` and dispatching Task 1's implementer.
+- v1: merged to main (`ad791fb`). v2+v3: complete on branch, merge-ready, held for §7.
+- v4 spec: `docs/superpowers/specs/2026-07-24-product-design-terminal-multiplayer.md` (user-approved; constraint line amended for turn_end/identity/peek).
+- v4 plan: `docs/superpowers/plans/2026-07-24-terminal-multiplayer-design.md` (12 tasks, all complete, every task review clean; fix loops: Task 1 one round).
+- SDD ledger: `.superpowers/sdd/2026-07-24-terminal-multiplayer-design/progress.md` — deferred minors + surfaced conflicts recorded there; trust it + `git log` over memory.
+- **Stopped exactly at: finishing-a-development-branch menu presented (merge local / push+PR / keep) + §7 decisions batched; user did a live co-walkthrough first (all features exercised, incl. deny flow, failover wheel handoff, sonnet switch). Live stack running: server :3001 (AGENT_WORKDIR_ROOT+AGENT_SKILLS), vite :5173.**
 
 ## 3. Decisions + why (do not re-litigate)
 
-- **Awareness = Approach 2 + 1** (agent self-declared intent + raw activity digest floor). Observer agent (Approach 3) is explicitly phase-3 — user likes it; the derivation seam in `projectSnapshot` is where it plugs in later.
-- **A-shape architecture** (own agent + own worktree per engineer + shared awareness), NOT one shared filesystem — avoids file-locking/CRDT warfare; git stays the merge substrate. v1's drop-in/take-the-wheel is the "same room" escape hatch at session granularity.
-- **Digest injected at prompt time only** (deterministic, demoable); async mid-turn injection deferred with the observer agent.
-- **Log stays clean:** digest goes to the SDK prompt only; session log records raw user text.
-- **`tools` vs `allowedTools` (hard-won):** `tools` restricts built-in tool set; `allowedTools` only auto-approves. MCP tool id is `mcp__awareness__set_intent` — goes in `allowedTools`, NOT in `tools`.
-- **SDK user-message shape** is nested: `{type:"user", message:{role:"user", content:[...]}, parent_tool_use_id: null}` (installed sdk.d.ts, not the flat docs shape).
-- **Visual design polish deferred** until the v2 demo works (user's explicit call).
-- **Process:** subagent-driven-development — fresh implementer per task (haiku for verbatim-transcription tasks, sonnet for judgment/integration), sonnet reviewers, review gate per task, fix→re-review loops, final whole-branch review on the most capable model. This caught 5 real bugs in v1; keep it.
+- All v1–v3 decisions stand (see git history of this file). New in v4:
+- **Faithful terminal, two-pane tmux split, inline spinner-strip game (local-only), per-session driver-picked model, all four game motifs** — user-ratified in brainstorm (spec records the table).
+- **turn_end / presence glyph+color / peek** — append-only wire additions the design itself requires; spec constraint line amended accordingly.
+- **Model switching uses SDK `Query.setModel`** surfaced via optional member on `RunQueryResult` so test fakes stay assignable; model_change logged optimistically (trailing agent_error = switch may not have taken).
+- **hashIdentity shift `>>>1` not `>>>3`** — plan's own variation test unsatisfiable with >>>3.
+- **Subagent sandbox CANNOT launch the agent SDK native binary** — live stack must be started by the controller session (unsandboxed background Bash); subagents drive Playwright only.
 
 ## 4. Ordered next steps
 
-1. `git checkout -b feature/project-hub` (from main at `b5235d4`).
-2. Run SDD per `docs/superpowers/plans/2026-07-24-project-hub-awareness.md` (6 tasks): for each task N — `<superpowers-skill-dir>/subagent-driven-development/scripts/task-brief docs/superpowers/plans/2026-07-24-project-hub-awareness.md N`, dispatch implementer (Task 1: sonnet — SDK boundary; 2: haiku; 3: sonnet — integration; 4: haiku; 5: haiku; 6: controller-run), then `scripts/review-package BASE HEAD`, dispatch reviewer, fix→re-review until approved, append to ledger `.superpowers/sdd/progress.md`.
-3. Task 6 acceptance is controller-run via Playwright MCP tools (two tabs, `?project=demo&session=ana|ben`); `ANTHROPIC_API_KEY` is set in this environment so real agents work.
-4. Final whole-branch review (fable/opus) with deferred-minors triage → one fix subagent → re-review.
-5. finishing-a-development-branch skill (tests → 4 options → likely merge to main per user pattern).
+1. `git add v4-*.png HANDOFF.md && git commit -m "test: v4 live acceptance — screenshots + HANDOFF refresh"`.
+2. Final whole-branch review: `scripts/review-package PLAN 3cd6515 HEAD`, dispatch requesting-code-review's code-reviewer on the most capable model; include ledger path for deferred-minor triage.
+3. If findings: ONE fix subagent (all findings), ONE scoped re-review, adjudicate residuals.
+4. Present the batched user decisions (§7), then superpowers:finishing-a-development-branch; delete the plan workspace after a clean final review.
 
-## 5. Files with line refs (current state on main)
+## 5. Files with line refs (v4 state)
 
-- Plan (v2, execute this): `docs/superpowers/plans/2026-07-24-project-hub-awareness.md` (full code per task; Tasks 1–6)
-- Spec (v2): `docs/superpowers/specs/2026-07-24-project-hub-awareness-design.md`
-- `poc/server/src/agentDriver.ts:31-33` RunQuery type (Task 1 changes to 2-param with hooks); `:35-60` runAgentQuery (gets MCP server + mcpServers option); `:62-88` AgentDriver ctor + sendPrompt (ctor gains workdir, sendPrompt gains contextBlock); `:65` dead flag (Task 1 adds `isDead` getter)
-- `poc/server/src/server.ts:19-31` startServer + session map (Task 3 replaces file wholesale — plan has full replacement); `:58-83` join handler; `:87-99` prompt handler
-- `poc/server/src/session.ts:8` participants Map (Task 3 adds `participantList` getter after `:36`)
-- `poc/server/src/events.ts:9` last union member (Task 1 appends `intent_update`)
-- `poc/client/src/App.tsx:41-42` URL parsing (Task 5 adds project param); `:44-64` ws effect (join gains projectId; onmessage gains project case); `:70-81` derived state (add myIntent); `:118-163` transcript (add intent_update case; wrap in `.workspace` flex with teammates aside)
-- v1 spec/plan for reference: `docs/superpowers/specs/2026-07-23-multiplayer-ai-design.md`, `docs/superpowers/plans/2026-07-23-multiplayer-ai.md`
-- SDD ledger: `.superpowers/sdd/progress.md` (gitignored via .git/info/exclude; v1 history + minors deferred list lives here)
-- Skill scripts: `/Users/franciscosoltero/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/{task-brief,review-package}`
+- Server: `poc/server/src/models.ts` (MODELS map); `agentDriver.ts` (`RunQueryResult` ~:56-62, turnActive+turn_end in handleMessage result branch, `setModel` ~:251-270); `server.ts` (`set_model` handler after permission handler; glyph/color validation in join ~:162-170; `peek` before the !ctx guard ~:177-191); `events.ts` (union + glyph/color on presence_join); `session.ts:45-59` (join identity param).
+- Client: `poc/client/src/{types,identity,derive}.ts` (+tests); `game/dino.ts` (+test); `useSessionSocket.ts`; `components/{Header,PromptBar,Transcript,PartyPane,ThinkingStrip,Lobby}.tsx`; `terminal.css` (design tokens at top; Task 11 refinements incl. :has() selectors, reduced-motion, focus-visible); `App.tsx` = gate (profile precedence ?name= → loadProfile → Lobby) + SessionView.
+- Design docs: `docs/design/claude-design-brief.md`, `docs/design/frontend-design-skill-notes.md` (4 structural future-work items listed).
+- Screenshots: repo-root `v4-{lobby,shell,thinking-game,permission,party-wheel}.png` (+ old step*.png, still uncommitted from v3 era — decide whether to commit or drop at finish time).
 
 ## 6. Gotchas / constraints
 
-- **`Docs/` == `docs/`** on this macOS FS — always write lowercase `docs/` (git tracks that casing).
-- **SDD reviewers sometimes derail into a GitHub-PR workflow** — every reviewer prompt must say "LOCAL review, no gh, your final message IS the review, read-only". One v1 reviewer also stalled on SendMessage resume; prefer fresh reviewer dispatches over resuming.
-- **v1 fakes stay assignable** after RunQuery gains the hooks param (fewer-params functions are assignable in TS) — do not "fix" them.
-- **Existing v1 tests must pass unmodified** (21 tests after v2 Task 1-2 additions; v1 baseline was 19).
-- The client has **no auto-reconnect**; server restart (tsx watch on edit) drops tabs — reload tabs during acceptance.
-- zod v4 required for `tool()` shapes (`npm install zod` in poc/server is plan Task 1 Step 1).
-- Background security scans fire on commits touching server.ts — missing-auth findings are spec-accepted PoC scope; don't churn on them.
-- `.superpowers/` is git-excluded; review packages/briefs/reports live there and survive nothing — the ledger is the recovery map (`git log` corroborates).
-- Demo worktrees: `poc/scripts/demo-setup.sh` creates `poc/demo-project` + `poc/demo-worktrees/{ana,ben}`; server needs `AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees`.
+- All v3 gotchas stand (worktree containment, canUseTool never-null, Bash allowlist two-hop escape = ratification item, `Docs/`==`docs/`, no client auto-reconnect, `.superpowers/` git-excluded).
+- **Subagent sandbox blocks the SDK native binary** — see §3; never let a subagent "debug" that as if it were a code bug.
+- Demo stack: `poc/scripts/demo-setup.sh` (idempotent, rm -rf's demo dirs), server env `AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees AGENT_SKILLS=auth-migration-guide`, client vite on :5173 (check banner). Kill stale listeners on 3001/5173/5174 first.
+- PARTY pane hides below 900px (`display:none`) — this contradicts spec §2 (summary+toggle); OPEN user decision, don't silently "fix".
+- Client tests are node-env pure-module tests only (no jsdom); components verified by build + live acceptance.
 
-## 7. Open questions
+## 7. Open questions / USER DECISIONS (batched — present before merge)
 
-- Whether the live agent reliably calls `set_intent` from the system-prompt instruction alone — Task 6 acceptance will tell; if it doesn't, options are stronger prompt wording or forcing an intent on first prompt. Not resolvable before live testing.
-- Whether `tools: [...]` restriction coexists cleanly with `mcpServers` tools in the installed SDK (typed OK per sdk.d.ts, unverified live). Task 6 verifies; fallback is dropping `tools` and using `disallowedTools`.
-- v2 report update (research-report.md §3 mentions only v1) — decide at final review whether to append a v2 findings paragraph or leave for a later pass.
+v3 ratification (carried): (1) worktree-containment-conditional Write/Edit approval; (2) Bash-allowlist two-hop residual risk acceptance; (3) project-skill discovery under settingSources:[].
+New from v4: (4) party-pane <900px: implement spec's summary+toggle (small component task) or ratify display:none; (5) spec/HANDOFF said `soltero-skills:frontend-design` but the real skill is `frontend-design:frontend-design` (official plugin) — fix the spec text; (6) frontend-design-skill-notes lists 4 structural future-work items (perm .decided class, lobby label alignment, turn grouping, party collapse) — schedule or drop; (7) old step*.png v3 screenshots still untracked — commit or delete.
 
 ## 8. Resume & verify
 
 ```bash
-cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
-git log --oneline | head -3        # expect b5235d4 (v2 plan), df1c713 (v2 spec), ad791fb
-cat .superpowers/sdd/progress.md   # v1 complete through final review; v2 not started
-cd poc/server && npx vitest run    # expect 19 passed (19)
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git checkout feature/project-hub
+git log --oneline | head -5          # 7b17151 (Task 11) at/near top until acceptance commit lands
+cat .superpowers/sdd/2026-07-24-terminal-multiplayer-design/progress.md
+cd poc/server && npx vitest run      # 68 passed
+cd ../client && npm test && npm run build   # 11 passed, clean
 ```
 
-Branch: work happens on `feature/project-hub` (create if absent). If mid-execution, trust the ledger + `git log` over memory; tasks marked complete are DONE — resume at the first unmarked task.
+Live demo: §6 stack commands; tabs `?project=demo&session=ana` (fresh tab → lobby) and same-session second viewer `?project=demo&session=ana&name=ben` for wheel/model-switch scenarios. v1–v3 acceptance walkthrough still applies for the permission gate.

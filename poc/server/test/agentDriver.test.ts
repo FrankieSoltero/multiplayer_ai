@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { Session } from "../src/session.js";
-import { AgentDriver, type RunQuery } from "../src/agentDriver.js";
+import { AgentDriver, type RunQuery, type SdkMessage } from "../src/agentDriver.js";
 
 const fakeRun: RunQuery = async function* (prompts) {
   for await (const _prompt of prompts) {
@@ -215,5 +215,328 @@ describe("AgentDriver", () => {
         expect(last.output.length).toBe(2000);
       }
     });
+  });
+});
+
+describe("intent updates", () => {
+  it("appends intent_update (truncated to 200 chars) when the SDK layer reports intent", async () => {
+    const s = new Session("s1");
+    const longIntent = "x".repeat(250);
+    const intentRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _prompt of prompts) {
+        hooks.onIntent("Migrating auth middleware to JWT");
+        hooks.onIntent(longIntent);
+        yield { type: "assistant", content: [{ type: "text", text: "done" }] };
+        return;
+      }
+    };
+    const driver = new AgentDriver(s, intentRun);
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => {
+      const intents = s
+        .eventsFrom(0)
+        .filter((e) => e.type === "intent_update") as { text: string }[];
+      expect(intents).toHaveLength(2);
+      expect(intents[0].text).toBe("Migrating auth middleware to JWT");
+      expect(intents[1].text).toHaveLength(200);
+    });
+  });
+
+  it("exposes liveness via isDead", async () => {
+    const s = new Session("s1");
+    const driver = new AgentDriver(s, fakeRun);
+    expect(driver.isDead).toBe(false);
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => expect(driver.isDead).toBe(true)); // fakeRun returns after one prompt
+  });
+});
+
+describe("digest injection", () => {
+  it("prefixes the SDK prompt with the context block but logs raw text only", async () => {
+    const s = new Session("s1");
+    const echoPrompt: RunQuery = async function* (prompts) {
+      for await (const prompt of prompts) {
+        yield {
+          type: "assistant",
+          content: [
+            { type: "text", text: `SDK saw: ${prompt.message.content[0].text}` },
+          ],
+        };
+        return;
+      }
+    };
+    const driver = new AgentDriver(s, echoPrompt);
+    driver.sendPrompt("u1", "add rate limiting", "<teammates>\n- session \"ana\": Migrating auth\n</teammates>");
+    await vi.waitFor(() => {
+      const events = s.eventsFrom(0);
+      const userMsg = events.find((e) => e.type === "user_message") as { text: string };
+      const agentText = events.find((e) => e.type === "agent_text_delta") as { text: string };
+      expect(userMsg.text).toBe("add rate limiting");
+      expect(agentText.text).toContain("<teammates>");
+      expect(agentText.text).toContain("add rate limiting");
+    });
+  });
+});
+
+describe("driver approval gate", () => {
+  const permissionRun: RunQuery = async function* (prompts, hooks) {
+    for await (const _prompt of prompts) {
+      const decision = await hooks.onPermissionRequest("Bash", {
+        command: "rm -rf build",
+      });
+      yield {
+        type: "assistant",
+        content: [{ type: "text", text: `decision: ${decision}` }],
+      };
+    }
+  };
+
+  async function waitForEvent(
+    session: Session,
+    type: string,
+    tries = 40,
+  ): Promise<any> {
+    for (let i = 0; i < tries; i++) {
+      const ev = session.eventsFrom(0).find((e) => e.type === type);
+      if (ev) return ev;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`timed out waiting for ${type}`);
+  }
+
+  it("logs permission_request, resolves allow, and logs the decision", async () => {
+    const session = new Session("s-perm-1");
+    const driver = new AgentDriver(session, permissionRun);
+    driver.sendPrompt("u1", "clean the build dir");
+
+    const request = await waitForEvent(session, "permission_request");
+    expect(request.toolName).toBe("Bash");
+    expect(request.input).toEqual({ command: "rm -rf build" });
+    expect(typeof request.requestId).toBe("string");
+
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(true);
+
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({
+      requestId: request.requestId,
+      decision: "allow",
+      userId: "u1",
+    });
+    const echoed = await waitForEvent(session, "agent_text_delta");
+    expect(echoed.text).toBe("decision: allow");
+  });
+
+  it("passes deny through to the waiting query", async () => {
+    const session = new Session("s-perm-2");
+    const driver = new AgentDriver(session, permissionRun);
+    driver.sendPrompt("u1", "clean the build dir");
+    const request = await waitForEvent(session, "permission_request");
+    expect(driver.resolvePermission(request.requestId, "deny", "u2")).toBe(true);
+    const echoed = await waitForEvent(session, "agent_text_delta");
+    expect(echoed.text).toBe("decision: deny");
+  });
+
+  it("rejects unknown and already-decided requestIds", async () => {
+    const session = new Session("s-perm-3");
+    const driver = new AgentDriver(session, permissionRun);
+    expect(driver.resolvePermission("nope", "allow", "u1")).toBe(false);
+
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "permission_request");
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(true);
+    expect(driver.resolvePermission(request.requestId, "deny", "u1")).toBe(false);
+    // exactly one decision event
+    const decisions = session
+      .eventsFrom(0)
+      .filter((e) => e.type === "permission_decision");
+    expect(decisions.length).toBe(1);
+  });
+
+  it("closes out a pending request when the SDK aborts it, denying it and marking the audit trail as system", async () => {
+    const controller = new AbortController();
+    const abortRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _prompt of prompts) {
+        const decision = await hooks.onPermissionRequest(
+          "Bash",
+          { command: "rm -rf x" },
+          controller.signal,
+        );
+        yield {
+          type: "assistant",
+          content: [{ type: "text", text: `decision: ${decision}` }],
+        };
+      }
+    };
+    const session = new Session("s-perm-abort");
+    const driver = new AgentDriver(session, abortRun);
+    driver.sendPrompt("u1", "clean the build dir");
+
+    const request = await waitForEvent(session, "permission_request");
+    controller.abort();
+
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({
+      requestId: request.requestId,
+      decision: "deny",
+      userId: "system",
+    });
+    const echoed = await waitForEvent(session, "agent_text_delta");
+    expect(echoed.text).toBe("decision: deny");
+
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(false);
+  });
+
+  it("flushes a still-pending permission request as a system deny when the stream ends without deciding it", async () => {
+    let capturedDecision: Promise<"allow" | "deny"> | undefined;
+    const streamDiesWhilePendingRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _prompt of prompts) {
+        capturedDecision = hooks.onPermissionRequest("Bash", {
+          command: "rm -rf x",
+        });
+        // The stream ends (e.g. the SDK query completes/closes) WITHOUT the
+        // driver ever resolving this permission request.
+        return;
+      }
+    };
+    const session = new Session("s-perm-stream-death");
+    const driver = new AgentDriver(session, streamDiesWhilePendingRun);
+    driver.sendPrompt("u1", "clean the build dir");
+
+    const request = await waitForEvent(session, "permission_request");
+    expect(capturedDecision).toBeDefined();
+    await expect(capturedDecision).resolves.toBe("deny");
+
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({
+      requestId: request.requestId,
+      decision: "deny",
+      userId: "system",
+    });
+
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(false);
+  });
+});
+
+const resultRun: RunQuery = async function* (prompts) {
+  for await (const _prompt of prompts) {
+    yield { type: "assistant", content: [{ type: "text", text: "done" }] };
+    yield { type: "result" };
+    // keep the stream open for the next prompt (do NOT return)
+  }
+};
+
+describe("turn lifecycle", () => {
+  it("appends turn_end when the SDK emits a result message", async () => {
+    const session = new Session("s");
+    const driver = new AgentDriver(session, resultRun);
+    driver.sendPrompt("u1", "hi");
+    await vi.waitFor(() =>
+      expect(session.eventsFrom(0).some((e) => e.type === "turn_end")).toBe(true),
+    );
+  });
+
+  it("emits a turn_end per result when queued prompts each get their own cycle", async () => {
+    // A driver can queue prompt B while prompt A is in flight. When the SDK
+    // runs them as two cycles (one result each), each result marks a turn
+    // boundary — the client's busy signal re-raises from cycle B's first
+    // activity event, so per-result turn_end never strands the strip.
+    const session = new Session("s");
+    let resultsYielded = 0;
+    const twoPromptRun: RunQuery = async function* (prompts) {
+      for await (const _prompt of prompts) {
+        yield { type: "assistant", content: [{ type: "text", text: "ok" }] };
+        yield { type: "result" };
+        resultsYielded++;
+        if (resultsYielded >= 2) return;
+      }
+    };
+    const driver = new AgentDriver(session, twoPromptRun);
+    driver.sendPrompt("u1", "prompt A");
+    driver.sendPrompt("u1", "prompt B");
+
+    await vi.waitFor(() => expect(resultsYielded).toBe(2));
+    await vi.waitFor(() => {
+      const types = session.eventsFrom(0).map((e) => e.type);
+      expect(types.filter((t) => t === "turn_end")).toHaveLength(2);
+    });
+  });
+
+  it("still ends the turn when the SDK folds two queued prompts into ONE cycle (live-repro regression)", async () => {
+    // Reproduced live 2026-07-25: the SDK answered a queued prompt inside the
+    // active cycle — TWO user_messages, ONE result. A per-prompt countdown
+    // left pendingTurns stuck at 1 forever: busy signal never cleared and
+    // setModel stayed blocked. Every result must therefore reset the counter
+    // and emit turn_end.
+    const session = new Session("s");
+    const foldedRun: RunQuery = async function* (prompts) {
+      let consumed = 0;
+      for await (const _prompt of prompts) {
+        consumed++;
+        if (consumed < 2) continue; // swallow prompt A, reply once for both
+        if (consumed === 2) {
+          yield { type: "assistant", content: [{ type: "text", text: "did both" }] };
+          yield { type: "result" };
+        }
+        // keep the stream open (a live query stays connected between turns)
+      }
+    };
+    const driver = new AgentDriver(session, foldedRun);
+    driver.sendPrompt("u1", "prompt A");
+    driver.sendPrompt("u1", "prompt B");
+
+    await vi.waitFor(() =>
+      expect(session.eventsFrom(0).some((e) => e.type === "turn_end")).toBe(true),
+    );
+    // The gate must be open again: a model switch after the folded cycle
+    // is "between turns" and must not be rejected as mid-turn.
+    const res = driver.setModel("sonnet", "u1");
+    expect(res).toEqual({ ok: false, error: "model switching not supported by this agent" });
+    // (foldedRun has no setModel — the point is it got PAST the mid-turn
+    // check, which returns a different error.)
+  });
+});
+
+describe("setModel", () => {
+  const makeRunWithSetModel = (spy: (m: string) => Promise<void>): RunQuery =>
+    (prompts) => {
+      const gen = (async function* () {
+        for await (const _p of prompts) {
+          yield { type: "assistant", content: [{ type: "text", text: "ok" }] } as SdkMessage;
+          yield { type: "result" } as SdkMessage;
+        }
+      })();
+      return Object.assign(gen, { setModel: spy });
+    };
+
+  it("switches between turns: calls SDK setModel with the mapped id and logs model_change", async () => {
+    const spy = vi.fn(async (_m: string) => {});
+    const session = new Session("s");
+    const driver = new AgentDriver(session, makeRunWithSetModel(spy));
+    driver.sendPrompt("u1", "hi");
+    await vi.waitFor(() =>
+      expect(session.eventsFrom(0).some((e) => e.type === "turn_end")).toBe(true),
+    );
+    const res = driver.setModel("sonnet", "u1");
+    expect(res).toEqual({ ok: true });
+    expect(spy).toHaveBeenCalledWith("claude-sonnet-5");
+    const ev = session.eventsFrom(0).find((e) => e.type === "model_change");
+    expect(ev).toMatchObject({ model: "sonnet", userId: "u1" });
+  });
+
+  it("rejects a switch mid-turn", async () => {
+    const spy = vi.fn(async (_m: string) => {});
+    const session = new Session("s");
+    const driver = new AgentDriver(session, makeRunWithSetModel(spy));
+    driver.sendPrompt("u1", "hi"); // turn active until result consumed…
+    const res = driver.setModel("haiku", "u1"); // …but call synchronously before waitFor
+    expect(res.ok).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("reports unsupported when the stream has no setModel (plain fakes)", () => {
+    const session = new Session("s");
+    const driver = new AgentDriver(session, fakeRun);
+    const res = driver.setModel("sonnet", "u1");
+    expect(res.ok).toBe(false);
   });
 });

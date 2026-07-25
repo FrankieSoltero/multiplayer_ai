@@ -35,9 +35,26 @@ export class Session {
     return this.currentDriverId;
   }
 
-  join(userId: string, name: string): void {
+  get participantList(): { userId: string; name: string }[] {
+    return [...this.participants.entries()].map(([userId, name]) => ({
+      userId,
+      name,
+    }));
+  }
+
+  join(
+    userId: string,
+    name: string,
+    identity?: { glyph?: string; color?: string },
+  ): void {
     this.participants.set(userId, name);
-    this.append({ type: "presence_join", userId, name });
+    this.append({
+      type: "presence_join",
+      userId,
+      name,
+      ...(identity?.glyph ? { glyph: identity.glyph } : {}),
+      ...(identity?.color ? { color: identity.color } : {}),
+    });
     if (this.currentDriverId === null) this.takeWheel(userId);
   }
 
