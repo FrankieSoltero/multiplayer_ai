@@ -25,7 +25,8 @@ export function Transcript(props: {
   useEffect(() => {
     if (!props.isDriver || !newest?.requestId) return;
     const onKey = (e: KeyboardEvent) => {
-      if ((document.activeElement as HTMLElement | null)?.tagName === "INPUT") return;
+      const tag = (document.activeElement as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       if (e.key === "a") props.onPermission(newest.requestId!, "allow");
       if (e.key === "d") props.onPermission(newest.requestId!, "deny");
     };

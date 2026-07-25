@@ -52,4 +52,16 @@ describe("deriveState", () => {
   it("defaults model to opus", () => {
     expect(deriveState([]).model).toBe("opus");
   });
+
+  it("keeps agentBusy true through a contained mid-turn agent_error (tool_call/agent_text_delta re-raise it), clearing only on turn_end", () => {
+    const base = [
+      ev({ type: "user_message", userId: "u1", text: "go" }, 0),
+      ev({ type: "agent_error", message: "transient hiccup" }, 1),
+      ev({ type: "tool_call", toolName: "Read", input: {} }, 2),
+    ];
+    expect(deriveState(base).agentBusy).toBe(true);
+    expect(
+      deriveState([...base, ev({ type: "turn_end" }, 3)]).agentBusy,
+    ).toBe(false);
+  });
 });

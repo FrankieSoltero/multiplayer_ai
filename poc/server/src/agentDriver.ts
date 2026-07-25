@@ -156,7 +156,12 @@ export class AgentDriver {
   private toolNamesById = new Map<string, string>();
   private pendingPermissions = new Map<string, (d: "allow" | "deny") => void>();
   private dead = false;
-  private turnActive = false;
+  // Count of turns sent but not yet resolved by a matching "result" message.
+  // A boolean here would be wrong: drivers can queue prompt B while prompt A
+  // is still mid-turn (input isn't disabled), so result(A) must not flip
+  // busy/mid-turn state off while B is still outstanding — only when the
+  // count returns to zero.
+  private pendingTurns = 0;
   private stream: RunQueryResult;
 
   constructor(
@@ -226,7 +231,7 @@ export class AgentDriver {
       });
       return;
     }
-    this.turnActive = true;
+    this.pendingTurns++;
     this.session.append({ type: "user_message", userId, text });
     const promptText = contextBlock ? `${contextBlock}\n\n${text}` : text;
     this.prompts.push({
@@ -260,7 +265,7 @@ export class AgentDriver {
     userId: string,
   ): { ok: true } | { ok: false; error: string } {
     if (this.dead) return { ok: false, error: "agent session has ended" };
-    if (this.turnActive)
+    if (this.pendingTurns > 0)
       return { ok: false, error: "agent is mid-turn — wait for it to finish" };
     if (!this.stream.setModel)
       return { ok: false, error: "model switching not supported by this agent" };
@@ -358,8 +363,8 @@ export class AgentDriver {
       }
     } else if (message.type === "result" || message.type === "user") {
       if (message.type === "result") {
-        this.turnActive = false;
-        this.session.append({ type: "turn_end" });
+        this.pendingTurns = Math.max(0, this.pendingTurns - 1);
+        if (this.pendingTurns === 0) this.session.append({ type: "turn_end" });
       }
       for (const block of blocks) {
         if (block.type === "tool_result") {

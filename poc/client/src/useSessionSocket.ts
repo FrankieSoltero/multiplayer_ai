@@ -54,7 +54,6 @@ export function useSessionSocket(opts: {
     };
     ws.onclose = () => setConnected(false);
     return () => ws.close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, sessionId, userId, profile.name, profile.glyph, profile.color]);
 
   const send = (msg: object) => {

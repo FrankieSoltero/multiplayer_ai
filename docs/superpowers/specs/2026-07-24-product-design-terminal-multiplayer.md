@@ -120,3 +120,9 @@ agents. (These are explicitly out of scope for v4.)
 Invoke `superpowers:writing-plans` for the implementation plan, which also sequences
 deliverables (b) the Claude Design brief and (c) the frontend-design skill pass relative
 to implementation.
+
+## Documented deviations (post-build)
+
+- The status line does not show "esc to interrupt" — no interrupt exists on the wire.
+- The lobby party preview is a point-in-time peek snapshot, not a live view.
+- `⏺` prefixes every agent text block (plan-mandated), not only the turn's first.

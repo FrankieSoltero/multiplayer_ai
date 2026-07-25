@@ -10,9 +10,13 @@ for dev teams. See `docs/research-report.md` for the research and
    (or rely on an active `claude` / `ant auth login` credential).
 2. `cd poc/server && npm install && npm run dev` — server on ws://localhost:3001
 3. `cd poc/client && npm install && npm run dev` — UI on http://localhost:5173
-4. Open http://localhost:5173 in **two tabs**. Tab A is driving; prompt the
-   agent. Tab B watches the same stream live, clicks "Take the wheel", and
-   redirects the agent mid-task.
+4. Open http://localhost:5173 in **two tabs**. Each tab first hits the
+   **lobby**: pick a name (a glyph + color are auto-assigned, both editable)
+   and join. Appending `?name=...` to the URL bypasses the lobby and joins
+   directly — handy for demo scripts. Tab A is driving; prompt the agent, and
+   optionally switch its model via the header picker (only the current
+   driver can). Tab B watches the same stream live, clicks "Take the wheel",
+   and redirects the agent mid-task.
 
 ## Run the v2 multi-session demo
 
@@ -20,8 +24,8 @@ for dev teams. See `docs/research-report.md` for the research and
 2. `cd poc/server && AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees npm run dev`
 3. `cd poc/client && npm run dev`
 4. Tab A: http://localhost:5173/?project=demo&session=ana — prompt: an auth→JWT
-   migration task. The agent declares its intent (🎯) and it appears in Tab B's
-   teammates sidebar.
+   migration task. The agent declares its intent (✦) and it appears in Tab B's
+   PARTY pane.
 5. Tab B: http://localhost:5173/?project=demo&session=ben — prompt: a
    rate-limiting task *without mentioning Ana*. Ben's agent should acknowledge
    Ana's in-flight migration via the injected `<teammates>` digest.
@@ -64,6 +68,23 @@ worktree with no driver approval in the loop. OS-level sandboxing
 (containers, restricted filesystem permissions, etc.) is explicitly out of
 scope for this PoC per the spec; this is the residual boundary until that
 lands.
+
+## Run the v4 design pass
+
+Setup is the same as above. New in v4:
+
+- The client UI is a faithful terminal shell (monospace, box-drawing frames,
+  `⏺`/`⎿`/`✦`/`🛞`/`🔐` glyphs) instead of a plain dark web app.
+- Joining goes through a **lobby**: pick a name, glyph, and color before
+  entering a session (`?name=...` in the URL bypasses it).
+- The **PARTY pane** replaces the old teammates sidebar, showing the session
+  roster with each participant's glyph/color and current quest line.
+- Agent intents render as a `✦` objective quest-log entry in the transcript.
+- Each session's driver can pick the agent's model (opus/sonnet/haiku) from a
+  header select; switches apply between turns and are logged as a visible
+  `model_change` event.
+- While the agent is working, the thinking strip shows a small playable dino
+  mini-game in place of a static spinner.
 
 ## Tests
 

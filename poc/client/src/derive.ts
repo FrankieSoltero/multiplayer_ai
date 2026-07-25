@@ -60,6 +60,8 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
         if (ev.model) s.model = ev.model;
         break;
       case "user_message":
+      case "tool_call":
+      case "agent_text_delta":
         s.agentBusy = true;
         break;
       case "turn_end":

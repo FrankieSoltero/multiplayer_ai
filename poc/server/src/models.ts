@@ -8,5 +8,5 @@ export type ModelKey = keyof typeof MODELS;
 export const DEFAULT_MODEL: ModelKey = "opus";
 
 export function isModelKey(v: unknown): v is ModelKey {
-  return typeof v === "string" && v in MODELS;
+  return typeof v === "string" && Object.hasOwn(MODELS, v);
 }

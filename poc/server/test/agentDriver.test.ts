@@ -434,6 +434,41 @@ describe("turn lifecycle", () => {
       expect(session.eventsFrom(0).some((e) => e.type === "turn_end")).toBe(true),
     );
   });
+
+  it("emits exactly one turn_end, only after the SECOND result, when two prompts are queued back-to-back mid-turn", async () => {
+    // Simulates a driver queuing prompt B while prompt A is still in flight
+    // (input isn't disabled mid-turn). Each prompt yielded gets its own
+    // "result" message from the fake, one per iteration of the prompts loop.
+    const session = new Session("s");
+    let resultsYielded = 0;
+    const twoPromptRun: RunQuery = async function* (prompts) {
+      for await (const _prompt of prompts) {
+        yield { type: "assistant", content: [{ type: "text", text: "ok" }] };
+        yield { type: "result" };
+        resultsYielded++;
+        if (resultsYielded >= 2) return;
+      }
+    };
+    const driver = new AgentDriver(session, twoPromptRun);
+    driver.sendPrompt("u1", "prompt A");
+    driver.sendPrompt("u1", "prompt B");
+
+    await vi.waitFor(() => expect(resultsYielded).toBe(2));
+    await vi.waitFor(() => {
+      const types = session.eventsFrom(0).map((e) => e.type);
+      const turnEndCount = types.filter((t) => t === "turn_end").length;
+      expect(turnEndCount).toBe(1);
+    });
+    // turn_end must appear strictly after both user_message events and both
+    // results have been processed — i.e. only once no turn remains outstanding.
+    const types = session.eventsFrom(0).map((e) => e.type);
+    const turnEndIndex = types.indexOf("turn_end");
+    const userMessageIndices = types
+      .map((t, i) => (t === "user_message" ? i : -1))
+      .filter((i) => i >= 0);
+    expect(userMessageIndices).toHaveLength(2);
+    expect(turnEndIndex).toBeGreaterThan(Math.max(...userMessageIndices));
+  });
 });
 
 describe("setModel", () => {

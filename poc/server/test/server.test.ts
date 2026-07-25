@@ -436,6 +436,32 @@ describe("set_model", () => {
     await vi.waitFor(() => expect(aSink.some((m) => m.type === "event" && m.event.type === "model_change" && m.event.model === "sonnet" && m.event.userId === "ua")).toBe(true));
     a.close(); b.close(); await server.close();
   });
+
+  it("rejects an inherited-property model key (prototype pollution guard)", async () => {
+    // "toString" is `in MODELS` (inherited from Object.prototype) but is not
+    // an own key, so MODELS["toString"] is not a valid model entry. isModelKey
+    // must reject it the same as any other invalid key.
+    const run: RunQuery = (prompts) => {
+      const gen = (async function* () {
+        for await (const _p of prompts) {
+          yield { type: "assistant", content: [{ type: "text", text: "ok" }] } as SdkMessage;
+          yield { type: "result" } as SdkMessage;
+        }
+      })();
+      return Object.assign(gen, { setModel: async (_m: string) => {} });
+    };
+    const server = await startServer({ port: 0, runQuery: run });
+    close = server.close;
+    const a = await connect(server.port);
+    const aSink: any[] = [];
+    collect(a, aSink);
+    a.send(JSON.stringify({ type: "join", sessionId: "m2", userId: "ua", name: "ana", lastSeq: 0 }));
+    await wait(50);
+
+    a.send(JSON.stringify({ type: "set_model", model: "toString" }));
+    await vi.waitFor(() => expect(aSink.some((m) => m.type === "error" && /opus\|sonnet\|haiku/.test(m.message))).toBe(true));
+    a.close();
+  });
 });
 
 describe("identity on join and pre-join peek", () => {
