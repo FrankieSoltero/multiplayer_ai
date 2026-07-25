@@ -8,6 +8,9 @@ export function ThinkingStrip(props: { busy: boolean; modelLabel: string }) {
   const [state, setState] = useState<DinoState>(() => initialState(Date.now() % 100000 | 1));
   const [high, setHigh] = useState(() => Number(localStorage.getItem(HIGH_KEY) ?? 0));
   const [elapsed, setElapsed] = useState(0);
+  // opt-in play: the lane sits idle until the viewer starts it (space or a
+  // click on the strip); death stops the run instead of auto-restarting.
+  const [playing, setPlaying] = useState(false);
   const startRef = useRef(0);
 
   // delayed unmount: stay mounted (with .leaving) for LEAVE_MS after busy
@@ -28,39 +31,58 @@ export function ThinkingStrip(props: { busy: boolean; modelLabel: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.busy]);
 
-  // game loop while busy
+  // fresh strip per turn: reset to an idle lane; the timer always ticks
+  // (it's the thinking indicator) but the game only runs once started.
   useEffect(() => {
     if (!props.busy) return;
     startRef.current = performance.now();
     setState(initialState((Date.now() % 100000) | 1));
+    setPlaying(false);
+    const t = setInterval(
+      () => setElapsed(Math.floor((performance.now() - startRef.current) / 1000)),
+      1000,
+    );
+    setElapsed(0);
+    return () => clearInterval(t);
+  }, [props.busy]);
+
+  // game loop only while the viewer is playing
+  useEffect(() => {
+    if (!props.busy || !playing) return;
     let raf = 0;
     let last = performance.now();
     const loop = (now: number) => {
       const dt = Math.min((now - last) / 1000, 0.05);
       last = now;
-      setElapsed(Math.floor((now - startRef.current) / 1000));
-      setState((s) => {
-        if (!s.alive) return s;
-        return tick(s, dt);
-      });
+      setState((s) => (s.alive ? tick(s, dt) : s));
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [props.busy]);
+  }, [props.busy, playing]);
 
-  // dead → auto-restart after a beat; persist high score
+  // dead → stop the run and persist the high score; space starts a new run
   useEffect(() => {
     if (state.alive) return;
+    setPlaying(false);
     if (state.score > high) {
       setHigh(state.score);
       localStorage.setItem(HIGH_KEY, String(state.score));
     }
-    const t = setTimeout(() => setState(initialState((state.rng % 100000) | 1)), 1000);
-    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.alive]);
 
-  // space to jump when not typing
+  // start / restart / jump — shared by the space key and clicks on the strip
+  const play = () => {
+    if (!playing) {
+      setState((s) => (s.alive ? s : initialState((s.rng % 100000) | 1)));
+      setPlaying(true);
+      return;
+    }
+    setState((s) => jump(s));
+  };
+
+  // space plays when not typing
   useEffect(() => {
     if (!props.busy) return;
     const onKey = (e: KeyboardEvent) => {
@@ -68,11 +90,12 @@ export function ThinkingStrip(props: { busy: boolean; modelLabel: string }) {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       e.preventDefault();
-      setState((s) => jump(s));
+      play();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [props.busy]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.busy, playing]);
 
   if (!mounted) return null;
   const [air, ground] = renderLane(state);
@@ -83,8 +106,14 @@ export function ThinkingStrip(props: { busy: boolean; modelLabel: string }) {
         <span className="pulse">✦</span> {props.modelLabel} is thinking… ({elapsed}s)
         <span className="thinking-score">score {pad(state.score)} · high {pad(high)}</span>
       </div>
-      <pre className="lane">{air + "\n" + ground}</pre>
-      <div className="thinking-hint">space to jump · click the prompt to type instead</div>
+      <pre className="lane" onClick={play}>{air + "\n" + ground}</pre>
+      <div className="thinking-hint">
+        {playing
+          ? "space to jump · click the prompt to type instead"
+          : state.alive && state.t === 0
+            ? "space (or click the lane) to play while you wait"
+            : "game over — space to play again"}
+      </div>
     </div>
   );
 }
