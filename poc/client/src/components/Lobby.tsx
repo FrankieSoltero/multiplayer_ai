@@ -2,9 +2,20 @@ import { useEffect, useState } from "react";
 import { GLYPHS, IDENTITY_COLORS, type Profile } from "../identity";
 import { SERVER_URL, type ProjectSessionInfo } from "../types";
 
+/** Optional — a card of your own numbers on the select screen. Nothing on the
+ *  server produces these yet; omit the prop and the block disappears. */
+export interface PlayerStats {
+  sessions?: number;
+  wheelTime?: string;
+  gatesDecided?: number;
+  gatesDenied?: number;
+  arcadeBest?: number;
+}
+
 export function Lobby(props: {
   projectId: string; sessionId: string; defaultName: string;
   onEnter: (p: Profile) => void;
+  stats?: PlayerStats;
 }) {
   const [name, setName] = useState(props.defaultName);
   const [glyph, setGlyph] = useState<string>(GLYPHS[0]);
@@ -28,37 +39,103 @@ export function Lobby(props: {
     if (n) props.onEnter({ name: n, glyph, color });
   };
 
+  const inside = party.reduce((n, s) => n + s.participants.length, 0);
+  const s = props.stats;
+
   return (
-    <div className="lobby term-frame">
-      <div className="lobby-title">JOIN SESSION {props.sessionId} · {props.projectId}</div>
-      <label className="lobby-row">
-        name <span className="caret">›</span>
-        <input autoFocus value={name} onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && enter()} maxLength={40} />
-      </label>
-      <div className="lobby-row">
-        glyph <span className="caret">›</span>
-        {GLYPHS.map((g) => (
-          <button key={g} className={g === glyph ? "pick on" : "pick"}
-            style={{ color }} onClick={() => setGlyph(g)}>{g}</button>
-        ))}
+    <div className="lobby">
+      <div className="lobby-hero">SELECT YOUR PLAYER</div>
+      <div className="lobby-sub">
+        PROJECT {props.projectId.toUpperCase()} ▸ SESSION {props.sessionId.toUpperCase()} ▸{" "}
+        {inside} ALREADY INSIDE
       </div>
-      <div className="lobby-row">
-        color <span className="caret">›</span>
-        {IDENTITY_COLORS.map((c) => (
-          <button key={c} className={c === color ? "pick on" : "pick"}
-            style={{ color: c }} onClick={() => setColor(c)}>■</button>
-        ))}
+
+      <div className="lobby-cols">
+        <div className="lobby-card panel">
+          <label className="lobby-row">
+            <span className="lbl">NAME</span>
+            <span className="caret">▸</span>
+            <input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && enter()}
+              maxLength={40}
+            />
+          </label>
+
+          <div className="lobby-row">
+            <span className="lbl">SPRITE</span>
+            <span className="caret">▸</span>
+            <span className="picks">
+              {GLYPHS.map((g) => (
+                <button
+                  key={g}
+                  className={g === glyph ? "pick on" : "pick"}
+                  style={{ color }}
+                  onClick={() => setGlyph(g)}
+                >
+                  {g}
+                </button>
+              ))}
+            </span>
+          </div>
+
+          <div className="lobby-row">
+            <span className="lbl">COLOR</span>
+            <span className="caret">▸</span>
+            <span className="picks">
+              {IDENTITY_COLORS.map((c) => (
+                <button
+                  key={c}
+                  className={c === color ? "pick swatch on" : "pick swatch"}
+                  style={{ background: c, borderColor: c === color ? "var(--accent)" : "var(--frame)" }}
+                  onClick={() => setColor(c)}
+                  aria-label={c}
+                />
+              ))}
+            </span>
+          </div>
+
+          {s && (
+            <div className="stats">
+              <div><div className="k">SESSIONS</div><div>{s.sessions ?? "—"}</div></div>
+              <div><div className="k">TIME ON THE WHEEL</div><div>{s.wheelTime ?? "—"}</div></div>
+              <div>
+                <div className="k">GATES DECIDED</div>
+                <div>{s.gatesDecided ?? "—"} <span style={{ color: "var(--dim)" }}>· {s.gatesDenied ?? 0} denied</span></div>
+              </div>
+              <div>
+                <div className="k">ARCADE BEST</div>
+                <div style={{ color: "var(--gold)" }}>{String(s.arcadeBest ?? 0).padStart(4, "0")}</div>
+              </div>
+            </div>
+          )}
+
+          <button className="lobby-enter" onClick={enter} disabled={!name.trim()}>
+            ▸ PRESS START
+          </button>
+        </div>
+
+        <div className="panel" style={{ width: 340, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="pix" style={{ color: "var(--dim)" }}>ALREADY IN THE PROJECT</div>
+          {party.length === 0 && <div className="member-meta">no one here yet</div>}
+          {party.map((sess) => (
+            <div key={sess.id} className="member" style={{ cursor: "default" }}>
+              <div className="member-head">{sess.id}</div>
+              <div className={sess.intent ? "member-quest" : "member-quest none"}>
+                ✦ {sess.intent ?? "no quest declared"}
+              </div>
+              <div className="member-meta">
+                {sess.participants.join(", ") || "empty"}
+                {sess.driverName ? ` · 🛞 ${sess.driverName}` : ""}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
-      <div className="lobby-party">
-        party:{" "}
-        {party.length === 0
-          ? "no one here yet"
-          : party.map((s) => `${s.id} (${s.participants.join(", ") || "empty"})`).join(" · ")}
-      </div>
-      <button className="lobby-enter" onClick={enter} disabled={!name.trim()}>
-        [ enter session ]
-      </button>
+
+      <div className="lobby-foot">NAME &amp; SPRITE ARE EDITABLE LATER · ?name= IN THE URL SKIPS THIS SCREEN</div>
     </div>
   );
 }
