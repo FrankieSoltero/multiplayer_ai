@@ -612,6 +612,9 @@ code, pre { font-family: var(--fm); }
 .subagent .lamp.done { background: var(--green); animation: none; }
 .subagent-body { padding: 0 var(--sp-3) var(--sp-2); }
 
+/* older wheel line (non-fresh) — older control changes render as gold text */
+.line.wheel-old { color: var(--gold); }
+
 /* plan mode toggle — pixel HUD button */
 .planmode {
   font-family: var(--pf); font-size: var(--fs-label); letter-spacing: var(--track-label);
@@ -656,18 +659,6 @@ code, pre { font-family: var(--fm); }
 /* ============================================================ TEMP v5a compat
    Keeps the PRE-PORT (v4-markup) components rendering against this css.
    Each rule names the task that deletes it — delete only then. */
-.transcript.term-frame { overflow-y: auto; padding: var(--sp-3); display: block; }  /* TEMP — Task 5 deletes */
-.line.wheel {  /* TEMP — Task 5 deletes */
-  color: var(--gold);
-  border-top: 1px dashed var(--frame); border-bottom: 1px dashed var(--frame);
-  padding: var(--sp-1) 0; margin: var(--sp-2) 0;
-}
-.line.wheel.fresh { animation: sweepbg 0.9s ease-out 1; }  /* TEMP — Task 5 deletes */
-.perm-actions button:not(.btn) {  /* TEMP — Task 5 deletes */
-  background: transparent; border: 1px solid var(--green); color: var(--green);
-  padding: var(--sp-1) var(--sp-3); cursor: pointer;
-}
-.perm-actions button.deny { border-color: var(--red); color: var(--red); }  /* TEMP — Task 5 deletes */
 .promptbar button.wheel {  /* TEMP — Task 6 deletes */
   width: 100%; padding: var(--sp-2) var(--sp-3); text-align: left; cursor: pointer;
   border: 1px dashed var(--frame); background: transparent; color: var(--gold);
