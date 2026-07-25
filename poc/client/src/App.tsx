@@ -71,6 +71,17 @@ function SessionView(props: {
   });
 
   const derived = useMemo(() => deriveState(events), [events]);
+
+  // HUD numbers that need no server change: counted off the event log (spec §1).
+  const hud = useMemo(
+    () => ({
+      turn: events.filter((e) => e.type === "turn_end").length + 1,
+      toolsUsed: events.filter((e) => e.type === "tool_call").length,
+      gated: events.filter((e) => e.type === "permission_request").length,
+    }),
+    [events],
+  );
+
   const isDriver = derived.driverId === userId;
   const canSetModel = isDriver && !derived.agentBusy;
   const planMode = derived.permissionMode === "plan";
@@ -127,6 +138,7 @@ function SessionView(props: {
         planMode={planMode}
         canTogglePlan={canTogglePlan}
         onTogglePlan={onTogglePlan}
+        hud={hud}
       />
 
       <div className="row">

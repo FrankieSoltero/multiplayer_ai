@@ -2,20 +2,44 @@ export const MODEL_LABELS: Record<string, string> = {
   opus: "opus 4.8", sonnet: "sonnet 5", haiku: "haiku 4.5",
 };
 
+/** Every hud field is optional and renders an em dash when absent — the HUD is
+ *  a design surface first; CONTEXT and PARTY XP stay "—" until server events
+ *  exist (spec §1). turn/toolsUsed/gated are derived client-side in App. */
+export interface HudData {
+  turn?: number;
+  elapsed?: string;
+  contextUsed?: number;
+  contextMax?: number;
+  toolsUsed?: number;
+  gated?: number;
+  partyXp?: number;
+}
+
+const dash = (v: unknown) => (v === undefined || v === null ? "—" : String(v));
+const k = (n?: number) => (n === undefined ? "—" : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+
 export function Header(props: {
   projectId: string; sessionId: string; model: string; connected: boolean;
   objective: string | null; canSetModel: boolean; onSetModel: (key: string) => void;
   planMode: boolean; canTogglePlan: boolean; onTogglePlan: () => void;
+  hud?: HudData;
 }) {
+  const hud = props.hud ?? {};
+  const pct =
+    hud.contextUsed !== undefined && hud.contextMax
+      ? Math.min(100, Math.round((hud.contextUsed / hud.contextMax) * 100))
+      : 0;
+
   return (
     <>
       <div className="term-header term-frame">
         <span className="crumb">
-          multiplayer_ai · <b>{props.projectId}</b> · session <b>{props.sessionId}</b>
+          multiplayer_ai <span className="sep">▸</span> <b>{props.projectId}</b>{" "}
+          <span className="sep">▸</span> session <b>{props.sessionId}</b>
         </span>
         <span className="rule" />
-        <label>
-          agent:{" "}
+        <label className="pix">
+          AGENT{" "}
           <select
             value={props.model}
             disabled={!props.canSetModel}
@@ -37,15 +61,51 @@ export function Header(props: {
               : "only the driver can toggle plan mode, between turns"
           }
         >
-          {props.planMode ? "▣ plan mode" : "▢ plan mode"}
+          {props.planMode ? "◉ PLAN" : "▢ PLAN"}
         </button>
         <span className={props.connected ? "conn" : "conn off"}>
-          {props.connected ? "● connected" : "○ disconnected"}
+          {props.connected ? "● ONLINE" : "○ OFFLINE"}
         </span>
       </div>
+
+      <div className="hud">
+        <div className="hud-cell panel">
+          <div className="hud-label pix sm"><span>TURN</span></div>
+          <div className="hud-val">
+            {dash(hud.turn)} <span className="sub">· {hud.elapsed ?? "—"}</span>
+          </div>
+        </div>
+        <div className="hud-cell wide panel">
+          <div className="hud-label pix sm">
+            <span>CONTEXT</span>
+            <span style={{ color: "var(--green)" }}>
+              {k(hud.contextUsed)} / {k(hud.contextMax)}
+            </span>
+          </div>
+          <div className="seg">
+            <div className="seg-fill" style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+        <div className="hud-cell panel">
+          <div className="hud-label pix sm"><span>TOOLS USED</span></div>
+          <div className="hud-val">
+            {dash(hud.toolsUsed)}{" "}
+            <span className="sub">· {hud.gated ?? 0} gated</span>
+          </div>
+        </div>
+        <div className="hud-cell panel">
+          <div className="hud-label pix sm"><span>PARTY XP</span></div>
+          <div className="hud-val" style={{ color: "var(--gold)" }}>
+            {hud.partyXp === undefined ? "—" : `+${hud.partyXp}`} <span className="sub">today</span>
+          </div>
+        </div>
+      </div>
+
       {props.objective && (
-        <div className="objective">
-          ✦ <span className="label">OBJECTIVE:</span> {props.objective}
+        <div className="quest">
+          <span className="label pix">✦ QUEST</span>
+          <span>{props.objective}</span>
+          <span className="spacer" />
         </div>
       )}
     </>
