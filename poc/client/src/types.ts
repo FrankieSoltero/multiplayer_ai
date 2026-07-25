@@ -32,6 +32,7 @@ export type ProjectSessionInfo = {
   intent: string | null;
   lastActivityTs: string | null;
   ended: boolean;
+  skills?: { name: string; description: string }[];
 };
 
 export const SERVER_URL = "ws://localhost:3001";

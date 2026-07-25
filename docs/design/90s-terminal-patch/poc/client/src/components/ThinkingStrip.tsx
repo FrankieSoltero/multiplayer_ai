@@ -107,7 +107,7 @@ export function ThinkingStrip(props: {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       if (e.code === "Space") { e.preventDefault(); play(); }
-      if (e.key === "g" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.key === "g") {
         e.preventDefault();
         const i = GAMES.findIndex((g) => g.key === game);
         setGame(GAMES[(i + 1) % GAMES.length].key);
@@ -126,7 +126,7 @@ export function ThinkingStrip(props: {
   return (
     <div className={"thinking panel" + (leaving ? " leaving" : "")}>
       <div className="thinking-head">
-        <span className="who">✦ {props.modelLabel.toUpperCase()} IS THINKING… {String(elapsed).padStart(2, "0")}S</span>
+        <span className="who">✦ {props.modelLabel.toUpperCase()} IS THINKING… {pad(elapsed).slice(2)}S</span>
         {props.currentTool && <span className="tool">tool · {props.currentTool}</span>}
         <span className="rule" />
         <span className="thinking-score">SCORE {pad(state.score)}</span>

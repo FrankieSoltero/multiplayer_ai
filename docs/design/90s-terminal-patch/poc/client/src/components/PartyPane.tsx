@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { hashIdentity } from "../identity";
 import type { ProjectSessionInfo } from "../types";
 import type { Participant } from "../derive";
@@ -9,30 +8,29 @@ const ago = (ts: string | null) => {
   return m < 1 ? "just now" : `${m}m ago`;
 };
 
-/** The people in THIS session first, other sessions below (patch design).
- *  Below 900px the pane collapses to a sprite summary strip with a toggle. */
+/**
+ * v4 listed project sessions. v5 keeps that, and puts the people in THIS
+ * session above it — with 7-person parties the roster is the thing you read
+ * first and the other sessions are the map.
+ *
+ * `participants` / `driverId` / `selfId` are optional: without them the pane
+ * degrades to exactly the v4 session list.
+ */
 export function PartyPane(props: {
   projectId: string; sessionId: string; sessions: ProjectSessionInfo[];
-  participants: Map<string, Participant>;
-  driverId: string | null;
-  selfId: string;
+  participants?: Map<string, Participant>;
+  driverId?: string | null;
+  selfId?: string;
+  level?: number;
 }) {
-  const [open, setOpen] = useState(false);
-  const here = [...props.participants.entries()];
+  const here = [...(props.participants?.entries() ?? [])];
   const others = props.sessions.filter((s) => s.id !== props.sessionId);
 
   return (
-    <aside className={"party panel" + (open ? " open" : "")}>
-      <button className="pane-summary" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <span className="pix sm">PARTY</span>
-        {here.map(([id, p]) => (
-          <span key={id} style={{ color: p.color }}>{p.glyph}</span>
-        ))}
-        <span>{open ? "▾" : "▸"}</span>
-      </button>
-
+    <aside className="party panel">
       <div className="party-title pix">
         <span>PARTY · {here.length || props.sessions.length}</span>
+        {props.level !== undefined && <span className="lv pix sm">LV.{props.level}</span>}
       </div>
 
       {here.map(([id, p]) => {
@@ -45,6 +43,11 @@ export function PartyPane(props: {
               {isDriver && <span className="role"> 🛞 DRIVING</span>}
               {isYou && <span className="here"> · you</span>}
             </div>
+            {isYou && (
+              <div className="seg" style={{ height: 8 }}>
+                <div className="seg-fill" style={{ width: "74%" }} />
+              </div>
+            )}
             {!isDriver && !isYou && <div className="member-meta">watching</div>}
           </div>
         );
@@ -82,6 +85,7 @@ export function PartyPane(props: {
 
       <div className="party-foot">
         <span>{others.length} other session{others.length === 1 ? "" : "s"}</span>
+        <span style={{ color: "var(--green)" }}>no overlap</span>
       </div>
     </aside>
   );

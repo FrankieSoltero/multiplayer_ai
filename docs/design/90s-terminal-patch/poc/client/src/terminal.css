@@ -379,6 +379,11 @@ code, pre { font-family: var(--fm); }
   display: flex; justify-content: space-between; color: var(--dim); font-size: var(--fs-sm);
 }
 
+/* HANDOFF §7.4 is still open: v4 hid the pane below 900px, the spec asked for a
+   summary + toggle. Unchanged here on purpose — swapping in a `.party.summary`
+   row of sprites is the ~15-line version if you want the spec behaviour. */
+@media (max-width: 900px) { .party { display: none; } }
+
 /* ------------------------------------------------------- prompt + status */
 
 .promptbar { display: flex; flex-direction: column; gap: var(--sp-1); }
@@ -554,113 +559,4 @@ code, pre { font-family: var(--fm); }
     animation: none;
   }
   .thinking.leaving { transition: none; }
-}
-
-/* ================================================================ v5a surfaces
-   The patch predates v5a. Everything below styles the v5a surfaces in the
-   same idiom (chunky frames, pixel chrome labels, mono content). Class names
-   match the existing components so they keep compiling. */
-
-/* slash autocomplete — pixel-frame popup anchored above the prompt input */
-.slashmenu {
-  position: absolute; bottom: calc(100% + 4px); left: -2px; right: -2px;
-  background: var(--input); border: 2px solid var(--accent);
-  box-shadow: var(--chunk-sm); z-index: 5;
-  display: flex; flex-direction: column;
-}
-.slashmenu button {
-  text-align: left; padding: var(--sp-2) var(--sp-3);
-  background: none; border: 0; color: var(--fg); cursor: pointer; font: inherit;
-}
-.slashmenu button:hover { background: rgba(217, 119, 87, 0.12); }
-.slashmenu .tag { font-family: var(--pf); font-size: 8px; color: var(--accent); margin-right: var(--sp-2); }
-
-/* suggest chip — a passenger's proposed skill riding the perm-card frame, gold */
-.perm.suggest { border-color: rgba(217, 184, 107, 0.42); }
-.perm.suggest:has(.perm-actions) { border-color: var(--gold); background: var(--gold-wash); }
-.perm.suggest .perm-title { color: var(--gold); }
-.perm.suggest .perm-what b { color: var(--gold); }
-.perm.suggest .perm-head .rule { border-top-color: var(--gold); }
-
-/* skill card — a skill invocation is a cast, not a generic tool row */
-.skillcard {
-  margin: var(--sp-2) 0; padding: var(--sp-2) var(--sp-3);
-  border: 2px solid var(--gold); background: var(--gold-wash);
-  box-shadow: inset 0 0 0 2px var(--bg);
-}
-.skillcard .cast { font-family: var(--pf); font-size: var(--fs-label); color: var(--gold); }
-.skillcard .skillname { font-weight: 600; color: var(--gold); }
-
-/* subagent group — an inset co-op window */
-.subagent {
-  margin: var(--sp-2) 0 var(--sp-2) var(--sp-2);
-  border: 2px solid var(--frame); border-left-width: 4px;
-  background: var(--panel); box-shadow: inset 0 0 0 2px var(--bg);
-}
-.subagent > summary {
-  display: flex; align-items: center; gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  color: var(--dim); cursor: pointer; list-style: none;
-}
-.subagent > summary::before { content: "▸"; color: var(--accent); }
-.subagent[open] > summary::before { content: "▾"; }
-.subagent .lamp {
-  width: 10px; height: 10px; flex: none;
-  border: 1px solid var(--frame); background: var(--gold);
-  animation: pulse 1.4s ease-in-out infinite;
-}
-.subagent .lamp.done { background: var(--green); animation: none; }
-.subagent-body { padding: 0 var(--sp-3) var(--sp-2); }
-
-/* older wheel line (non-fresh) — older control changes render as gold text */
-.line.wheel-old { color: var(--gold); }
-
-/* plan mode toggle — pixel HUD button */
-.planmode {
-  font-family: var(--pf); font-size: var(--fs-label); letter-spacing: var(--track-label);
-  background: transparent; border: 2px solid var(--frame); color: var(--dim);
-  padding: 4px 8px; cursor: pointer; box-shadow: var(--chunk-sm);
-}
-.planmode.on { color: var(--gold); border-color: var(--gold); background: var(--gold-wash); }
-.planmode:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
-
-/* plan approval card — perm-card frame in the plan (gold) accent */
-.perm.plancard { border-color: rgba(217, 184, 107, 0.42); }
-.perm.plancard:has(.perm-actions) { border-color: var(--gold); background: var(--gold-wash); }
-.perm.plancard .perm-title { color: var(--gold); }
-.plan-body {
-  margin: 0; padding: var(--sp-2) var(--sp-3);
-  background: var(--input); border: 1px solid var(--frame);
-  overflow-x: auto; white-space: pre-wrap;
-}
-
-/* todo panel — QUEST LOG */
-.todopanel {
-  width: 220px; padding: 10px; overflow-y: auto;
-  display: flex; flex-direction: column; gap: var(--sp-1);
-}
-.todo { color: var(--dim); }
-.todo.in_progress { color: var(--gold); }
-.todo.completed { text-decoration: line-through; }
-
-/* <900px: side panes collapse to a summary strip with a toggle (spec §6) */
-.pane-summary {
-  display: none; background: none; border: 0; color: var(--dim);
-  cursor: pointer; align-items: center; gap: var(--sp-2); padding: 0;
-}
-@media (max-width: 900px) {
-  .row { flex-direction: column; }
-  .party, .todopanel { display: flex; width: 100%; }
-  .pane-summary { display: flex; }
-  .party:not(.open) > :not(.pane-summary),
-  .todopanel:not(.open) > :not(.pane-summary) { display: none; }
-}
-
-/* Reduced-motion coverage for rules declared below the main kill list above
-   (~line 550): equal specificity means later source order wins, so appending
-   to that list isn't enough once a rule lives past it. New animations added
-   anywhere below the main kill block must be added here too (or moved above
-   it and added to its selector list). */
-@media (prefers-reduced-motion: reduce) {
-  .subagent .lamp { animation: none; }
 }

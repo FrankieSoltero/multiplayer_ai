@@ -37,6 +37,7 @@ export interface ProjectMessage {
     intent: string | null;
     lastActivityTs: string | null;
     ended: boolean;
+    skills: SkillInfo[];
   }[];
 }
 
@@ -54,6 +55,7 @@ export function projectSnapshot(project: Project): ProjectMessage {
       intent: summary.intent,
       lastActivityTs: events.at(-1)?.ts ?? null,
       ended: summary.ended,
+      skills: entry.skills,
     };
   });
   return { type: "project", sessions };

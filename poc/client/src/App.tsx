@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import "./terminal.css";
-import { deriveState } from "./derive";
+import { deriveState, deriveTranscriptGroups } from "./derive";
 import { hashIdentity, loadOrCreateUserId, loadProfile, saveProfile } from "./identity";
 import type { Profile } from "./identity";
 import { useSessionSocket } from "./useSessionSocket";
@@ -11,12 +11,18 @@ import { PartyPane } from "./components/PartyPane";
 import { TodoPanel } from "./components/TodoPanel";
 import { ThinkingStrip } from "./components/ThinkingStrip";
 import { Lobby } from "./components/Lobby";
+import { Cabinet, Crt } from "./components/Crt";
+import { SkillsPanel } from "./components/SkillsPanel";
+import { AgentStatus } from "./components/AgentStatus";
+
+const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
 
 export default function App() {
   const [userId] = useState(loadOrCreateUserId);
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   const sessionId = params.get("session") ?? "demo";
   const projectId = params.get("project") ?? "default";
+  const screen = params.get("screen");
 
   // Profile precedence: `?name=` URL param auto-derives a profile (glyph/color
   // hashed from userId) and skips the lobby entirely — demo scripts depend on
@@ -31,27 +37,24 @@ export default function App() {
     return loadProfile();
   });
 
-  if (profile === null) {
-    return (
-      <Lobby
-        projectId={projectId}
-        sessionId={sessionId}
-        defaultName={`user-${userId.slice(0, 4)}`}
-        onEnter={(p) => {
-          saveProfile(p);
-          setProfile(p);
-        }}
-      />
-    );
-  }
-
   return (
-    <SessionView
-      userId={userId}
-      sessionId={sessionId}
-      projectId={projectId}
-      profile={profile}
-    />
+    <Cabinet legend={LEGEND}>
+      <Crt>
+        {profile === null ? (
+          <Lobby
+            projectId={projectId}
+            sessionId={sessionId}
+            defaultName={`user-${userId.slice(0, 4)}`}
+            onEnter={(p) => {
+              saveProfile(p);
+              setProfile(p);
+            }}
+          />
+        ) : (
+          <SessionView userId={userId} sessionId={sessionId} projectId={projectId} profile={profile} screen={screen} />
+        )}
+      </Crt>
+    </Cabinet>
   );
 }
 
@@ -60,6 +63,7 @@ function SessionView(props: {
   sessionId: string;
   projectId: string;
   profile: Profile;
+  screen: string | null;
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
@@ -71,6 +75,25 @@ function SessionView(props: {
   });
 
   const derived = useMemo(() => deriveState(events), [events]);
+
+  // HUD numbers that need no server change: counted off the event log (spec §1).
+  const hud = useMemo(
+    () => ({
+      turn: events.filter((e) => e.type === "turn_end").length + 1,
+      toolsUsed: events.filter((e) => e.type === "tool_call").length,
+      gated: events.filter((e) => e.type === "permission_request").length,
+    }),
+    [events],
+  );
+
+  const gatesPending = useMemo(
+    () =>
+      events.filter(
+        (e) => e.type === "permission_request" && e.requestId && !derived.permissionDecisions.has(e.requestId),
+      ).length,
+    [events, derived.permissionDecisions],
+  );
+
   const isDriver = derived.driverId === userId;
   const canSetModel = isDriver && !derived.agentBusy;
   const planMode = derived.permissionMode === "plan";
@@ -114,6 +137,33 @@ function SessionView(props: {
     send({ type: "decide_plan", requestId, decision });
   }
 
+  // last tool_call of the in-flight turn — derivable, no server change
+  let currentTool: string | undefined;
+  if (derived.agentBusy) {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.type === "turn_end") break;
+      if (e.type === "tool_call") { currentTool = e.toolName; break; }
+    }
+  }
+
+  if (props.screen === "skills") {
+    const subruns = deriveTranscriptGroups(events)
+      .filter((g) => g.kind === "subagent")
+      .map((g) => ({ label: g.label, status: g.status, rows: g.events.length }));
+    return (
+      <SkillsPanel
+        sessions={projectSessions}
+        sessionId={sessionId}
+        roster={derived.skills}
+        subruns={subruns}
+      />
+    );
+  }
+  if (props.screen === "status") {
+    return <AgentStatus model={derived.model} canSetModel={canSetModel} onSetModel={onSetModel} rosterCount={derived.skills.length} />;
+  }
+
   return (
     <div className="term">
       <Header
@@ -127,9 +177,10 @@ function SessionView(props: {
         planMode={planMode}
         canTogglePlan={canTogglePlan}
         onTogglePlan={onTogglePlan}
+        hud={hud}
       />
 
-      <div className="split">
+      <div className="row">
         <Transcript
           events={events}
           derived={derived}
@@ -140,11 +191,18 @@ function SessionView(props: {
           onDecidePlan={onDecidePlan}
         />
 
-        <PartyPane projectId={projectId} sessionId={sessionId} sessions={projectSessions} />
+        <PartyPane
+          projectId={projectId}
+          sessionId={sessionId}
+          sessions={projectSessions}
+          participants={derived.participants}
+          driverId={derived.driverId}
+          selfId={userId}
+        />
         <TodoPanel todos={derived.todos} />
       </div>
 
-      <ThinkingStrip busy={derived.agentBusy} modelLabel={MODEL_LABELS[derived.model] ?? derived.model} />
+      <ThinkingStrip busy={derived.agentBusy} modelLabel={MODEL_LABELS[derived.model] ?? derived.model} currentTool={currentTool} />
 
       {errors.length > 0 && <div className="line red">⚠ {errors.at(-1)}</div>}
 
@@ -153,6 +211,7 @@ function SessionView(props: {
         agentBusy={derived.agentBusy}
         watcherNames={watcherNames}
         skills={derived.skills}
+        gatesPending={gatesPending}
         onPrompt={onPrompt}
         onTakeWheel={onTakeWheel}
         onSuggestSkill={onSuggestSkill}

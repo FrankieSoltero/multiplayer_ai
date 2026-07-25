@@ -2,9 +2,12 @@ export const MODEL_LABELS: Record<string, string> = {
   opus: "opus 4.8", sonnet: "sonnet 5", haiku: "haiku 4.5",
 };
 
-/** Every hud field is optional and renders an em dash when absent — the HUD is
- *  a design surface first; CONTEXT and PARTY XP stay "—" until server events
- *  exist (spec §1). turn/toolsUsed/gated are derived client-side in App. */
+/**
+ * Everything in `hud` and `quest` is optional and renders an em dash when
+ * absent — the HUD strip is a design surface first, so it must not wait on new
+ * server events to look right. `turn` and `toolsUsed` are already derivable
+ * client-side from the event log (count turn_end / tool_call in derive.ts).
+ */
 export interface HudData {
   turn?: number;
   elapsed?: string;
@@ -21,8 +24,8 @@ const k = (n?: number) => (n === undefined ? "—" : n >= 1000 ? `${(n / 1000).t
 export function Header(props: {
   projectId: string; sessionId: string; model: string; connected: boolean;
   objective: string | null; canSetModel: boolean; onSetModel: (key: string) => void;
-  planMode: boolean; canTogglePlan: boolean; onTogglePlan: () => void;
   hud?: HudData;
+  questStep?: { done: number; total: number };
 }) {
   const hud = props.hud ?? {};
   const pct =
@@ -51,18 +54,6 @@ export function Header(props: {
             ))}
           </select>
         </label>
-        <button
-          className={props.planMode ? "planmode on" : "planmode"}
-          disabled={!props.canTogglePlan}
-          onClick={props.onTogglePlan}
-          title={
-            props.canTogglePlan
-              ? "plan mode: the agent must present a plan for approval before acting"
-              : "only the driver can toggle plan mode, between turns"
-          }
-        >
-          {props.planMode ? "◉ PLAN" : "▢ PLAN"}
-        </button>
         <span className={props.connected ? "conn" : "conn off"}>
           {props.connected ? "● ONLINE" : "○ OFFLINE"}
         </span>
@@ -106,6 +97,16 @@ export function Header(props: {
           <span className="label pix">✦ QUEST</span>
           <span>{props.objective}</span>
           <span className="spacer" />
+          {props.questStep && (
+            <>
+              <span className="of">step {props.questStep.done}/{props.questStep.total}</span>
+              <span className="steps">
+                {Array.from({ length: props.questStep.total }, (_, i) => (
+                  <i key={i} className={i < props.questStep!.done ? "on" : ""} />
+                ))}
+              </span>
+            </>
+          )}
         </div>
       )}
     </>
