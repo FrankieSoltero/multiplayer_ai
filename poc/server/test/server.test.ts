@@ -437,3 +437,41 @@ describe("set_model", () => {
     a.close(); b.close(); await server.close();
   });
 });
+
+describe("identity on join and pre-join peek", () => {
+  it("join forwards validated glyph/color; junk is dropped", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    const ws = await connect(server.port);
+    const sink: any[] = []; collect(ws, sink);
+    ws.send(JSON.stringify({ type: "join", sessionId: "g1", userId: "u1", name: "ana", lastSeq: 0, glyph: "▲", color: "#61afef" }));
+    await vi.waitFor(() => expect(sink.some((m) => m.type === "event" && m.event.type === "presence_join" && m.event.glyph === "▲" && m.event.color === "#61afef")).toBe(true));
+    ws.close();
+    const ws2 = await connect(server.port);
+    const sink2: any[] = []; collect(ws2, sink2);
+    ws2.send(JSON.stringify({ type: "join", sessionId: "g2", userId: "u2", name: "ben", lastSeq: 0, glyph: "<script>", color: "red" }));
+    await vi.waitFor(() => {
+      const ev = sink2.find((m) => m.type === "event" && m.event.type === "presence_join" && m.event.userId === "u2");
+      expect(ev).toBeTruthy();
+      expect(ev.event.glyph).toBeUndefined();
+      expect(ev.event.color).toBeUndefined();
+    });
+    ws2.close(); await server.close();
+  });
+
+  it("peek returns a project snapshot without joining", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    const member = await connect(server.port);
+    member.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "p1", userId: "u1", name: "ana", lastSeq: 0 }));
+    const peeker = await connect(server.port);
+    const sink: any[] = []; collect(peeker, sink);
+    peeker.send(JSON.stringify({ type: "peek", projectId: "demo" }));
+    await vi.waitFor(() => {
+      const snap = sink.find((m) => m.type === "project");
+      expect(snap).toBeTruthy();
+      expect(snap.sessions.map((s: any) => s.id)).toContain("p1");
+    });
+    peeker.send(JSON.stringify({ type: "peek", projectId: "nope" }));
+    await vi.waitFor(() => expect(sink.filter((m) => m.type === "project").length).toBeGreaterThanOrEqual(2));
+    member.close(); peeker.close(); await server.close();
+  });
+});

@@ -14,6 +14,8 @@ import { Session } from "./session.js";
 
 const MAX_PROMPT_LENGTH = 4000;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
+const ALLOWED_GLYPHS = new Set(["■", "▲", "●", "✦", "◆", "♠"]);
+const COLOR_RE = /^#[0-9a-f]{6}$/i;
 
 interface ClientContext {
   project: Project;
@@ -157,10 +159,32 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
         });
         ctx = { project, entry, userId: msg.userId, unsubscribe };
         project.watchers.add(ws);
-        entry.session.join(msg.userId, msg.name.slice(0, 40));
+        const glyph =
+          typeof msg.glyph === "string" && ALLOWED_GLYPHS.has(msg.glyph)
+            ? msg.glyph
+            : undefined;
+        const color =
+          typeof msg.color === "string" && COLOR_RE.test(msg.color)
+            ? msg.color.toLowerCase()
+            : undefined;
+        entry.session.join(msg.userId, msg.name.slice(0, 40), { glyph, color });
         // Immediate personal snapshot so the sidebar isn't blank until the
         // next throttled push.
         ws.send(JSON.stringify(projectSnapshot(project)));
+        return;
+      }
+
+      if (msg.type === "peek") {
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) {
+          return sendError("peek requires a valid projectId");
+        }
+        const project = projects.get(projectId);
+        ws.send(
+          JSON.stringify(
+            project ? projectSnapshot(project) : { type: "project", sessions: [] },
+          ),
+        );
         return;
       }
 
