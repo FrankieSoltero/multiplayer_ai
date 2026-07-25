@@ -1,6 +1,6 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25, v4 (terminal-multiplayer product design) BUILT + live-acceptance PASSED; final whole-branch review pending.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25, v4 COMPLETE: final whole-branch review MERGE-READY, fix wave landed (bde35c8), re-review clean. Next: user decisions §7 + finishing-a-development-branch.*
 
 ## 0. WHERE WE ARE (v4 executed; final review + user decisions remain)
 
