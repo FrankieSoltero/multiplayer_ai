@@ -87,6 +87,12 @@ function isContainedWrite(workdir: string | undefined, input: unknown): boolean 
  */
 export function buildCanUseTool(hooks: DriverHooks): CanUseTool {
   return async (toolName, input, options) => {
+    // TodoWrite is the agent's own bookkeeping (mirrored to the party as a
+    // todo_update event by the driver) — pausing the session to approve it is
+    // pure noise, and it writes no files and runs no commands.
+    if (toolName === "TodoWrite") {
+      return { behavior: "allow" };
+    }
     const command = (input as { command?: unknown }).command;
     if (toolName === "Bash" && typeof command === "string" && isAutoApprovedBash(command)) {
       return { behavior: "allow" };

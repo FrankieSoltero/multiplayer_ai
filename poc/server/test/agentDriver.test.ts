@@ -597,3 +597,54 @@ describe("subagent lineage", () => {
     expect(done.toolUseId).toBe("task-1");
   });
 });
+
+const todoRun: RunQuery = async function* (prompts) {
+  for await (const _prompt of prompts) {
+    yield {
+      type: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "td-1",
+          name: "TodoWrite",
+          input: {
+            todos: [
+              { content: "write tests", status: "completed", activeForm: "writing tests" },
+              { content: "implement", status: "in_progress", activeForm: "implementing" },
+              { content: 42, status: "pending" },              // invalid content — dropped
+              { content: "ship", status: "someday" },          // invalid status — dropped
+            ],
+          },
+        },
+      ],
+    };
+    // Subagent TodoWrite must NOT mirror to the panel
+    yield {
+      type: "assistant",
+      parent_tool_use_id: "task-9",
+      content: [
+        { type: "tool_use", id: "td-2", name: "TodoWrite", input: { todos: [{ content: "sub", status: "pending" }] } },
+      ],
+    };
+    return;
+  }
+};
+
+describe("todo mirror", () => {
+  it("emits todo_update from main-agent TodoWrite only, dropping invalid entries", async () => {
+    const session = new Session("s-todo");
+    const events: any[] = [];
+    session.subscribe((e) => events.push(e));
+    const driver = new AgentDriver(session, todoRun);
+    driver.sendPrompt("u1", "plan it");
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.type === "tool_call" && e.toolName === "TodoWrite").length).toBe(2);
+    });
+    const updates = events.filter((e) => e.type === "todo_update");
+    expect(updates.length).toBe(1);
+    expect(updates[0].todos).toEqual([
+      { text: "write tests", status: "completed" },
+      { text: "implement", status: "in_progress" },
+    ]);
+  });
+});

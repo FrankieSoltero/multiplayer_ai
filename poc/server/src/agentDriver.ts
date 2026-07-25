@@ -5,6 +5,7 @@ import { AsyncQueue } from "./asyncQueue.js";
 import { MODELS, DEFAULT_MODEL, type ModelKey } from "./models.js";
 import { buildCanUseTool } from "./permissions.js";
 import type { Session } from "./session.js";
+import type { TodoItem } from "./events.js";
 
 /**
  * Message pushed into the SDK's streaming-input queue.
@@ -371,6 +372,10 @@ export class AgentDriver {
             ...(block.id ? { toolUseId: block.id } : {}),
             ...(parentId ? { parentToolUseId: parentId } : {}),
           });
+          if (block.name === "TodoWrite" && !parentId) {
+            const todos = this.todosFrom(block.input);
+            if (todos) this.session.append({ type: "todo_update", todos });
+          }
         }
       }
     } else if (message.type === "result" || message.type === "user") {
@@ -425,5 +430,21 @@ export class AgentDriver {
     throw new Error(
       `tool_result content has unsupported shape: ${typeof content}`,
     );
+  }
+
+  /**
+   * Parse a TodoWrite input into wire TodoItems. The SDK's TodoWrite input is
+   * { todos: [{ content, status, activeForm }] }; we keep content/status only,
+   * drop malformed entries, and cap list size and text length for wire hygiene.
+   */
+  private todosFrom(input: unknown): TodoItem[] | null {
+    const todos = (input as { todos?: unknown }).todos;
+    if (!Array.isArray(todos)) return null;
+    const valid = new Set(["pending", "in_progress", "completed"]);
+    return todos.slice(0, 50).flatMap((t) => {
+      const { content, status } = t as { content?: unknown; status?: unknown };
+      if (typeof content !== "string" || typeof status !== "string" || !valid.has(status)) return [];
+      return [{ text: content.slice(0, 200), status: status as TodoItem["status"] }];
+    });
   }
 }

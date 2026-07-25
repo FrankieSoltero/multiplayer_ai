@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { isAutoApprovedBash } from "../src/permissions.js";
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import { buildCanUseTool } from "../src/permissions.js";
@@ -224,5 +224,17 @@ describe("buildCanUseTool worktree containment (file-writing tools)", () => {
     expect(result?.behavior).toBe("deny");
     expect(calls.length).toBe(1);
     expect(calls[0].toolName).toBe("NotebookEdit");
+  });
+
+  it("auto-approves TodoWrite without consulting the driver", async () => {
+    const onPermissionRequest = vi.fn();
+    const canUse = buildCanUseTool({ onIntent: () => {}, onPermissionRequest });
+    const result = await canUse(
+      "TodoWrite",
+      { todos: [{ content: "step 1", status: "pending", activeForm: "doing step 1" }] },
+      { signal: new AbortController().signal } as any,
+    );
+    expect(result).toEqual({ behavior: "allow" });
+    expect(onPermissionRequest).not.toHaveBeenCalled();
   });
 });
