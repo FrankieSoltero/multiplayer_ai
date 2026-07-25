@@ -72,6 +72,24 @@ button, input, select { font: inherit; color: inherit; }
 }
 .statusline .driving { color: var(--green); }
 
+/* take-the-wheel flourish */
+.line.wheel { color: var(--gold); border-top: 1px dashed var(--frame); border-bottom: 1px dashed var(--frame); padding: 3px 0; margin: 6px 0; }
+.line.wheel.fresh { animation: wheel-sweep 0.9s ease-out 1; }
+@keyframes wheel-sweep {
+  0% { background: linear-gradient(90deg, var(--gold) 0%, transparent 0%); color: var(--bg); }
+  60% { background: linear-gradient(90deg, transparent 0%, rgba(217, 184, 107, 0.25) 50%, transparent 100%); color: var(--gold); }
+  100% { background: transparent; }
+}
+
+/* permission block */
+.perm { border: 1px solid var(--amber); border-left-width: 3px; border-radius: 4px; padding: 6px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 4px; }
+.perm-title { color: var(--amber); }
+.perm-input { background: var(--bg); border-radius: 3px; padding: 4px 8px; overflow-wrap: anywhere; color: var(--fg); }
+.perm-actions { display: flex; gap: 10px; }
+.perm-actions button { background: transparent; border: 1px solid var(--green); color: var(--green); border-radius: 4px; padding: 2px 10px; cursor: pointer; }
+.perm-actions button.deny { border-color: var(--red); color: var(--red); }
+.perm-outcome { color: var(--dim); font-size: 12px; }
+
 /* party pane (Task 8), thinking strip (Task 9), lobby (Task 10) add their
    sections below this line */
 @media (max-width: 900px) { .party { display: none; } }

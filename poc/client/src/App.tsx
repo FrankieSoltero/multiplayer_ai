@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import "./terminal.css";
 import { deriveState } from "./derive";
 import { hashIdentity, loadOrCreateUserId, loadProfile } from "./identity";
@@ -6,6 +6,7 @@ import type { Profile } from "./identity";
 import { useSessionSocket } from "./useSessionSocket";
 import { Header } from "./components/Header";
 import { PromptBar } from "./components/PromptBar";
+import { Transcript } from "./components/Transcript";
 
 export default function App() {
   const [userId] = useState(loadOrCreateUserId);
@@ -43,11 +44,6 @@ export default function App() {
     .map(([, p]) => p.name);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [events]);
 
   function onPrompt(text: string) {
     send({ type: "prompt", text });
@@ -78,101 +74,13 @@ export default function App() {
       />
 
       <div className="split">
-        <main className="transcript term-frame">
-          {events.map((ev) => {
-            switch (ev.type) {
-              case "user_message":
-                return (
-                  <div key={ev.seq} className="line">
-                    <span className="who">
-                      {derived.participants.get(ev.userId ?? "")?.name ?? ev.userId}:
-                    </span>{" "}
-                    {ev.text}
-                  </div>
-                );
-              case "agent_text_delta":
-                return (
-                  <div key={ev.seq} className="line">
-                    {ev.text}
-                  </div>
-                );
-              case "tool_call":
-                return (
-                  <div key={ev.seq} className="line dim">
-                    ⚙ {ev.toolName}({JSON.stringify(ev.input)})
-                  </div>
-                );
-              case "tool_result":
-                return (
-                  <div key={ev.seq} className="line dim">
-                    ↳ {ev.output?.slice(0, 300)}
-                  </div>
-                );
-              case "control_change":
-                return (
-                  <div key={ev.seq} className="line dim">
-                    🛞 {derived.participants.get(ev.userId ?? "")?.name ?? ev.userId} took
-                    the wheel
-                  </div>
-                );
-              case "agent_error":
-                return (
-                  <div key={ev.seq} className="line red">
-                    ⚠ {ev.message}
-                  </div>
-                );
-              case "intent_update":
-                return (
-                  <div key={ev.seq} className="line gold">
-                    ✦ agent intent: {ev.text}
-                  </div>
-                );
-              case "permission_request": {
-                const decided = ev.requestId
-                  ? derived.permissionDecisions.get(ev.requestId)?.decision
-                  : undefined;
-                const cmd = (ev.input as { command?: unknown } | undefined)?.command;
-                const preview =
-                  typeof cmd === "string" ? cmd : JSON.stringify(ev.input);
-                return (
-                  <div key={ev.seq} className="line">
-                    <div>
-                      🔐 agent wants to run <span className="who">{ev.toolName}</span>
-                    </div>
-                    <code>{preview?.slice(0, 300)}</code>
-                    {decided ? (
-                      <div className="line dim">
-                        {decided === "allow" ? "✅ approved" : "⛔ denied"}
-                      </div>
-                    ) : isDriver && ev.requestId ? (
-                      <div>
-                        <button onClick={() => sendPermission(ev.requestId!, "allow")}>
-                          Approve
-                        </button>
-                        <button onClick={() => sendPermission(ev.requestId!, "deny")}>
-                          Deny
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="line dim">⏳ waiting for the driver to decide…</div>
-                    )}
-                  </div>
-                );
-              }
-              case "permission_decision":
-                return (
-                  <div key={ev.seq} className="line dim">
-                    {ev.decision === "allow" ? "✅" : "⛔"}{" "}
-                    {derived.participants.get(ev.userId ?? "")?.name ?? ev.userId}{" "}
-                    {ev.decision === "allow" ? "approved" : "denied"} a tool request
-                  </div>
-                );
-              default:
-                return null;
-            }
-          })}
-          <div ref={bottomRef} />
-        </main>
+        <Transcript
+          events={events}
+          derived={derived}
+          isDriver={isDriver}
+          selfId={userId}
+          onPermission={sendPermission}
+        />
 
         <aside className="party term-frame">
           <div className="line dim">project: {projectId}</div>
