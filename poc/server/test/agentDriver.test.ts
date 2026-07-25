@@ -741,6 +741,67 @@ describe("task tool mirror (live SDK TaskCreate/TaskUpdate)", () => {
     ]);
     expect(updates[3].todos).toEqual([{ text: "write tests", status: "completed" }]);
   });
+
+  it("never reuses an id after a delete — ids stay monotonic like the SDK's own numbering", async () => {
+    // create a(id 1), create b(id 2), delete a(id 1), create c → c must get
+    // id 3 (not a reused "2", which would collide with b and let a later
+    // TaskUpdate("2") corrupt b instead of targeting c).
+    const collisionRun: RunQuery = async function* (prompts) {
+      for await (const _prompt of prompts) {
+        yield {
+          type: "assistant",
+          content: [
+            { type: "tool_use", id: "tc-a", name: "TaskCreate", input: { subject: "a" } },
+          ],
+        };
+        yield {
+          type: "assistant",
+          content: [
+            { type: "tool_use", id: "tc-b", name: "TaskCreate", input: { subject: "b" } },
+          ],
+        };
+        yield {
+          type: "assistant",
+          content: [
+            { type: "tool_use", id: "tu-del-a", name: "TaskUpdate", input: { taskId: "1", status: "deleted" } },
+          ],
+        };
+        yield {
+          type: "assistant",
+          content: [
+            { type: "tool_use", id: "tc-c", name: "TaskCreate", input: { subject: "c" } },
+          ],
+        };
+        yield {
+          type: "assistant",
+          content: [
+            { type: "tool_use", id: "tu-complete-c", name: "TaskUpdate", input: { taskId: "3", status: "completed" } },
+          ],
+        };
+        return;
+      }
+    };
+    const session = new Session("s-task-id-collision");
+    const events: any[] = [];
+    session.subscribe((e) => events.push(e));
+    const driver = new AgentDriver(session, collisionRun);
+    driver.sendPrompt("u1", "plan it");
+    await vi.waitFor(() => {
+      expect(
+        events.filter(
+          (e) =>
+            e.type === "tool_call" &&
+            (e.toolName === "TaskCreate" || e.toolName === "TaskUpdate"),
+        ).length,
+      ).toBe(5);
+    });
+    const updates = events.filter((e) => e.type === "todo_update");
+    const last = updates.at(-1);
+    expect(last.todos).toEqual([
+      { text: "b", status: "pending" },
+      { text: "c", status: "completed" },
+    ]);
+  });
 });
 
 describe("plan gate", () => {

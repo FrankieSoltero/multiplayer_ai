@@ -186,6 +186,15 @@ export class AgentDriver {
   // replacement for TodoWrite), used to emit todo_update snapshots. Ids are
   // assigned sequentially from 1 to mirror the SDK's own numbering.
   private taskPanel: { id: string; text: string; status: "pending" | "in_progress" | "completed" }[] = [];
+  // Next id to assign on TaskCreate. MUST be its own monotonic counter, not
+  // derived from taskPanel.length: the SDK never reuses ids, but a plain
+  // length-based id would (create a(1), create b(2), delete a, create c
+  // would rederive c's id as 2 — colliding with b's still-live id — and a
+  // later TaskUpdate("2") would then corrupt b instead of targeting c).
+  // Incremented on every accepted main-agent TaskCreate regardless of the
+  // 50-item cap, so ids assigned after the cap kicks in stay aligned with
+  // the SDK's own numbering (which keeps counting past 50).
+  private nextTaskId = 1;
 
   constructor(
     private session: Session,
@@ -513,16 +522,18 @@ export class AgentDriver {
           } else if (block.name === "TaskCreate" && !parentId) {
             const subject = (block.input as { subject?: unknown } | undefined)
               ?.subject;
-            if (typeof subject === "string" && subject.length > 0 && this.taskPanel.length < 50) {
-              this.taskPanel.push({
-                id: String(this.taskPanel.length + 1),
-                text: subject.slice(0, 200),
-                status: "pending",
-              });
-              this.session.append({
-                type: "todo_update",
-                todos: this.taskPanel.map(({ text, status }) => ({ text, status })),
-              });
+            if (typeof subject === "string" && subject.length > 0) {
+              // Assign the id and advance the counter regardless of the cap
+              // below, so ids stay aligned with the SDK's own monotonic
+              // numbering even once the panel itself stops growing.
+              const id = String(this.nextTaskId++);
+              if (this.taskPanel.length < 50) {
+                this.taskPanel.push({ id, text: subject.slice(0, 200), status: "pending" });
+                this.session.append({
+                  type: "todo_update",
+                  todos: this.taskPanel.map(({ text, status }) => ({ text, status })),
+                });
+              }
             }
           } else if (block.name === "TaskUpdate" && !parentId) {
             const { taskId, status, subject } = (block.input ?? {}) as {
