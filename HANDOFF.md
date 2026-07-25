@@ -1,6 +1,6 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (late evening): v5a COMPLETE on `feature/v5a-harness` — fix re-review clean, live re-test passed, final whole-branch review clean (one trivial fix applied, commit 3527d9a), plan workspace deleted. BLOCKED ON USER: merge menu (merge local / PR / keep) + batched §7 decisions. Then the queued ask: `Multiplayer AI 90s Terminal UI.zip`.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (late evening): v5a COMPLETE. USER DECIDED: integrate via push + PR (v4 precedent); screenshots DROPPED (deleted, HANDOFF text record suffices). PR against main opened from `feature/v5a-harness`. NEXT: remaining §7 decisions + queued ask `Multiplayer AI 90s Terminal UI.zip`.*
 
 ## 0. WHERE WE ARE — v5a done, awaiting integration decision
 
@@ -35,11 +35,10 @@ Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration. v1–v4 merged to m
 
 ## 4. Ordered next steps
 
-1. **USER: pick integration option** — merge to main locally / push + create PR (v4 precedent) / keep branch. Execute per finishing-a-development-branch (on merge: checkout main, merge, re-run both suites, delete branch only after green).
-2. **USER: batched decisions** (§7) — can ride along with step 1 or after.
-3. Commit or drop the untracked images per decision 7 (`v5a-*.jpeg`, `ana-live.png`, old step*.png if any remain).
-4. **Queued user ask:** unzip `Multiplayer AI 90s Terminal UI.zip` (repo root) into scratchpad, study, then discuss application (restyle v5a UI? feeds v5b? separate cycle). Brainstorm → spec; frontend-design skill relevant. No restyle without a spec.
-5. v5b (game roster + party high score) when the user wants it — fresh spec/plan cycle.
+1. DONE: user chose push + PR; branch pushed, PR open against main (merge happens on GitHub when user is ready). Screenshots deleted per user choice.
+2. **USER: remaining batched decisions** (§7, items 1–6 and 8–10) — present when convenient; none block the PR.
+3. **Queued user ask:** unzip `Multiplayer AI 90s Terminal UI.zip` (repo root) into scratchpad, study, then discuss application (restyle v5a UI? feeds v5b? separate cycle). Brainstorm → spec; frontend-design skill relevant. No restyle without a spec.
+4. v5b (game roster + party high score) when the user wants it — fresh spec/plan cycle.
 
 ## 5. Files with line refs (HEAD 3527d9a)
 
@@ -61,7 +60,7 @@ Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration. v1–v4 merged to m
 ## 7. Open questions / USER DECISIONS (batched — present at merge)
 
 Carried v3: (1) worktree-containment Write/Edit approval; (2) Bash-allowlist two-hop residual risk; (3) skill discovery under settingSources:[] confirmed broken — accept self-recovery or investigate SDK versions.
-Carried v4: (4) party pane <900px hide (TodoPanel same); (5) stale skill name in v4 spec text; (6) 4 structural polish items in frontend-design-skill-notes; (7) images: `ana-live.png` + `v5a-plan-approved-ben.jpeg` + `v5a-tasks-subagent-retest.jpeg` — commit or drop.
+Carried v4: (4) party pane <900px hide (TodoPanel same); (5) stale skill name in v4 spec text; (6) 4 structural polish items in frontend-design-skill-notes. ~~(7) screenshots~~ RESOLVED 2026-07-25: user chose DROP — all three deleted.
 New v5a: (8) deferred minors marked DEFER in §3 triage — schedule post-merge or drop; (9) meta-tools bypassing the permission gate — accept or raise upstream; (10) suggest-chip args preview 120/500 chars on an approval surface — widen to 300+ or accept; (11) `Multiplayer AI 90s Terminal UI.zip` — how blueprints map to work (restyle v5a? feeds v5b? separate cycle) — ask after studying it.
 
 ## 8. Resume & verify
