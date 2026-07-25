@@ -93,9 +93,10 @@ you don't need the live app):
   purple card now shows a collapsed "denied" outcome line, followed by system lines
   ("took the wheel", "denied a tool request") and the agent's own bubble reply adapting to
   the denial.
-- `step4-sidebar.png` — a non-driving participant's near-empty transcript (just a "took the
-  wheel" system line) next to the teammates sidebar showing one other live session card with
-  its intent, participants, and driver.
+- `step4-sidebar.png` — the newly-driving participant's near-empty transcript right after
+  taking the wheel (just a "took the wheel" system line, with the driving-only prompt input
+  now active in the footer) next to the teammates sidebar showing one other live session
+  card with its intent, participants, and driver.
 
 ---
 
