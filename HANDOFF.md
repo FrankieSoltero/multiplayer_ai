@@ -1,6 +1,6 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25, v4 COMPLETE: final whole-branch review MERGE-READY, fix wave landed (bde35c8), re-review clean. Next: user decisions §7 + finishing-a-development-branch.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (afternoon): v4 merge-ready + LIVE co-walkthrough done with the user; two live-feedback fixes landed (96f73b0 opt-in dino game, 5336f3c turn_end-per-result fix for queued-prompt busy deadlock, 71/71 server tests). Awaiting user's merge choice (menu presented: merge local / PR / keep) + §7 decisions.*
 
 ## 0. WHERE WE ARE (v4 executed; final review + user decisions remain)
 
@@ -22,7 +22,7 @@
 - v4 spec: `docs/superpowers/specs/2026-07-24-product-design-terminal-multiplayer.md` (user-approved; constraint line amended for turn_end/identity/peek).
 - v4 plan: `docs/superpowers/plans/2026-07-24-terminal-multiplayer-design.md` (12 tasks, all complete, every task review clean; fix loops: Task 1 one round).
 - SDD ledger: `.superpowers/sdd/2026-07-24-terminal-multiplayer-design/progress.md` — deferred minors + surfaced conflicts recorded there; trust it + `git log` over memory.
-- **Stopped exactly at: Task 12 scenarios passed; acceptance commit + final whole-branch review NOT yet done.**
+- **Stopped exactly at: finishing-a-development-branch menu presented (merge local / push+PR / keep) + §7 decisions batched; user did a live co-walkthrough first (all features exercised, incl. deny flow, failover wheel handoff, sonnet switch). Live stack running: server :3001 (AGENT_WORKDIR_ROOT+AGENT_SKILLS), vite :5173.**
 
 ## 3. Decisions + why (do not re-litigate)
 
