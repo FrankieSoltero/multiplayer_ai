@@ -182,6 +182,10 @@ export class AgentDriver {
   // count returns to zero.
   private pendingTurns = 0;
   private stream: RunQueryResult;
+  // Mirror of the agent's TaskCreate/TaskUpdate bookkeeping (the live SDK's
+  // replacement for TodoWrite), used to emit todo_update snapshots. Ids are
+  // assigned sequentially from 1 to mirror the SDK's own numbering.
+  private taskPanel: { id: string; text: string; status: "pending" | "in_progress" | "completed" }[] = [];
 
   constructor(
     private session: Session,
@@ -506,6 +510,44 @@ export class AgentDriver {
           if (block.name === "TodoWrite" && !parentId) {
             const todos = this.todosFrom(block.input);
             if (todos) this.session.append({ type: "todo_update", todos });
+          } else if (block.name === "TaskCreate" && !parentId) {
+            const subject = (block.input as { subject?: unknown } | undefined)
+              ?.subject;
+            if (typeof subject === "string" && subject.length > 0 && this.taskPanel.length < 50) {
+              this.taskPanel.push({
+                id: String(this.taskPanel.length + 1),
+                text: subject.slice(0, 200),
+                status: "pending",
+              });
+              this.session.append({
+                type: "todo_update",
+                todos: this.taskPanel.map(({ text, status }) => ({ text, status })),
+              });
+            }
+          } else if (block.name === "TaskUpdate" && !parentId) {
+            const { taskId, status, subject } = (block.input ?? {}) as {
+              taskId?: unknown;
+              status?: unknown;
+              subject?: unknown;
+            };
+            const entry = this.taskPanel.find((t) => t.id === taskId);
+            if (entry) {
+              if (status === "deleted") {
+                this.taskPanel = this.taskPanel.filter((t) => t !== entry);
+              } else {
+                const validStatuses = new Set(["pending", "in_progress", "completed"]);
+                if (typeof status === "string" && validStatuses.has(status)) {
+                  entry.status = status as "pending" | "in_progress" | "completed";
+                }
+                if (typeof subject === "string" && subject.length > 0) {
+                  entry.text = subject.slice(0, 200);
+                }
+              }
+              this.session.append({
+                type: "todo_update",
+                todos: this.taskPanel.map(({ text, status }) => ({ text, status })),
+              });
+            }
           }
         }
       }

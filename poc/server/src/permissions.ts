@@ -55,6 +55,22 @@ export function isAutoApprovedBash(command: string): boolean {
 const FILE_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
 
 /**
+ * The agent's own task-tracking bookkeeping — TodoWrite in the documented SDK
+ * shape, or the installed live SDK's TaskCreate/TaskUpdate/TaskGet/TaskList
+ * equivalents (verified live 2026-07-25: this SDK build has no TodoWrite tool
+ * at all). All are mirrored to the party as todo_update events by the driver,
+ * write no files, and run no commands — pausing the session to approve them
+ * is pure noise.
+ */
+const AGENT_BOOKKEEPING_TOOLS = new Set([
+  "TodoWrite",
+  "TaskCreate",
+  "TaskUpdate",
+  "TaskGet",
+  "TaskList",
+]);
+
+/**
  * True if the write target — `input.file_path` for Write/Edit, or
  * `input.notebook_path` for NotebookEdit (the SDK's NotebookEdit input uses
  * a different field name) — is a string that resolves (relative to
@@ -87,10 +103,11 @@ function isContainedWrite(workdir: string | undefined, input: unknown): boolean 
  */
 export function buildCanUseTool(hooks: DriverHooks): CanUseTool {
   return async (toolName, input, options) => {
-    // TodoWrite is the agent's own bookkeeping (mirrored to the party as a
-    // todo_update event by the driver) — pausing the session to approve it is
-    // pure noise, and it writes no files and runs no commands.
-    if (toolName === "TodoWrite") {
+    // Agent bookkeeping tools (TodoWrite, or the live SDK's TaskCreate/
+    // TaskUpdate/TaskGet/TaskList) are mirrored to the party as todo_update
+    // events by the driver — pausing the session to approve them is pure
+    // noise, and none of them write files or run commands.
+    if (AGENT_BOOKKEEPING_TOOLS.has(toolName)) {
       return { behavior: "allow" };
     }
     // Plan mode's exit tool is the plan-approval gate: the plan rides the

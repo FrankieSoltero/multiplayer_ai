@@ -118,6 +118,25 @@ describe("deriveTranscriptGroups", () => {
     expect(sub.status).toBe("running");
   });
 
+  it("splits consecutive runs into main and labeled subagent groups when the spawning call is named Agent (live SDK)", () => {
+    const agentEvents = [
+      ev({ type: "user_message", userId: "u1", text: "audit" }, 0),
+      ev({ type: "tool_call", toolName: "Agent", input: { description: "audit deps" }, toolUseId: "task-1" }, 1),
+      ev({ type: "agent_text_delta", text: "scanning", parentToolUseId: "task-1" }, 2),
+      ev({ type: "tool_call", toolName: "Read", input: {}, toolUseId: "t-sub", parentToolUseId: "task-1" }, 3),
+      ev({ type: "agent_text_delta", text: "meanwhile, main agent" }, 4),
+      ev({ type: "tool_result", toolName: "Read", output: "ok", toolUseId: "t-sub", parentToolUseId: "task-1" }, 5),
+      ev({ type: "tool_result", toolName: "Agent", output: "audit done", toolUseId: "task-1" }, 6),
+    ];
+    const groups = deriveTranscriptGroups(agentEvents);
+    expect(groups.map((g) => g.kind)).toEqual(["main", "subagent", "main", "subagent", "main"]);
+    const sub = groups[1] as Extract<ReturnType<typeof deriveTranscriptGroups>[number], { kind: "subagent" }>;
+    expect(sub.parentId).toBe("task-1");
+    expect(sub.label).toBe("audit deps");
+    expect(sub.status).toBe("done"); // parent Agent tool_result exists in the log
+    expect(sub.events.map((e) => e.seq)).toEqual([2, 3]);
+  });
+
   it("labels orphan parent ids as a plain subagent instead of crashing", () => {
     const groups = deriveTranscriptGroups([
       ev({ type: "agent_text_delta", text: "ghost", parentToolUseId: "unknown-9" }, 0),

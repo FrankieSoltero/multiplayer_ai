@@ -649,6 +649,100 @@ describe("todo mirror", () => {
   });
 });
 
+const taskToolRun: RunQuery = async function* (prompts) {
+  for await (const _prompt of prompts) {
+    yield {
+      type: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "tc-1",
+          name: "TaskCreate",
+          input: { subject: "write tests", description: "add coverage", activeForm: "writing tests" },
+        },
+      ],
+    };
+    yield {
+      type: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "tc-2",
+          name: "TaskCreate",
+          input: { subject: "implement", description: "do the work", activeForm: "implementing" },
+        },
+      ],
+    };
+    yield {
+      type: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "tu-1",
+          name: "TaskUpdate",
+          input: { taskId: "1", status: "completed" },
+        },
+      ],
+    };
+    yield {
+      type: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "tu-2",
+          name: "TaskUpdate",
+          input: { taskId: "2", status: "deleted" },
+        },
+      ],
+    };
+    // Subagent TaskCreate must NOT mirror to the panel
+    yield {
+      type: "assistant",
+      parent_tool_use_id: "task-9",
+      content: [
+        {
+          type: "tool_use",
+          id: "tc-sub",
+          name: "TaskCreate",
+          input: { subject: "sub task", description: "d", activeForm: "doing sub task" },
+        },
+      ],
+    };
+    return;
+  }
+};
+
+describe("task tool mirror (live SDK TaskCreate/TaskUpdate)", () => {
+  it("emits todo_update snapshots as TaskCreate/TaskUpdate calls arrive, excluding subagent calls", async () => {
+    const session = new Session("s-task-mirror");
+    const events: any[] = [];
+    session.subscribe((e) => events.push(e));
+    const driver = new AgentDriver(session, taskToolRun);
+    driver.sendPrompt("u1", "plan it");
+    await vi.waitFor(() => {
+      expect(
+        events.filter(
+          (e) =>
+            e.type === "tool_call" &&
+            (e.toolName === "TaskCreate" || e.toolName === "TaskUpdate"),
+        ).length,
+      ).toBe(5);
+    });
+    const updates = events.filter((e) => e.type === "todo_update");
+    expect(updates.length).toBe(4);
+    expect(updates[0].todos).toEqual([{ text: "write tests", status: "pending" }]);
+    expect(updates[1].todos).toEqual([
+      { text: "write tests", status: "pending" },
+      { text: "implement", status: "pending" },
+    ]);
+    expect(updates[2].todos).toEqual([
+      { text: "write tests", status: "completed" },
+      { text: "implement", status: "pending" },
+    ]);
+    expect(updates[3].todos).toEqual([{ text: "write tests", status: "completed" }]);
+  });
+});
+
 describe("plan gate", () => {
   it("appends plan_request, resolves approve, switches mode back to default", async () => {
     const setPermissionMode = vi.fn().mockResolvedValue(undefined);

@@ -21,6 +21,11 @@ architecture; late-joiner replay keeps working by construction. A server-side
 stateful entity model was considered and rejected (breaks replay, grows server
 responsibility for no added capability).
 
+Live acceptance (2026-07-25) found the installed SDK names these tools
+differently than assumed above: it has no `TodoWrite` (task tools —
+`TaskCreate`/`TaskUpdate` — instead), and its subagent-spawning tool is named
+`Agent`, not `Task`. Corrected against the installed SDK; see §2 and §3 below.
+
 ## 1. Wire protocol (append-only additions to `poc/server/src/events.ts`)
 
 ```ts
@@ -59,10 +64,11 @@ party — and late joiners via replay — can see the current mode.
 
 - **Lineage plumbing:** copy the SDK's `parent_tool_use_id` onto emitted
   `tool_call` / `tool_result` / `agent_text_delta` events. No behavior change.
-- **Todos:** `canUseTool` auto-approves `TodoWrite` (today it pauses for driver
+- **Todos:** `canUseTool` auto-approves `TodoWrite` — or the live SDK's
+  `TaskCreate`/`TaskUpdate` equivalents (today it pauses for driver
   approval — noise for internal bookkeeping); the driver emits `todo_update`
-  from the tool input. Only main-agent `TodoWrite` mirrors to the panel;
-  subagent todo calls (parent id set) are excluded.
+  from the tool input. Only main-agent `TodoWrite`/`TaskCreate`/`TaskUpdate`
+  calls mirror to the panel; subagent todo calls (parent id set) are excluded.
 - **Plan mode:** driver-toggled, wired exactly like v4's model switch — an
   optional `setPermissionMode` member on `RunQueryResult` so test fakes stay
   assignable. Toggle-on logs optimistically (a trailing `agent_error` means the
@@ -100,9 +106,9 @@ No structural change; new events flow through the existing log/replay path.
 ### `poc/client/src/derive.ts` (pure module)
 
 - Events with `parentToolUseId` fold into a **subagent group** keyed by the
-  spawning `Task` `tool_call`; status = running until the parent `tool_result`
-  arrives. Orphan parent ids (no matching Task call in view) render as an
-  "unknown subagent" group — never a derivation crash.
+  spawning `Task`/`Agent` `tool_call`; status = running until the parent
+  `tool_result` arrives. Orphan parent ids (no matching Task/Agent call in
+  view) render as an "unknown subagent" group — never a derivation crash.
 - `tool_call` with `toolName: "Skill"` → **skill entity** (name + args parsed
   from input, paired with its `tool_result`).
 - Latest `todo_update` → todo panel state. `plan_request` without a matching

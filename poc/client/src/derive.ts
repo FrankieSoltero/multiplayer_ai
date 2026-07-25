@@ -112,9 +112,11 @@ export type TranscriptGroup =
 
 /**
  * Split the flat event log into consecutive main/subagent runs for nested
- * rendering. A subagent is keyed by the tool_use id of its spawning Task
- * call; its label comes from that call's input.description, its status flips
- * to done when the parent-level Task tool_result for that id appears. Orphan
+ * rendering. A subagent is keyed by the tool_use id of its spawning Task/Agent
+ * call (the SDK's subagent-spawning tool is named `Agent`, not `Task`, in the
+ * installed live SDK — verified 2026-07-25; both names are accepted); its
+ * label comes from that call's input.description, its status flips to done
+ * when the parent-level Task/Agent tool_result for that id appears. Orphan
  * parent ids (spawning call not in view) get a generic label — replay always
  * includes the spawn, but a malformed stream must degrade, not crash.
  */
@@ -122,7 +124,12 @@ export function deriveTranscriptGroups(events: LoggedEvent[]): TranscriptGroup[]
   const labels = new Map<string, string>();
   const done = new Set<string>();
   for (const ev of events) {
-    if (ev.type === "tool_call" && ev.toolName === "Task" && ev.toolUseId && !ev.parentToolUseId) {
+    if (
+      ev.type === "tool_call" &&
+      (ev.toolName === "Task" || ev.toolName === "Agent") &&
+      ev.toolUseId &&
+      !ev.parentToolUseId
+    ) {
       const desc = (ev.input as { description?: unknown } | undefined)?.description;
       labels.set(ev.toolUseId, typeof desc === "string" && desc ? desc : "subagent");
     }

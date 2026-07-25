@@ -243,6 +243,38 @@ describe("buildCanUseTool worktree containment (file-writing tools)", () => {
     expect(onPermissionRequest).not.toHaveBeenCalled();
   });
 
+  it("auto-approves TaskCreate without consulting the driver", async () => {
+    const onPermissionRequest = vi.fn();
+    const canUse = buildCanUseTool({
+      onIntent: () => {},
+      onPermissionRequest,
+      onPlanRequest: async () => "approve" as const,
+    });
+    const result = await canUse(
+      "TaskCreate",
+      { subject: "write tests", description: "add coverage", activeForm: "writing tests" },
+      { signal: new AbortController().signal } as any,
+    );
+    expect(result).toEqual({ behavior: "allow" });
+    expect(onPermissionRequest).not.toHaveBeenCalled();
+  });
+
+  it("auto-approves TaskUpdate without consulting the driver", async () => {
+    const onPermissionRequest = vi.fn();
+    const canUse = buildCanUseTool({
+      onIntent: () => {},
+      onPermissionRequest,
+      onPlanRequest: async () => "approve" as const,
+    });
+    const result = await canUse(
+      "TaskUpdate",
+      { taskId: "1", status: "completed" },
+      { signal: new AbortController().signal } as any,
+    );
+    expect(result).toEqual({ behavior: "allow" });
+    expect(onPermissionRequest).not.toHaveBeenCalled();
+  });
+
   it("routes ExitPlanMode to onPlanRequest: approve allows, reject denies with a revise message", async () => {
     const onPermissionRequest = vi.fn();
     const decisions: Array<"approve" | "reject"> = ["approve", "reject"];
