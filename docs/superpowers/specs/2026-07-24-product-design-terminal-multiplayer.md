@@ -106,7 +106,11 @@ agents. (These are explicitly out of scope for v4.)
 
 - Wire/event model is fixed: the client renders the `events.ts` union
   (`permission_request`/`permission_decision` included); design must not require server
-  log-format changes beyond `set_model`/`model_change`.
+  log-format changes beyond `set_model`/`model_change`, a `turn_end` event (§4's
+  "prompt sent → turn end" trigger requires a turn boundary the log doesn't have
+  today), optional `glyph`/`color` on join/`presence_join` (§6 lobby identity must be
+  visible to teammates), and a read-only pre-join `peek` snapshot (§6's live party
+  preview). All are append-only additions; existing events are unchanged.
 - v3 ratification items (HANDOFF §7) are a separate open thread; design must not
   silently change permission/allowlist behavior.
 - `Docs/` == `docs/` on this filesystem — lowercase `docs/` always.
