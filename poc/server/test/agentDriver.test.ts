@@ -435,10 +435,11 @@ describe("turn lifecycle", () => {
     );
   });
 
-  it("emits exactly one turn_end, only after the SECOND result, when two prompts are queued back-to-back mid-turn", async () => {
-    // Simulates a driver queuing prompt B while prompt A is still in flight
-    // (input isn't disabled mid-turn). Each prompt yielded gets its own
-    // "result" message from the fake, one per iteration of the prompts loop.
+  it("emits a turn_end per result when queued prompts each get their own cycle", async () => {
+    // A driver can queue prompt B while prompt A is in flight. When the SDK
+    // runs them as two cycles (one result each), each result marks a turn
+    // boundary — the client's busy signal re-raises from cycle B's first
+    // activity event, so per-result turn_end never strands the strip.
     const session = new Session("s");
     let resultsYielded = 0;
     const twoPromptRun: RunQuery = async function* (prompts) {
@@ -456,18 +457,42 @@ describe("turn lifecycle", () => {
     await vi.waitFor(() => expect(resultsYielded).toBe(2));
     await vi.waitFor(() => {
       const types = session.eventsFrom(0).map((e) => e.type);
-      const turnEndCount = types.filter((t) => t === "turn_end").length;
-      expect(turnEndCount).toBe(1);
+      expect(types.filter((t) => t === "turn_end")).toHaveLength(2);
     });
-    // turn_end must appear strictly after both user_message events and both
-    // results have been processed — i.e. only once no turn remains outstanding.
-    const types = session.eventsFrom(0).map((e) => e.type);
-    const turnEndIndex = types.indexOf("turn_end");
-    const userMessageIndices = types
-      .map((t, i) => (t === "user_message" ? i : -1))
-      .filter((i) => i >= 0);
-    expect(userMessageIndices).toHaveLength(2);
-    expect(turnEndIndex).toBeGreaterThan(Math.max(...userMessageIndices));
+  });
+
+  it("still ends the turn when the SDK folds two queued prompts into ONE cycle (live-repro regression)", async () => {
+    // Reproduced live 2026-07-25: the SDK answered a queued prompt inside the
+    // active cycle — TWO user_messages, ONE result. A per-prompt countdown
+    // left pendingTurns stuck at 1 forever: busy signal never cleared and
+    // setModel stayed blocked. Every result must therefore reset the counter
+    // and emit turn_end.
+    const session = new Session("s");
+    const foldedRun: RunQuery = async function* (prompts) {
+      let consumed = 0;
+      for await (const _prompt of prompts) {
+        consumed++;
+        if (consumed < 2) continue; // swallow prompt A, reply once for both
+        if (consumed === 2) {
+          yield { type: "assistant", content: [{ type: "text", text: "did both" }] };
+          yield { type: "result" };
+        }
+        // keep the stream open (a live query stays connected between turns)
+      }
+    };
+    const driver = new AgentDriver(session, foldedRun);
+    driver.sendPrompt("u1", "prompt A");
+    driver.sendPrompt("u1", "prompt B");
+
+    await vi.waitFor(() =>
+      expect(session.eventsFrom(0).some((e) => e.type === "turn_end")).toBe(true),
+    );
+    // The gate must be open again: a model switch after the folded cycle
+    // is "between turns" and must not be rejected as mid-turn.
+    const res = driver.setModel("sonnet", "u1");
+    expect(res).toEqual({ ok: false, error: "model switching not supported by this agent" });
+    // (foldedRun has no setModel — the point is it got PAST the mid-turn
+    // check, which returns a different error.)
   });
 });
 

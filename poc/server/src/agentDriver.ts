@@ -363,8 +363,15 @@ export class AgentDriver {
       }
     } else if (message.type === "result" || message.type === "user") {
       if (message.type === "result") {
-        this.pendingTurns = Math.max(0, this.pendingTurns - 1);
-        if (this.pendingTurns === 0) this.session.append({ type: "turn_end" });
+        // A result ends the SDK's current response cycle. The SDK may fold
+        // prompts queued mid-turn into ONE cycle (one result for N prompts),
+        // so counting down per-result can leave the counter — and the
+        // client's busy signal, and the setModel gate — stuck above zero
+        // forever (reproduced live). Treat every result as end-of-turn; if
+        // a genuinely queued cycle follows, the client re-raises busy from
+        // that cycle's first activity event.
+        this.pendingTurns = 0;
+        this.session.append({ type: "turn_end" });
       }
       for (const block of blocks) {
         if (block.type === "tool_result") {
