@@ -540,3 +540,60 @@ describe("setModel", () => {
     expect(res.ok).toBe(false);
   });
 });
+
+const subagentRun: RunQuery = async function* (prompts) {
+  for await (const _prompt of prompts) {
+    // Main agent spawns a subagent via Task
+    yield {
+      type: "assistant",
+      content: [{ type: "tool_use", id: "task-1", name: "Task", input: { description: "audit deps" } }],
+    };
+    // Subagent traffic arrives tagged with parent_tool_use_id
+    yield {
+      type: "assistant",
+      parent_tool_use_id: "task-1",
+      content: [
+        { type: "text", text: "scanning lockfile" },
+        { type: "tool_use", id: "t-sub", name: "Read", input: { file: "package.json" } },
+      ],
+    };
+    yield {
+      type: "user",
+      parent_tool_use_id: "task-1",
+      content: [{ type: "tool_result", tool_use_id: "t-sub", content: "lockfile ok" }],
+    };
+    // Task completes: parent-level tool_result for task-1
+    yield {
+      type: "user",
+      content: [{ type: "tool_result", tool_use_id: "task-1", content: "audit done" }],
+    };
+    return;
+  }
+};
+
+describe("subagent lineage", () => {
+  it("threads parent_tool_use_id and block ids onto emitted events", async () => {
+    const session = new Session("s-lineage");
+    const events: any[] = [];
+    session.subscribe((e) => events.push(e));
+    const driver = new AgentDriver(session, subagentRun);
+    driver.sendPrompt("u1", "audit");
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.type === "tool_result").length).toBe(2);
+    });
+    const spawn = events.find((e) => e.type === "tool_call" && e.toolName === "Task");
+    expect(spawn.toolUseId).toBe("task-1");
+    expect(spawn.parentToolUseId).toBeUndefined();
+    const subText = events.find((e) => e.type === "agent_text_delta" && e.text === "scanning lockfile");
+    expect(subText.parentToolUseId).toBe("task-1");
+    const subCall = events.find((e) => e.type === "tool_call" && e.toolName === "Read");
+    expect(subCall.parentToolUseId).toBe("task-1");
+    expect(subCall.toolUseId).toBe("t-sub");
+    const subResult = events.find((e) => e.type === "tool_result" && e.output === "lockfile ok");
+    expect(subResult.parentToolUseId).toBe("task-1");
+    expect(subResult.toolUseId).toBe("t-sub");
+    const done = events.find((e) => e.type === "tool_result" && e.output === "audit done");
+    expect(done.parentToolUseId).toBeUndefined();
+    expect(done.toolUseId).toBe("task-1");
+  });
+});

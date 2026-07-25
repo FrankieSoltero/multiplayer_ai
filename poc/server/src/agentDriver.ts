@@ -30,6 +30,7 @@ export interface SdkMessage {
   type: string;
   content?: unknown[];
   message?: { content?: unknown[] };
+  parent_tool_use_id?: string | null;
 }
 
 export interface DriverHooks {
@@ -140,6 +141,10 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
       // (project/user/local) — full isolation, not just MCP.
       strictMcpConfig: true,
       settingSources: [],
+      // Forward subagent text/thinking as messages tagged with
+      // parent_tool_use_id so the client can render a nested transcript.
+      // Default (false) only forwards subagent tool_use/tool_result blocks.
+      forwardSubagentText: true,
       cwd: workdir,
     },
     // Cast at the SDK boundary only — see Global Constraints. The real
@@ -348,16 +353,23 @@ export class AgentDriver {
       tool_use_id?: string;
       content?: string | { type: string; text?: string }[];
     }[];
+    const parentId = message.parent_tool_use_id ?? undefined;
     if (message.type === "assistant") {
       for (const block of blocks) {
         if (block.type === "text" && block.text) {
-          this.session.append({ type: "agent_text_delta", text: block.text });
+          this.session.append({
+            type: "agent_text_delta",
+            text: block.text,
+            ...(parentId ? { parentToolUseId: parentId } : {}),
+          });
         } else if (block.type === "tool_use" && block.name) {
           if (block.id) this.toolNamesById.set(block.id, block.name);
           this.session.append({
             type: "tool_call",
             toolName: block.name,
             input: block.input,
+            ...(block.id ? { toolUseId: block.id } : {}),
+            ...(parentId ? { parentToolUseId: parentId } : {}),
           });
         }
       }
@@ -383,6 +395,8 @@ export class AgentDriver {
             type: "tool_result",
             toolName,
             output: text.slice(0, 2000),
+            ...(block.tool_use_id ? { toolUseId: block.tool_use_id } : {}),
+            ...(parentId ? { parentToolUseId: parentId } : {}),
           });
         }
       }
