@@ -120,7 +120,10 @@ No structural change; new events flow through the existing log/replay path.
 - **Transcript:** subagent groups render as collapsible nested blocks
   (collapsed by default: glyph, task description, status, row count). Skill
   entities render as a distinct card (name badge + args, collapsible output)
-  instead of a generic tool row.
+  instead of a generic tool row. *(As-built deviation, ratified at live
+  acceptance 2026-07-25: the skill card renders name badge + args only; its
+  tool_result falls through as a generic dim row rather than a paired
+  collapsible output.)*
 - **PlanCard (new):** pending plan inline in the transcript like a permission
   request — markdown body, "Approve" / "Request revision" buttons for the
   driver (mapping to wire `approve` / `reject`), read-only for passengers.

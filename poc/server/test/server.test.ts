@@ -580,7 +580,8 @@ describe("skill suggest/decide", () => {
     await wait(100);
     expect(seenB.some((m) => m.type === "error" && /driver/.test(m.message))).toBe(true);
 
-    // Driver runs it — attributed to the SUGGESTER (u2)
+    // Driver runs it — the decision event is attributed to the DECIDER (u1);
+    // the suggest event above carries the suggester (u2).
     wsA.send(JSON.stringify({ type: "decide_skill", suggestId: suggest.suggestId, decision: "run" }));
     await wait(200);
     const decision = seenA.find((m) => m.event?.type === "skill_decision").event;
