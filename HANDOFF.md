@@ -1,6 +1,6 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (late night): v5c IMPLEMENTED — all 12 plan tasks complete on `feature/v5c-restyle`, live acceptance 10/10 PASS. Awaiting user decisions (screenshots, zip, merge), then finishing-a-development-branch.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (late night): v5c DONE — final review clean after one fix wave (client tests 22), PR #3 open (https://github.com/FrankieSoltero/multiplayer_ai/pull/3). User decided: screenshots committed to `docs/acceptance/v5c/`, source zip deleted, push+PR. Next: merge PR #3 when ready, then v5b.*
 
 ## 0. WHERE WE ARE — v5c done, pending final review + user decisions
 
@@ -64,7 +64,7 @@ Observation (not a v5c regression): the server emits paired plan-mode on/off eve
 
 Carried v3: (1) worktree-containment Write/Edit approval; (2) Bash-allowlist two-hop residual risk; (3) skill discovery under settingSources:[] broken — accept self-recovery or investigate SDK.
 Carried v4/v5a: (5) stale skill name in v4 spec text; (6) 4 polish items in frontend-design-skill-notes; (8) v5a deferred minors (git history of this file @ bf889d4); (9) meta-tools bypassing the gate.
-New v5c: (11) acceptance screenshots `v5c-accept-*.png` at repo root — commit into repo (e.g. docs/) or delete? (12) `Multiplayer AI 90s Terminal UI.zip` at repo root — delete now that it's vendored, or keep? (13) merge: push + PR like v5a?
+v5c items RESOLVED 2026-07-25: (11) screenshots → committed to `docs/acceptance/v5c/`; (12) zip → deleted (vendored copy is canonical); (13) push + PR → PR #3 open.
 
 ## 8. Resume & verify
 
