@@ -1,7 +1,7 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import WebSocket from "ws";
 import { startServer } from "../src/server.js";
-import type { RunQuery } from "../src/agentDriver.js";
+import type { RunQuery, SdkMessage } from "../src/agentDriver.js";
 
 const echoRun: RunQuery = async function* (prompts) {
   for await (const prompt of prompts) {
@@ -402,5 +402,38 @@ describe("driver approval gate over the wire", () => {
     const errors = seen.filter((m) => m.type === "error");
     expect(errors.length).toBeGreaterThanOrEqual(2);
     ws1.close();
+  });
+});
+
+describe("set_model", () => {
+  it("driver can switch; non-driver and bad model rejected", async () => {
+    // run fake: reply then result, stream stays open (same shape as resultRun above)
+    const run: RunQuery = (prompts) => {
+      const gen = (async function* () {
+        for await (const _p of prompts) {
+          yield { type: "assistant", content: [{ type: "text", text: "ok" }] } as SdkMessage;
+          yield { type: "result" } as SdkMessage;
+        }
+      })();
+      return Object.assign(gen, { setModel: async (_m: string) => {} });
+    };
+    const server = await startServer({ port: 0, runQuery: run });
+    const a = await connect(server.port);
+    const b = await connect(server.port);
+    const aSink: any[] = []; const bSink: any[] = [];
+    collect(a, aSink); collect(b, bSink);
+    a.send(JSON.stringify({ type: "join", sessionId: "m1", userId: "ua", name: "ana", lastSeq: 0 }));
+    b.send(JSON.stringify({ type: "join", sessionId: "m1", userId: "ub", name: "ben", lastSeq: 0 }));
+    await vi.waitFor(() => expect(bSink.some((m) => m.type === "event" && m.event.type === "presence_join" && m.event.userId === "ub")).toBe(true));
+
+    b.send(JSON.stringify({ type: "set_model", model: "sonnet" })); // ub is not driving
+    await vi.waitFor(() => expect(bSink.some((m) => m.type === "error" && /driver/.test(m.message))).toBe(true));
+
+    a.send(JSON.stringify({ type: "set_model", model: "gpt-5" })); // invalid key
+    await vi.waitFor(() => expect(aSink.some((m) => m.type === "error" && /opus\|sonnet\|haiku/.test(m.message))).toBe(true));
+
+    a.send(JSON.stringify({ type: "set_model", model: "sonnet" })); // ua drives (first join)
+    await vi.waitFor(() => expect(aSink.some((m) => m.type === "event" && m.event.type === "model_change" && m.event.model === "sonnet" && m.event.userId === "ua")).toBe(true));
+    a.close(); b.close(); await server.close();
   });
 });

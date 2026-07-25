@@ -3,6 +3,7 @@ import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { AgentDriver, runAgentQuery, type RunQuery } from "./agentDriver.js";
 import { buildTeammateDigest, summarizeSession } from "./digest.js";
+import { isModelKey } from "./models.js";
 import {
   Project,
   projectSnapshot,
@@ -204,6 +205,18 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
         if (!ctx.entry.driver.resolvePermission(msg.requestId, msg.decision, ctx.userId)) {
           return sendError("unknown or already-decided permission request");
         }
+        return;
+      }
+
+      if (msg.type === "set_model") {
+        if (!isModelKey(msg.model)) {
+          return sendError("set_model requires model: opus|sonnet|haiku");
+        }
+        if (!ctx.entry.session.canPrompt(ctx.userId)) {
+          return sendError("only the current driver can switch models — take the wheel first");
+        }
+        const result = ctx.entry.driver.setModel(msg.model, ctx.userId);
+        if (!result.ok) return sendError(result.error);
         return;
       }
 

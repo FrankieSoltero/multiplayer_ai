@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { Session } from "../src/session.js";
-import { AgentDriver, type RunQuery } from "../src/agentDriver.js";
+import { AgentDriver, type RunQuery, type SdkMessage } from "../src/agentDriver.js";
 
 const fakeRun: RunQuery = async function* (prompts) {
   for await (const _prompt of prompts) {
@@ -414,5 +414,69 @@ describe("driver approval gate", () => {
     });
 
     expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(false);
+  });
+});
+
+const resultRun: RunQuery = async function* (prompts) {
+  for await (const _prompt of prompts) {
+    yield { type: "assistant", content: [{ type: "text", text: "done" }] };
+    yield { type: "result" };
+    // keep the stream open for the next prompt (do NOT return)
+  }
+};
+
+describe("turn lifecycle", () => {
+  it("appends turn_end when the SDK emits a result message", async () => {
+    const session = new Session("s");
+    const driver = new AgentDriver(session, resultRun);
+    driver.sendPrompt("u1", "hi");
+    await vi.waitFor(() =>
+      expect(session.eventsFrom(0).some((e) => e.type === "turn_end")).toBe(true),
+    );
+  });
+});
+
+describe("setModel", () => {
+  const makeRunWithSetModel = (spy: (m: string) => Promise<void>): RunQuery =>
+    (prompts) => {
+      const gen = (async function* () {
+        for await (const _p of prompts) {
+          yield { type: "assistant", content: [{ type: "text", text: "ok" }] } as SdkMessage;
+          yield { type: "result" } as SdkMessage;
+        }
+      })();
+      return Object.assign(gen, { setModel: spy });
+    };
+
+  it("switches between turns: calls SDK setModel with the mapped id and logs model_change", async () => {
+    const spy = vi.fn(async (_m: string) => {});
+    const session = new Session("s");
+    const driver = new AgentDriver(session, makeRunWithSetModel(spy));
+    driver.sendPrompt("u1", "hi");
+    await vi.waitFor(() =>
+      expect(session.eventsFrom(0).some((e) => e.type === "turn_end")).toBe(true),
+    );
+    const res = driver.setModel("sonnet", "u1");
+    expect(res).toEqual({ ok: true });
+    expect(spy).toHaveBeenCalledWith("claude-sonnet-5");
+    const ev = session.eventsFrom(0).find((e) => e.type === "model_change");
+    expect(ev).toMatchObject({ model: "sonnet", userId: "u1" });
+  });
+
+  it("rejects a switch mid-turn", async () => {
+    const spy = vi.fn(async (_m: string) => {});
+    const session = new Session("s");
+    const driver = new AgentDriver(session, makeRunWithSetModel(spy));
+    driver.sendPrompt("u1", "hi"); // turn active until result consumed…
+    const res = driver.setModel("haiku", "u1"); // …but call synchronously before waitFor
+    expect(res.ok).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("reports unsupported when the stream has no setModel (plain fakes)", () => {
+    const session = new Session("s");
+    const driver = new AgentDriver(session, fakeRun);
+    const res = driver.setModel("sonnet", "u1");
+    expect(res.ok).toBe(false);
   });
 });
