@@ -1,30 +1,84 @@
 * { box-sizing: border-box; }
+
+/* ---------------------------------------------------------------------------
+   Tokens. Everything below derives from the terminal cell: one type size, one
+   integer line box, and a 4px spacing grid. See
+   docs/design/frontend-design-skill-notes.md for the rationale behind each.
+   --------------------------------------------------------------------------- */
 :root {
-  --bg: #0b0d10; --panel: #101318; --fg: #d8dee6; --dim: #6b7482;
-  --frame: #333b49; --gold: #d9b86b; --red: #e0685f; --amber: #e0a458;
-  --green: #7fbf7f; --accent: #d97757;
+  /* surface — flat. The app is one terminal window, not a stack of cards:
+     panels share the background and 1px rules do the separating. Only genuinely
+     interactive surfaces (prompt input, code lines) are raised. */
+  --bg: #0b0d10;
+  --panel: #0b0d10;
+  --input: #14171d;
+  --frame: #3d4655;      /* 2.04:1 — decorative rule, deliberately quiet */
+
+  /* text. --dim was #6b7482 (4.12:1, below AA) and carried the smallest text in
+     the app; lifted to 5.72:1. */
+  --fg: #d8dee6;         /* 14.37:1 */
+  --dim: #828c9b;        /*  5.72:1 */
+
+  /* semantic — all clear AA on --bg */
+  --gold: #d9b86b;       /* 10.21:1  system / awareness */
+  --red: #e0685f;        /*  5.85:1  errors */
+  --amber: #e0a458;      /*  8.91:1  permission gate */
+  --amber-mute: rgba(224, 164, 88, 0.42);  /* decided / not-yours permission frame */
+  --amber-wash: rgba(224, 164, 88, 0.07);
+  --green: #7fbf7f;      /*  8.95:1  affirmative / driving */
+  --accent: #d97757;     /*  6.23:1  "you can act here" only */
+
+  /* type — one content size; one uppercase, tracked micro-label */
+  --fs: 13px;
+  --fs-label: 11.5px;
+  --line: 20px;
+  --track-label: 0.14em;
+
+  /* space — 4px grid */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-6: 24px;
 }
+
 html, body, #root { height: 100%; }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
   font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: var(--fs);
+  line-height: var(--line);
 }
 button, input, select { font: inherit; color: inherit; }
 
+/* Quality floor: the shell is keyboard-first, so every focusable thing must
+   show where focus is. Nothing here relies on the UA default ring. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .term {
   display: flex; flex-direction: column;
-  height: 100%; max-width: 1280px; margin: 0 auto; padding: 10px 14px;
+  height: 100%; max-width: 1280px; margin: 0 auto; padding: var(--sp-3);
 }
-.term-frame { border: 1px solid var(--frame); border-radius: 6px; background: var(--panel); }
+.term-frame { border: 1px solid var(--frame); background: var(--panel); }
+
+/* Micro-labels — the one step off the single type size, earned back by
+   letter-spacing. Deliberately no `text-transform: uppercase`: these labels
+   sit next to project/session identifiers, and case-folding an identifier
+   misrepresents it. The components already send the label words in caps. */
+.party-title, .lobby-title, .objective .label {
+  font-size: var(--fs-label);
+  letter-spacing: var(--track-label);
+}
 
 /* header */
 .term-header {
-  display: flex; align-items: center; gap: 10px;
-  padding: 6px 12px; margin-bottom: 8px;
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-2);
   color: var(--dim); white-space: nowrap; overflow: hidden;
 }
 .term-header .crumb b { color: var(--fg); font-weight: 600; }
@@ -36,16 +90,20 @@ button, input, select { font: inherit; color: inherit; }
 .conn { color: var(--green); } .conn.off { color: var(--red); }
 
 /* objective quest line */
-.objective { color: var(--gold); padding: 0 12px 6px; }
-.objective .label { letter-spacing: 0.08em; font-weight: 600; }
+.objective { color: var(--gold); padding: 0 var(--sp-3) var(--sp-2); }
+.objective .label { font-weight: 600; }
 
 /* two-pane split */
-.split { flex: 1; display: flex; gap: 8px; min-height: 0; }
-.transcript { flex: 1; overflow-y: auto; padding: 10px 12px; }
+.split { flex: 1; display: flex; gap: var(--sp-2); min-height: 0; }
+.transcript { flex: 1; overflow-y: auto; padding: var(--sp-3); }
 
-/* transcript lines (Task 7 renders into these) */
+/* transcript lines (Task 7 renders into these).
+   Scrollback is a cell grid: consecutive lines sit on adjacent cells with no
+   leading. Separation comes from turns, not from per-line gaps. */
 .line { white-space: pre-wrap; overflow-wrap: anywhere; }
-.line + .line { margin-top: 2px; }
+.line + .line { margin-top: 0; }
+/* a user prompt starts a new turn — one cell of air above it */
+.line + .line:has(> .who) { margin-top: var(--sp-2); }
 .line.dim { color: var(--dim); }
 .line.gold { color: var(--gold); }
 .line.red { color: var(--red); }
@@ -53,27 +111,31 @@ button, input, select { font: inherit; color: inherit; }
 .line .who { font-weight: 600; }
 
 /* prompt bar + status line */
-.promptbar { margin-top: 8px; }
+.promptbar { margin-top: var(--sp-2); }
 .promptbar .inputbox {
-  display: flex; gap: 8px; padding: 8px 12px;
-  border: 1px solid var(--frame); border-radius: 6px; background: var(--panel);
+  display: flex; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--frame); background: var(--input);
 }
 .promptbar .inputbox:focus-within { border-color: var(--accent); }
 .promptbar .caret { color: var(--accent); }
 .promptbar input { flex: 1; background: transparent; border: none; outline: none; }
 .promptbar button.wheel {
-  width: 100%; padding: 8px 12px; text-align: left; cursor: pointer;
-  border: 1px dashed var(--frame); border-radius: 6px;
+  width: 100%; padding: var(--sp-2) var(--sp-3); text-align: left; cursor: pointer;
+  border: 1px dashed var(--frame);
   background: transparent; color: var(--gold);
 }
 .promptbar button.wheel:hover { border-color: var(--gold); }
 .statusline {
-  display: flex; gap: 14px; padding: 4px 12px 0; color: var(--dim); font-size: 12px;
+  display: flex; gap: var(--sp-4); padding: var(--sp-1) var(--sp-3) 0; color: var(--dim);
 }
 .statusline .driving { color: var(--green); }
 
-/* take-the-wheel flourish */
-.line.wheel { color: var(--gold); border-top: 1px dashed var(--frame); border-bottom: 1px dashed var(--frame); padding: 3px 0; margin: 6px 0; }
+/* take-the-wheel flourish — one of the two moments the product animates */
+.line.wheel {
+  color: var(--gold);
+  border-top: 1px dashed var(--frame); border-bottom: 1px dashed var(--frame);
+  padding: var(--sp-1) 0; margin: var(--sp-2) 0;
+}
 .line.wheel.fresh { animation: wheel-sweep 0.9s ease-out 1; }
 @keyframes wheel-sweep {
   0% { background: linear-gradient(90deg, var(--gold) 0%, transparent 0%); color: var(--bg); }
@@ -81,52 +143,112 @@ button, input, select { font: inherit; color: inherit; }
   100% { background: transparent; }
 }
 
-/* permission block */
-.perm { border: 1px solid var(--amber); border-left-width: 3px; border-radius: 4px; padding: 6px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 4px; }
-.perm-title { color: var(--amber); }
-.perm-input { background: var(--bg); border-radius: 3px; padding: 4px 8px; overflow-wrap: anywhere; color: var(--fg); }
-.perm-actions { display: flex; gap: 10px; }
-.perm-actions button { background: transparent; border: 1px solid var(--green); color: var(--green); border-radius: 4px; padding: 2px 10px; cursor: pointer; }
+/* permission block — the signature element. This is the product's highest-stakes
+   moment (a privileged tool call awaiting a human), so it is the one place that
+   spends contrast. Everything around it is deliberately quieter so it reads
+   first in a fast-scrolling transcript.
+   Two weights: a block you can act on right now carries the wash and the heavy
+   rail; a block that is already decided (or that you can only watch) keeps the
+   amber frame but recedes. `:has(.perm-actions)` is true exactly when this
+   viewer is the driver and the request is still open — see the notes for the
+   `.perm.decided` follow-up that would make the three states fully distinct. */
+.perm {
+  border: 1px solid var(--amber-mute); border-left: 3px solid var(--amber-mute);
+  padding: var(--sp-2) var(--sp-3); margin: var(--sp-3) 0;
+  display: flex; flex-direction: column; gap: var(--sp-2);
+}
+.perm:has(.perm-actions) {
+  border-color: var(--amber); border-left-width: 4px;
+  background: var(--amber-wash);
+}
+.perm-title {
+  color: var(--amber);
+  letter-spacing: 0.04em;
+}
+.perm-title b { font-weight: 600; }
+.perm-input {
+  background: var(--input); padding: var(--sp-1) var(--sp-3);
+  overflow-wrap: anywhere; color: var(--fg);
+}
+.perm-actions { display: flex; gap: var(--sp-3); }
+.perm-actions button {
+  background: transparent; border: 1px solid var(--green); color: var(--green);
+  padding: var(--sp-1) var(--sp-3); cursor: pointer;
+}
+.perm-actions button:hover { background: rgba(127, 191, 127, 0.12); }
 .perm-actions button.deny { border-color: var(--red); color: var(--red); }
-.perm-outcome { color: var(--dim); font-size: 12px; }
-
-/* party pane (Task 8), thinking strip (Task 9), lobby (Task 10) add their
-   sections below this line */
+.perm-actions button.deny:hover { background: rgba(224, 104, 95, 0.12); }
+.perm-outcome { color: var(--dim); }
 
 /* party pane */
-.party { width: 280px; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
-.party-title { color: var(--dim); letter-spacing: 0.12em; font-size: 11px; }
-.member { display: block; border: 1px solid var(--frame); border-radius: 4px; padding: 6px 8px; color: inherit; text-decoration: none; }
+.party {
+  width: 280px; overflow-y: auto; padding: var(--sp-3);
+  display: flex; flex-direction: column; gap: var(--sp-2);
+}
+.party-title { color: var(--dim); }
+.member {
+  display: block; border: 1px solid var(--frame);
+  padding: var(--sp-2) var(--sp-3); color: inherit; text-decoration: none;
+}
 .member:hover { border-color: var(--accent); }
-.member.ended { opacity: 0.5; }
+/* an ended session is encoded structurally (dashed frame), not by fading it
+   until it fails contrast */
+.member.ended { opacity: 0.75; border-style: dashed; }
 .member-head { font-weight: 600; }
 .member-head .here { color: var(--dim); font-weight: 400; }
-.member-quest { color: var(--gold); font-size: 12px; margin: 2px 0; }
+.member-quest { color: var(--gold); margin: var(--sp-1) 0; }
 .member-quest.none { color: var(--dim); }
-.member-meta { color: var(--dim); font-size: 11px; }
+.member-meta { color: var(--dim); }
 
 @media (max-width: 900px) { .party { display: none; } }
 
 /* thinking strip (Task 9) — ASCII dino mini-game shown while the agent works */
-.thinking { margin-top: 8px; padding: 6px 12px; color: var(--gold); animation: strip-in 0.3s ease-out; }
+.thinking {
+  margin-top: var(--sp-2); padding: var(--sp-2) var(--sp-3);
+  color: var(--gold); animation: strip-in 0.3s ease-out;
+}
 .thinking.leaving { opacity: 0; transition: opacity 0.6s ease-out; }
-.thinking-head { display: flex; gap: 8px; }
+.thinking-head { display: flex; gap: var(--sp-2); }
 .thinking-score { margin-left: auto; color: var(--dim); }
-.pulse { animation: pulse 1.2s ease-in-out infinite; }
-@keyframes pulse { 50% { opacity: 0.3; } }
+/* .pulse is intentionally inert: the brief allows exactly two animations (the
+   take-the-wheel sweep and this strip's fade-out), and the running lane plus the
+   ticking elapsed counter already carry liveness. Kept as a hook. */
 @keyframes strip-in { from { opacity: 0; } }
-.lane { margin: 2px 0; border-top: 1px dashed var(--frame); border-bottom: 1px dashed var(--frame); padding: 2px 0; color: var(--fg); line-height: 1.2; }
-.thinking-hint { color: var(--dim); font-size: 11px; }
+.lane {
+  margin: var(--sp-1) 0; padding: var(--sp-1) 0;
+  border-top: 1px dashed var(--frame); border-bottom: 1px dashed var(--frame);
+  color: var(--fg); line-height: 1.2;
+}
+.thinking-hint { color: var(--dim); }
 
 /* lobby (Task 10) — pre-join profile picker */
-.lobby { max-width: 480px; margin: 15vh auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 12px; }
-.lobby-title { color: var(--dim); letter-spacing: 0.12em; font-size: 11px; }
-.lobby-row { display: flex; align-items: center; gap: 8px; }
+.lobby {
+  max-width: 480px; margin: 15vh auto; padding: var(--sp-6);
+  display: flex; flex-direction: column; gap: var(--sp-3);
+}
+.lobby-title { color: var(--dim); }
+.lobby-row { display: flex; align-items: center; gap: var(--sp-2); }
 .lobby-row .caret { color: var(--accent); }
-.lobby-row input { flex: 1; background: var(--bg); border: 1px solid var(--frame); border-radius: 4px; padding: 6px 10px; outline: none; }
+.lobby-row input {
+  flex: 1; background: var(--input); border: 1px solid var(--frame);
+  padding: var(--sp-2) var(--sp-3); outline: none;
+}
 .lobby-row input:focus { border-color: var(--accent); }
-.pick { background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 2px 6px; cursor: pointer; }
+.pick {
+  background: transparent; border: 1px solid transparent;
+  padding: var(--sp-1) var(--sp-2); cursor: pointer;
+}
 .pick.on { border-color: var(--accent); }
-.lobby-party { color: var(--dim); font-size: 12px; }
-.lobby-enter { border: 1px solid var(--green); color: var(--green); background: transparent; border-radius: 4px; padding: 8px; cursor: pointer; }
+.lobby-party { color: var(--dim); }
+.lobby-enter {
+  border: 1px solid var(--green); color: var(--green); background: transparent;
+  padding: var(--sp-2); cursor: pointer;
+}
+.lobby-enter:hover:not(:disabled) { background: rgba(127, 191, 127, 0.12); }
 .lobby-enter:disabled { border-color: var(--frame); color: var(--dim); }
+
+/* Quality floor: honour the OS "reduce motion" setting. */
+@media (prefers-reduced-motion: reduce) {
+  .line.wheel.fresh, .thinking { animation: none; }
+  .thinking.leaving { transition: none; }
+}
