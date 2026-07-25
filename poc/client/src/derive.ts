@@ -15,6 +15,11 @@ export interface DerivedState {
   permissionDecisions: Map<string, { decision: string; userId: string }>;
   model: string;
   agentBusy: boolean;
+  skills: { name: string; description: string }[];
+  todos: { text: string; status: string }[];
+  suggestDecisions: Map<string, { decision: string; userId: string }>;
+  planDecisions: Map<string, { decision: string; userId: string }>;
+  permissionMode: string;
 }
 
 export function deriveState(events: LoggedEvent[]): DerivedState {
@@ -26,6 +31,11 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
     permissionDecisions: new Map(),
     model: "opus",
     agentBusy: false,
+    skills: [],
+    todos: [],
+    suggestDecisions: new Map(),
+    planDecisions: new Map(),
+    permissionMode: "default",
   };
   for (const ev of events) {
     switch (ev.type) {
@@ -59,6 +69,23 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
       case "model_change":
         if (ev.model) s.model = ev.model;
         break;
+      case "skill_roster":
+        s.skills = ev.skills ?? [];
+        break;
+      case "todo_update":
+        s.todos = ev.todos ?? [];
+        break;
+      case "skill_decision":
+        if (ev.suggestId && ev.decision && ev.userId)
+          s.suggestDecisions.set(ev.suggestId, { decision: ev.decision, userId: ev.userId });
+        break;
+      case "plan_decision":
+        if (ev.requestId && ev.decision && ev.userId)
+          s.planDecisions.set(ev.requestId, { decision: ev.decision, userId: ev.userId });
+        break;
+      case "permission_mode_change":
+        s.permissionMode = ev.mode ?? "default";
+        break;
       case "user_message":
       case "tool_call":
       case "agent_text_delta":
@@ -71,4 +98,61 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
     }
   }
   return s;
+}
+
+export type TranscriptGroup =
+  | { kind: "main"; events: LoggedEvent[] }
+  | {
+      kind: "subagent";
+      parentId: string;
+      label: string;
+      status: "running" | "done";
+      events: LoggedEvent[];
+    };
+
+/**
+ * Split the flat event log into consecutive main/subagent runs for nested
+ * rendering. A subagent is keyed by the tool_use id of its spawning Task
+ * call; its label comes from that call's input.description, its status flips
+ * to done when the parent-level Task tool_result for that id appears. Orphan
+ * parent ids (spawning call not in view) get a generic label — replay always
+ * includes the spawn, but a malformed stream must degrade, not crash.
+ */
+export function deriveTranscriptGroups(events: LoggedEvent[]): TranscriptGroup[] {
+  const labels = new Map<string, string>();
+  const done = new Set<string>();
+  for (const ev of events) {
+    if (ev.type === "tool_call" && ev.toolName === "Task" && ev.toolUseId && !ev.parentToolUseId) {
+      const desc = (ev.input as { description?: unknown } | undefined)?.description;
+      labels.set(ev.toolUseId, typeof desc === "string" && desc ? desc : "subagent");
+    }
+    if (ev.type === "tool_result" && ev.toolUseId && !ev.parentToolUseId && labels.has(ev.toolUseId)) {
+      done.add(ev.toolUseId);
+    }
+  }
+  const groups: TranscriptGroup[] = [];
+  for (const ev of events) {
+    const parentId = ev.parentToolUseId;
+    const last = groups.at(-1);
+    if (parentId) {
+      if (last?.kind === "subagent" && last.parentId === parentId) {
+        last.events.push(ev);
+      } else {
+        groups.push({
+          kind: "subagent",
+          parentId,
+          label: labels.get(parentId) ?? "subagent",
+          status: done.has(parentId) ? "done" : "running",
+          events: [ev],
+        });
+      }
+    } else {
+      if (last?.kind === "main") {
+        last.events.push(ev);
+      } else {
+        groups.push({ kind: "main", events: [ev] });
+      }
+    }
+  }
+  return groups;
 }
