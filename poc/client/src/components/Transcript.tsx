@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { DerivedState } from "../derive";
+import { deriveTranscriptGroups, type DerivedState } from "../derive";
 import type { LoggedEvent } from "../types";
 
 const isFresh = (ev: LoggedEvent) => Date.now() - new Date(ev.ts).getTime() < 5000;
@@ -34,82 +34,105 @@ export function Transcript(props: {
     return () => window.removeEventListener("keydown", onKey);
   }, [props, newest?.requestId]);
 
+  const renderEvent = (ev: LoggedEvent) => {
+    switch (ev.type) {
+      case "user_message":
+        return (
+          <div key={ev.seq} className="line">
+            <span className="who" style={{ color: colorOf(ev.userId) }}>
+              &gt; {nameOf(ev.userId)}:
+            </span>{" "}
+            {ev.text}
+          </div>
+        );
+      case "agent_text_delta":
+        return <div key={ev.seq} className="line">⏺ {ev.text}</div>;
+      case "tool_call": {
+        const input = ev.input as { skill?: unknown; args?: unknown } | undefined;
+        if (ev.toolName === "Skill") {
+          return (
+            <div key={ev.seq} className="skillcard">
+              <span className="skillname">⚡ {typeof input?.skill === "string" ? input.skill : "skill"}</span>
+              {typeof input?.args === "string" && input.args && <span className="dim"> {input.args.slice(0, 120)}</span>}
+            </div>
+          );
+        }
+        return (
+          <div key={ev.seq} className="line dim">
+            ⏺ {ev.toolName}({JSON.stringify(ev.input)?.slice(0, 200)})
+          </div>
+        );
+      }
+      case "tool_result":
+        return (
+          <div key={ev.seq} className="line dim">
+            {"  ⎿ "}{ev.output?.slice(0, 300)}
+          </div>
+        );
+      case "control_change":
+        return (
+          <div key={ev.seq} className={isFresh(ev) ? "line wheel fresh" : "line wheel"}>
+            🛞 {nameOf(ev.userId)} took the wheel
+          </div>
+        );
+      case "agent_error":
+        return <div key={ev.seq} className="line red">⚠ {ev.message}</div>;
+      case "intent_update":
+        return (
+          <div key={ev.seq} className={ev.seq === lastIntentSeq ? "line gold" : "line gold done"}>
+            ✦ objective: {ev.text}
+          </div>
+        );
+      case "model_change":
+        return (
+          <div key={ev.seq} className="line gold">
+            ✦ {nameOf(ev.userId)} switched the agent to {ev.model}
+          </div>
+        );
+      case "permission_request": {
+        const decided = ev.requestId ? permissionDecisions.get(ev.requestId) : undefined;
+        const cmd = (ev.input as { command?: unknown } | undefined)?.command;
+        const preview = typeof cmd === "string" ? cmd : JSON.stringify(ev.input);
+        return (
+          <div key={ev.seq} className="perm">
+            <div className="perm-title">🔐 agent wants to run <b>{ev.toolName}</b></div>
+            <code className="perm-input">{preview?.slice(0, 300)}</code>
+            {decided ? (
+              <div className="perm-outcome">
+                {decided.decision === "allow" ? "✅ approved" : "⛔ denied"} by {nameOf(decided.userId)}
+              </div>
+            ) : props.isDriver && ev.requestId ? (
+              <div className="perm-actions">
+                <button onClick={() => props.onPermission(ev.requestId!, "allow")}>[a]pprove</button>
+                <button className="deny" onClick={() => props.onPermission(ev.requestId!, "deny")}>[d]eny</button>
+              </div>
+            ) : (
+              <div className="perm-outcome">⏳ driver deciding…</div>
+            )}
+          </div>
+        );
+      }
+      case "permission_decision":
+        return null; // folded into the request block via permissionDecisions
+      default:
+        return null; // presence_join/leave, turn_end: no transcript line
+    }
+  };
+
   return (
     <main className="transcript term-frame">
-      {props.events.map((ev) => {
-        switch (ev.type) {
-          case "user_message":
-            return (
-              <div key={ev.seq} className="line">
-                <span className="who" style={{ color: colorOf(ev.userId) }}>
-                  &gt; {nameOf(ev.userId)}:
-                </span>{" "}
-                {ev.text}
-              </div>
-            );
-          case "agent_text_delta":
-            return <div key={ev.seq} className="line">⏺ {ev.text}</div>;
-          case "tool_call":
-            return (
-              <div key={ev.seq} className="line dim">
-                ⏺ {ev.toolName}({JSON.stringify(ev.input)?.slice(0, 200)})
-              </div>
-            );
-          case "tool_result":
-            return (
-              <div key={ev.seq} className="line dim">
-                {"  ⎿ "}{ev.output?.slice(0, 300)}
-              </div>
-            );
-          case "control_change":
-            return (
-              <div key={ev.seq} className={isFresh(ev) ? "line wheel fresh" : "line wheel"}>
-                🛞 {nameOf(ev.userId)} took the wheel
-              </div>
-            );
-          case "agent_error":
-            return <div key={ev.seq} className="line red">⚠ {ev.message}</div>;
-          case "intent_update":
-            return (
-              <div key={ev.seq} className={ev.seq === lastIntentSeq ? "line gold" : "line gold done"}>
-                ✦ objective: {ev.text}
-              </div>
-            );
-          case "model_change":
-            return (
-              <div key={ev.seq} className="line gold">
-                ✦ {nameOf(ev.userId)} switched the agent to {ev.model}
-              </div>
-            );
-          case "permission_request": {
-            const decided = ev.requestId ? permissionDecisions.get(ev.requestId) : undefined;
-            const cmd = (ev.input as { command?: unknown } | undefined)?.command;
-            const preview = typeof cmd === "string" ? cmd : JSON.stringify(ev.input);
-            return (
-              <div key={ev.seq} className="perm">
-                <div className="perm-title">🔐 agent wants to run <b>{ev.toolName}</b></div>
-                <code className="perm-input">{preview?.slice(0, 300)}</code>
-                {decided ? (
-                  <div className="perm-outcome">
-                    {decided.decision === "allow" ? "✅ approved" : "⛔ denied"} by {nameOf(decided.userId)}
-                  </div>
-                ) : props.isDriver && ev.requestId ? (
-                  <div className="perm-actions">
-                    <button onClick={() => props.onPermission(ev.requestId!, "allow")}>[a]pprove</button>
-                    <button className="deny" onClick={() => props.onPermission(ev.requestId!, "deny")}>[d]eny</button>
-                  </div>
-                ) : (
-                  <div className="perm-outcome">⏳ driver deciding…</div>
-                )}
-              </div>
-            );
-          }
-          case "permission_decision":
-            return null; // folded into the request block via permissionDecisions
-          default:
-            return null; // presence_join/leave, turn_end: no transcript line
-        }
-      })}
+      {deriveTranscriptGroups(props.events).map((group, gi) =>
+        group.kind === "main" ? (
+          group.events.map(renderEvent)
+        ) : (
+          <details key={`sub-${gi}-${group.parentId}`} className="subagent">
+            <summary>
+              ⚒ subagent: {group.label} · {group.status === "done" ? "done" : "running…"} · {group.events.length} rows
+            </summary>
+            {group.events.map(renderEvent)}
+          </details>
+        ),
+      )}
       <div ref={bottomRef} />
     </main>
   );

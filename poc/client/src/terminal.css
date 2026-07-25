@@ -180,6 +180,16 @@ button, input, select { font: inherit; color: inherit; }
 .perm-actions button.deny:hover { background: rgba(224, 104, 95, 0.12); }
 .perm-outcome { color: var(--dim); }
 
+/* subagent groups — collapsed nested transcript segments */
+.subagent { border-left: 2px solid var(--frame); padding-left: var(--sp-3); margin: var(--sp-1) 0; }
+.subagent > summary { color: var(--dim); cursor: pointer; list-style: none; }
+.subagent > summary::before { content: "▸ "; }
+.subagent[open] > summary::before { content: "▾ "; }
+
+/* skill invocation — first-class, not a generic tool row */
+.skillcard { color: var(--gold); }
+.skillcard .skillname { font-weight: 600; }
+
 /* party pane */
 .party {
   width: 280px; overflow-y: auto; padding: var(--sp-3);
