@@ -4,10 +4,11 @@ import { deriveState } from "./derive";
 import { hashIdentity, loadOrCreateUserId, loadProfile } from "./identity";
 import type { Profile } from "./identity";
 import { useSessionSocket } from "./useSessionSocket";
-import { Header } from "./components/Header";
+import { Header, MODEL_LABELS } from "./components/Header";
 import { PromptBar } from "./components/PromptBar";
 import { Transcript } from "./components/Transcript";
 import { PartyPane } from "./components/PartyPane";
+import { ThinkingStrip } from "./components/ThinkingStrip";
 
 export default function App() {
   const [userId] = useState(loadOrCreateUserId);
@@ -85,6 +86,8 @@ export default function App() {
 
         <PartyPane projectId={projectId} sessionId={sessionId} sessions={projectSessions} />
       </div>
+
+      <ThinkingStrip busy={derived.agentBusy} modelLabel={MODEL_LABELS[derived.model] ?? derived.model} />
 
       {errors.length > 0 && <div className="line red">⚠ {errors.at(-1)}</div>}
 

@@ -106,3 +106,14 @@ button, input, select { font: inherit; color: inherit; }
 .member-meta { color: var(--dim); font-size: 11px; }
 
 @media (max-width: 900px) { .party { display: none; } }
+
+/* thinking strip (Task 9) — ASCII dino mini-game shown while the agent works */
+.thinking { margin-top: 8px; padding: 6px 12px; color: var(--gold); animation: strip-in 0.3s ease-out; }
+.thinking.leaving { opacity: 0; transition: opacity 0.6s ease-out; }
+.thinking-head { display: flex; gap: 8px; }
+.thinking-score { margin-left: auto; color: var(--dim); }
+.pulse { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.3; } }
+@keyframes strip-in { from { opacity: 0; } }
+.lane { margin: 2px 0; border-top: 1px dashed var(--frame); border-bottom: 1px dashed var(--frame); padding: 2px 0; color: var(--fg); line-height: 1.2; }
+.thinking-hint { color: var(--dim); font-size: 11px; }
