@@ -501,3 +501,26 @@ describe("identity on join and pre-join peek", () => {
     member.close(); peeker.close(); await server.close();
   });
 });
+
+describe("skill roster", () => {
+  it("replays a skill_roster event to every joiner", async () => {
+    process.env.AGENT_SKILLS = "alpha, beta";
+    try {
+      const server = await startServer({ port: 0, runQuery: echoRun });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "join", sessionId: "s-roster", userId: "u1", name: "Ana" }));
+      await wait(100);
+      const roster = seen.find((m) => m.event?.type === "skill_roster");
+      expect(roster.event.skills).toEqual([
+        { name: "alpha", description: "" },
+        { name: "beta", description: "" },
+      ]);
+      ws.close();
+    } finally {
+      delete process.env.AGENT_SKILLS;
+    }
+  });
+});

@@ -11,6 +11,7 @@ import {
   type ProjectSessionEntry,
 } from "./project.js";
 import { Session } from "./session.js";
+import { loadSkillRoster } from "./skillRoster.js";
 
 const MAX_PROMPT_LENGTH = 4000;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
@@ -81,10 +82,23 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
       const session = new Session(sessionId);
       const root = process.env.AGENT_WORKDIR_ROOT;
       const workdir = root ? path.join(root, sessionId) : undefined;
-      entry = { session, driver: new AgentDriver(session, runQuery, workdir) };
+      const skillNames = (process.env.AGENT_SKILLS ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const skills = loadSkillRoster(workdir, skillNames);
+      // Appended (not side-channeled) so late joiners get the roster from the
+      // same replay path as everything else. Empty roster still appends — the
+      // client treats "no skill_roster yet" and "empty roster" identically,
+      // but a uniform log is easier to reason about.
+      session.append({ type: "skill_roster", skills });
+      entry = {
+        session,
+        driver: new AgentDriver(session, runQuery, workdir),
+        skills,
+        pendingSuggests: new Map(),
+      };
       project.sessions.set(sessionId, entry);
-      // Project-level awareness: any interesting event on any member session
-      // schedules a throttled snapshot push to the whole project.
       session.subscribe((event) => {
         if (INTERESTING.has(event.type)) schedulePush(project);
       });
