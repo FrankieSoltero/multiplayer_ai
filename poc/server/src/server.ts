@@ -37,6 +37,9 @@ const INTERESTING = new Set([
   "permission_decision",
   "skill_suggest",
   "skill_decision",
+  "plan_request",
+  "plan_decision",
+  "permission_mode_change",
 ]);
 
 export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
@@ -318,6 +321,34 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
         });
         if (msg.decision === "run") {
           ctx.entry.driver.runSkill(pending.skill, pending.args);
+        }
+        return;
+      }
+
+      if (msg.type === "set_permission_mode") {
+        if (msg.mode !== "plan" && msg.mode !== "default") {
+          return sendError("set_permission_mode requires mode: plan|default");
+        }
+        if (!ctx.entry.session.canPrompt(ctx.userId)) {
+          return sendError("only the current driver can toggle plan mode — take the wheel first");
+        }
+        const result = ctx.entry.driver.setPermissionMode(msg.mode, ctx.userId);
+        if (!result.ok) return sendError(result.error);
+        return;
+      }
+
+      if (msg.type === "decide_plan") {
+        if (
+          typeof msg.requestId !== "string" ||
+          (msg.decision !== "approve" && msg.decision !== "reject")
+        ) {
+          return sendError("decide_plan requires requestId and decision approve|reject");
+        }
+        if (!ctx.entry.session.canPrompt(ctx.userId)) {
+          return sendError("only the current driver can decide plans — take the wheel first");
+        }
+        if (!ctx.entry.driver.resolvePlan(msg.requestId, msg.decision, ctx.userId)) {
+          return sendError("unknown or already-decided plan request");
         }
         return;
       }

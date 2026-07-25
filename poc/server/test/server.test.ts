@@ -609,3 +609,27 @@ describe("skill suggest/decide", () => {
     ws.close();
   });
 });
+
+describe("plan mode", () => {
+  it("guards set_permission_mode and decide_plan to the current driver", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const wsA = await connect(server.port);
+    collect(wsA, []);
+    wsA.send(JSON.stringify({ type: "join", sessionId: "pg1", userId: "u1", name: "Ana" }));
+    await wait(50);
+    const wsB = await connect(server.port);
+    const seenB: any[] = [];
+    collect(wsB, seenB);
+    wsB.send(JSON.stringify({ type: "join", sessionId: "pg1", userId: "u2", name: "Ben" }));
+    await wait(50);
+    wsB.send(JSON.stringify({ type: "set_permission_mode", mode: "plan" }));
+    wsB.send(JSON.stringify({ type: "decide_plan", requestId: "r1", decision: "approve" }));
+    await wait(100);
+    const errors = seenB.filter((m) => m.type === "error").map((m) => m.message);
+    expect(errors.some((e) => /toggle plan mode/.test(e))).toBe(true);
+    expect(errors.some((e) => /decide plans/.test(e))).toBe(true);
+    wsA.close();
+    wsB.close();
+  });
+});

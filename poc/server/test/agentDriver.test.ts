@@ -648,3 +648,74 @@ describe("todo mirror", () => {
     ]);
   });
 });
+
+describe("plan gate", () => {
+  it("appends plan_request, resolves approve, switches mode back to default", async () => {
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    let planPromise: Promise<"approve" | "reject"> | undefined;
+    const planRun: RunQuery = (prompts, hooks) => {
+      const gen = (async function* () {
+        for await (const _prompt of prompts) {
+          planPromise = hooks.onPlanRequest("1. audit\n2. fix", undefined);
+          await planPromise;
+          return;
+        }
+      })();
+      return Object.assign(gen, { setPermissionMode });
+    };
+    const session = new Session("s-plan");
+    const events: any[] = [];
+    session.subscribe((e) => events.push(e));
+    const driver = new AgentDriver(session, planRun);
+    driver.sendPrompt("u1", "build it");
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "plan_request")).toBe(true);
+    });
+    const request = events.find((e) => e.type === "plan_request");
+    expect(request.plan).toBe("1. audit\n2. fix");
+
+    expect(driver.resolvePlan(request.requestId, "approve", "u1")).toBe(true);
+    await expect(planPromise).resolves.toBe("approve");
+    const decision = events.find((e) => e.type === "plan_decision");
+    expect(decision).toMatchObject({ requestId: request.requestId, decision: "approve", userId: "u1" });
+    const modeChange = events.find((e) => e.type === "permission_mode_change");
+    expect(modeChange).toMatchObject({ mode: "default", userId: "u1" });
+    expect(setPermissionMode).toHaveBeenCalledWith("default");
+    // Second resolve is a no-op
+    expect(driver.resolvePlan(request.requestId, "approve", "u1")).toBe(false);
+  });
+
+  it("setPermissionMode mirrors the setModel guards and logs optimistically", async () => {
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const idleRun: RunQuery = (prompts) => {
+      const gen = (async function* () {
+        for await (const _prompt of prompts) {
+          /* never yields */
+        }
+      })();
+      return Object.assign(gen, { setPermissionMode });
+    };
+    const session = new Session("s-mode");
+    const events: any[] = [];
+    session.subscribe((e) => events.push(e));
+    const driver = new AgentDriver(session, idleRun);
+    expect(driver.setPermissionMode("plan", "u1")).toEqual({ ok: true });
+    expect(setPermissionMode).toHaveBeenCalledWith("plan");
+    expect(events.find((e) => e.type === "permission_mode_change")).toMatchObject({ mode: "plan", userId: "u1" });
+
+    driver.sendPrompt("u1", "go"); // now mid-turn
+    expect(driver.setPermissionMode("default", "u1")).toEqual({
+      ok: false,
+      error: "agent is mid-turn — wait for it to finish",
+    });
+  });
+
+  it("reports not-supported on fakes without setPermissionMode", () => {
+    const session = new Session("s-nomode");
+    const driver = new AgentDriver(session, fakeRun);
+    expect(driver.setPermissionMode("plan", "u1")).toEqual({
+      ok: false,
+      error: "plan mode not supported by this agent",
+    });
+  });
+});

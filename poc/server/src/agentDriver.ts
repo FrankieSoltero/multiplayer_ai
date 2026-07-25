@@ -50,12 +50,24 @@ export interface DriverHooks {
   ) => Promise<"allow" | "deny">;
   /** Surface a permission-flow failure into the session log (agent_error). */
   onPermissionError?: (message: string) => void;
+  /**
+   * Ask the session's current driver to approve the agent's plan (the
+   * ExitPlanMode tool call, held at canUseTool). Same lifetime semantics as
+   * onPermissionRequest: no timeout, resolvable by whoever is driving at
+   * decision time, abort-safe.
+   */
+  onPlanRequest: (
+    plan: string,
+    signal?: AbortSignal,
+  ) => Promise<"approve" | "reject">;
   workdir?: string;
 }
 
 export type RunQueryResult = AsyncIterable<SdkMessage> & {
   /** Present on the real SDK Query (sdk.d.ts Query.setModel); absent on plain test fakes. */
   setModel?(model: string): Promise<void>;
+  /** Present on the real SDK Query (sdk.d.ts Query.setPermissionMode); absent on plain test fakes. */
+  setPermissionMode?(mode: string): Promise<void>;
 };
 
 export type RunQuery = (
@@ -161,6 +173,7 @@ export class AgentDriver {
   private prompts = new AsyncQueue<SdkUserMessage>();
   private toolNamesById = new Map<string, string>();
   private pendingPermissions = new Map<string, (d: "allow" | "deny") => void>();
+  private pendingPlans = new Map<string, (d: "approve" | "reject") => void>();
   private dead = false;
   // Count of turns sent but not yet resolved by a matching "result" message.
   // A boolean here would be wrong: drivers can queue prompt B while prompt A
@@ -220,6 +233,34 @@ export class AgentDriver {
       },
       onPermissionError: (message) =>
         this.session.append({ type: "agent_error", message }),
+      onPlanRequest: (plan, signal) => {
+        const requestId = randomUUID();
+        let resolve!: (d: "approve" | "reject") => void;
+        const pending = new Promise<"approve" | "reject">((res) => {
+          resolve = res;
+        });
+        this.pendingPlans.set(requestId, resolve);
+        this.session.append({
+          type: "plan_request",
+          requestId,
+          plan: plan.slice(0, 20000),
+        });
+        if (signal) {
+          const rejectOnAbort = () => {
+            if (!this.pendingPlans.delete(requestId)) return;
+            this.session.append({
+              type: "plan_decision",
+              requestId,
+              decision: "reject",
+              userId: "system",
+            });
+            resolve("reject");
+          };
+          if (signal.aborted) rejectOnAbort();
+          else signal.addEventListener("abort", rejectOnAbort, { once: true });
+        }
+        return pending;
+      },
       workdir,
     });
     void this.consume(this.stream);
@@ -296,6 +337,56 @@ export class AgentDriver {
     return true;
   }
 
+  /**
+   * Resolve a pending plan request. Driver-validated by the server at
+   * DECISION time (wheel handoffs mid-plan are a feature). On approve, also
+   * switch the SDK back to default permission mode — plan mode's job is done
+   * once a plan is accepted; without this the agent would present plans
+   * forever. The switch is fire-and-forget like setModel: mode-change is
+   * logged optimistically and a trailing agent_error means it may not have
+   * taken.
+   */
+  resolvePlan(
+    requestId: string,
+    decision: "approve" | "reject",
+    userId: string,
+  ): boolean {
+    const resolve = this.pendingPlans.get(requestId);
+    if (!resolve) return false;
+    this.pendingPlans.delete(requestId);
+    this.session.append({ type: "plan_decision", requestId, decision, userId });
+    if (decision === "approve") {
+      void this.stream.setPermissionMode?.("default").catch((err) =>
+        this.session.append({
+          type: "agent_error",
+          message: `permission mode switch failed: ${err instanceof Error ? err.message : String(err)}`,
+        }),
+      );
+      this.session.append({ type: "permission_mode_change", mode: "default", userId });
+    }
+    resolve(decision);
+    return true;
+  }
+
+  setPermissionMode(
+    mode: "plan" | "default",
+    userId: string,
+  ): { ok: true } | { ok: false; error: string } {
+    if (this.dead) return { ok: false, error: "agent session has ended" };
+    if (this.pendingTurns > 0)
+      return { ok: false, error: "agent is mid-turn — wait for it to finish" };
+    if (!this.stream.setPermissionMode)
+      return { ok: false, error: "plan mode not supported by this agent" };
+    void this.stream.setPermissionMode(mode).catch((err) =>
+      this.session.append({
+        type: "agent_error",
+        message: `permission mode switch failed: ${err instanceof Error ? err.message : String(err)}`,
+      }),
+    );
+    this.session.append({ type: "permission_mode_change", mode, userId });
+    return { ok: true };
+  }
+
   setModel(
     key: ModelKey,
     userId: string,
@@ -370,6 +461,16 @@ export class AgentDriver {
         userId: "system",
       });
       resolve("deny");
+    }
+    for (const [requestId, resolve] of this.pendingPlans) {
+      this.pendingPlans.delete(requestId);
+      this.session.append({
+        type: "plan_decision",
+        requestId,
+        decision: "reject",
+        userId: "system",
+      });
+      resolve("reject");
     }
   }
 

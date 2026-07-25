@@ -93,6 +93,30 @@ export function buildCanUseTool(hooks: DriverHooks): CanUseTool {
     if (toolName === "TodoWrite") {
       return { behavior: "allow" };
     }
+    // Plan mode's exit tool is the plan-approval gate: the plan rides the
+    // tool input, the driver's decision rides the same held-promise machinery
+    // as permission requests, but with its own event pair so the client can
+    // render an approval card instead of a generic permission row.
+    if (toolName === "ExitPlanMode") {
+      const plan = (input as { plan?: unknown }).plan;
+      const planText = typeof plan === "string" ? plan : "";
+      try {
+        const decision = await Promise.race([
+          hooks.onPlanRequest(planText, options.signal),
+          abortsToDeny(options.signal),
+        ]);
+        if (decision === "approve") return { behavior: "allow" };
+        return {
+          behavior: "deny",
+          message:
+            "The driving teammate asked for revisions. Revise the plan based on the conversation so far and present it again with ExitPlanMode.",
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        hooks.onPermissionError?.(`plan flow failed: ${message}`);
+        return { behavior: "deny", message: `plan flow failed: ${message}` };
+      }
+    }
     const command = (input as { command?: unknown }).command;
     if (toolName === "Bash" && typeof command === "string" && isAutoApprovedBash(command)) {
       return { behavior: "allow" };

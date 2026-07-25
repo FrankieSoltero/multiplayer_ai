@@ -54,6 +54,7 @@ function fakeHooks(decision: "allow" | "deny" | "hang" | "throw") {
       if (decision === "throw") return Promise.reject(new Error("boom"));
       return Promise.resolve(decision);
     },
+    onPlanRequest: async () => "approve" as const,
   };
   return { hooks, calls, errors };
 }
@@ -228,13 +229,38 @@ describe("buildCanUseTool worktree containment (file-writing tools)", () => {
 
   it("auto-approves TodoWrite without consulting the driver", async () => {
     const onPermissionRequest = vi.fn();
-    const canUse = buildCanUseTool({ onIntent: () => {}, onPermissionRequest });
+    const canUse = buildCanUseTool({
+      onIntent: () => {},
+      onPermissionRequest,
+      onPlanRequest: async () => "approve" as const,
+    });
     const result = await canUse(
       "TodoWrite",
       { todos: [{ content: "step 1", status: "pending", activeForm: "doing step 1" }] },
       { signal: new AbortController().signal } as any,
     );
     expect(result).toEqual({ behavior: "allow" });
+    expect(onPermissionRequest).not.toHaveBeenCalled();
+  });
+
+  it("routes ExitPlanMode to onPlanRequest: approve allows, reject denies with a revise message", async () => {
+    const onPermissionRequest = vi.fn();
+    const decisions: Array<"approve" | "reject"> = ["approve", "reject"];
+    const seenPlans: string[] = [];
+    const canUse = buildCanUseTool({
+      onIntent: () => {},
+      onPermissionRequest,
+      onPlanRequest: async (plan) => {
+        seenPlans.push(plan);
+        return decisions.shift()!;
+      },
+    });
+    const opts = { signal: new AbortController().signal } as any;
+    const first = await canUse("ExitPlanMode", { plan: "1. do the thing" }, opts);
+    expect(first).toEqual({ behavior: "allow" });
+    const second = await canUse("ExitPlanMode", { plan: "2. revised" }, opts);
+    expect(second).toMatchObject({ behavior: "deny", message: expect.stringMatching(/revis/i) });
+    expect(seenPlans).toEqual(["1. do the thing", "2. revised"]);
     expect(onPermissionRequest).not.toHaveBeenCalled();
   });
 });
