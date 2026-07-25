@@ -30,12 +30,19 @@ responsibility for no added capability).
 | { type: "todo_update"; todos: { text: string; status: "pending" | "in_progress" | "completed" }[] }
 | { type: "plan_request"; requestId: string; plan: string }        // markdown plan body
 | { type: "plan_decision"; requestId: string; decision: "approve" | "reject"; userId: string }
+| { type: "permission_mode_change"; mode: "plan" | "default"; userId: string }
 ```
 
 Plus `parentToolUseId?: string` on the existing `tool_call`, `tool_result`, and
 `agent_text_delta` events — present iff the traffic originates from a subagent
 (the SDK already tags these messages with `parent_tool_use_id`; the driver
-currently drops the tag).
+currently drops the tag) — and `toolUseId?: string` on `tool_call`/`tool_result`
+(the SDK block id), without which a subagent's `parentToolUseId` has no spawning
+`Task` call to match for labeling and running/done status.
+
+`permission_mode_change` (added during planning) logs the driver's plan-mode
+toggle and the automatic switch back to default on plan approval, so the whole
+party — and late joiners via replay — can see the current mode.
 
 - **No new event for skill invocations**: a skill run is a `tool_call` with
   `toolName: "Skill"`; the client promotes it by inspecting the input.
