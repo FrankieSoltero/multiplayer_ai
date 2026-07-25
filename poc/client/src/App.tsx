@@ -8,6 +8,7 @@ import { Header, MODEL_LABELS } from "./components/Header";
 import { PromptBar } from "./components/PromptBar";
 import { Transcript } from "./components/Transcript";
 import { PartyPane } from "./components/PartyPane";
+import { TodoPanel } from "./components/TodoPanel";
 import { ThinkingStrip } from "./components/ThinkingStrip";
 import { Lobby } from "./components/Lobby";
 
@@ -117,6 +118,7 @@ function SessionView(props: {
         />
 
         <PartyPane projectId={projectId} sessionId={sessionId} sessions={projectSessions} />
+        <TodoPanel todos={derived.todos} />
       </div>
 
       <ThinkingStrip busy={derived.agentBusy} modelLabel={MODEL_LABELS[derived.model] ?? derived.model} />
