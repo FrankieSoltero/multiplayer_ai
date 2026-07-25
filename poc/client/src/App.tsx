@@ -73,6 +73,8 @@ function SessionView(props: {
   const derived = useMemo(() => deriveState(events), [events]);
   const isDriver = derived.driverId === userId;
   const canSetModel = isDriver && !derived.agentBusy;
+  const planMode = derived.permissionMode === "plan";
+  const canTogglePlan = isDriver && !derived.agentBusy;
 
   const watcherNames = [...derived.participants.entries()]
     .filter(([id]) => id !== derived.driverId && id !== userId)
@@ -104,6 +106,14 @@ function SessionView(props: {
     send({ type: "decide_skill", suggestId, decision });
   }
 
+  function onTogglePlan() {
+    send({ type: "set_permission_mode", mode: planMode ? "default" : "plan" });
+  }
+
+  function onDecidePlan(requestId: string, decision: "approve" | "reject") {
+    send({ type: "decide_plan", requestId, decision });
+  }
+
   return (
     <div className="term">
       <Header
@@ -114,6 +124,9 @@ function SessionView(props: {
         objective={derived.objective}
         canSetModel={canSetModel}
         onSetModel={onSetModel}
+        planMode={planMode}
+        canTogglePlan={canTogglePlan}
+        onTogglePlan={onTogglePlan}
       />
 
       <div className="split">
@@ -124,6 +137,7 @@ function SessionView(props: {
           selfId={userId}
           onPermission={sendPermission}
           onDecideSkill={onDecideSkill}
+          onDecidePlan={onDecidePlan}
         />
 
         <PartyPane projectId={projectId} sessionId={sessionId} sessions={projectSessions} />

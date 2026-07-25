@@ -5,6 +5,7 @@ export const MODEL_LABELS: Record<string, string> = {
 export function Header(props: {
   projectId: string; sessionId: string; model: string; connected: boolean;
   objective: string | null; canSetModel: boolean; onSetModel: (key: string) => void;
+  planMode: boolean; canTogglePlan: boolean; onTogglePlan: () => void;
 }) {
   return (
     <>
@@ -26,6 +27,18 @@ export function Header(props: {
             ))}
           </select>
         </label>
+        <button
+          className={props.planMode ? "planmode on" : "planmode"}
+          disabled={!props.canTogglePlan}
+          onClick={props.onTogglePlan}
+          title={
+            props.canTogglePlan
+              ? "plan mode: the agent must present a plan for approval before acting"
+              : "only the driver can toggle plan mode, between turns"
+          }
+        >
+          {props.planMode ? "▣ plan mode" : "▢ plan mode"}
+        </button>
         <span className={props.connected ? "conn" : "conn off"}>
           {props.connected ? "● connected" : "○ disconnected"}
         </span>

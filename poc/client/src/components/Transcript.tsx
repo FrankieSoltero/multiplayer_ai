@@ -9,12 +9,13 @@ export function Transcript(props: {
   selfId: string;
   onPermission: (requestId: string, decision: "allow" | "deny") => void;
   onDecideSkill: (suggestId: string, decision: "run" | "dismiss") => void;
+  onDecidePlan: (requestId: string, decision: "approve" | "reject") => void;
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [props.events]);
-  const { participants, permissionDecisions, lastIntentSeq, suggestDecisions } = props.derived;
+  const { participants, permissionDecisions, lastIntentSeq, suggestDecisions, planDecisions } = props.derived;
   const nameOf = (id?: string) => (id && participants.get(id)?.name) ?? id ?? "?";
   const colorOf = (id?: string) => (id && participants.get(id)?.color) ?? "var(--fg)";
 
@@ -140,6 +141,35 @@ export function Transcript(props: {
       }
       case "skill_decision":
         return null; // folded into the suggest chip via suggestDecisions
+      case "plan_request": {
+        const decided = ev.requestId ? planDecisions.get(ev.requestId) : undefined;
+        return (
+          <div key={ev.seq} className="perm plancard">
+            <div className="perm-title">📋 agent proposes a plan</div>
+            <pre className="plan-body">{ev.plan}</pre>
+            {decided ? (
+              <div className="perm-outcome">
+                {decided.decision === "approve" ? "✅ approved" : "↩ revisions requested"} by {nameOf(decided.userId)}
+              </div>
+            ) : props.isDriver && ev.requestId ? (
+              <div className="perm-actions">
+                <button onClick={() => props.onDecidePlan(ev.requestId!, "approve")}>approve</button>
+                <button className="deny" onClick={() => props.onDecidePlan(ev.requestId!, "reject")}>request revision</button>
+              </div>
+            ) : (
+              <div className="perm-outcome">⏳ driver deciding…</div>
+            )}
+          </div>
+        );
+      }
+      case "plan_decision":
+        return null; // folded into the plan card via planDecisions
+      case "permission_mode_change":
+        return (
+          <div key={ev.seq} className="line gold">
+            ✦ {nameOf(ev.userId)} switched plan mode {ev.mode === "plan" ? "on" : "off"}
+          </div>
+        );
       default:
         return null; // presence_join/leave, turn_end: no transcript line
     }

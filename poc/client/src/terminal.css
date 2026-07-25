@@ -205,6 +205,18 @@ button, input, select { font: inherit; color: inherit; }
 .skillcard { color: var(--gold); }
 .skillcard .skillname { font-weight: 600; }
 
+/* plan mode toggle + plan approval card */
+.planmode {
+  background: none; border: 1px solid var(--frame); color: var(--dim);
+  padding: 0 var(--sp-2); cursor: pointer; font: inherit;
+}
+.planmode.on { color: var(--gold); border-color: var(--gold); }
+.planmode:disabled { opacity: 0.5; cursor: default; }
+.plan-body {
+  margin: var(--sp-2) 0; padding: var(--sp-2) var(--sp-3);
+  background: var(--input); overflow-x: auto; white-space: pre-wrap;
+}
+
 /* party pane */
 .party {
   width: 280px; overflow-y: auto; padding: var(--sp-3);
