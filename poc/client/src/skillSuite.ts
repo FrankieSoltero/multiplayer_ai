@@ -14,7 +14,9 @@ export function suiteFromSessions(sessions: ProjectSessionInfo[]): SuiteSkill[] 
     for (const sk of s.skills ?? []) {
       const cur = byName.get(sk.name);
       if (cur) {
-        cur.sources.push({ sessionId: s.id, driverName: s.driverName });
+        if (!cur.sources.some((src) => src.sessionId === s.id)) {
+          cur.sources.push({ sessionId: s.id, driverName: s.driverName });
+        }
         if (!cur.description && sk.description) cur.description = sk.description;
       } else {
         byName.set(sk.name, {

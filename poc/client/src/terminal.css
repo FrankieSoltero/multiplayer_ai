@@ -649,9 +649,18 @@ code, pre { font-family: var(--fm); }
   cursor: pointer; align-items: center; gap: var(--sp-2); padding: 0;
 }
 @media (max-width: 900px) {
-  .row, .split { flex-direction: column; }
+  .row { flex-direction: column; }
   .party, .todopanel { display: flex; width: 100%; }
   .pane-summary { display: flex; }
   .party:not(.open) > :not(.pane-summary),
   .todopanel:not(.open) > :not(.pane-summary) { display: none; }
+}
+
+/* Reduced-motion coverage for rules declared below the main kill list above
+   (~line 550): equal specificity means later source order wins, so appending
+   to that list isn't enough once a rule lives past it. New animations added
+   anywhere below the main kill block must be added here too (or moved above
+   it and added to its selector list). */
+@media (prefers-reduced-motion: reduce) {
+  .subagent .lamp { animation: none; }
 }

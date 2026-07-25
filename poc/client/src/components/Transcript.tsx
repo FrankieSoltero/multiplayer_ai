@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { deriveTranscriptGroups, type DerivedState } from "../derive";
 import type { LoggedEvent } from "../types";
 
@@ -14,6 +14,18 @@ export function Transcript(props: {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [props.events]);
+
+  // the "fresh" wheelbanner (< 5s old) otherwise only re-evaluates on the next
+  // render; schedule one at the freshness boundary so it demotes on time.
+  const [, setFreshnessTick] = useState(0);
+  useEffect(() => {
+    const latest = [...props.events].reverse().find((e) => e.type === "control_change");
+    if (!latest) return;
+    const remaining = 5000 - (Date.now() - new Date(latest.ts).getTime());
+    if (remaining <= 0) return;
+    const t = setTimeout(() => setFreshnessTick((n) => n + 1), remaining);
+    return () => clearTimeout(t);
   }, [props.events]);
   const { participants, permissionDecisions, lastIntentSeq, suggestDecisions, planDecisions } = props.derived;
   const nameOf = (id?: string) => (id && participants.get(id)?.name) ?? id ?? "?";

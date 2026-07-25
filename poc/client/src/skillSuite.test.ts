@@ -32,4 +32,10 @@ describe("suiteFromSessions", () => {
     ]);
     expect(out[0].description).toBe("real");
   });
+  it("dedupes duplicate skill names within a single session to one source entry", () => {
+    const out = suiteFromSessions([
+      sess("ana", "Ana", [{ name: "x", description: "A" }, { name: "x", description: "A2" }]),
+    ]);
+    expect(out[0].sources).toEqual([{ sessionId: "ana", driverName: "Ana" }]);
+  });
 });
