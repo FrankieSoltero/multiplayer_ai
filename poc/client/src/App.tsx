@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import "./terminal.css";
 import { deriveState } from "./derive";
-import { hashIdentity, loadOrCreateUserId, loadProfile } from "./identity";
+import { hashIdentity, loadOrCreateUserId, loadProfile, saveProfile } from "./identity";
 import type { Profile } from "./identity";
 import { useSessionSocket } from "./useSessionSocket";
 import { Header, MODEL_LABELS } from "./components/Header";
@@ -9,6 +9,7 @@ import { PromptBar } from "./components/PromptBar";
 import { Transcript } from "./components/Transcript";
 import { PartyPane } from "./components/PartyPane";
 import { ThinkingStrip } from "./components/ThinkingStrip";
+import { Lobby } from "./components/Lobby";
 
 export default function App() {
   const [userId] = useState(loadOrCreateUserId);
@@ -16,19 +17,50 @@ export default function App() {
   const sessionId = params.get("session") ?? "demo";
   const projectId = params.get("project") ?? "default";
 
-  // Profile fallback for this task: existing saved profile, else `?name=`
-  // param or an auto `user-xxxx` name with a hashIdentity-derived glyph and
-  // color. The lobby that lets a user actually pick these arrives in Task 10.
-  const [profile] = useState<Profile>(() => {
-    const existing = loadProfile();
-    if (existing) return existing;
-    const fallback = hashIdentity(userId);
-    return {
-      name: params.get("name") ?? `user-${userId.slice(0, 4)}`,
-      glyph: fallback.glyph,
-      color: fallback.color,
-    };
+  // Profile precedence: `?name=` URL param auto-derives a profile (glyph/color
+  // hashed from userId) and skips the lobby entirely — demo scripts depend on
+  // this. Otherwise fall back to a previously saved profile. If neither is
+  // present, profile stays null and the gate below renders the Lobby so the
+  // user can pick a name/glyph/color before the session socket connects.
+  const [profile, setProfile] = useState<Profile | null>(() => {
+    const nameParam = params.get("name");
+    if (nameParam) {
+      return { name: nameParam.slice(0, 40), ...hashIdentity(loadOrCreateUserId()) };
+    }
+    return loadProfile();
   });
+
+  if (profile === null) {
+    return (
+      <Lobby
+        projectId={projectId}
+        sessionId={sessionId}
+        defaultName={`user-${userId.slice(0, 4)}`}
+        onEnter={(p) => {
+          saveProfile(p);
+          setProfile(p);
+        }}
+      />
+    );
+  }
+
+  return (
+    <SessionView
+      userId={userId}
+      sessionId={sessionId}
+      projectId={projectId}
+      profile={profile}
+    />
+  );
+}
+
+function SessionView(props: {
+  userId: string;
+  sessionId: string;
+  projectId: string;
+  profile: Profile;
+}) {
+  const { userId, sessionId, projectId, profile } = props;
 
   const { events, errors, connected, projectSessions, send } = useSessionSocket({
     sessionId,
