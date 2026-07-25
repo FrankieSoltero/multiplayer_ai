@@ -14,6 +14,15 @@ export type LoggedEvent = {
   model?: string;
   glyph?: string;
   color?: string;
+  toolUseId?: string;
+  parentToolUseId?: string;
+  skills?: { name: string; description: string }[];
+  suggestId?: string;
+  skill?: string;
+  args?: string;
+  todos?: { text: string; status: string }[];
+  plan?: string;
+  mode?: string;
 };
 
 export type ProjectSessionInfo = {
