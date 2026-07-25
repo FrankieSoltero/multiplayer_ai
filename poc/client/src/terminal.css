@@ -113,12 +113,27 @@ button, input, select { font: inherit; color: inherit; }
 /* prompt bar + status line */
 .promptbar { margin-top: var(--sp-2); }
 .promptbar .inputbox {
+  position: relative;
   display: flex; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--frame); background: var(--input);
 }
 .promptbar .inputbox:focus-within { border-color: var(--accent); }
 .promptbar .caret { color: var(--accent); }
 .promptbar input { flex: 1; background: transparent; border: none; outline: none; }
+
+/* slash autocomplete — anchored above the prompt input */
+.slashmenu {
+  position: absolute; bottom: 100%; left: 0; right: 0;
+  background: var(--input); border: 1px solid var(--frame);
+  display: flex; flex-direction: column;
+}
+.slashmenu button {
+  text-align: left; padding: var(--sp-1) var(--sp-3);
+  background: none; border: 0; color: var(--fg); cursor: pointer;
+  font: inherit;
+}
+.slashmenu button:hover { background: rgba(217, 119, 87, 0.12); }
+.suggest .perm-title { color: var(--gold); }
 .promptbar button.wheel {
   width: 100%; padding: var(--sp-2) var(--sp-3); text-align: left; cursor: pointer;
   border: 1px dashed var(--frame);
@@ -180,6 +195,28 @@ button, input, select { font: inherit; color: inherit; }
 .perm-actions button.deny:hover { background: rgba(224, 104, 95, 0.12); }
 .perm-outcome { color: var(--dim); }
 
+/* subagent groups — collapsed nested transcript segments */
+.subagent { border-left: 2px solid var(--frame); padding-left: var(--sp-3); margin: var(--sp-1) 0; }
+.subagent > summary { color: var(--dim); cursor: pointer; list-style: none; }
+.subagent > summary::before { content: "▸ "; }
+.subagent[open] > summary::before { content: "▾ "; }
+
+/* skill invocation — first-class, not a generic tool row */
+.skillcard { color: var(--gold); }
+.skillcard .skillname { font-weight: 600; }
+
+/* plan mode toggle + plan approval card */
+.planmode {
+  background: none; border: 1px solid var(--frame); color: var(--dim);
+  padding: 0 var(--sp-2); cursor: pointer; font: inherit;
+}
+.planmode.on { color: var(--gold); border-color: var(--gold); }
+.planmode:disabled { opacity: 0.5; cursor: default; }
+.plan-body {
+  margin: var(--sp-2) 0; padding: var(--sp-2) var(--sp-3);
+  background: var(--input); overflow-x: auto; white-space: pre-wrap;
+}
+
 /* party pane */
 .party {
   width: 280px; overflow-y: auto; padding: var(--sp-3);
@@ -201,6 +238,16 @@ button, input, select { font: inherit; color: inherit; }
 .member-meta { color: var(--dim); }
 
 @media (max-width: 900px) { .party { display: none; } }
+
+/* agent todo panel — mirrors the agent's TodoWrite list, hidden when empty */
+.todopanel {
+  width: 200px; overflow-y: auto; padding: var(--sp-3);
+  display: flex; flex-direction: column; gap: var(--sp-1);
+}
+.todo { color: var(--dim); }
+.todo.in_progress { color: var(--gold); }
+.todo.completed { text-decoration: line-through; }
+@media (max-width: 900px) { .todopanel { display: none; } }
 
 /* thinking strip (Task 9) — ASCII dino mini-game shown while the agent works */
 .thinking {

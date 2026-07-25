@@ -8,6 +8,7 @@ import { Header, MODEL_LABELS } from "./components/Header";
 import { PromptBar } from "./components/PromptBar";
 import { Transcript } from "./components/Transcript";
 import { PartyPane } from "./components/PartyPane";
+import { TodoPanel } from "./components/TodoPanel";
 import { ThinkingStrip } from "./components/ThinkingStrip";
 import { Lobby } from "./components/Lobby";
 
@@ -72,6 +73,8 @@ function SessionView(props: {
   const derived = useMemo(() => deriveState(events), [events]);
   const isDriver = derived.driverId === userId;
   const canSetModel = isDriver && !derived.agentBusy;
+  const planMode = derived.permissionMode === "plan";
+  const canTogglePlan = isDriver && !derived.agentBusy;
 
   const watcherNames = [...derived.participants.entries()]
     .filter(([id]) => id !== derived.driverId && id !== userId)
@@ -95,6 +98,22 @@ function SessionView(props: {
     send({ type: "permission", requestId, decision });
   }
 
+  function onSuggestSkill(skill: string, args: string) {
+    send({ type: "suggest_skill", skill, args });
+  }
+
+  function onDecideSkill(suggestId: string, decision: "run" | "dismiss") {
+    send({ type: "decide_skill", suggestId, decision });
+  }
+
+  function onTogglePlan() {
+    send({ type: "set_permission_mode", mode: planMode ? "default" : "plan" });
+  }
+
+  function onDecidePlan(requestId: string, decision: "approve" | "reject") {
+    send({ type: "decide_plan", requestId, decision });
+  }
+
   return (
     <div className="term">
       <Header
@@ -105,6 +124,9 @@ function SessionView(props: {
         objective={derived.objective}
         canSetModel={canSetModel}
         onSetModel={onSetModel}
+        planMode={planMode}
+        canTogglePlan={canTogglePlan}
+        onTogglePlan={onTogglePlan}
       />
 
       <div className="split">
@@ -114,9 +136,12 @@ function SessionView(props: {
           isDriver={isDriver}
           selfId={userId}
           onPermission={sendPermission}
+          onDecideSkill={onDecideSkill}
+          onDecidePlan={onDecidePlan}
         />
 
         <PartyPane projectId={projectId} sessionId={sessionId} sessions={projectSessions} />
+        <TodoPanel todos={derived.todos} />
       </div>
 
       <ThinkingStrip busy={derived.agentBusy} modelLabel={MODEL_LABELS[derived.model] ?? derived.model} />
@@ -127,8 +152,10 @@ function SessionView(props: {
         isDriver={isDriver}
         agentBusy={derived.agentBusy}
         watcherNames={watcherNames}
+        skills={derived.skills}
         onPrompt={onPrompt}
         onTakeWheel={onTakeWheel}
+        onSuggestSkill={onSuggestSkill}
         inputRef={inputRef}
       />
     </div>

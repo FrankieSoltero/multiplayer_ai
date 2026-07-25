@@ -1,80 +1,75 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (afternoon): v2+v3+v4 MERGED to main via PR #1 (github.com/FrankieSoltero/multiplayer_ai, private; merge 1c6330d; 71/71+12/12+build verified on main). Branch deleted. CURRENT TASK: v5 design phase — brainstorm below.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (late evening): v5a COMPLETE. USER DECIDED: integrate via push + PR (v4 precedent); screenshots DROPPED (deleted, HANDOFF text record suffices). PR against main opened from `feature/v5a-harness`. NEXT: remaining §7 decisions + queued ask `Multiplayer AI 90s Terminal UI.zip`.*
 
-## 0. WHERE WE ARE — v5 DESIGN PHASE (starting)
+## 0. WHERE WE ARE — v5a done, awaiting integration decision
 
-**User's v5 asks (2026-07-25, verbatim intent):**
-1. **Real agent-harness functionality** — "add all the functionality of an actual agent harness, like being able to call skills and workflows and other things along that line." Scope to pin in brainstorming: skills invocation (beyond the current AGENT_SKILLS listing), workflows/subagent orchestration, and what else qualifies (slash commands? hooks? plan mode? background tasks?).
-2. **Multiple games to choose from** in the thinking strip (dino is the first; add a small selectable roster).
-3. **Party-wide shared high score** — "keeping a highscore amongst everyone in the party." NOTE: v4 deliberately made game state local-only and listed "broadcast game state" as a NON-GOAL; v5 reverses that intentionally → needs wire/event design (e.g. a game_score event or project-level scoreboard) and a decision on per-session vs per-project scope.
+All 12 plan tasks complete; fix loop closed (re-review of `0022a80` ADDRESSED, no new breakage); live re-test of the two fixed surfaces PASSED (session v5a-retest-3: TaskCreate/TaskUpdate mirror incl. post-delete fresh id #4, Agent subagent group with real label flipping to done — screenshot `v5a-tasks-subagent-retest.jpeg`, repo root, untracked). Final whole-branch review (d67f386..3575463): **no Critical, no Important; verdict "ready to merge with fixes"** — the one FIX BEFORE MERGE item (misleading test comment) applied with a spec-deviation note in commit `3527d9a`. Gates re-verified on final tree: server tsc clean + 89/89; client 18/18 + build clean.
 
-**v5 backlog candidates to raise during brainstorming (carried from v4):** party pane <900px summary+toggle (spec gap, user decision pending); 4 structural polish items in docs/design/frontend-design-skill-notes.md; spec text still names soltero-skills:frontend-design (real: frontend-design:frontend-design); stream-death-mid-turn leaves busy stuck until next prompt (parked minor).
-
-**Process:** start with superpowers:brainstorming (one question at a time), likely decompose into two sub-projects (harness capabilities vs games/scoreboard) -> spec -> writing-plans -> subagent-driven-development. All v1-v4 decisions stand (section 3).
-
-**Live demo stack may still be running:** server :3001 (AGENT_WORKDIR_ROOT+AGENT_SKILLS), vite :5173; demo worktree ana has committed landing/future pages (54ad577).
+**Branch:** `feature/v5a-harness` off main at `d67f386`, HEAD `3527d9a`.
+**The SDD workspace `.superpowers/sdd/2026-07-25-harness-capabilities/` was deleted after the clean final review (per plan); its load-bearing facts are folded into this file.**
 
 ## 1. Goal & current task
 
-**Project goal:** YC Fall 2026 "Multiplayer AI" RFS exploration (dev-tools). v1 merged; v2+v3+v4 on `feature/project-hub`, unmerged.
+Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration. v1–v4 merged to main (PR #1). v5a (harness capabilities) = THIS branch, complete. v5b (game roster + party high score) not started; needs own spec/plan cycle.
 
-**CURRENT TASK:** v5 design phase per section 0 — resume by invoking superpowers:brainstorming and driving it from the section-0 asks. v4 is DONE and merged; do not reopen it.
+**CURRENT TASK (blocked on user):** present/execute the finishing-a-development-branch menu — (1) merge to main locally, (2) push + PR, (3) keep as-is — plus the batched user decisions in §7. Then the queued ask: unzip and study `Multiplayer AI 90s Terminal UI.zip` (repo root) — the user's UI blueprints; treat as design input for a brainstorm → spec discussion, do NOT silently restyle.
 
-**PROCESS NOTE (2026-07-24, user):** when the context-watch hook fires (~40%), HARD STOP — refresh HANDOFF, tell user to `/clear`, end the turn.
+**PROCESS NOTE (standing):** context-watch hook at ~40% = HARD STOP (refresh this file, tell user to /clear, end turn).
 
-## 2. Status
+## 2. What v5a shipped (verified live 2026-07-25)
 
-- v1: merged to main (`ad791fb`). v2+v3: complete on branch, merge-ready, held for §7.
-- v4 spec: `docs/superpowers/specs/2026-07-24-product-design-terminal-multiplayer.md` (user-approved; constraint line amended for turn_end/identity/peek).
-- v4 plan: `docs/superpowers/plans/2026-07-24-terminal-multiplayer-design.md` (12 tasks, all complete, every task review clean; fix loops: Task 1 one round).
-- SDD ledger: `.superpowers/sdd/2026-07-24-terminal-multiplayer-design/progress.md` — deferred minors + surfaced conflicts recorded there; trust it + `git log` over memory.
-- **Stopped exactly at: finishing-a-development-branch menu presented (merge local / push+PR / keep) + §7 decisions batched; user did a live co-walkthrough first (all features exercised, incl. deny flow, failover wheel handoff, sonnet switch). Live stack running: server :3001 (AGENT_WORKDIR_ROOT+AGENT_SKILLS), vite :5173.**
+- Wire: 7 append-only events (skill_roster/suggest/decision, todo_update, plan_request/decision, permission_mode_change) + toolUseId/parentToolUseId lineage (`poc/server/src/events.ts:61-85`).
+- Server: lineage plumbing + `forwardSubagentText: true`; task-tool todo mirror (live SDK TaskCreate/TaskUpdate, monotonic `nextTaskId` — `agentDriver.ts:189-196`); per-session skill roster (seq-0 event); suggest/decide flow (driver auto-run); plan gate on canUseTool (ExitPlanMode held; approve auto-switches mode back, logged by decider); 4 driver-guarded messages in `server.ts`.
+- Client: `deriveTranscriptGroups` (spawner = Task|Agent, `derive.ts:1059-1101`); grouped Transcript with collapsible ⚒ subagent blocks + ⚡ skill cards + suggest chips + PlanCard; TodoPanel; PromptBar slash autocomplete (passenger=suggest, driver=auto-run); Header plan toggle.
+- Live acceptance + re-test PASSED (details previously in ledger, now §0). Screenshots at repo root: `v5a-plan-approved-ben.jpeg`, `v5a-tasks-subagent-retest.jpeg` (both untracked — decision 7).
 
 ## 3. Decisions + why (do not re-litigate)
 
-- All v1–v3 decisions stand (see git history of this file). New in v4:
-- **Faithful terminal, two-pane tmux split, inline spinner-strip game (local-only), per-session driver-picked model, all four game motifs** — user-ratified in brainstorm (spec records the table).
-- **turn_end / presence glyph+color / peek** — append-only wire additions the design itself requires; spec constraint line amended accordingly.
-- **Model switching uses SDK `Query.setModel`** surfaced via optional member on `RunQueryResult` so test fakes stay assignable; model_change logged optimistically (trailing agent_error = switch may not have taken).
-- **hashIdentity shift `>>>1` not `>>>3`** — plan's own variation test unsatisfiable with >>>3.
-- **Subagent sandbox CANNOT launch the agent SDK native binary** — live stack must be started by the controller session (unsandboxed background Bash); subagents drive Playwright only.
+- All v1–v4 decisions stand. v5a = append-only wire + client derivation (server entity model rejected — breaks replay).
+- Passenger slash = suggest_skill; driver decision validated at DECISION time (mirrors permission gate). Driver's own suggest auto-runs server-side (one message, two events).
+- `runSkill` appends NO user_message — the suggest/decision pair is the record.
+- Live-SDK corrections (spec amended): no TodoWrite → mirror TaskCreate/TaskUpdate; spawner tool named `Agent` (derive accepts both); bookkeeping tools auto-approved.
+- Final-review triage (do not re-open): deferred minors #2,3,4,5,7,8,13,15 DEFER post-merge; #1,9,10,11,12,14 DROP; #6 fixed (3527d9a). New residual minors, all adjudicated POC-acceptable/defer: suggest-chip args preview shows 120 of 500 chars on an approval surface (fold into decision batch); typo'd slash submit clears input before server error round-trips; dead-driver suggest logs decision:run before agent_error; skill-card collapsible-output deviation ratified in spec (3527d9a).
+- Final-review inline fix (comment reword + docs) intentionally got NO re-review round — docs/comment-only, gates green.
 
 ## 4. Ordered next steps
 
-1. `git add v4-*.png HANDOFF.md && git commit -m "test: v4 live acceptance — screenshots + HANDOFF refresh"`.
-2. Final whole-branch review: `scripts/review-package PLAN 3cd6515 HEAD`, dispatch requesting-code-review's code-reviewer on the most capable model; include ledger path for deferred-minor triage.
-3. If findings: ONE fix subagent (all findings), ONE scoped re-review, adjudicate residuals.
-4. Present the batched user decisions (§7), then superpowers:finishing-a-development-branch; delete the plan workspace after a clean final review.
+1. DONE: user chose push + PR; branch pushed, PR open against main (merge happens on GitHub when user is ready). Screenshots deleted per user choice.
+2. **USER: remaining batched decisions** (§7, items 1–6 and 8–10) — present when convenient; none block the PR.
+3. **v5c restyle cycle (USER-CHOSEN 2026-07-25, next up):** brainstorm → spec → plan porting the 90s-terminal repo-patch ONTO the v5a client, after PR #2 merges. Zip studied (extracted at scratchpad/ui-blueprints/repo-patch; re-extract from the repo-root zip in a fresh session — scratchpad is session-scoped). KEY FACT: the patch targets the v4 client — its terminal.css has none of the 15 v5a class blocks (subagent/skillcard/slashmenu/planmode/todopanel) and its Transcript (161 ln) / PromptBar (48 ln) lack v5a logic (groups, skill cards, PlanCard, autocomplete) — so it's a PORT, not a file replace. Its README's copy-map order (index.html+css first, then components one at a time), optional-prop degradation (`—` when absent), and wire-work list (HUD data, party best, game roster, AgentStatus HP/MP, SkillsPanel) are the spec's raw material; wire-work items overlap v5b and stay deferred. frontend-design + brainstorming skills apply. No restyle without a spec.
+4. v5b (game roster + party high score) when the user wants it — fresh spec/plan cycle (the patch's ThinkingStrip/arcade chrome anticipates it).
 
-## 5. Files with line refs (v4 state)
+## 5. Files with line refs (HEAD 3527d9a)
 
-- Server: `poc/server/src/models.ts` (MODELS map); `agentDriver.ts` (`RunQueryResult` ~:56-62, turnActive+turn_end in handleMessage result branch, `setModel` ~:251-270); `server.ts` (`set_model` handler after permission handler; glyph/color validation in join ~:162-170; `peek` before the !ctx guard ~:177-191); `events.ts` (union + glyph/color on presence_join); `session.ts:45-59` (join identity param).
-- Client: `poc/client/src/{types,identity,derive}.ts` (+tests); `game/dino.ts` (+test); `useSessionSocket.ts`; `components/{Header,PromptBar,Transcript,PartyPane,ThinkingStrip,Lobby}.tsx`; `terminal.css` (design tokens at top; Task 11 refinements incl. :has() selectors, reduced-motion, focus-visible); `App.tsx` = gate (profile precedence ?name= → loadProfile → Lobby) + SessionView.
-- Design docs: `docs/design/claude-design-brief.md`, `docs/design/frontend-design-skill-notes.md` (4 structural future-work items listed).
-- Screenshots: repo-root `v4-{lobby,shell,thinking-game,permission,party-wheel}.png` (+ old step*.png, still uncommitted from v3 era — decide whether to commit or drop at finish time).
+- Server: `events.ts:51-85` (union + SkillInfo/TodoItem); `agentDriver.ts` (parent_tool_use_id :33, nextTaskId ~:35+189-196, runSkill, onPlanRequest, resolvePlan/setPermissionMode, task mirror ~:513-551); `permissions.ts` (AGENT_BOOKKEEPING_TOOLS :60-65, ExitPlanMode branch :123-131); `server.ts` (4 new handlers after set_model ~:273-296; roster :76-103); `project.ts:9-13`; `skillRoster.ts`.
+- Client: `derive.ts` (harness state ~:100-183, groups :1059-1101); `components/{Transcript,PromptBar,Header,TodoPanel}.tsx` (suggest chip slice at Transcript.tsx:125); `App.tsx` wiring; `terminal.css` (todopanel ~:101, subagent/skillcard/slashmenu/planmode blocks).
+- Tests: `poc/server/test/{agentDriver,permissions,server,skillRoster}.test.ts` (attribution comment fixed at server.test.ts:583); `poc/client/src/derive.test.ts`.
+- Spec (amended ×3): `docs/superpowers/specs/2026-07-25-harness-capabilities-design.md`. Plan: `docs/superpowers/plans/2026-07-25-harness-capabilities.md`.
 
 ## 6. Gotchas / constraints
 
-- All v3 gotchas stand (worktree containment, canUseTool never-null, Bash allowlist two-hop escape = ratification item, `Docs/`==`docs/`, no client auto-reconnect, `.superpowers/` git-excluded).
-- **Subagent sandbox blocks the SDK native binary** — see §3; never let a subagent "debug" that as if it were a code bug.
-- Demo stack: `poc/scripts/demo-setup.sh` (idempotent, rm -rf's demo dirs), server env `AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees AGENT_SKILLS=auth-migration-guide`, client vite on :5173 (check banner). Kill stale listeners on 3001/5173/5174 first.
-- PARTY pane hides below 900px (`display:none`) — this contradicts spec §2 (summary+toggle); OPEN user decision, don't silently "fix".
-- Client tests are node-env pure-module tests only (no jsdom); components verified by build + live acceptance.
+- All v3/v4 gotchas stand (worktree containment, canUseTool never-null, `Docs/`==`docs/`, no client auto-reconnect, `.superpowers/` git-excluded, subagent sandbox CANNOT launch the SDK binary — controller starts the stack).
+- tsx watch hot-reloads on server edits → kills live SDK query mid-turn. Never edit server code during a live demo turn.
+- **Fresh demo sessions need a worktree FIRST**: `cd poc/demo-project && git worktree add ../demo-worktrees/<session> -b <session>` — otherwise the SDK spawn fails on the nonexistent cwd with a MISLEADING "native binary failed to launch" banner and the session ends. (Cost 2 dead sessions v5a-retest-1/2 to rediscover.) Also: stack processes from a dead controller session go stale — kill by port and restart (unsandboxed).
+- Stack: server :3001 `AGENT_WORKDIR_ROOT=$(pwd)/poc/demo-worktrees AGENT_SKILLS=auth-migration-guide npm run dev` (from poc/server), vite :5173 (from poc/client). Check `lsof -nP -iTCP:3001 -iTCP:5173 -sTCP:LISTEN`.
+- Live SDK facts (documented, NOT bugs): Skill tool "Unknown skill" under settingSources:[] (agent self-recovers reading SKILL.md); meta-tools (ToolSearch, TaskCreate/TaskUpdate, Agent) bypass canUseTool; AskUserQuestion routes through it; a/d shortcuts ignore keypresses while an input is focused.
+- Speculative (from final review, unproven — diagnose fast if task mirror misbehaves): if the live SDK's task numbering is session-global across subagents, main-agent TaskUpdate ids could drift from the mirror's counter (mirror excludes subagent creates by design).
+- Test counts: server 89, client 18.
 
-## 7. Open questions / USER DECISIONS (batched — present before merge)
+## 7. Open questions / USER DECISIONS (batched — present at merge)
 
-v3 ratification (carried): (1) worktree-containment-conditional Write/Edit approval; (2) Bash-allowlist two-hop residual risk acceptance; (3) project-skill discovery under settingSources:[].
-New from v4: (4) party-pane <900px: implement spec's summary+toggle (small component task) or ratify display:none; (5) spec/HANDOFF said `soltero-skills:frontend-design` but the real skill is `frontend-design:frontend-design` (official plugin) — fix the spec text; (6) frontend-design-skill-notes lists 4 structural future-work items (perm .decided class, lobby label alignment, turn grouping, party collapse) — schedule or drop; (7) old step*.png v3 screenshots still untracked — commit or delete.
+Carried v3: (1) worktree-containment Write/Edit approval; (2) Bash-allowlist two-hop residual risk; (3) skill discovery under settingSources:[] confirmed broken — accept self-recovery or investigate SDK versions.
+Carried v4: (4) party pane <900px hide (TodoPanel same); (5) stale skill name in v4 spec text; (6) 4 structural polish items in frontend-design-skill-notes. ~~(7) screenshots~~ RESOLVED 2026-07-25: user chose DROP — all three deleted.
+New v5a: (8) deferred minors marked DEFER in §3 triage — schedule post-merge or drop; (9) meta-tools bypassing the permission gate — accept or raise upstream; (10) suggest-chip args preview 120/500 chars on an approval surface — widen to 300+ or accept. ~~(11) zip mapping~~ RESOLVED 2026-07-25: user chose a dedicated v5c restyle cycle (see §4 step 3). Patch-internal opens for the v5c brainstorm: party pane <900px (`.party.summary` sprite row ~15 lines vs display:none), 7th `★` sprite into identity.ts, HUD/AgentStatus/SkillsPanel wire events.
 
 ## 8. Resume & verify
 
 ```bash
-cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git checkout feature/project-hub
-git log --oneline | head -5          # 7b17151 (Task 11) at/near top until acceptance commit lands
-cat .superpowers/sdd/2026-07-24-terminal-multiplayer-design/progress.md
-cd poc/server && npx vitest run      # 68 passed
-cd ../client && npm test && npm run build   # 11 passed, clean
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git checkout feature/v5a-harness
+git log --oneline | head -3   # 3527d9a docs+test: final-review fixes …
+cd poc/server && npx tsc --noEmit && npx vitest run   # clean, 89 passed
+cd ../client && npm test && npm run build             # 18 passed, clean build
 ```
 
-Live demo: §6 stack commands; tabs `?project=demo&session=ana` (fresh tab → lobby) and same-session second viewer `?project=demo&session=ana&name=ben` for wheel/model-switch scenarios. v1–v3 acceptance walkthrough still applies for the permission gate.
+Resume at §4 step 1: the user's integration choice + §7 batch. Everything before it is DONE — do not re-run reviews or re-dispatch plan tasks.

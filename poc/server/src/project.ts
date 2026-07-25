@@ -1,12 +1,15 @@
 import type { AgentDriver } from "./agentDriver.js";
 import { summarizeSession } from "./digest.js";
 import type { Session } from "./session.js";
+import type { SkillInfo } from "./events.js";
 
 export const SLUG = /^[a-z0-9-]{1,40}$/;
 
 export interface ProjectSessionEntry {
   session: Session;
   driver: AgentDriver;
+  skills: SkillInfo[];
+  pendingSuggests: Map<string, { skill: string; args: string }>;
 }
 
 /** Minimal structural type so tests don't need real sockets. */

@@ -501,3 +501,136 @@ describe("identity on join and pre-join peek", () => {
     member.close(); peeker.close(); await server.close();
   });
 });
+
+describe("skill roster", () => {
+  it("replays a skill_roster event to every joiner", async () => {
+    process.env.AGENT_SKILLS = "alpha, beta";
+    try {
+      const server = await startServer({ port: 0, runQuery: echoRun });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "join", sessionId: "s-roster", userId: "u1", name: "Ana" }));
+      await wait(100);
+      const roster = seen.find((m) => m.event?.type === "skill_roster");
+      expect(roster.event.skills).toEqual([
+        { name: "alpha", description: "" },
+        { name: "beta", description: "" },
+      ]);
+      ws.close();
+    } finally {
+      delete process.env.AGENT_SKILLS;
+    }
+  });
+});
+
+describe("skill suggest/decide", () => {
+  async function rosterServer() {
+    process.env.AGENT_SKILLS = "alpha";
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = async () => {
+      delete process.env.AGENT_SKILLS;
+      await server.close();
+    };
+    return server;
+  }
+
+  it("driver slash-run: one suggest_skill message yields suggest + run decision + agent activity", async () => {
+    const server = await rosterServer();
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "sk1", userId: "u1", name: "Ana" }));
+    await wait(50);
+    ws.send(JSON.stringify({ type: "suggest_skill", skill: "alpha", args: "the login flow" }));
+    await wait(200);
+    const types = seen.map((m) => m.event?.type);
+    expect(types).toContain("skill_suggest");
+    expect(types).toContain("skill_decision");
+    const decision = seen.find((m) => m.event?.type === "skill_decision").event;
+    expect(decision.decision).toBe("run");
+    expect(decision.userId).toBe("u1");
+    expect(types).toContain("agent_text_delta"); // the enqueued skill prompt ran
+    expect(types).not.toContain("user_message"); // skill runs are recorded by the suggest/decision pair, not a user row
+    ws.close();
+  });
+
+  it("passenger suggestion waits; driver run decision executes it; non-driver decisions rejected", async () => {
+    const server = await rosterServer();
+    const wsA = await connect(server.port);
+    const seenA: any[] = [];
+    collect(wsA, seenA);
+    wsA.send(JSON.stringify({ type: "join", sessionId: "sk2", userId: "u1", name: "Ana" }));
+    await wait(50);
+    const wsB = await connect(server.port);
+    const seenB: any[] = [];
+    collect(wsB, seenB);
+    wsB.send(JSON.stringify({ type: "join", sessionId: "sk2", userId: "u2", name: "Ben" }));
+    await wait(50);
+
+    wsB.send(JSON.stringify({ type: "suggest_skill", skill: "alpha", args: "" }));
+    await wait(150);
+    const suggest = seenA.find((m) => m.event?.type === "skill_suggest").event;
+    expect(suggest.userId).toBe("u2");
+    expect(seenA.some((m) => m.event?.type === "skill_decision")).toBe(false);
+
+    // Passenger cannot decide their own suggestion
+    wsB.send(JSON.stringify({ type: "decide_skill", suggestId: suggest.suggestId, decision: "run" }));
+    await wait(100);
+    expect(seenB.some((m) => m.type === "error" && /driver/.test(m.message))).toBe(true);
+
+    // Driver runs it — the decision event is attributed to the DECIDER (u1);
+    // the suggest event above carries the suggester (u2).
+    wsA.send(JSON.stringify({ type: "decide_skill", suggestId: suggest.suggestId, decision: "run" }));
+    await wait(200);
+    const decision = seenA.find((m) => m.event?.type === "skill_decision").event;
+    expect(decision).toMatchObject({ suggestId: suggest.suggestId, decision: "run", userId: "u1" });
+    expect(seenA.map((m) => m.event?.type)).toContain("agent_text_delta");
+
+    // Already decided → error
+    wsA.send(JSON.stringify({ type: "decide_skill", suggestId: suggest.suggestId, decision: "run" }));
+    await wait(100);
+    expect(seenA.some((m) => m.type === "error" && /unknown or already-decided/.test(m.message))).toBe(true);
+    wsA.close();
+    wsB.close();
+  });
+
+  it("rejects suggestions for skills not in the roster", async () => {
+    const server = await rosterServer();
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "sk3", userId: "u1", name: "Ana" }));
+    await wait(50);
+    ws.send(JSON.stringify({ type: "suggest_skill", skill: "rm-rf-everything", args: "" }));
+    await wait(100);
+    expect(seen.some((m) => m.type === "error" && /roster/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.event?.type === "skill_suggest")).toBe(false);
+    ws.close();
+  });
+});
+
+describe("plan mode", () => {
+  it("guards set_permission_mode and decide_plan to the current driver", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const wsA = await connect(server.port);
+    collect(wsA, []);
+    wsA.send(JSON.stringify({ type: "join", sessionId: "pg1", userId: "u1", name: "Ana" }));
+    await wait(50);
+    const wsB = await connect(server.port);
+    const seenB: any[] = [];
+    collect(wsB, seenB);
+    wsB.send(JSON.stringify({ type: "join", sessionId: "pg1", userId: "u2", name: "Ben" }));
+    await wait(50);
+    wsB.send(JSON.stringify({ type: "set_permission_mode", mode: "plan" }));
+    wsB.send(JSON.stringify({ type: "decide_plan", requestId: "r1", decision: "approve" }));
+    await wait(100);
+    const errors = seenB.filter((m) => m.type === "error").map((m) => m.message);
+    expect(errors.some((e) => /toggle plan mode/.test(e))).toBe(true);
+    expect(errors.some((e) => /decide plans/.test(e))).toBe(true);
+    wsA.close();
+    wsB.close();
+  });
+});

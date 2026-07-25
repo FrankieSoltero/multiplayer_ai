@@ -540,3 +540,337 @@ describe("setModel", () => {
     expect(res.ok).toBe(false);
   });
 });
+
+const subagentRun: RunQuery = async function* (prompts) {
+  for await (const _prompt of prompts) {
+    // Main agent spawns a subagent via Task
+    yield {
+      type: "assistant",
+      content: [{ type: "tool_use", id: "task-1", name: "Task", input: { description: "audit deps" } }],
+    };
+    // Subagent traffic arrives tagged with parent_tool_use_id
+    yield {
+      type: "assistant",
+      parent_tool_use_id: "task-1",
+      content: [
+        { type: "text", text: "scanning lockfile" },
+        { type: "tool_use", id: "t-sub", name: "Read", input: { file: "package.json" } },
+      ],
+    };
+    yield {
+      type: "user",
+      parent_tool_use_id: "task-1",
+      content: [{ type: "tool_result", tool_use_id: "t-sub", content: "lockfile ok" }],
+    };
+    // Task completes: parent-level tool_result for task-1
+    yield {
+      type: "user",
+      content: [{ type: "tool_result", tool_use_id: "task-1", content: "audit done" }],
+    };
+    return;
+  }
+};
+
+describe("subagent lineage", () => {
+  it("threads parent_tool_use_id and block ids onto emitted events", async () => {
+    const session = new Session("s-lineage");
+    const events: any[] = [];
+    session.subscribe((e) => events.push(e));
+    const driver = new AgentDriver(session, subagentRun);
+    driver.sendPrompt("u1", "audit");
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.type === "tool_result").length).toBe(2);
+    });
+    const spawn = events.find((e) => e.type === "tool_call" && e.toolName === "Task");
+    expect(spawn.toolUseId).toBe("task-1");
+    expect(spawn.parentToolUseId).toBeUndefined();
+    const subText = events.find((e) => e.type === "agent_text_delta" && e.text === "scanning lockfile");
+    expect(subText.parentToolUseId).toBe("task-1");
+    const subCall = events.find((e) => e.type === "tool_call" && e.toolName === "Read");
+    expect(subCall.parentToolUseId).toBe("task-1");
+    expect(subCall.toolUseId).toBe("t-sub");
+    const subResult = events.find((e) => e.type === "tool_result" && e.output === "lockfile ok");
+    expect(subResult.parentToolUseId).toBe("task-1");
+    expect(subResult.toolUseId).toBe("t-sub");
+    const done = events.find((e) => e.type === "tool_result" && e.output === "audit done");
+    expect(done.parentToolUseId).toBeUndefined();
+    expect(done.toolUseId).toBe("task-1");
+  });
+});
+
+const todoRun: RunQuery = async function* (prompts) {
+  for await (const _prompt of prompts) {
+    yield {
+      type: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "td-1",
+          name: "TodoWrite",
+          input: {
+            todos: [
+              { content: "write tests", status: "completed", activeForm: "writing tests" },
+              { content: "implement", status: "in_progress", activeForm: "implementing" },
+              { content: 42, status: "pending" },              // invalid content — dropped
+              { content: "ship", status: "someday" },          // invalid status — dropped
+            ],
+          },
+        },
+      ],
+    };
+    // Subagent TodoWrite must NOT mirror to the panel
+    yield {
+      type: "assistant",
+      parent_tool_use_id: "task-9",
+      content: [
+        { type: "tool_use", id: "td-2", name: "TodoWrite", input: { todos: [{ content: "sub", status: "pending" }] } },
+      ],
+    };
+    return;
+  }
+};
+
+describe("todo mirror", () => {
+  it("emits todo_update from main-agent TodoWrite only, dropping invalid entries", async () => {
+    const session = new Session("s-todo");
+    const events: any[] = [];
+    session.subscribe((e) => events.push(e));
+    const driver = new AgentDriver(session, todoRun);
+    driver.sendPrompt("u1", "plan it");
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.type === "tool_call" && e.toolName === "TodoWrite").length).toBe(2);
+    });
+    const updates = events.filter((e) => e.type === "todo_update");
+    expect(updates.length).toBe(1);
+    expect(updates[0].todos).toEqual([
+      { text: "write tests", status: "completed" },
+      { text: "implement", status: "in_progress" },
+    ]);
+  });
+});
+
+const taskToolRun: RunQuery = async function* (prompts) {
+  for await (const _prompt of prompts) {
+    yield {
+      type: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "tc-1",
+          name: "TaskCreate",
+          input: { subject: "write tests", description: "add coverage", activeForm: "writing tests" },
+        },
+      ],
+    };
+    yield {
+      type: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "tc-2",
+          name: "TaskCreate",
+          input: { subject: "implement", description: "do the work", activeForm: "implementing" },
+        },
+      ],
+    };
+    yield {
+      type: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "tu-1",
+          name: "TaskUpdate",
+          input: { taskId: "1", status: "completed" },
+        },
+      ],
+    };
+    yield {
+      type: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "tu-2",
+          name: "TaskUpdate",
+          input: { taskId: "2", status: "deleted" },
+        },
+      ],
+    };
+    // Subagent TaskCreate must NOT mirror to the panel
+    yield {
+      type: "assistant",
+      parent_tool_use_id: "task-9",
+      content: [
+        {
+          type: "tool_use",
+          id: "tc-sub",
+          name: "TaskCreate",
+          input: { subject: "sub task", description: "d", activeForm: "doing sub task" },
+        },
+      ],
+    };
+    return;
+  }
+};
+
+describe("task tool mirror (live SDK TaskCreate/TaskUpdate)", () => {
+  it("emits todo_update snapshots as TaskCreate/TaskUpdate calls arrive, excluding subagent calls", async () => {
+    const session = new Session("s-task-mirror");
+    const events: any[] = [];
+    session.subscribe((e) => events.push(e));
+    const driver = new AgentDriver(session, taskToolRun);
+    driver.sendPrompt("u1", "plan it");
+    await vi.waitFor(() => {
+      expect(
+        events.filter(
+          (e) =>
+            e.type === "tool_call" &&
+            (e.toolName === "TaskCreate" || e.toolName === "TaskUpdate"),
+        ).length,
+      ).toBe(5);
+    });
+    const updates = events.filter((e) => e.type === "todo_update");
+    expect(updates.length).toBe(4);
+    expect(updates[0].todos).toEqual([{ text: "write tests", status: "pending" }]);
+    expect(updates[1].todos).toEqual([
+      { text: "write tests", status: "pending" },
+      { text: "implement", status: "pending" },
+    ]);
+    expect(updates[2].todos).toEqual([
+      { text: "write tests", status: "completed" },
+      { text: "implement", status: "pending" },
+    ]);
+    expect(updates[3].todos).toEqual([{ text: "write tests", status: "completed" }]);
+  });
+
+  it("never reuses an id after a delete — ids stay monotonic like the SDK's own numbering", async () => {
+    // create a(id 1), create b(id 2), delete a(id 1), create c → c must get
+    // id 3 (not a reused "2", which would collide with b and let a later
+    // TaskUpdate("2") corrupt b instead of targeting c).
+    const collisionRun: RunQuery = async function* (prompts) {
+      for await (const _prompt of prompts) {
+        yield {
+          type: "assistant",
+          content: [
+            { type: "tool_use", id: "tc-a", name: "TaskCreate", input: { subject: "a" } },
+          ],
+        };
+        yield {
+          type: "assistant",
+          content: [
+            { type: "tool_use", id: "tc-b", name: "TaskCreate", input: { subject: "b" } },
+          ],
+        };
+        yield {
+          type: "assistant",
+          content: [
+            { type: "tool_use", id: "tu-del-a", name: "TaskUpdate", input: { taskId: "1", status: "deleted" } },
+          ],
+        };
+        yield {
+          type: "assistant",
+          content: [
+            { type: "tool_use", id: "tc-c", name: "TaskCreate", input: { subject: "c" } },
+          ],
+        };
+        yield {
+          type: "assistant",
+          content: [
+            { type: "tool_use", id: "tu-complete-c", name: "TaskUpdate", input: { taskId: "3", status: "completed" } },
+          ],
+        };
+        return;
+      }
+    };
+    const session = new Session("s-task-id-collision");
+    const events: any[] = [];
+    session.subscribe((e) => events.push(e));
+    const driver = new AgentDriver(session, collisionRun);
+    driver.sendPrompt("u1", "plan it");
+    await vi.waitFor(() => {
+      expect(
+        events.filter(
+          (e) =>
+            e.type === "tool_call" &&
+            (e.toolName === "TaskCreate" || e.toolName === "TaskUpdate"),
+        ).length,
+      ).toBe(5);
+    });
+    const updates = events.filter((e) => e.type === "todo_update");
+    const last = updates.at(-1);
+    expect(last.todos).toEqual([
+      { text: "b", status: "pending" },
+      { text: "c", status: "completed" },
+    ]);
+  });
+});
+
+describe("plan gate", () => {
+  it("appends plan_request, resolves approve, switches mode back to default", async () => {
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    let planPromise: Promise<"approve" | "reject"> | undefined;
+    const planRun: RunQuery = (prompts, hooks) => {
+      const gen = (async function* () {
+        for await (const _prompt of prompts) {
+          planPromise = hooks.onPlanRequest("1. audit\n2. fix", undefined);
+          await planPromise;
+          return;
+        }
+      })();
+      return Object.assign(gen, { setPermissionMode });
+    };
+    const session = new Session("s-plan");
+    const events: any[] = [];
+    session.subscribe((e) => events.push(e));
+    const driver = new AgentDriver(session, planRun);
+    driver.sendPrompt("u1", "build it");
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "plan_request")).toBe(true);
+    });
+    const request = events.find((e) => e.type === "plan_request");
+    expect(request.plan).toBe("1. audit\n2. fix");
+
+    expect(driver.resolvePlan(request.requestId, "approve", "u1")).toBe(true);
+    await expect(planPromise).resolves.toBe("approve");
+    const decision = events.find((e) => e.type === "plan_decision");
+    expect(decision).toMatchObject({ requestId: request.requestId, decision: "approve", userId: "u1" });
+    const modeChange = events.find((e) => e.type === "permission_mode_change");
+    expect(modeChange).toMatchObject({ mode: "default", userId: "u1" });
+    expect(setPermissionMode).toHaveBeenCalledWith("default");
+    // Second resolve is a no-op
+    expect(driver.resolvePlan(request.requestId, "approve", "u1")).toBe(false);
+  });
+
+  it("setPermissionMode mirrors the setModel guards and logs optimistically", async () => {
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const idleRun: RunQuery = (prompts) => {
+      const gen = (async function* () {
+        for await (const _prompt of prompts) {
+          /* never yields */
+        }
+      })();
+      return Object.assign(gen, { setPermissionMode });
+    };
+    const session = new Session("s-mode");
+    const events: any[] = [];
+    session.subscribe((e) => events.push(e));
+    const driver = new AgentDriver(session, idleRun);
+    expect(driver.setPermissionMode("plan", "u1")).toEqual({ ok: true });
+    expect(setPermissionMode).toHaveBeenCalledWith("plan");
+    expect(events.find((e) => e.type === "permission_mode_change")).toMatchObject({ mode: "plan", userId: "u1" });
+
+    driver.sendPrompt("u1", "go"); // now mid-turn
+    expect(driver.setPermissionMode("default", "u1")).toEqual({
+      ok: false,
+      error: "agent is mid-turn — wait for it to finish",
+    });
+  });
+
+  it("reports not-supported on fakes without setPermissionMode", () => {
+    const session = new Session("s-nomode");
+    const driver = new AgentDriver(session, fakeRun);
+    expect(driver.setPermissionMode("plan", "u1")).toEqual({
+      ok: false,
+      error: "plan mode not supported by this agent",
+    });
+  });
+});

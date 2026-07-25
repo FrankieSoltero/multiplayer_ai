@@ -5,6 +5,7 @@ import { AsyncQueue } from "./asyncQueue.js";
 import { MODELS, DEFAULT_MODEL, type ModelKey } from "./models.js";
 import { buildCanUseTool } from "./permissions.js";
 import type { Session } from "./session.js";
+import type { TodoItem } from "./events.js";
 
 /**
  * Message pushed into the SDK's streaming-input queue.
@@ -30,6 +31,7 @@ export interface SdkMessage {
   type: string;
   content?: unknown[];
   message?: { content?: unknown[] };
+  parent_tool_use_id?: string | null;
 }
 
 export interface DriverHooks {
@@ -48,12 +50,24 @@ export interface DriverHooks {
   ) => Promise<"allow" | "deny">;
   /** Surface a permission-flow failure into the session log (agent_error). */
   onPermissionError?: (message: string) => void;
+  /**
+   * Ask the session's current driver to approve the agent's plan (the
+   * ExitPlanMode tool call, held at canUseTool). Same lifetime semantics as
+   * onPermissionRequest: no timeout, resolvable by whoever is driving at
+   * decision time, abort-safe.
+   */
+  onPlanRequest: (
+    plan: string,
+    signal?: AbortSignal,
+  ) => Promise<"approve" | "reject">;
   workdir?: string;
 }
 
 export type RunQueryResult = AsyncIterable<SdkMessage> & {
   /** Present on the real SDK Query (sdk.d.ts Query.setModel); absent on plain test fakes. */
   setModel?(model: string): Promise<void>;
+  /** Present on the real SDK Query (sdk.d.ts Query.setPermissionMode); absent on plain test fakes. */
+  setPermissionMode?(mode: string): Promise<void>;
 };
 
 export type RunQuery = (
@@ -140,6 +154,10 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
       // (project/user/local) — full isolation, not just MCP.
       strictMcpConfig: true,
       settingSources: [],
+      // Forward subagent text/thinking as messages tagged with
+      // parent_tool_use_id so the client can render a nested transcript.
+      // Default (false) only forwards subagent tool_use/tool_result blocks.
+      forwardSubagentText: true,
       cwd: workdir,
     },
     // Cast at the SDK boundary only — see Global Constraints. The real
@@ -155,6 +173,7 @@ export class AgentDriver {
   private prompts = new AsyncQueue<SdkUserMessage>();
   private toolNamesById = new Map<string, string>();
   private pendingPermissions = new Map<string, (d: "allow" | "deny") => void>();
+  private pendingPlans = new Map<string, (d: "approve" | "reject") => void>();
   private dead = false;
   // Count of turns sent but not yet resolved by a matching "result" message.
   // A boolean here would be wrong: drivers can queue prompt B while prompt A
@@ -163,6 +182,19 @@ export class AgentDriver {
   // count returns to zero.
   private pendingTurns = 0;
   private stream: RunQueryResult;
+  // Mirror of the agent's TaskCreate/TaskUpdate bookkeeping (the live SDK's
+  // replacement for TodoWrite), used to emit todo_update snapshots. Ids are
+  // assigned sequentially from 1 to mirror the SDK's own numbering.
+  private taskPanel: { id: string; text: string; status: "pending" | "in_progress" | "completed" }[] = [];
+  // Next id to assign on TaskCreate. MUST be its own monotonic counter, not
+  // derived from taskPanel.length: the SDK never reuses ids, but a plain
+  // length-based id would (create a(1), create b(2), delete a, create c
+  // would rederive c's id as 2 — colliding with b's still-live id — and a
+  // later TaskUpdate("2") would then corrupt b instead of targeting c).
+  // Incremented on every accepted main-agent TaskCreate regardless of the
+  // 50-item cap, so ids assigned after the cap kicks in stay aligned with
+  // the SDK's own numbering (which keeps counting past 50).
+  private nextTaskId = 1;
 
   constructor(
     private session: Session,
@@ -214,6 +246,34 @@ export class AgentDriver {
       },
       onPermissionError: (message) =>
         this.session.append({ type: "agent_error", message }),
+      onPlanRequest: (plan, signal) => {
+        const requestId = randomUUID();
+        let resolve!: (d: "approve" | "reject") => void;
+        const pending = new Promise<"approve" | "reject">((res) => {
+          resolve = res;
+        });
+        this.pendingPlans.set(requestId, resolve);
+        this.session.append({
+          type: "plan_request",
+          requestId,
+          plan: plan.slice(0, 20000),
+        });
+        if (signal) {
+          const rejectOnAbort = () => {
+            if (!this.pendingPlans.delete(requestId)) return;
+            this.session.append({
+              type: "plan_decision",
+              requestId,
+              decision: "reject",
+              userId: "system",
+            });
+            resolve("reject");
+          };
+          if (signal.aborted) rejectOnAbort();
+          else signal.addEventListener("abort", rejectOnAbort, { once: true });
+        }
+        return pending;
+      },
       workdir,
     });
     void this.consume(this.stream);
@@ -242,6 +302,36 @@ export class AgentDriver {
   }
 
   /**
+   * Enqueue a driver-approved skill invocation. Unlike sendPrompt this appends
+   * NO user_message — the skill_suggest/skill_decision pair (appended by the
+   * server) is the transcript record; a synthetic user row would double-log it.
+   */
+  runSkill(skill: string, args: string): void {
+    if (this.dead) {
+      this.session.append({
+        type: "agent_error",
+        message: "agent session has ended — restart the server to continue",
+      });
+      return;
+    }
+    this.pendingTurns++;
+    const argText = args ? ` with these arguments: ${args}` : "";
+    this.prompts.push({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `Invoke the project skill "${skill}" using the Skill tool${argText}, then follow the skill's instructions.`,
+          },
+        ],
+      },
+      parent_tool_use_id: null,
+    });
+  }
+
+  /**
    * Resolve a pending permission request. Validated by the caller (server)
    * to be the session's CURRENT driver — which may be a different user than
    * when the request was raised. Returns false for unknown or
@@ -258,6 +348,56 @@ export class AgentDriver {
     this.session.append({ type: "permission_decision", requestId, decision, userId });
     resolve(decision);
     return true;
+  }
+
+  /**
+   * Resolve a pending plan request. Driver-validated by the server at
+   * DECISION time (wheel handoffs mid-plan are a feature). On approve, also
+   * switch the SDK back to default permission mode — plan mode's job is done
+   * once a plan is accepted; without this the agent would present plans
+   * forever. The switch is fire-and-forget like setModel: mode-change is
+   * logged optimistically and a trailing agent_error means it may not have
+   * taken.
+   */
+  resolvePlan(
+    requestId: string,
+    decision: "approve" | "reject",
+    userId: string,
+  ): boolean {
+    const resolve = this.pendingPlans.get(requestId);
+    if (!resolve) return false;
+    this.pendingPlans.delete(requestId);
+    this.session.append({ type: "plan_decision", requestId, decision, userId });
+    if (decision === "approve") {
+      void this.stream.setPermissionMode?.("default").catch((err) =>
+        this.session.append({
+          type: "agent_error",
+          message: `permission mode switch failed: ${err instanceof Error ? err.message : String(err)}`,
+        }),
+      );
+      this.session.append({ type: "permission_mode_change", mode: "default", userId });
+    }
+    resolve(decision);
+    return true;
+  }
+
+  setPermissionMode(
+    mode: "plan" | "default",
+    userId: string,
+  ): { ok: true } | { ok: false; error: string } {
+    if (this.dead) return { ok: false, error: "agent session has ended" };
+    if (this.pendingTurns > 0)
+      return { ok: false, error: "agent is mid-turn — wait for it to finish" };
+    if (!this.stream.setPermissionMode)
+      return { ok: false, error: "plan mode not supported by this agent" };
+    void this.stream.setPermissionMode(mode).catch((err) =>
+      this.session.append({
+        type: "agent_error",
+        message: `permission mode switch failed: ${err instanceof Error ? err.message : String(err)}`,
+      }),
+    );
+    this.session.append({ type: "permission_mode_change", mode, userId });
+    return { ok: true };
   }
 
   setModel(
@@ -335,6 +475,16 @@ export class AgentDriver {
       });
       resolve("deny");
     }
+    for (const [requestId, resolve] of this.pendingPlans) {
+      this.pendingPlans.delete(requestId);
+      this.session.append({
+        type: "plan_decision",
+        requestId,
+        decision: "reject",
+        userId: "system",
+      });
+      resolve("reject");
+    }
   }
 
   private handleMessage(message: SdkMessage): void {
@@ -348,17 +498,68 @@ export class AgentDriver {
       tool_use_id?: string;
       content?: string | { type: string; text?: string }[];
     }[];
+    const parentId = message.parent_tool_use_id ?? undefined;
     if (message.type === "assistant") {
       for (const block of blocks) {
         if (block.type === "text" && block.text) {
-          this.session.append({ type: "agent_text_delta", text: block.text });
+          this.session.append({
+            type: "agent_text_delta",
+            text: block.text,
+            ...(parentId ? { parentToolUseId: parentId } : {}),
+          });
         } else if (block.type === "tool_use" && block.name) {
           if (block.id) this.toolNamesById.set(block.id, block.name);
           this.session.append({
             type: "tool_call",
             toolName: block.name,
             input: block.input,
+            ...(block.id ? { toolUseId: block.id } : {}),
+            ...(parentId ? { parentToolUseId: parentId } : {}),
           });
+          if (block.name === "TodoWrite" && !parentId) {
+            const todos = this.todosFrom(block.input);
+            if (todos) this.session.append({ type: "todo_update", todos });
+          } else if (block.name === "TaskCreate" && !parentId) {
+            const subject = (block.input as { subject?: unknown } | undefined)
+              ?.subject;
+            if (typeof subject === "string" && subject.length > 0) {
+              // Assign the id and advance the counter regardless of the cap
+              // below, so ids stay aligned with the SDK's own monotonic
+              // numbering even once the panel itself stops growing.
+              const id = String(this.nextTaskId++);
+              if (this.taskPanel.length < 50) {
+                this.taskPanel.push({ id, text: subject.slice(0, 200), status: "pending" });
+                this.session.append({
+                  type: "todo_update",
+                  todos: this.taskPanel.map(({ text, status }) => ({ text, status })),
+                });
+              }
+            }
+          } else if (block.name === "TaskUpdate" && !parentId) {
+            const { taskId, status, subject } = (block.input ?? {}) as {
+              taskId?: unknown;
+              status?: unknown;
+              subject?: unknown;
+            };
+            const entry = this.taskPanel.find((t) => t.id === taskId);
+            if (entry) {
+              if (status === "deleted") {
+                this.taskPanel = this.taskPanel.filter((t) => t !== entry);
+              } else {
+                const validStatuses = new Set(["pending", "in_progress", "completed"]);
+                if (typeof status === "string" && validStatuses.has(status)) {
+                  entry.status = status as "pending" | "in_progress" | "completed";
+                }
+                if (typeof subject === "string" && subject.length > 0) {
+                  entry.text = subject.slice(0, 200);
+                }
+              }
+              this.session.append({
+                type: "todo_update",
+                todos: this.taskPanel.map(({ text, status }) => ({ text, status })),
+              });
+            }
+          }
         }
       }
     } else if (message.type === "result" || message.type === "user") {
@@ -383,6 +584,8 @@ export class AgentDriver {
             type: "tool_result",
             toolName,
             output: text.slice(0, 2000),
+            ...(block.tool_use_id ? { toolUseId: block.tool_use_id } : {}),
+            ...(parentId ? { parentToolUseId: parentId } : {}),
           });
         }
       }
@@ -411,5 +614,21 @@ export class AgentDriver {
     throw new Error(
       `tool_result content has unsupported shape: ${typeof content}`,
     );
+  }
+
+  /**
+   * Parse a TodoWrite input into wire TodoItems. The SDK's TodoWrite input is
+   * { todos: [{ content, status, activeForm }] }; we keep content/status only,
+   * drop malformed entries, and cap list size and text length for wire hygiene.
+   */
+  private todosFrom(input: unknown): TodoItem[] | null {
+    const todos = (input as { todos?: unknown }).todos;
+    if (!Array.isArray(todos)) return null;
+    const valid = new Set(["pending", "in_progress", "completed"]);
+    return todos.slice(0, 50).flatMap((t) => {
+      const { content, status } = t as { content?: unknown; status?: unknown };
+      if (typeof content !== "string" || typeof status !== "string" || !valid.has(status)) return [];
+      return [{ text: content.slice(0, 200), status: status as TodoItem["status"] }];
+    });
   }
 }

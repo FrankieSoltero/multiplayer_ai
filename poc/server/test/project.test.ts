@@ -11,7 +11,7 @@ const idleRun: RunQuery = async function* (prompts) {
 
 function addSession(project: Project, id: string): Session {
   const session = new Session(id);
-  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun) });
+  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills: [], pendingSuggests: new Map() });
   return session;
 }
 
