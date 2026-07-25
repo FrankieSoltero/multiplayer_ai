@@ -11,6 +11,9 @@ import { PartyPane } from "./components/PartyPane";
 import { TodoPanel } from "./components/TodoPanel";
 import { ThinkingStrip } from "./components/ThinkingStrip";
 import { Lobby } from "./components/Lobby";
+import { Cabinet, Crt } from "./components/Crt";
+
+const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
 
 export default function App() {
   const [userId] = useState(loadOrCreateUserId);
@@ -31,27 +34,24 @@ export default function App() {
     return loadProfile();
   });
 
-  if (profile === null) {
-    return (
-      <Lobby
-        projectId={projectId}
-        sessionId={sessionId}
-        defaultName={`user-${userId.slice(0, 4)}`}
-        onEnter={(p) => {
-          saveProfile(p);
-          setProfile(p);
-        }}
-      />
-    );
-  }
-
   return (
-    <SessionView
-      userId={userId}
-      sessionId={sessionId}
-      projectId={projectId}
-      profile={profile}
-    />
+    <Cabinet legend={LEGEND}>
+      <Crt>
+        {profile === null ? (
+          <Lobby
+            projectId={projectId}
+            sessionId={sessionId}
+            defaultName={`user-${userId.slice(0, 4)}`}
+            onEnter={(p) => {
+              saveProfile(p);
+              setProfile(p);
+            }}
+          />
+        ) : (
+          <SessionView userId={userId} sessionId={sessionId} projectId={projectId} profile={profile} />
+        )}
+      </Crt>
+    </Cabinet>
   );
 }
 
@@ -129,7 +129,7 @@ function SessionView(props: {
         onTogglePlan={onTogglePlan}
       />
 
-      <div className="split">
+      <div className="row">
         <Transcript
           events={events}
           derived={derived}

@@ -656,7 +656,6 @@ code, pre { font-family: var(--fm); }
 /* ============================================================ TEMP v5a compat
    Keeps the PRE-PORT (v4-markup) components rendering against this css.
    Each rule names the task that deletes it — delete only then. */
-.split { flex: 1; display: flex; gap: var(--sp-2); min-height: 0; }  /* TEMP — Task 3 deletes */
 .transcript.term-frame { overflow-y: auto; padding: var(--sp-3); display: block; }  /* TEMP — Task 5 deletes */
 .line.wheel {  /* TEMP — Task 5 deletes */
   color: var(--gold);
