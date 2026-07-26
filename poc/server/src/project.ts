@@ -90,11 +90,13 @@ export interface ProjectMessage {
   arcade: ArcadeRecord[];
   plugins: PluginInfo[];
   pluginsEnabled: boolean;
+  repo: { defaultBranch: string } | null;
 }
 
 export function projectSnapshot(
   project: Project,
   pluginState?: { plugins: PluginInfo[]; enabled: boolean },
+  repo?: { defaultBranch: string } | null,
 ): ProjectMessage {
   const sessions = [...project.sessions.entries()].map(([id, entry]) => {
     const events = entry.session.eventsFrom(0);
@@ -118,5 +120,6 @@ export function projectSnapshot(
     arcade: arcadeRecords(project),
     plugins: pluginState?.plugins ?? [],
     pluginsEnabled: pluginState?.enabled ?? false,
+    repo: repo ?? null,
   };
 }

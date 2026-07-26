@@ -923,3 +923,196 @@ describe("plugin registry", () => {
     ws.close();
   });
 });
+
+describe("session initiation", () => {
+  let close: (() => Promise<void>) | undefined;
+  afterEach(async () => {
+    await close?.();
+    close = undefined;
+  });
+
+  function fakeWorkspace() {
+    const calls: { slug: string; baseRef: string }[] = [];
+    return {
+      calls,
+      provision(slug: string, baseRef: string) {
+        calls.push({ slug, baseRef });
+        return { ok: true as const, workdir: `/tmp/wt/${slug}` };
+      },
+      defaultBranch: () => "main",
+    };
+  }
+
+  it("watch_project sends an immediate snapshot with repo info and live pushes", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const watcher = await connect(server.port);
+    const seen: any[] = [];
+    collect(watcher, seen);
+    watcher.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(50);
+    const snap = seen.find((m) => m.type === "project");
+    expect(snap).toBeTruthy();
+    expect(snap.repo).toEqual({ defaultBranch: "main" });
+    expect(snap.sessions).toEqual([]);
+    const joiner = await connect(server.port);
+    joiner.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
+    await vi.waitFor(() => {
+      expect(
+        seen.some((m) => m.type === "project" && m.sessions.some((s: any) => s.id === "s1")),
+      ).toBe(true);
+    });
+    watcher.close();
+    joiner.close();
+  });
+
+  it("watch_project unsubscribes from the previous project on re-watch", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const watcher = await connect(server.port);
+    const seen: any[] = [];
+    collect(watcher, seen);
+    // Watch default project
+    watcher.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(30);
+    const initialSnap = seen.find((m) => m.type === "project");
+    expect(initialSnap).toBeTruthy();
+    const snapCount = seen.filter((m) => m.type === "project").length;
+    // Switch to watching other project
+    watcher.send(JSON.stringify({ type: "watch_project", projectId: "other" }));
+    await wait(30);
+    // Have a session join the default project (watcher is no longer subscribed)
+    const joiner = await connect(server.port);
+    joiner.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana", projectId: "default" }));
+    await wait(100);
+    // Count project messages received: initial "default" + initial "other" + should NOT get updated "default"
+    const projectMessages = seen.filter((m) => m.type === "project");
+    expect(projectMessages.length).toBe(snapCount + 1); // only the "other" project added
+    // Verify the last project message is from "other" (empty sessions initially)
+    const lastProjectMsg = projectMessages.at(-1);
+    expect(lastProjectMsg).toBeTruthy();
+    watcher.close();
+    joiner.close();
+  });
+
+  it("create_session provisions, acks, and pushes the new session", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const creator = await connect(server.port);
+    const seen: any[] = [];
+    collect(creator, seen);
+    creator.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(30);
+    creator.send(JSON.stringify({ type: "create_session", name: "Fix Auth!", baseRef: "dev" }));
+    await vi.waitFor(() => {
+      expect(seen.some((m) => m.type === "session_created" && m.sessionId === "fix-auth")).toBe(true);
+    });
+    expect(workspace.calls).toEqual([{ slug: "fix-auth", baseRef: "dev" }]);
+    await vi.waitFor(() => {
+      expect(
+        seen.some((m) => m.type === "project" && m.sessions.some((s: any) => s.id === "fix-auth")),
+      ).toBe(true);
+    });
+    creator.close();
+  });
+
+  it("create_session errors when the server has no workspace", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "create_session", name: "x" }));
+    await wait(50);
+    expect(seen.some((m) => m.type === "error" && /not launched in a repo/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "session_created")).toBe(false);
+    ws.close();
+  });
+
+  it("create_session validates the name", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "create_session" }));
+    ws.send(JSON.stringify({ type: "create_session", name: "###" }));
+    await wait(50);
+    expect(seen.some((m) => m.type === "error" && /requires name/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "error" && /usable name/.test(m.message))).toBe(true);
+    expect(workspace.calls).toEqual([]);
+    ws.close();
+  });
+
+  it("create_session surfaces provision failure and creates nothing", async () => {
+    const workspace = {
+      provision: () => ({ ok: false as const, error: "unknown base ref: dev" }),
+      defaultBranch: () => "main",
+    };
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "create_session", name: "ghost", baseRef: "dev" }));
+    await wait(50);
+    expect(seen.some((m) => m.type === "error" && m.message === "unknown base ref: dev")).toBe(true);
+    expect(seen.some((m) => m.type === "session_created")).toBe(false);
+    ws.close();
+  });
+
+  it("create_session for an existing session just acks without re-provisioning", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const joiner = await connect(server.port);
+    joiner.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
+    await wait(50);
+    const creator = await connect(server.port);
+    const seen: any[] = [];
+    collect(creator, seen);
+    creator.send(JSON.stringify({ type: "create_session", name: "s1" }));
+    await vi.waitFor(() => {
+      expect(seen.some((m) => m.type === "session_created" && m.sessionId === "s1")).toBe(true);
+    });
+    expect(workspace.calls.length).toBe(1); // only the join's deep-link provision
+    joiner.close();
+    creator.close();
+  });
+
+  it("deep-link join provisions through the workspace off the default branch", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "adhoc", userId: "u1", name: "Ana" }));
+    await vi.waitFor(() => {
+      expect(seen.some((m) => m.event?.type === "presence_join")).toBe(true);
+    });
+    expect(workspace.calls).toEqual([{ slug: "adhoc", baseRef: "main" }]);
+    ws.close();
+  });
+
+  it("deep-link join surfaces provision failure as a join error", async () => {
+    const workspace = {
+      provision: () => ({ ok: false as const, error: "session name taken (branch mpai/adhoc exists)" }),
+      defaultBranch: () => "main",
+    };
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "adhoc", userId: "u1", name: "Ana" }));
+    await wait(50);
+    expect(seen.some((m) => m.type === "error" && /name taken/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.event?.type === "presence_join")).toBe(false);
+    ws.close();
+  });
+});

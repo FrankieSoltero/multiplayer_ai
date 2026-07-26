@@ -68,4 +68,11 @@ export type PluginInfo = {
   addedBy: string;
 };
 
-export const SERVER_URL = "ws://localhost:3001";
+/** In vite dev the server runs separately on 3001; in a built bundle the
+ *  page is served BY the server (spec §5), so the socket targets the same
+ *  host. The DEV short-circuit also keeps window untouched under vitest. */
+export const SERVER_URL = import.meta.env.DEV
+  ? "ws://localhost:3001"
+  : `ws://${window.location.host}`;
+
+export type RepoInfo = { defaultBranch: string };

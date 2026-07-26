@@ -1,19 +1,20 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-26 (bg session #2): **WORKFLOWS SCREEN IMPLEMENTED via SDD — all 5 plan tasks done, final whole-branch review (fable) clean after one fix wave. Server 131 / client 66, tsc + build clean.** Awaiting USER DEMO CHECKPOINT; PR on user go, never merge without the user.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-26 (bg session #3): **session-launcher SDD run COMPLETE on branch `feature/session-launcher` (tip `67cc627` + this HANDOFF commit) — all 7 tasks done, final whole-branch review READY TO MERGE, server 161/tsc clean, client 72/build clean. STOPPED at the user demo checkpoint; PR only on user go.** Resume per §1.*
 
 ## 0. WHERE WE ARE
 
-- **main** (origin in sync, `18fa45c`): v1–v5c + v6a + v6c (plugins, PR #8) + slash-autocomplete v2 (PR #9). Baselines on main: **server 123 tests / client 57**, both builds clean.
-- **Branch `feature/workflows-screen`** (local only, off main, 9 commits): `c5e82bc` viewport-fit fix (user-verified), spec+plan+handoff docs, then the SDD-built feature: `8db9a6b` task_event forwarding + throttle, `114ea97` driver-gated stop_task, `804c4cb` client derive + taskLine, `f35329a` WorkflowsPanel screen, `271c5ff` final-review fixes (empty-state copy scoped to truly-empty sessions; SKILLS tooltip → "skills (S)"; deviation recorded in plan). **On-branch state: server 131 tests / client 66, tsc + builds clean.** SDD workspace deleted (git is the record); deviation recorded in the plan's Deviations section.
+- **main** (origin in sync, `dcf8429` = merge of PR #10): everything through the workflows screen. Baselines on main: **server 131 tests / client 66**, both builds clean.
+- **Branch `feature/session-launcher`** (local only; based on `71661c0`; tip `e132a1d`, 14 commits): `1fded02` spec, `57f0645` plan, `f3e6048` Task 1 (WorkspaceManager), `2afc745`+`2d61565` Task 2 (wire + re-watch-leak fix), `f142105`+`4b67c59` Task 3 (static serving + ws error-re-emit fix), `5aea229` Task 4 (client pure layer), `72be0e6` Task 5 (SessionPicker), `77f53f9` Task 6 (mpai CLI, smoke-tested e2e), `5f9a271`/`487cee4` deviation docs, `67cc627` final-review fix wave (stream error handler, name cap, deviations). Suites at tip: **server 161 + tsc clean, client 72 + build clean.**
+- **SDD run state: DONE.** All 7 tasks complete, each task review clean. Final whole-branch review (fable): zero Critical/Important, verdict READY TO MERGE; all deferred minors triaged KEEP DEFERRED (list in §7). One fix wave applied + re-reviewed clean. SDD workspace deleted (git history + plan Deviations section are the record).
+- Workflows demo passed live earlier; PR #10 merged with user go.
 - v6b (interrupt rail / fleet) still banked at decision level (§3b). Launch build (§3d) still PARKED.
-- Post-workflows roadmap (user-approved decomposition): **B = session initiation + directory choice, C = launch-anywhere CLI** (B/C may merge into one spec; C mostly automates what B parameterizes). Not brainstormed yet.
 
 ## 1. Goal & current task
 
 Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 
-**CURRENT TASK: USER DEMO CHECKPOINT for the workflows screen, then PR on user go.** All 5 plan tasks of `docs/superpowers/plans/2026-07-26-workflows-screen.md` are implemented and reviewed (per-task reviews clean; final whole-branch review on fable found 1 Important — misleading RUNNING empty-state copy, a plan defect vs spec §6 — fixed in `271c5ff` and verified by scoped re-review). Demo script (plan Task 5 Step 3): fan a subagent out from the live session (e.g. prompt the agent to research something using a subagent), watch the row go running → done with live usage on the WORKFLOWS screen (W hotkey / header badge), stop one mid-flight and see ⛔ + attribution, check the badge count. Do NOT merge; PR only on user go.
+**CURRENT TASK: user demo checkpoint for session-launcher, then PR on user go.** The demo script (plan Task 7 Step 3): from a scratch git repo (or this one), `node poc/server/bin/mpai.js` → browser opens the SESSIONS picker → create a session (watch slug preview + base-ref default) → Lobby → prompt the agent, confirm workdir is `.mpai/worktrees/<slug>` on branch `mpai/<slug>` → second no-param tab joins via picker → `mpai new cli-made` prints a working join URL. NEVER merge or PR without the user (merge-permission gotcha §6). After demo + PR: next roadmap item is v6b (§3b) or deployment week-1 (§3d) — user's call.
 
 **PROCESS NOTES (standing):** context hook ≈40% = HARD STOP (refresh this file, tell user to /clear, end turn). Don't pair AskUserQuestion with long content. SDD workspace scripts live under `~/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/` (sdd-workspace, task-brief, review-package).
 
@@ -46,11 +47,11 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 
 ## 4. Ordered next steps (fresh session)
 
-1. Verify state per §8. Check `lsof -ti :3001` BEFORE any edit under poc/server — demo stack may still be running (editing poc/server hot-reloads it; NEVER switch branches in the main checkout while it's attached; editing poc/client is safe, vite HMR). NOTE: the demo stack was left RUNNING through this implementation session — the live server process picked up the poc/server hot reloads; WS clients rejoin on reload.
-2. USER DEMO CHECKPOINT (see §1 for the script). If the demo reveals issues (most likely class: live SDK task-message shape drift vs the read-side `SdkMessage` widening, or throttle feel), fix on-branch with tests.
-3. On user go: push branch + open PR to main (base `18fa45c`). Do NOT merge without the user (user gave merge-go for #8/#9 immediately; still ask). Permission gotcha for merge in §6.
-4. Then: brainstorm sub-project B (session initiation + working directories), then C (launch-anywhere CLI) — see §3 decomposition.
-5. Post-merge tidy (optional): delete merged remote branches `feature/v6c-plugins`, `feature/slash-autocomplete-v2` (permission-blocked for agent; user can); deferred minors ledger in §7.
+1. Verify state per §8. Check `lsof -ti :3001` BEFORE any edit under poc/server — demo stack may still be running (poc/server edits hot-reload it — allowed, WS clients rejoin; NEVER switch branches in the main checkout while attached; poc/client edits safe, vite HMR). We are ON `feature/session-launcher` — stay there.
+2. **WAITING ON USER: session-launcher demo** (script in §1). If the demo surfaces bugs → fix on this branch with tests, re-run §8 verify.
+3. On user go: PR `feature/session-launcher` → main (use superpowers:finishing-a-development-branch). Never merge without the user; merge-permission gotcha in §6. PR body: WorkspaceManager worktree provisioning, watch_project/create_session wire + repo snapshot, single-port static serving + EADDRINUSE rejection, SessionPicker, mpai CLI; final review READY TO MERGE.
+4. Then next roadmap item: v6b (interrupt rail / fleet, banked decisions §3b) or deployment week-1 build items (§3d) — user's call.
+5. Post-merge tidy (optional): delete merged remote branches `feature/v6c-plugins`, `feature/slash-autocomplete-v2`, `feature/workflows-screen` (permission-blocked for agent; user can); deferred minors in §7.
 
 ## 5. Files with line refs (post-merge main + workflows branch)
 
@@ -72,17 +73,18 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 - `tour-skill-suggest.png` (untracked): keep or delete — user's call; no feature gap behind it.
 - Workflows demo may reveal: whether real SDK task messages match the read-side shapes (plan Task 1 widened SdkMessage from sdk.d.ts:4424-4500 — verified against installed d.ts, but live-shape drift is the recurring gotcha class); whether the 2s progress throttle feels right.
 - Workflows deferred minors (from per-task + final review, none block merge): task_stop for a never-seen taskId creates a phantom RUNNING row in derive (plan-mandated create-on-stop; pairs with the no-confirmation-on-unknown-stop UX gap — fix together if ever touched); stop_task taskId length uncapped in server.ts (driver-only; house style would cap ~200); stopTask sync-throw would escape WS handler (theoretical — same idiom as setModel); FINISHED cap trims by insertion not completion order (observable past 50 tasks); stopTask dead-session branch untested; usage-fields mapping duplicated in handleTaskMessage branches (plan-mandated); fmtTokens 1000-boundary untested; WorkflowsPanel cap-math comment could carry an example.
+- **Session-launcher deferred minors (final review triaged ALL as keep-deferred; SDD ledger deleted, this is the surviving record):** staticFiles 403/404/405 responses lack content-type; containment is string-path not realpath (trusted dist; comment gates reuse); joined socket that re-watches away loses its own project pushes (server.ts watch_project delete removes the join registration — no shipped client triggers it; fix = skip delete when `watching === ctx?.project`); peek no-project fallback literal omits `arcade`/not typed `satisfies ProjectMessage`; create_session registers empty Project before `!repo` check; SessionPicker has no ws.onerror/onclose (silent staleness) and pending never clears if server never responds; SERVER_URL DEV/prod ternary untested; cli.ts connects `ws://127.0.0.1` but prints `http://localhost`; launch() mkdirSync uncaught (raw stack on disk/perms failure); openBrowser try/catch vestigial; slugify mirrored in client sessionRow.ts + server workspace.ts (sync comment only — reviewer suggests shared JSON fixture test); WorkspaceManager provision assumes pre-slugified input + TOCTOU on concurrent provision (single-process sync path).
 - Carried v3–v6c items: worktree-containment approvals; Bash-allowlist two-hop risk (AUTO amplifies; plugin hooks widen — v6c spec §8); frontend-design polish; meta-tools bypass gate #9; AgentStatus TOOLS line #10; plan-mode pairing cosmetic #11; deferred minors ledger (slashmenu wrap/nowrap, tabIndex=-1, orphaned .clone-* GC, SkillsPanel submit dedupe, pendingUrl clearing).
 
 ## 8. Resume & verify
 
 ```bash
-cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # feature/workflows-screen (local only); untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png
-git log --oneline main..HEAD                  # 271c5ff review fixes … 8db9a6b task_event fwd, + handoff/plan/spec/viewport commits (9 total)
-git log --oneline -1 origin/main              # 18fa45c (= local main; PR #9 head)
-cd poc/server && npx tsc --noEmit && npx vitest run   # clean, 131 passed
-cd ../client && npm test && npm run build             # 66 passed, clean build
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # feature/session-launcher, clean; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png
+git log --oneline -3                          # HANDOFF docs, 67cc627 final fix wave, 487cee4 docs — tip of the DONE SDD run
+git log --oneline -1 origin/main              # dcf8429 (merge of PR #10, workflows)
+cd poc/server && npx tsc --noEmit && npx vitest run   # clean, 161 passed
+cd ../client && npm test && npm run build             # 72 passed, clean build
 lsof -ti :3001                                # if PIDs: demo stack still up — see §6
 ```
 
-Resume at §1: user demo checkpoint (client URLs `http://localhost:5173/?session=v6c-accept-1|2`, hit W or the WORKFLOWS header button), then PR on user go. Never merge without the user.
+Resume at §1: the branch is demo-ready. Present the demo script to the user (or run it if asked); PR only on user go. The `.superpowers/sdd/2026-07-26-session-launcher/` workspace is deleted — the plan's Deviations section and §7's deferred-minors list are the surviving record.
