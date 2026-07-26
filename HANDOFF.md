@@ -13,7 +13,7 @@
 
 Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 
-**CURRENT TASK:** close out v6a — get user live acceptance of PR #5, then merge (same local-merge + push pattern as PRs #2–#4, since `gh pr merge` is permission-blocked). Also resolve the two untracked root files (§7 first two bullets).
+**CURRENT TASK:** v6c cycle designed and planned (2026-07-26): plugin import by git URL + full CC skills (`skills:"all"` + SDK `plugins` option). Spec `docs/superpowers/specs/2026-07-25-v6c-plugins-design.md` (user-approved), plan `docs/superpowers/plans/2026-07-26-v6c-plugins.md` — both committed on the v6a branch. **GATE: v6a (PR #5) must merge before v6c implementation starts** (plan Task 1 Step 1 verifies). Awaiting: v6a acceptance+merge, then execution-mode choice (subagent-driven vs inline). Untracked root files (§7) still pending. Note: the screenshot's "suggest a skill" affordance turned out to already exist (skill_suggest/skill_decision events, v4-era).
 
 **PROCESS NOTES (standing):** context hook ≈40% = HARD STOP (refresh this file, tell user /clear, end turn). Don't pair AskUserQuestion with long content in the same turn (dialog hides the text — user correction, saved in memory). SDD per superpowers skills; user picked subagent-driven for v5b (worked well).
 
