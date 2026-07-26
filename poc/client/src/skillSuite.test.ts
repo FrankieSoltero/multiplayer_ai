@@ -38,4 +38,13 @@ describe("suiteFromSessions", () => {
     ]);
     expect(out[0].sources).toEqual([{ sessionId: "ana", driverName: "Ana" }]);
   });
+  it("filters out skills marked as removed via the (removed) description prefix", () => {
+    const out = suiteFromSessions([
+      sess("ana", "Ana", [
+        { name: "normal", description: "a real skill" },
+        { name: "dead", description: "(removed) junk entry" },
+      ]),
+    ]);
+    expect(out.map((s) => s.name)).toEqual(["normal"]);
+  });
 });

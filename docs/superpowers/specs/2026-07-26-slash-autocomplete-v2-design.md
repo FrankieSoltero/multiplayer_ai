@@ -50,7 +50,9 @@ No component-test infra exists; the repo's pattern is pure-function extraction
 `slashMatch.ts` (`!description.trimStart().startsWith("(removed")`). One spot cleans every
 consumer — SkillsPanel roster, AgentStatus roster count, PromptBar menu — and the wire
 stays untouched (append-only events unchanged; filtering is client derivation, per the
-standing architecture decision).
+standing architecture decision). Note: the SKILL SUITE path (`skillSuite.ts`) consumes the
+raw per-session roster data directly (not the derived `DerivedState.skills`), so it applies
+`notRemoved` itself in `suiteFromSessions`.
 
 ### 3c. `PromptBar.tsx` wiring
 

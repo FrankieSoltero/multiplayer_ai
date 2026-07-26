@@ -1,4 +1,5 @@
 import type { ProjectSessionInfo } from "./types";
+import { notRemoved } from "./slashMatch";
 
 export interface SuiteSkill {
   name: string;
@@ -11,7 +12,7 @@ export interface SuiteSkill {
 export function suiteFromSessions(sessions: ProjectSessionInfo[]): SuiteSkill[] {
   const byName = new Map<string, SuiteSkill>();
   for (const s of sessions) {
-    for (const sk of s.skills ?? []) {
+    for (const sk of (s.skills ?? []).filter(notRemoved)) {
       const cur = byName.get(sk.name);
       if (cur) {
         if (!cur.sources.some((src) => src.sessionId === s.id)) {
