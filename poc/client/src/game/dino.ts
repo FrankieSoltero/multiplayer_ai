@@ -1,4 +1,5 @@
-export const LANE_WIDTH = 40;
+import { LANE_WIDTH, type GameEngine } from "./engine";
+export { LANE_WIDTH };
 export const DINO_X = 4;
 const SPEED = 14;       // columns / second
 const GRAVITY = 30;     // rows / s²
@@ -63,3 +64,22 @@ export function renderLane(s: DinoState): [string, string] {
   else ground[DINO_X] = sprite;
   return [air.join(""), ground.join("")];
 }
+
+export const dinoEngine: GameEngine<DinoState> = {
+  key: "dino",
+  label: "DINO RUN",
+  rows: 2,
+  init: (seed) => initialState(seed),
+  tick,
+  input: (s, key) => (key === " " || key === "click" ? jump(s) : s),
+  render: (s) => {
+    const [air, ground] = renderLane(s);
+    return [air, ground];
+  },
+  score: (s) => s.score,
+  over: (s) => !s.alive,
+  hint: (_s, playing) =>
+    playing
+      ? "SPACE jump · click the prompt to type instead"
+      : "SPACE (or click the lane) to play while you wait",
+};
