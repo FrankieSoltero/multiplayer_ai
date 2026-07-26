@@ -556,10 +556,12 @@ export async function startServer(opts: {
   });
 
   await new Promise<void>((resolve, reject) => {
-    const onError = (err: any) => reject(err);
+    const onError = (err: Error) => reject(err);
     httpServer.once("error", onError);
+    wss.once("error", onError);
     httpServer.once("listening", () => {
       httpServer.removeListener("error", onError);
+      wss.removeListener("error", onError);
       resolve();
     });
     httpServer.listen(opts.port);
