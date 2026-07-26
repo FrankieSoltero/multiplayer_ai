@@ -8,7 +8,16 @@ panel).
 ## Setup
 
 The invite gate is **off by default**, so it must be switched on to demo it.
-The simplest harness is a single-port server serving the built client:
+
+For a wire-only run (no UI), the env var is enough:
+
+```bash
+cd poc/server && REQUIRE_INVITE=1 npx tsx src/main.ts
+# optional: INVITE_TTL_MS=3600000 INVITE_MAX_USES=5
+```
+
+`main.ts` serves no static files, so for the **browser** demo below use a
+single-port harness serving the built client:
 
 ```bash
 cd poc/client && npm run build          # dist/ must exist
