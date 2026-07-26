@@ -13,7 +13,7 @@
 
 Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 
-**CURRENT TASK:** start v6c execution once the user picks the mode (subagent-driven recommended; inline alternative) — OR the user may prioritize the §3d launch build (calendar deadline ~Aug 6) first. Sequencing is the user's call; note §3d's pull-notification item overlaps §3b's interrupt rail — if launch goes first, build that slice once, spec'd to serve both.
+**CURRENT TASK:** execute v6c **subagent-driven** (user decided 2026-07-26: "start this now sub agent driven and park the launch build"). Launch build (§3d) is PARKED behind v6c — do not start it. Fresh session: invoke superpowers:subagent-driven-development and run `docs/superpowers/plans/2026-07-26-v6c-plugins.md` task-by-task from Task 1 (branch `feature/v6c-plugins` off main; the v6a-merged precondition is satisfied — merge `2eeee28`). No v6c work has started yet.
 
 **PROCESS NOTES (standing):** context hook ≈40% = HARD STOP. Don't pair AskUserQuestion with long content in the same turn. SDD per superpowers skills (worked well for v5b and v6a — 1 fix round total across v6a's 7 tasks).
 
@@ -54,9 +54,8 @@ Anyone in a project imports a skills plugin by **https git URL** (e.g. soltero-s
 
 ## 4. Ordered next steps (fresh session)
 
-1. Verify state per §8. Check `lsof -ti :3001` BEFORE any checkout/edit under the repo — the demo stack may be running; the tsx supervisor respawns children (kill the `npm run dev`/`tsx watch` parents, not just the node child).
-2. Ask the user: v6c execution now (subagent-driven vs inline), or §3d launch-build writing-plans first (calendar pressure ~Aug 6)? Then run the chosen cycle.
-3. If v6c: follow `docs/superpowers/plans/2026-07-26-v6c-plugins.md` exactly (Task 1 verifies v6a is on main — it is).
+1. Verify state per §8. Check `lsof -ti :3001` BEFORE any checkout/edit under the repo — the demo stack may be running; the tsx supervisor respawns children (kill the `npm run dev`/`tsx watch` parents, not just the node child). NOTE: Task 1's `git checkout -b` switches the working tree — if the stack is still up, warn/kill first.
+2. Invoke superpowers:subagent-driven-development and execute `docs/superpowers/plans/2026-07-26-v6c-plugins.md` from Task 1 (no questions needed — mode and sequencing already decided).
 4. Post-merge tidy (optional, non-blocking): delete merged remote branch `feature/v6a-modes-skills` (permission-blocked for the agent; user can); ledgered chores — poll-based waits in server.test.ts; thread `PermissionMode` type through derive/Header; hotkey-guard helper to DRY App.tsx ×3.
 5. v6b spec from §3b whenever it comes up.
 
@@ -79,8 +78,7 @@ Anyone in a project imports a skills plugin by **https git URL** (e.g. soltero-s
 
 ## 7. Open questions / USER DECISIONS (carried)
 
-- **Sequencing: v6c vs launch build (§3d)** — user decides; pull-notification overlap with §3b noted.
-- **v6c execution mode:** subagent-driven (recommended) vs inline — asked, awaiting answer.
+- ~~Sequencing~~ DECIDED 2026-07-26: v6c first, subagent-driven; launch build parked (pull-notification overlap with §3b still noted for whenever launch resumes).
 - `tour-skill-suggest.png` (untracked, repo root): screenshot from the live demo; the "suggest a skill" affordance it shows already exists (skill_suggest/skill_decision, v4-era). Keep or delete — user's call; no feature gap behind it.
 - Carried v3–v5c items unchanged: worktree-containment Write/Edit approval; Bash-allowlist two-hop risk (market-research documents it as the residual boundary; AUTO amplifies it; v6c plugin hooks widen it further — spec §8); skill discovery under settingSources:[] (v6c retires the question by going `skills:"all"` + explicit plugins); frontend-design polish; meta-tools bypass gate #9; AgentStatus TOOLS line #10; plan-mode pairing cosmetic #11.
 - Deferred v5b minors + v6a ledgered chores (§4.4) — none blocking.
