@@ -111,28 +111,53 @@ describe("PluginStore.add", () => {
     expect(store.paths("proj")).toEqual([]);
   });
 
-  it("handles finalization failure gracefully: cleans up tmp, not dest, on rename failure", async () => {
-    const store = new PluginStore(root, fakeClone(SOLTERO));
+  it("on rename failure: cleans tmp only, verifies dest not deleted (race-safety check)", async () => {
     const projectDir = path.join(root, "proj");
     fs.mkdirSync(projectDir, { recursive: true });
 
-    // Mock renameSync to throw before renaming (simulating ENOTEMPTY from a race)
+    // Pre-create dest with marker file (simulating winner's plugin)
+    const destPath = path.join(projectDir, "soltero-skills");
+    fs.mkdirSync(destPath, { recursive: true });
+    fs.writeFileSync(path.join(destPath, "marker.txt"), "winner data");
+
+    // Create a fresh store with cleared registry to simulate TOCTOU window
+    const store = new PluginStore(root, fakeClone(SOLTERO));
+    // @ts-ignore
+    store.registry.clear();
+
+    // Mock the duplicate check to incorrectly pass (simulating TOCTOU race)
+    const realExistSync = fs.existsSync;
+    const existsSpy = vi.spyOn(fs, "existsSync").mockImplementation((filePath: any) => {
+      const p = typeof filePath === "string" ? filePath : String(filePath);
+      // Return false ONLY for the duplicate check call on soltero-skills
+      if (p === destPath) {
+        return false; // TOCTOU: check incorrectly says dest doesn't exist
+      }
+      return realExistSync(p);
+    });
+
     const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation(() => {
       throw new Error("ENOTEMPTY: dest already exists");
     });
 
     const result = await store.add("proj", "https://github.com/x/soltero-skills", "u1");
+
+    // Restore mocks immediately so assertions use real fs
+    existsSpy.mockRestore();
+    renameSpy.mockRestore();
+
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toMatch(/^finalization failed: /);
+    expect(result.error).toMatch(/^finalization failed: ENOTEMPTY/);
 
-    // Key: tmp should be cleaned up (rename failed, so this call never took ownership)
+    // CRITICAL: Verify the pre-created dest still exists (we never delete it on rename failure)
+    // This uses the real fs.existsSync after mock restore
+    expect(fs.existsSync(destPath)).toBe(true);
+    expect(fs.readFileSync(path.join(destPath, "marker.txt"), "utf8")).toBe("winner data");
+
+    // Verify tmp is cleaned up (no .clone- dirs remain)
     const remaining = fs.readdirSync(projectDir);
-    expect(remaining.every((f) => !f.startsWith(".clone-"))).toBe(true);
-    // And we never try to delete dest since rename failed (no crash, clean error)
-    expect(result.error).toContain("ENOTEMPTY");
-
-    renameSpy.mockRestore();
+    expect(remaining.filter((f) => f.startsWith(".clone-"))).toHaveLength(0);
   });
 });
 
