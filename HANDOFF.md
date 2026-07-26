@@ -1,6 +1,6 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (post-merge): **v5b MERGED** — PR #4 landed on `main` @ `f777265`, both suites verified green on the merged result (server 94, client 39, builds clean). Local feature branch deleted; remote branch left (delete blocked by permissions — harmless). Nothing in flight; next session starts a fresh cycle at brainstorming.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (post-merge, evening): **v5b MERGED** — PR #4 landed on `main` @ `f777265`, both suites verified green on the merged result (server 94, client 39, builds clean). Local feature branch deleted; remote branch left (delete blocked by permissions — harmless). Demo stack was relaunched clean this session (server :3001 + vite :5173, all stale watchers killed) and verified live end-to-end incl. arcade/snake. User asked whether the zip-patch "skills area" was lost in handoff — it wasn't; see §2b. Nothing in flight; next session starts a fresh cycle at brainstorming.*
 
 ## 0. WHERE WE ARE — v5b shipped, clean slate
 
@@ -19,6 +19,10 @@ Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 ## 2. What v5b shipped (now on main)
 
 Playable arcade: snake + typerace cartridges alongside dino behind a shared `GameEngine` interface (zero per-game host branches); `game_score` server event on the append-only wire; per-game party records aggregated server-side into the throttled ProjectMessage snapshot; header ARCADE toggle + `A` hotkey; snake vertical steps aspect-scaled (V_ASPECT=2) so on-screen speed matches horizontal.
+
+## 2b. Zip-patch skills area — SHIPPED in v5c, not lost (user asked 2026-07-25)
+
+The 90s-terminal zip patch (vendored at `docs/design/90s-terminal-patch/`, README = copy map) included a design-only `SkillsPanel` mock. The REAL one shipped in v5c (PR #3): `poc/client/src/components/SkillsPanel.tsx` behind `?screen=skills` — skill suite as union of session rosters (server carries `skills` in projectSnapshot), command palette from this session's roster, sub-quests from real subagent groups. Deliberately NOT carried from the mock (recorded in v5c spec §4 / PR #3): background-tasks section (nothing behind it), AgentStatus HP/MP real data (`?screen=status` stays dash-honest — needs SDK usage numbers), party XP (HUD renders —). Those remain §7 candidates, not regressions.
 
 ## 3. Decisions + why (do not re-litigate)
 
