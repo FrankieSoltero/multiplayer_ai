@@ -136,6 +136,26 @@ describe("Overseer", () => {
     expect(calls[0]).toMatchObject({ projectId: "p1", previousSummary: null });
     expect(calls[1]).toMatchObject({ projectId: "p1", previousSummary: "summary 1" });
   });
+
+  it("dispose prevents post-disposal timer re-arm and update broadcasts", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { overseer, calls, updates } = makeOverseer({
+      summarize: async () => {
+        await gate;
+        return "late";
+      },
+      debounceMs: 10,
+    });
+    overseer.setEnabled("p1", true); // starts refresh 1, held open
+    await wait(5);
+    overseer.notify("p1"); // sets pending during in-flight
+    overseer.dispose(); // dispose while in-flight + pending
+    release();
+    await wait(60);
+    expect(calls).toHaveLength(1); // no post-dispose follow-up
+    expect(overseer.latest("p1")).toBe(null); // late result dropped
+  });
 });
 
 describe("oversightToolText", () => {

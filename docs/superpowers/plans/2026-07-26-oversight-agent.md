@@ -1502,4 +1502,4 @@ Stop for the user's demo checkpoint: `mpai` (or the dev stack) with two sessions
 
 ## Deviations (recorded during execution)
 
-(none yet)
+**Task 2:** plan's dispose() listing had a re-arm race (in-flight refresh with pending follow-up could schedule a timer and call onUpdate after dispose) — fixed with a disposed flag guarding notify/refresh and the post-await write-back; +1 test = 178 server baseline entering Task 3.

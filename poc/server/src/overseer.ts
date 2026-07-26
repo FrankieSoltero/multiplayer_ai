@@ -40,6 +40,7 @@ interface ProjectOversight {
  *  summary. Not a session — one stateless summarize call per refresh. */
 export class Overseer {
   private states = new Map<string, ProjectOversight>();
+  private disposed = false;
 
   constructor(
     private summarize: Summarize,
@@ -81,6 +82,7 @@ export class Overseer {
    *  refresh absorbs further notifies, so steady activity still summarizes
    *  every debounceMs instead of being postponed forever. */
   notify(projectId: string): void {
+    if (this.disposed) return;
     const s = this.states.get(projectId);
     if (!s?.enabled) return;
     if (s.inFlight) {
@@ -95,6 +97,7 @@ export class Overseer {
   }
 
   private async refresh(projectId: string): Promise<void> {
+    if (this.disposed) return;
     const s = this.state(projectId);
     if (s.inFlight) {
       s.pending = true;
@@ -107,7 +110,7 @@ export class Overseer {
         previousSummary: s.latest?.text ?? null,
         sessions: this.digestsFor(projectId),
       });
-      if (s.enabled) {
+      if (!this.disposed && s.enabled) {
         s.seq += 1;
         s.latest = { text, ts: new Date().toISOString(), seq: s.seq };
         this.onUpdate(projectId);
@@ -127,6 +130,7 @@ export class Overseer {
   }
 
   dispose(): void {
+    this.disposed = true;
     for (const s of this.states.values()) {
       if (s.timer) clearTimeout(s.timer);
       s.timer = null;
