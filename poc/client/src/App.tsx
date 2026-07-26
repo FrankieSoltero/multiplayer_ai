@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./terminal.css";
 import { deriveState, deriveTranscriptGroups } from "./derive";
+import { nextMode } from "./modes";
 import { hashIdentity, loadOrCreateUserId, loadProfile, saveProfile } from "./identity";
 import type { Profile } from "./identity";
 import { useSessionSocket } from "./useSessionSocket";
@@ -97,8 +98,9 @@ function SessionView(props: {
 
   const isDriver = derived.driverId === userId;
   const canSetModel = isDriver && !derived.agentBusy;
-  const planMode = derived.permissionMode === "plan";
-  const canTogglePlan = isDriver && !derived.agentBusy;
+  const permissionMode = derived.permissionMode;
+  // v6a: driver can cycle anytime, including mid-turn (rescues gate-stuck turns)
+  const canCycleMode = isDriver;
 
   const watcherNames = [...derived.participants.entries()]
     .filter(([id]) => id !== derived.driverId && id !== userId)
@@ -131,6 +133,24 @@ function SessionView(props: {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [arcadeOpen, derived.agentBusy, gatesPending]);
+
+  // "M" cycles the permission mode (driver only, works even while the agent
+  // is busy — that's the point: flipping to AUTO rescues a gate-stuck turn).
+  // Same keyboard etiquette as "A": never while typing, never while an
+  // arcade run has the keyboard.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (document.activeElement as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if ((e.key === "m" || e.key === "M") && isDriver && !arcadeCapturing) {
+        e.preventDefault();
+        send({ type: "set_permission_mode", mode: nextMode(permissionMode) });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isDriver, arcadeCapturing, permissionMode, send]);
 
   // per-game party records; glyph/color fall back to hashIdentity like derive.ts
   const partyBests = useMemo(() => {
@@ -172,8 +192,8 @@ function SessionView(props: {
     send({ type: "decide_skill", suggestId, decision });
   }
 
-  function onTogglePlan() {
-    send({ type: "set_permission_mode", mode: planMode ? "default" : "plan" });
+  function onCycleMode() {
+    send({ type: "set_permission_mode", mode: nextMode(permissionMode) });
   }
 
   function onDecidePlan(requestId: string, decision: "approve" | "reject") {
@@ -217,9 +237,9 @@ function SessionView(props: {
         objective={derived.objective}
         canSetModel={canSetModel}
         onSetModel={onSetModel}
-        planMode={planMode}
-        canTogglePlan={canTogglePlan}
-        onTogglePlan={onTogglePlan}
+        permissionMode={permissionMode}
+        canCycleMode={canCycleMode}
+        onCycleMode={onCycleMode}
         arcadeOpen={arcadeOpen}
         canToggleArcade={!derived.agentBusy}
         onToggleArcade={() => setArcadeOpen((v) => !v)}

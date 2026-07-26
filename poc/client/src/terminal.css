@@ -624,6 +624,10 @@ code, pre { font-family: var(--fm); }
 .planmode.on { color: var(--gold); border-color: var(--gold); background: var(--gold-wash); }
 .planmode:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
 
+/* v6a: AUTO mode is loud on purpose — gates self-approve while it's on
+   (spec §7: this visibility is load-bearing, not decoration). */
+.planmode.auto.on { border-color: var(--amber); color: var(--amber); background: var(--amber-wash); }
+
 /* plan approval card — perm-card frame in the plan (gold) accent */
 .perm.plancard { border-color: rgba(217, 184, 107, 0.42); }
 .perm.plancard:has(.perm-actions) { border-color: var(--gold); background: var(--gold-wash); }
