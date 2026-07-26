@@ -40,7 +40,9 @@ export interface ArcadeRecord {
 /** Best score per game across every session in the project. Holder identity
  *  is resolved from presence_join events (NOT the live participants map) so
  *  a record survives its holder leaving. Ties break chronologically (earliest
- *  timestamp wins), regardless of session iteration order. */
+ *  timestamp wins), regardless of session iteration order.
+ *  Cost: O(total project events) per throttled push — fine for an in-memory
+ *  POC; an incremental best-map is the upgrade path if event counts grow. */
 function arcadeRecords(project: Project): ArcadeRecord[] {
   const identities = new Map<string, { name: string; glyph?: string; color?: string }>();
   const best = new Map<string, { userId: string; score: number; ts: string }>();

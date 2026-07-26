@@ -107,9 +107,14 @@ function SessionView(props: {
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const [arcadeOpen, setArcadeOpen] = useState(false);
+  // v5b final-review: whether a live arcade run currently has the keyboard
+  // captured (game letters overlap a/d permission hotkeys).
+  const [arcadeCapturing, setArcadeCapturing] = useState(false);
 
   // "A" opens the idle arcade; while busy the strip is already mounted and
   // letters belong to the games, so the hotkey only fires when closed + idle.
+  // Also require no pending permission gates, so "a" never both opens the
+  // arcade and answers a (possibly dead) permission request.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
@@ -117,7 +122,7 @@ function SessionView(props: {
       if (
         (e.key === "a" || e.key === "A") &&
         !e.metaKey && !e.ctrlKey && !e.altKey &&
-        !arcadeOpen && !derived.agentBusy
+        !arcadeOpen && !derived.agentBusy && gatesPending === 0
       ) {
         e.preventDefault();
         setArcadeOpen(true);
@@ -125,7 +130,7 @@ function SessionView(props: {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [arcadeOpen, derived.agentBusy]);
+  }, [arcadeOpen, derived.agentBusy, gatesPending]);
 
   // per-game party records; glyph/color fall back to hashIdentity like derive.ts
   const partyBests = useMemo(() => {
@@ -230,6 +235,7 @@ function SessionView(props: {
           onPermission={sendPermission}
           onDecideSkill={onDecideSkill}
           onDecidePlan={onDecidePlan}
+          hotkeysMuted={arcadeCapturing}
         />
 
         <PartyPane
@@ -251,6 +257,7 @@ function SessionView(props: {
         currentTool={currentTool}
         partyBests={partyBests}
         onScore={(game, score) => send({ type: "game_score", game, score })}
+        onPlayingChange={setArcadeCapturing}
       />
 
       {errors.length > 0 && <div className="line red">⚠ {errors.at(-1)}</div>}

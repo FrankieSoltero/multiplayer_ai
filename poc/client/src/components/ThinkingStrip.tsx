@@ -6,7 +6,10 @@ import { typeRaceEngine } from "../game/typerace";
 
 const LEAVE_MS = 600;
 const bestKey = (game: string) => `mpai-${game}-high`;
-const readBest = (game: string) => Number(localStorage.getItem(bestKey(game)) ?? 0);
+const readBest = (game: string) => {
+  const n = Number(localStorage.getItem(bestKey(game)) ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+};
 const seed = () => (Date.now() % 100000) | 1;
 
 /** v5b: a slot with an `engine` is playable; the rest render an honest empty
@@ -35,6 +38,10 @@ export function ThinkingStrip(props: {
   partyBests?: Record<string, PartyBest>;
   currentTool?: string;
   onScore?: (game: string, score: number) => void;
+  /** v5b final-review: notified whenever a run's key-capturing status
+   *  changes (including unmount) so the transcript can mute its a/d
+   *  permission hotkeys while game letters are live. */
+  onPlayingChange?: (capturing: boolean) => void;
 }) {
   const active = props.busy || (props.open ?? false);
 
@@ -78,6 +85,18 @@ export function ThinkingStrip(props: {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
+
+  // v5b final-review: any live run captures the keyboard (game letters
+  // overlap the a/d permission hotkeys) — tell the transcript so it can
+  // mute those hotkeys for the duration. Conservative on purpose: any
+  // mounted+playing run mutes, dino included; permission cards' on-screen
+  // buttons remain clickable throughout.
+  const capturing = mounted && playing && !!engine;
+  useEffect(() => {
+    props.onPlayingChange?.(capturing);
+    return () => props.onPlayingChange?.(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [capturing]);
 
   // thinking timer — busy turns only; the idle arcade has no timer
   useEffect(() => {
