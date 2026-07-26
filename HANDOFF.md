@@ -1,21 +1,20 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-26 (bg session #2, ~40% hard stop mid-SDD): **workflows screen DEMOED + MERGED (PR #10, main `dcf8429`). Session-launcher (sub-projects B+C) spec+plan approved and committed; SDD run IN PROGRESS on branch `feature/session-launcher` — Tasks 1-2 of 7 done (Task 2 mid-fix-loop: fix landed, scoped re-review NOT yet run).** Resume per §1.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-26 (bg session #3): **session-launcher SDD run COMPLETE on branch `feature/session-launcher` (tip `67cc627` + this HANDOFF commit) — all 7 tasks done, final whole-branch review READY TO MERGE, server 161/tsc clean, client 72/build clean. STOPPED at the user demo checkpoint; PR only on user go.** Resume per §1.*
 
 ## 0. WHERE WE ARE
 
 - **main** (origin in sync, `dcf8429` = merge of PR #10): everything through the workflows screen. Baselines on main: **server 131 tests / client 66**, both builds clean.
-- **Branch `feature/session-launcher`** (local only; based on `71661c0`, fully contained in main's merge — future PR shows only new work): `1fded02` spec, `57f0645` plan + spec watch_project addendum, `f3e6048` Task 1 (WorkspaceManager + slugify, +8 tests → 139), `2afc745` Task 2 (watch_project/create_session wire, +8 → 147), `2d61565` Task 2 fix round 1 (watch_project re-watch leak, +1 → 148). Client untouched so far (66).
-- **SDD run state:** ledger at `.superpowers/sdd/2026-07-26-session-launcher/progress.md` (briefs/reports/review packages beside it). Tasks 1 complete (review clean); Task 2 MID-FIX-LOOP: reviewer found 1 Important (watch_project watcher leak on re-watch — plan pseudocode bug, constraint text governs), fix landed in `2d61565`, **scoped re-review of `2afc745..2d61565` not yet dispatched**. Tasks 3-7 not started.
-- Workflows demo passed live (running→done, mid-flight stop w/ attribution, badge). PR #10 merged with user go.
+- **Branch `feature/session-launcher`** (local only; based on `71661c0`; tip `e132a1d`, 14 commits): `1fded02` spec, `57f0645` plan, `f3e6048` Task 1 (WorkspaceManager), `2afc745`+`2d61565` Task 2 (wire + re-watch-leak fix), `f142105`+`4b67c59` Task 3 (static serving + ws error-re-emit fix), `5aea229` Task 4 (client pure layer), `72be0e6` Task 5 (SessionPicker), `77f53f9` Task 6 (mpai CLI, smoke-tested e2e), `5f9a271`/`487cee4` deviation docs, `67cc627` final-review fix wave (stream error handler, name cap, deviations). Suites at tip: **server 161 + tsc clean, client 72 + build clean.**
+- **SDD run state: DONE.** All 7 tasks complete, each task review clean. Final whole-branch review (fable): zero Critical/Important, verdict READY TO MERGE; all deferred minors triaged KEEP DEFERRED (list in §7). One fix wave applied + re-reviewed clean. SDD workspace deleted (git history + plan Deviations section are the record).
+- Workflows demo passed live earlier; PR #10 merged with user go.
 - v6b (interrupt rail / fleet) still banked at decision level (§3b). Launch build (§3d) still PARKED.
-- Post-workflows roadmap (user-approved decomposition): **B = session initiation + directory choice, C = launch-anywhere CLI** (B/C may merge into one spec; C mostly automates what B parameterizes). Not brainstormed yet.
 
 ## 1. Goal & current task
 
 Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 
-**CURRENT TASK: continue the SDD run on `docs/superpowers/plans/2026-07-26-session-launcher.md` (7 tasks; spec `docs/superpowers/specs/2026-07-26-session-launcher-design.md`, both user-approved).** Feature: WorkspaceManager worktree provisioning + watch_project/create_session wire + single-port static serving + SessionPicker (no-param entry) + `mpai` CLI. Resume EXACTLY at: scoped re-review of Task 2's fix round 1 (diff `2afc745..2d61565`; findings list = the one Important: "watch_project leaks watcher registration when a socket switches projects"; use re-review-prompt.md, sonnet). If ADDRESSED + no new breakage → ledger `Task 2: complete (commits f3e6048..2d61565, review clean)` → proceed Task 3 (brief not yet extracted; `task-brief PLAN 3`). Model policy this run: implementers haiku (plan has complete code), task reviewers sonnet, re-reviews sonnet, final whole-branch review fable. Expected end state: server 160 (now 148; +6 static Task 3, +7 cli Task 6 — NOTE: 148 not 147 baseline for remaining arithmetic, fix-round test added one; so final = 161 not 160 — record in plan Deviations at Task 7), client 72 (66 + 6 Task 4). After Task 7: STOP for user demo (mpai launch in a scratch repo → picker → create session → agent in `.mpai/worktrees/<slug>` → `mpai new`), then PR on user go.
+**CURRENT TASK: user demo checkpoint for session-launcher, then PR on user go.** The demo script (plan Task 7 Step 3): from a scratch git repo (or this one), `node poc/server/bin/mpai.js` → browser opens the SESSIONS picker → create a session (watch slug preview + base-ref default) → Lobby → prompt the agent, confirm workdir is `.mpai/worktrees/<slug>` on branch `mpai/<slug>` → second no-param tab joins via picker → `mpai new cli-made` prints a working join URL. NEVER merge or PR without the user (merge-permission gotcha §6). After demo + PR: next roadmap item is v6b (§3b) or deployment week-1 (§3d) — user's call.
 
 **PROCESS NOTES (standing):** context hook ≈40% = HARD STOP (refresh this file, tell user to /clear, end turn). Don't pair AskUserQuestion with long content. SDD workspace scripts live under `~/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/` (sdd-workspace, task-brief, review-package).
 
@@ -49,8 +48,8 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 ## 4. Ordered next steps (fresh session)
 
 1. Verify state per §8. Check `lsof -ti :3001` BEFORE any edit under poc/server — demo stack may still be running (poc/server edits hot-reload it — allowed, WS clients rejoin; NEVER switch branches in the main checkout while attached; poc/client edits safe, vite HMR). We are ON `feature/session-launcher` — stay there.
-2. Re-invoke superpowers:subagent-driven-development on `docs/superpowers/plans/2026-07-26-session-launcher.md`. The ledger (`.superpowers/sdd/2026-07-26-session-launcher/progress.md`) names the exact resume point: Task 2's pending scoped re-review (details in §1). Then Tasks 3-7 per plan.
-3. After Task 7 (verification sweep + final whole-branch review on fable + one fix wave if needed): STOP for user demo checkpoint, then PR `feature/session-launcher` → main on user go. Never merge without the user; merge-permission gotcha in §6.
+2. **WAITING ON USER: session-launcher demo** (script in §1). If the demo surfaces bugs → fix on this branch with tests, re-run §8 verify.
+3. On user go: PR `feature/session-launcher` → main (use superpowers:finishing-a-development-branch). Never merge without the user; merge-permission gotcha in §6. PR body: WorkspaceManager worktree provisioning, watch_project/create_session wire + repo snapshot, single-port static serving + EADDRINUSE rejection, SessionPicker, mpai CLI; final review READY TO MERGE.
 4. Then next roadmap item: v6b (interrupt rail / fleet, banked decisions §3b) or deployment week-1 build items (§3d) — user's call.
 5. Post-merge tidy (optional): delete merged remote branches `feature/v6c-plugins`, `feature/slash-autocomplete-v2`, `feature/workflows-screen` (permission-blocked for agent; user can); deferred minors in §7.
 
@@ -74,18 +73,18 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 - `tour-skill-suggest.png` (untracked): keep or delete — user's call; no feature gap behind it.
 - Workflows demo may reveal: whether real SDK task messages match the read-side shapes (plan Task 1 widened SdkMessage from sdk.d.ts:4424-4500 — verified against installed d.ts, but live-shape drift is the recurring gotcha class); whether the 2s progress throttle feels right.
 - Workflows deferred minors (from per-task + final review, none block merge): task_stop for a never-seen taskId creates a phantom RUNNING row in derive (plan-mandated create-on-stop; pairs with the no-confirmation-on-unknown-stop UX gap — fix together if ever touched); stop_task taskId length uncapped in server.ts (driver-only; house style would cap ~200); stopTask sync-throw would escape WS handler (theoretical — same idiom as setModel); FINISHED cap trims by insertion not completion order (observable past 50 tasks); stopTask dead-session branch untested; usage-fields mapping duplicated in handleTaskMessage branches (plan-mandated); fmtTokens 1000-boundary untested; WorkflowsPanel cap-math comment could carry an example.
+- **Session-launcher deferred minors (final review triaged ALL as keep-deferred; SDD ledger deleted, this is the surviving record):** staticFiles 403/404/405 responses lack content-type; containment is string-path not realpath (trusted dist; comment gates reuse); joined socket that re-watches away loses its own project pushes (server.ts watch_project delete removes the join registration — no shipped client triggers it; fix = skip delete when `watching === ctx?.project`); peek no-project fallback literal omits `arcade`/not typed `satisfies ProjectMessage`; create_session registers empty Project before `!repo` check; SessionPicker has no ws.onerror/onclose (silent staleness) and pending never clears if server never responds; SERVER_URL DEV/prod ternary untested; cli.ts connects `ws://127.0.0.1` but prints `http://localhost`; launch() mkdirSync uncaught (raw stack on disk/perms failure); openBrowser try/catch vestigial; slugify mirrored in client sessionRow.ts + server workspace.ts (sync comment only — reviewer suggests shared JSON fixture test); WorkspaceManager provision assumes pre-slugified input + TOCTOU on concurrent provision (single-process sync path).
 - Carried v3–v6c items: worktree-containment approvals; Bash-allowlist two-hop risk (AUTO amplifies; plugin hooks widen — v6c spec §8); frontend-design polish; meta-tools bypass gate #9; AgentStatus TOOLS line #10; plan-mode pairing cosmetic #11; deferred minors ledger (slashmenu wrap/nowrap, tabIndex=-1, orphaned .clone-* GC, SkillsPanel submit dedupe, pendingUrl clearing).
 
 ## 8. Resume & verify
 
 ```bash
-cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # feature/session-launcher; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png
-git log --oneline -5                          # 2d61565 fix(watch_project leak), 2afc745 wire, f3e6048 workspace, 57f0645 plan, 1fded02 spec
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # feature/session-launcher, clean; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png
+git log --oneline -3                          # HANDOFF docs, 67cc627 final fix wave, 487cee4 docs — tip of the DONE SDD run
 git log --oneline -1 origin/main              # dcf8429 (merge of PR #10, workflows)
-head -30 .superpowers/sdd/2026-07-26-session-launcher/progress.md   # ledger: Task 1 complete; Task 2 fix round 1 awaiting scoped re-review
-cd poc/server && npx tsc --noEmit && npx vitest run   # clean, 148 passed
-cd ../client && npm test && npm run build             # 66 passed, clean build
+cd poc/server && npx tsc --noEmit && npx vitest run   # clean, 161 passed
+cd ../client && npm test && npm run build             # 72 passed, clean build
 lsof -ti :3001                                # if PIDs: demo stack still up — see §6
 ```
 
-Resume at §1: dispatch the pending scoped re-review of `2afc745..2d61565` (generate the package with `review-package PLAN 2afc745 HEAD`), then continue the SDD loop through Task 7. STOP for user demo before PR.
+Resume at §1: the branch is demo-ready. Present the demo script to the user (or run it if asked); PR only on user go. The `.superpowers/sdd/2026-07-26-session-launcher/` workspace is deleted — the plan's Deviations section and §7's deferred-minors list are the surviving record.
