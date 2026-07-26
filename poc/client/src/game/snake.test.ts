@@ -52,7 +52,7 @@ describe("snake", () => {
       body: [[5, 2], [4, 2], [4, 3], [5, 3], [6, 3]],
     };
     s = steer(s, "ArrowDown"); // next cell [5,3] is body (and not the vacating tail)
-    s = tick(s, 0.2); // one step at base speed (stepTime 0.125s)
+    s = tick(s, 0.3); // one vertical step at base speed (stepTime 0.25s)
     expect(s.alive).toBe(false);
   });
 
@@ -68,6 +68,14 @@ describe("snake", () => {
     for (const r of rows) expect(r).toHaveLength(LANE_WIDTH);
     expect(rows.join("")).toContain("●");
     expect(rows[2][8]).toBe("█"); // head start position
+  });
+
+  it("steps vertically at half the cell rate so on-screen speed matches horizontal", () => {
+    // terminal cells are ~2× taller than wide; vertical steps take 2× as long
+    let s = steer(noFood(initialState(1)), "ArrowUp"); // head [8,2], base 8 cells/s
+    s = run(s, 0.45); // vertical stepTime 0.25s → exactly one step (y 2→1)
+    expect(s.alive).toBe(true); // unscaled 8 c/s would take 3 steps and die at the top wall
+    expect(s.body[0][1]).toBe(1);
   });
 
   it("applies the post-eat speed to later steps within the same tick", () => {

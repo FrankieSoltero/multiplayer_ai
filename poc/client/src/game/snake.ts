@@ -4,6 +4,7 @@ export const SNAKE_ROWS = 5;
 const BASE_SPEED = 8; // cells / second
 const SPEED_PER_FOOD = 0.5; // cells / second per food eaten
 const MAX_SPEED = 16;
+const V_ASPECT = 2; // terminal cells are ~2× taller than wide; vertical steps take 2× as long
 
 type Cell = [number, number];
 
@@ -81,7 +82,7 @@ export function tick(s: SnakeState, dt: number): SnakeState {
   let cur = s;
   for (;;) {
     const speed = Math.min(MAX_SPEED, BASE_SPEED + SPEED_PER_FOOD * cur.eaten);
-    const stepTime = 1 / speed;
+    const stepTime = (cur.pendingDir[1] !== 0 ? V_ASPECT : 1) / speed;
     if (acc < stepTime || !cur.alive) break;
     acc -= stepTime;
     cur = step(cur);
