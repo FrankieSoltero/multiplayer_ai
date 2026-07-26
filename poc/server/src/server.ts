@@ -14,6 +14,7 @@ import {
 import { Session } from "./session.js";
 import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
+import { slugify, type WorkspaceLike } from "./workspace.js";
 
 const MAX_PROMPT_LENGTH = 4000;
 const MAX_URL_LENGTH = 2048;
@@ -51,12 +52,26 @@ export async function startServer(opts: {
   port: number;
   runQuery?: RunQuery;
   plugins?: PluginStore;
+  workspace?: WorkspaceLike;
 }) {
   const runQuery = opts.runQuery ?? runAgentQuery;
   const pluginStore = opts.plugins ?? new PluginStore(process.env.AGENT_PLUGINS_ROOT);
+  // Cached once at startup: the default branch changing mid-run is rare and
+  // harmless (it only seeds the create form's base-ref field).
+  const repo = opts.workspace
+    ? { workspace: opts.workspace, defaultBranch: opts.workspace.defaultBranch() }
+    : null;
   const projects = new Map<string, Project>();
   const lastPush = new Map<Project, number>();
   const pushTimers = new Map<Project, NodeJS.Timeout>();
+
+  function snapshotFor(project: Project) {
+    return projectSnapshot(
+      project,
+      { plugins: pluginStore.list(project.id), enabled: pluginStore.enabled },
+      repo && { defaultBranch: repo.defaultBranch },
+    );
+  }
 
   function pushProject(project: Project): void {
     const timer = pushTimers.get(project);
@@ -64,12 +79,7 @@ export async function startServer(opts: {
       clearTimeout(timer);
       pushTimers.delete(project);
     }
-    const payload = JSON.stringify(
-      projectSnapshot(project, {
-        plugins: pluginStore.list(project.id),
-        enabled: pluginStore.enabled,
-      }),
-    );
+    const payload = JSON.stringify(snapshotFor(project));
     for (const watcher of project.watchers) {
       if (watcher.readyState === WebSocket.OPEN) watcher.send(payload);
     }
@@ -102,12 +112,24 @@ export async function startServer(opts: {
   function getOrCreateSession(
     project: Project,
     sessionId: string,
-  ): ProjectSessionEntry {
+    workdirOverride?: string,
+  ): ProjectSessionEntry | { error: string } {
     let entry = project.sessions.get(sessionId);
     if (!entry) {
+      let workdir: string | undefined = workdirOverride;
+      if (workdir === undefined) {
+        if (repo) {
+          // Deep-link join to a not-yet-provisioned session: same core as
+          // create_session, branched off the default branch (spec §3).
+          const result = repo.workspace.provision(sessionId, repo.defaultBranch);
+          if (!result.ok) return { error: result.error };
+          workdir = result.workdir;
+        } else {
+          const root = process.env.AGENT_WORKDIR_ROOT;
+          workdir = root ? path.join(root, sessionId) : undefined;
+        }
+      }
       const session = new Session(sessionId);
-      const root = process.env.AGENT_WORKDIR_ROOT;
-      const workdir = root ? path.join(root, sessionId) : undefined;
       // v6c: roster seeds from the plugin registry scan (instant, accurate
       // for plugin skills); the driver replaces it with the SDK's live list
       // — built-ins included — once the stream is up. Appended (not
@@ -152,6 +174,7 @@ export async function startServer(opts: {
 
   wss.on("connection", (ws: WebSocket) => {
     let ctx: ClientContext | null = null;
+    let watching: Project | null = null;
 
     const sendError = (message: string) =>
       ws.send(JSON.stringify({ type: "error", message }));
@@ -192,6 +215,7 @@ export async function startServer(opts: {
         }
         const project = getOrCreateProject(projectId);
         const entry = getOrCreateSession(project, msg.sessionId);
+        if ("error" in entry) return sendError(entry.error);
         // Replay first, then subscribe, then join — single-threaded, so no gap.
         const from =
           Number.isInteger(msg.lastSeq) && msg.lastSeq >= 0 ? msg.lastSeq : 0;
@@ -216,14 +240,7 @@ export async function startServer(opts: {
         entry.session.join(msg.userId, msg.name.slice(0, 40), { glyph, color });
         // Immediate personal snapshot so the sidebar isn't blank until the
         // next throttled push.
-        ws.send(
-          JSON.stringify(
-            projectSnapshot(project, {
-              plugins: pluginStore.list(project.id),
-              enabled: pluginStore.enabled,
-            }),
-          ),
-        );
+        ws.send(JSON.stringify(snapshotFor(project)));
         return;
       }
 
@@ -236,13 +253,55 @@ export async function startServer(opts: {
         ws.send(
           JSON.stringify(
             project
-              ? projectSnapshot(project, {
-                  plugins: pluginStore.list(project.id),
-                  enabled: pluginStore.enabled,
-                })
-              : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled },
+              ? snapshotFor(project)
+              : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: repo && { defaultBranch: repo.defaultBranch } },
           ),
         );
+        return;
+      }
+
+      if (msg.type === "watch_project") {
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) {
+          return sendError("watch_project requires a valid projectId");
+        }
+        const project = getOrCreateProject(projectId);
+        project.watchers.add(ws);
+        watching = project;
+        ws.send(JSON.stringify(snapshotFor(project)));
+        return;
+      }
+
+      if (msg.type === "create_session") {
+        const projectId =
+          typeof msg.projectId === "string" ? msg.projectId : "default";
+        if (!SLUG.test(projectId)) {
+          return sendError("create_session requires a valid projectId");
+        }
+        if (typeof msg.name !== "string") {
+          return sendError("create_session requires name");
+        }
+        const slug = slugify(msg.name);
+        if (!slug) return sendError("create_session requires a usable name");
+        const project = getOrCreateProject(projectId);
+        if (project.sessions.has(slug)) {
+          // Matches provision idempotence (spec §3): existing session acks.
+          ws.send(JSON.stringify({ type: "session_created", sessionId: slug }));
+          return;
+        }
+        if (!repo) return sendError("server not launched in a repo");
+        const baseRef =
+          typeof msg.baseRef === "string" && msg.baseRef.length > 0
+            ? msg.baseRef.slice(0, 100)
+            : repo.defaultBranch;
+        const result = repo.workspace.provision(slug, baseRef);
+        if (!result.ok) return sendError(result.error);
+        const entry = getOrCreateSession(project, slug, result.workdir);
+        if ("error" in entry) return sendError(entry.error);
+        ws.send(JSON.stringify({ type: "session_created", sessionId: slug }));
+        // Deliberate user action, not a hot stream — immediate push (same
+        // rationale as add_plugin).
+        pushProject(project);
         return;
       }
 
@@ -478,6 +537,10 @@ export async function startServer(opts: {
     });
 
     ws.on("close", () => {
+      if (watching) {
+        watching.watchers.delete(ws);
+        watching = null;
+      }
       if (ctx) {
         ctx.unsubscribe();
         ctx.project.watchers.delete(ws);
