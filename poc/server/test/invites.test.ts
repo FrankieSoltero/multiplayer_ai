@@ -56,18 +56,29 @@ describe("InviteStore", () => {
   it("counts seats by distinct user and rejects when full", () => {
     const store = new InviteStore({ maxUses: 2 });
     const inv = store.mint(mintArgs);
-    expect(store.redeem(inv.token, "u2", "alpha")).toMatchObject({ ok: true });
-    expect(store.redeem(inv.token, "u2", "alpha")).toMatchObject({ ok: true });
+    expect(store.redeem(inv.token, "u2", "alpha", "default")).toMatchObject({ ok: true });
+    expect(store.redeem(inv.token, "u2", "alpha", "default")).toMatchObject({ ok: true });
     expect(store.listFor("alpha")[0].uses).toBe(1);
-    expect(store.redeem(inv.token, "u3", "alpha")).toMatchObject({ ok: true });
-    expect(store.redeem(inv.token, "u4", "alpha")).toEqual({ ok: false, error: "invite is full" });
-    expect(store.redeem(inv.token, "u2", "alpha")).toMatchObject({ ok: true });
+    expect(store.redeem(inv.token, "u3", "alpha", "default")).toMatchObject({ ok: true });
+    expect(store.redeem(inv.token, "u4", "alpha", "default")).toEqual({ ok: false, error: "invite is full" });
+    expect(store.redeem(inv.token, "u2", "alpha", "default")).toMatchObject({ ok: true });
   });
 
   it("refuses to redeem an invite against a different session", () => {
     const store = new InviteStore();
     const inv = store.mint(mintArgs);
-    expect(store.redeem(inv.token, "u2", "beta")).toEqual({ ok: false, error: "invite not found" });
+    expect(store.redeem(inv.token, "u2", "beta", "default")).toEqual({ ok: false, error: "invite not found" });
+  });
+
+  it("refuses to redeem an invite against a different project, even with the right sessionId", () => {
+    const store = new InviteStore();
+    const inv = store.mint(mintArgs); // projectId: "default", sessionId: "alpha"
+    expect(store.redeem(inv.token, "u2", "alpha", "other-project")).toEqual({
+      ok: false,
+      error: "invite not found",
+    });
+    // Sanity: the correct project+session pair still redeems.
+    expect(store.redeem(inv.token, "u2", "alpha", "default")).toMatchObject({ ok: true });
   });
 
   it("lists only live invites for the session, soonest expiry first", () => {
@@ -120,22 +131,22 @@ describe("InviteStore", () => {
     const inv = store.mint(mintArgs);
     store.revoke(inv.id, "alpha");
     // Trying to redeem with a different session should NOT leak "revoked" state
-    expect(store.redeem(inv.token, "u2", "beta")).toEqual({ ok: false, error: "invite not found" });
+    expect(store.redeem(inv.token, "u2", "beta", "default")).toEqual({ ok: false, error: "invite not found" });
   });
 
   it("full invite with wrong session returns invite not found", () => {
     const store = new InviteStore({ maxUses: 1 });
     const inv = store.mint(mintArgs);
     // Redeem the only seat in session alpha
-    store.redeem(inv.token, "u2", "alpha");
+    store.redeem(inv.token, "u2", "alpha", "default");
     // Now it's full, but try to redeem from a different session
-    expect(store.redeem(inv.token, "u3", "beta")).toEqual({ ok: false, error: "invite not found" });
+    expect(store.redeem(inv.token, "u3", "beta", "default")).toEqual({ ok: false, error: "invite not found" });
   });
 
   it("full invite still appears in listFor with zero seats left", () => {
     const store = new InviteStore({ maxUses: 1 });
     const inv = store.mint(mintArgs);
-    store.redeem(inv.token, "u2", "alpha");
+    store.redeem(inv.token, "u2", "alpha", "default");
     // Should still be listed even though it's full
     const list = store.listFor("alpha");
     expect(list).toHaveLength(1);
@@ -147,7 +158,7 @@ describe("InviteStore", () => {
   it("revoke succeeds on a full invite", () => {
     const store = new InviteStore({ maxUses: 1 });
     const inv = store.mint(mintArgs);
-    store.redeem(inv.token, "u2", "alpha");
+    store.redeem(inv.token, "u2", "alpha", "default");
     // Should be able to revoke a full invite
     expect(store.revoke(inv.id, "alpha")).toBe(true);
     // And it should disappear from the list after revoke

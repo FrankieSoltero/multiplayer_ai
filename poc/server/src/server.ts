@@ -279,14 +279,23 @@ export async function startServer(opts: {
         // rejected join never provisions a git worktree.
         let redeemedId: string | null = null;
         if (typeof msg.invite === "string" && msg.invite) {
-          const result = invites.redeem(msg.invite, msg.userId, msg.sessionId);
+          const token = msg.invite.slice(0, 64);
+          const result = invites.redeem(token, msg.userId, msg.sessionId, projectId);
           if (!result.ok) return sendError(result.error);
           redeemedId = result.invite.id;
         } else if (opts.requireInvite) {
           // The founder slot stays open: an empty room can be opened by
           // whoever arrives first (spec §7 states this bound explicitly).
+          // A previously-admitted participant (including the founder) is
+          // also exempt: presence_leave drops them from participantList on
+          // disconnect, but the admitted set survives so a reconnect isn't
+          // mistaken for a stranger (spec §4).
           const occupied = projects.get(projectId)?.sessions.get(msg.sessionId);
-          if (occupied && occupied.session.participantList.length > 0) {
+          if (
+            occupied &&
+            occupied.session.participantList.length > 0 &&
+            !occupied.session.hasBeenAdmitted(msg.userId)
+          ) {
             return sendError("this session requires an invite");
           }
         }

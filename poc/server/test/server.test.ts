@@ -1407,6 +1407,8 @@ describe("oversight wire", () => {
     const a = await connect(server.port);
     a.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
     await wait(30);
+    // The founder's join provisions exactly one worktree for "alpha".
+    expect(workspace.calls).toHaveLength(1);
 
     const b = await connect(server.port);
     const sinkB: any[] = [];
@@ -1415,6 +1417,8 @@ describe("oversight wire", () => {
     await wait(30);
     expect(sinkB.find((m) => m.type === "error")?.message).toBe("this session requires an invite");
     expect(sinkB.some((m) => m.type === "project")).toBe(false);
+    // The rejected join must not provision a second worktree for "alpha".
+    expect(workspace.calls).toHaveLength(1);
 
     const c = await connect(server.port);
     const sinkC: any[] = [];
@@ -1425,6 +1429,91 @@ describe("oversight wire", () => {
     expect(sinkC.some((m) => m.type === "project")).toBe(true);
     a.close();
     b.close();
+    c.close();
+  });
+
+  it("rejects a join with an unknown invite token before ever provisioning the brand-new session it targets", async () => {
+    // A session that already exists (founded by a prior join) can't
+    // distinguish correct gate ordering from broken ordering, because
+    // getOrCreateSession only calls workspace.provision for a session that
+    // doesn't yet exist. This test targets a sessionId that has never been
+    // created, so any provisioning at all would prove the gate ran too late.
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const ws = await connect(server.port);
+    const sink: any[] = [];
+    collect(ws, sink);
+    ws.send(
+      JSON.stringify({
+        type: "join",
+        sessionId: "never-created",
+        userId: "u1",
+        name: "eve",
+        invite: "x".repeat(32),
+      }),
+    );
+    await wait(30);
+    expect(sink.find((m) => m.type === "error")?.message).toBe("invite not found");
+    expect(workspace.calls).toHaveLength(0);
+    ws.close();
+  });
+
+  it("requireInvite admits a reconnecting founder without a token even while the room stays occupied", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, requireInvite: true });
+    close = server.close;
+
+    const a = await connect(server.port);
+    const sinkA: any[] = [];
+    collect(a, sinkA);
+    a.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
+    await wait(30);
+
+    // Admit a second participant with a minted invite so the room is
+    // occupied by more than just the reconnecting founder.
+    a.send(JSON.stringify({ type: "create_invite" }));
+    await wait(30);
+    const invite = sinkA.find((m) => m.type === "invite_list").invites[0];
+    const b = await connect(server.port);
+    b.send(
+      JSON.stringify({ type: "join", sessionId: "alpha", userId: "u2", name: "bob", invite: invite.token }),
+    );
+    await wait(30);
+
+    // Founder's tab refreshes: socket drops, presence_leave fires.
+    a.close();
+    await wait(30);
+
+    // Reconnect with the same userId and no token. The room is still
+    // occupied (by bob), but u1 was admitted before, so this must succeed.
+    const a2 = await connect(server.port);
+    const sinkA2: any[] = [];
+    collect(a2, sinkA2);
+    a2.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
+    await wait(30);
+    expect(sinkA2.some((m) => m.type === "error")).toBe(false);
+    expect(sinkA2.some((m) => m.type === "project")).toBe(true);
+
+    a2.close();
+    b.close();
+  });
+
+  it("requireInvite still rejects a genuinely new userId with no token in an occupied room", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, requireInvite: true });
+    close = server.close;
+
+    const a = await connect(server.port);
+    a.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
+    await wait(30);
+
+    const c = await connect(server.port);
+    const sinkC: any[] = [];
+    collect(c, sinkC);
+    c.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u3", name: "cal" }));
+    await wait(30);
+    expect(sinkC.find((m) => m.type === "error")?.message).toBe("this session requires an invite");
+
+    a.close();
     c.close();
   });
 });

@@ -95,13 +95,17 @@ export class InviteStore {
   }
 
   /** Consuming check. Takes a seat unless this user already holds one. */
-  redeem(token: unknown, userId: string, sessionId: string): InviteResult {
+  redeem(token: unknown, userId: string, sessionId: string, projectId: string): InviteResult {
     this.prune();
     const invite = this.lookup(token);
     // A token that exists but belongs elsewhere reports "not found" rather
     // than confirming it is real for some other session — checked before
-    // classify() so revoked/expired/full states don't leak either.
-    if (invite && invite.sessionId !== sessionId) return { ok: false, error: "invite not found" };
+    // classify() so revoked/expired/full states don't leak either. Both ids
+    // must match: a token is a capability for one project+session pair, not
+    // for a session-id string that another project might reuse.
+    if (invite && (invite.sessionId !== sessionId || invite.projectId !== projectId)) {
+      return { ok: false, error: "invite not found" };
+    }
     const failure = this.classify(invite, userId);
     if (failure) return { ok: false, error: failure };
     invite!.redeemedBy.add(userId);
