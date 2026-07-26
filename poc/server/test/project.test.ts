@@ -63,3 +63,34 @@ describe("projectSnapshot", () => {
     expect(snap.sessions.find((s) => s.id === "ben")!.skills).toEqual([]);
   });
 });
+
+describe("arcade records", () => {
+  it("keeps the best score per game across sessions and survives the holder leaving", () => {
+    const project = new Project("demo");
+    const ana = addSession(project, "ana");
+    ana.join("u1", "Ana", { glyph: "▲", color: "#ff0000" });
+    ana.append({ type: "game_score", userId: "u1", game: "dino", score: 120 });
+    const ben = addSession(project, "ben");
+    ben.join("u2", "Ben");
+    ben.append({ type: "game_score", userId: "u2", game: "dino", score: 90 });
+    ben.append({ type: "game_score", userId: "u2", game: "snake", score: 40 });
+    ana.leave("u1"); // record must outlive the holder's presence
+
+    const snap = projectSnapshot(project);
+    expect(snap.arcade).toHaveLength(2);
+    const dino = snap.arcade.find((r) => r.game === "dino")!;
+    expect(dino).toMatchObject({ score: 120, userId: "u1", name: "Ana", glyph: "▲", color: "#ff0000" });
+    const snake = snap.arcade.find((r) => r.game === "snake")!;
+    expect(snake).toMatchObject({ score: 40, userId: "u2", name: "Ben" });
+    expect(snake.glyph).toBeUndefined(); // no glyph sent — client falls back
+  });
+
+  it("skips malformed game_score events instead of crashing", () => {
+    const project = new Project("demo");
+    const ana = addSession(project, "ana");
+    ana.join("u1", "Ana");
+    ana.append({ type: "game_score", userId: "u1", game: "dino", score: 2.5 } as never);
+    ana.append({ type: "game_score", userId: "u1", game: "dino", score: -5 } as never);
+    expect(projectSnapshot(project).arcade).toEqual([]);
+  });
+});
