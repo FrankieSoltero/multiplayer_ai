@@ -40,11 +40,14 @@ const OFF_ERROR = "plugin import is off — set AGENT_PLUGINS_ROOT on the server
 export class PluginStore {
   private registry = new Map<string, Map<string, PluginInfo>>();
 
+  private root: string | undefined;
+
   constructor(
-    private root: string | undefined,
+    root: string | undefined,
     private clone: CloneFn = gitClone,
   ) {
-    if (root) this.rescan();
+    this.root = root ? path.resolve(root) : undefined;
+    if (this.root) this.rescan();
   }
 
   get enabled(): boolean {

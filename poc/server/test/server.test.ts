@@ -853,6 +853,27 @@ describe("plugin registry", () => {
     ws.close();
   });
 
+  it("add_plugin trims whitespace and caps url length", async () => {
+    const { store } = storeWithFakeClone();
+    const server = await startServer({ port: 0, runQuery: echoRun, plugins: store });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "pf", projectId: "prj6", userId: "u1", name: "Ana" }));
+    await wait(50);
+    ws.send(JSON.stringify({ type: "add_plugin", url: "   " }));
+    ws.send(JSON.stringify({ type: "add_plugin", url: "https://" + "a".repeat(2049) }));
+    ws.send(JSON.stringify({ type: "add_plugin", url: "  https://github.com/x/tools  " }));
+    await wait(200);
+    const errs = seen.filter((m) => m.type === "error").map((m) => m.message);
+    expect(errs).toContain("add_plugin requires url");
+    expect(errs).toContain("url too long (max 2048)");
+    const change = seen.find((m) => m.event?.type === "plugin_change")?.event;
+    expect(change).toMatchObject({ action: "add", name: "tools" });
+    ws.close();
+  });
+
   it("reports the feature as off without a root", async () => {
     const server = await startServer({
       port: 0,

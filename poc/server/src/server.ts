@@ -16,6 +16,7 @@ import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
 
 const MAX_PROMPT_LENGTH = 4000;
+const MAX_URL_LENGTH = 2048;
 const MAX_GAME_SCORE = 99999;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
 const ALLOWED_GLYPHS = new Set(["■", "▲", "●", "✦", "◆", "♠"]);
@@ -58,6 +59,11 @@ export async function startServer(opts: {
   const pushTimers = new Map<Project, NodeJS.Timeout>();
 
   function pushProject(project: Project): void {
+    const timer = pushTimers.get(project);
+    if (timer) {
+      clearTimeout(timer);
+      pushTimers.delete(project);
+    }
     const payload = JSON.stringify(
       projectSnapshot(project, {
         plugins: pluginStore.list(project.id),
@@ -370,13 +376,20 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "add_plugin") {
-        if (typeof msg.url !== "string" || msg.url.length === 0) {
+        if (typeof msg.url !== "string") {
           return sendError("add_plugin requires url");
+        }
+        const url = msg.url.trim();
+        if (url.length === 0) {
+          return sendError("add_plugin requires url");
+        }
+        if (url.length > MAX_URL_LENGTH) {
+          return sendError(`url too long (max ${MAX_URL_LENGTH})`);
         }
         const { project, entry, userId } = ctx;
         // Anyone in the project may register a plugin (spec §1) — no driver
         // gate. Accountability is the attributed plugin_change on the wire.
-        void pluginStore.add(project.id, msg.url, userId).then((result) => {
+        void pluginStore.add(project.id, url, userId).then((result) => {
           if (!result.ok) return sendError(result.error);
           entry.session.append({
             type: "plugin_change",
