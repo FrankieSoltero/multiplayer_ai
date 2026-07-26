@@ -17,7 +17,9 @@ import { SessionPicker } from "./components/SessionPicker";
 import { Cabinet, Crt } from "./components/Crt";
 import { SkillsPanel } from "./components/SkillsPanel";
 import { WorkflowsPanel } from "./components/WorkflowsPanel";
+import { OversightPanel } from "./components/OversightPanel";
 import { AgentStatus } from "./components/AgentStatus";
+import { oversightFresh } from "./oversightView";
 
 const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
 
@@ -78,7 +80,7 @@ function SessionView(props: {
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
-  const { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, send } = useSessionSocket({
+  const { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, oversight, send } = useSessionSocket({
     sessionId,
     projectId,
     userId,
@@ -127,6 +129,13 @@ function SessionView(props: {
   // captured (game letters overlap a/d permission hotkeys).
   const [arcadeCapturing, setArcadeCapturing] = useState(false);
 
+  const [seenOversightSeq, setSeenOversightSeq] = useState(0);
+  useEffect(() => {
+    if (props.screen === "oversight" && oversight.latest) {
+      setSeenOversightSeq(oversight.latest.seq);
+    }
+  }, [props.screen, oversight.latest]);
+
   // "A" opens the idle arcade; while busy the strip is already mounted and
   // letters belong to the games, so the hotkey only fires when closed + idle.
   // Also require no pending permission gates, so "a" never both opens the
@@ -166,7 +175,7 @@ function SessionView(props: {
     return () => window.removeEventListener("keydown", onKey);
   }, [isDriver, arcadeCapturing, permissionMode, send, props.screen]);
 
-  // "S" toggles the skills screen; "W" toggles the workflows screen; Esc always returns to the session.
+  // "S" toggles the skills screen; "W" toggles the workflows screen; "O" toggles the oversight screen; Esc always returns to the session.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
@@ -180,7 +189,11 @@ function SessionView(props: {
         e.preventDefault();
         props.onScreenChange(props.screen === "workflows" ? null : "workflows");
       }
-      if (e.key === "Escape" && (props.screen === "skills" || props.screen === "workflows")) {
+      if ((e.key === "o" || e.key === "O") && !arcadeCapturing) {
+        e.preventDefault();
+        props.onScreenChange(props.screen === "oversight" ? null : "oversight");
+      }
+      if (e.key === "Escape" && (props.screen === "skills" || props.screen === "workflows" || props.screen === "oversight")) {
         props.onScreenChange(null);
       }
     };
@@ -276,6 +289,17 @@ function SessionView(props: {
       />
     );
   }
+  if (props.screen === "oversight") {
+    return (
+      <OversightPanel
+        oversight={oversight}
+        isDriver={isDriver}
+        onToggle={(enabled) => send({ type: "set_oversight", projectId, enabled })}
+        onPull={() => send({ type: "pull_oversight" })}
+        onBack={() => props.onScreenChange(null)}
+      />
+    );
+  }
   if (props.screen === "status") {
     return <AgentStatus model={derived.model} canSetModel={canSetModel} onSetModel={onSetModel} rosterCount={derived.skills.length} />;
   }
@@ -298,6 +322,8 @@ function SessionView(props: {
         onToggleArcade={() => setArcadeOpen((v) => !v)}
         onOpenSkills={() => props.onScreenChange("skills")}
         onOpenWorkflows={() => props.onScreenChange("workflows")}
+        onOpenOversight={() => props.onScreenChange("oversight")}
+        oversightFresh={oversightFresh(oversight, seenOversightSeq)}
         runningTasks={runningTasks}
         hud={hud}
       />

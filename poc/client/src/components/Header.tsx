@@ -25,6 +25,7 @@ export function Header(props: {
   arcadeOpen: boolean; canToggleArcade: boolean; onToggleArcade: () => void;
   onOpenSkills: () => void;
   onOpenWorkflows: () => void; runningTasks: number;
+  onOpenOversight: () => void; oversightFresh: boolean;
   hud?: HudData;
 }) {
   const hud = props.hud ?? {};
@@ -105,6 +106,13 @@ export function Header(props: {
           title="live subagent workflows (W)"
         >
           {props.runningTasks > 0 ? `▸ WORKFLOWS ▸ ${props.runningTasks}` : "▢ WORKFLOWS"}
+        </button>
+        <button
+          className={props.oversightFresh ? "planmode on" : "planmode"}
+          onClick={props.onOpenOversight}
+          title="team oversight (O)"
+        >
+          {props.oversightFresh ? "▸ OVERSIGHT ●" : "▢ OVERSIGHT"}
         </button>
         <span className={props.connected ? "conn" : "conn off"}>
           {props.connected ? "● ONLINE" : "○ OFFLINE"}

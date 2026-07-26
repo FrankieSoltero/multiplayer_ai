@@ -256,6 +256,12 @@ export function Transcript(props: {
             ✦ {nameOf(ev.userId)} {pluginLine(ev.action, ev.name, ev.skillCount)}
           </div>
         );
+      case "oversight_pull":
+        return (
+          <div key={ev.seq} className="line gold">
+            ✦ {nameOf(ev.userId)} pulled team update #{ev.summarySeq} into the session
+          </div>
+        );
       default:
         return null; // presence_join/leave, turn_end: no transcript line
     }
