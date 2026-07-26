@@ -384,6 +384,7 @@ code, pre { font-family: var(--fm); }
 
 .promptbar { display: flex; flex-direction: column; gap: var(--sp-1); }
 .promptbar .inputbox {
+  position: relative; /* anchor for .slashmenu — absolute popup above the input */
   display: flex; gap: var(--sp-2); align-items: center;
   padding: 10px var(--sp-3);
   border: 2px solid var(--accent); background: var(--input);
