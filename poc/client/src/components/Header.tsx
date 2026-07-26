@@ -24,6 +24,7 @@ export function Header(props: {
   permissionMode: string; canCycleMode: boolean; onCycleMode: () => void;
   arcadeOpen: boolean; canToggleArcade: boolean; onToggleArcade: () => void;
   onOpenSkills: () => void;
+  onOpenWorkflows: () => void; runningTasks: number;
   hud?: HudData;
 }) {
   const hud = props.hud ?? {};
@@ -94,9 +95,16 @@ export function Header(props: {
         <button
           className="planmode"
           onClick={props.onOpenSkills}
-          title="skills & workflows (S)"
+          title="skills (S)"
         >
           ▢ SKILLS
+        </button>
+        <button
+          className={props.runningTasks > 0 ? "planmode on" : "planmode"}
+          onClick={props.onOpenWorkflows}
+          title="live subagent workflows (W)"
+        >
+          {props.runningTasks > 0 ? `▸ WORKFLOWS ▸ ${props.runningTasks}` : "▢ WORKFLOWS"}
         </button>
         <span className={props.connected ? "conn" : "conn off"}>
           {props.connected ? "● ONLINE" : "○ OFFLINE"}

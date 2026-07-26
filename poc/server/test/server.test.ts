@@ -676,6 +676,33 @@ describe("plan mode", () => {
     wsA.close();
     wsB.close();
   });
+
+  it("guards stop_task to the current driver and appends task_stop for the driver", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const wsA = await connect(server.port);
+    const seenA: any[] = [];
+    collect(wsA, seenA);
+    wsA.send(JSON.stringify({ type: "join", sessionId: "wf1", userId: "u1", name: "Ana" }));
+    await wait(50);
+    const wsB = await connect(server.port);
+    const seenB: any[] = [];
+    collect(wsB, seenB);
+    wsB.send(JSON.stringify({ type: "join", sessionId: "wf1", userId: "u2", name: "Ben" }));
+    await wait(50);
+    wsB.send(JSON.stringify({ type: "stop_task", taskId: "T1" })); // watcher: rejected
+    await wait(100);
+    expect(seenB.some((m) => m.type === "error" && /stop tasks/.test(m.message))).toBe(true);
+    expect(seenB.some((m) => m.event?.type === "task_stop")).toBe(false);
+    wsA.send(JSON.stringify({ type: "stop_task", taskId: "T1" })); // driver: accepted
+    await wait(100);
+    expect(seenA.some((m) => m.event?.type === "task_stop" && m.event.taskId === "T1" && m.event.userId === "u1")).toBe(true);
+    wsA.send(JSON.stringify({ type: "stop_task" })); // missing taskId: rejected
+    await wait(100);
+    expect(seenA.some((m) => m.type === "error" && /requires taskId/.test(m.message))).toBe(true);
+    wsA.close();
+    wsB.close();
+  });
 });
 
 describe("auto mode (e2e)", () => {

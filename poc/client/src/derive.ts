@@ -8,6 +8,21 @@ export interface Participant {
   color: string;
 }
 
+export interface TaskInfo {
+  id: string;
+  description: string;
+  subagentType?: string;
+  workflowName?: string;
+  status: string; // "running" until updated/done says otherwise; unknown statuses kept verbatim
+  tokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+  lastTool?: string;
+  summary?: string;
+  error?: string;
+  stoppedBy?: string;
+}
+
 export interface DerivedState {
   driverId: string | null;
   participants: Map<string, Participant>;
@@ -21,6 +36,7 @@ export interface DerivedState {
   suggestDecisions: Map<string, { decision: string; userId: string }>;
   planDecisions: Map<string, { decision: string; userId: string }>;
   permissionMode: string;
+  tasks: Map<string, TaskInfo>;
 }
 
 export function deriveState(events: LoggedEvent[]): DerivedState {
@@ -37,6 +53,7 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
     suggestDecisions: new Map(),
     planDecisions: new Map(),
     permissionMode: "default",
+    tasks: new Map(),
   };
   for (const ev of events) {
     switch (ev.type) {
@@ -88,6 +105,36 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
       case "permission_mode_change":
         s.permissionMode = ev.mode ?? "default";
         break;
+      case "task_event": {
+        if (!ev.taskId) break;
+        let t = s.tasks.get(ev.taskId);
+        if (!t) {
+          t = { id: ev.taskId, description: "", status: "running" };
+          s.tasks.set(ev.taskId, t);
+        }
+        if (ev.description) t.description = ev.description;
+        if (ev.subagentType) t.subagentType = ev.subagentType;
+        if (ev.workflowName) t.workflowName = ev.workflowName;
+        if (ev.status) t.status = ev.status;
+        if (ev.subtype === "done" && !ev.status) t.status = "completed";
+        if (ev.summary) t.summary = ev.summary;
+        if (ev.error) t.error = ev.error;
+        if (ev.tokens !== undefined) t.tokens = ev.tokens;
+        if (ev.toolUses !== undefined) t.toolUses = ev.toolUses;
+        if (ev.durationMs !== undefined) t.durationMs = ev.durationMs;
+        if (ev.lastTool) t.lastTool = ev.lastTool;
+        break;
+      }
+      case "task_stop": {
+        if (!ev.taskId || !ev.userId) break;
+        let t = s.tasks.get(ev.taskId);
+        if (!t) {
+          t = { id: ev.taskId, description: "", status: "running" };
+          s.tasks.set(ev.taskId, t);
+        }
+        t.stoppedBy = ev.userId;
+        break;
+      }
       case "user_message":
       case "tool_call":
       case "agent_text_delta":

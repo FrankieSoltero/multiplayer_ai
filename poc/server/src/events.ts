@@ -33,6 +33,12 @@ export type SessionEvent =
   | { type: "plan_decision"; requestId: string; decision: "approve" | "reject"; userId: string }
   | { type: "permission_mode_change"; mode: "plan" | "default" | "auto"; userId: string }
   | { type: "game_score"; userId: string; game: ArcadeGame; score: number }
-  | { type: "plugin_change"; action: "add" | "remove"; name: string; skillCount: number; userId: string };
+  | { type: "plugin_change"; action: "add" | "remove"; name: string; skillCount: number; userId: string }
+  | { type: "task_event"; taskId: string;
+      subtype: "started" | "progress" | "updated" | "done";
+      description?: string; subagentType?: string; workflowName?: string;
+      status?: string; summary?: string; error?: string;
+      tokens?: number; toolUses?: number; durationMs?: number; lastTool?: string }
+  | { type: "task_stop"; taskId: string; userId: string };
 
 export type LoggedEvent = SessionEvent & { seq: number; ts: string };

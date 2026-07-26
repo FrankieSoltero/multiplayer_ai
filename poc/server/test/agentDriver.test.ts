@@ -1066,3 +1066,175 @@ describe("plugin plumbing and live roster", () => {
     expect(session.eventsFrom(0).some((e) => e.type === "skill_roster")).toBe(false);
   });
 });
+
+describe("task events (workflows)", () => {
+  // SDK-shaped system messages; SdkMessage is widened in this task to carry them.
+  const taskRun: RunQuery = async function* (prompts) {
+    for await (const _prompt of prompts) {
+      yield {
+        type: "system", subtype: "task_started", task_id: "T1",
+        description: "audit the repo", subagent_type: "general-purpose",
+        workflow_name: "audit",
+      } as SdkMessage;
+      yield {
+        type: "system", subtype: "task_progress", task_id: "T1",
+        description: "audit the repo", last_tool_name: "Grep",
+        usage: { total_tokens: 1200, tool_uses: 3, duration_ms: 4000 },
+      } as SdkMessage;
+      yield {
+        type: "system", subtype: "task_updated", task_id: "T1",
+        patch: { status: "running", description: "audit the repo (deep)" },
+      } as SdkMessage;
+      yield {
+        type: "system", subtype: "task_notification", task_id: "T1",
+        status: "completed", summary: "3 findings",
+        usage: { total_tokens: 9000, tool_uses: 12, duration_ms: 60000 },
+      } as SdkMessage;
+      return;
+    }
+  };
+
+  it("forwards started/progress/updated/done with normalized fields", async () => {
+    const s = new Session("t1");
+    const driver = new AgentDriver(s, taskRun);
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => {
+      const tasks = s.eventsFrom(0).filter((e) => e.type === "task_event");
+      expect(tasks.map((e: any) => e.subtype)).toEqual(["started", "progress", "updated", "done"]);
+    });
+    const [started, progress, updated, done] = s
+      .eventsFrom(0)
+      .filter((e) => e.type === "task_event") as any[];
+    expect(started).toMatchObject({
+      taskId: "T1", description: "audit the repo",
+      subagentType: "general-purpose", workflowName: "audit",
+    });
+    expect(progress).toMatchObject({
+      taskId: "T1", tokens: 1200, toolUses: 3, durationMs: 4000, lastTool: "Grep",
+    });
+    expect(updated).toMatchObject({ taskId: "T1", status: "running", description: "audit the repo (deep)" });
+    expect(done).toMatchObject({
+      taskId: "T1", status: "completed", summary: "3 findings",
+      tokens: 9000, toolUses: 12, durationMs: 60000,
+    });
+  });
+
+  it("throttles progress per task: leading append, trailing flush with latest values", async () => {
+    const burstRun: RunQuery = async function* (prompts) {
+      for await (const _prompt of prompts) {
+        for (let i = 1; i <= 4; i++) {
+          yield {
+            type: "system", subtype: "task_progress", task_id: "T2",
+            usage: { total_tokens: i * 100, tool_uses: i, duration_ms: i * 10 },
+          } as SdkMessage;
+        }
+        // Keep the stream alive past the throttle window: normal stream end
+        // flushes pending progress immediately, which would defeat the
+        // inside-the-window assertion below.
+        await wait(200);
+        return;
+      }
+    };
+    const s = new Session("t2");
+    const driver = new AgentDriver(s, burstRun, undefined, [], undefined, 80);
+    driver.sendPrompt("u1", "go");
+    await wait(40); // inside the window: only the leading event so far
+    expect(s.eventsFrom(0).filter((e) => e.type === "task_event").length).toBe(1);
+    await vi.waitFor(() => {
+      const evs = s.eventsFrom(0).filter((e) => e.type === "task_event") as any[];
+      expect(evs.length).toBe(2); // leading + one trailing flush
+      expect(evs[0]).toMatchObject({ tokens: 100 });
+      expect(evs[1]).toMatchObject({ tokens: 400 }); // latest-wins
+    });
+  });
+
+  it("done supersedes pending progress and appends immediately", async () => {
+    const doneRun: RunQuery = async function* (prompts) {
+      for await (const _prompt of prompts) {
+        yield {
+          type: "system", subtype: "task_progress", task_id: "T3",
+          usage: { total_tokens: 100, tool_uses: 1, duration_ms: 10 },
+        } as SdkMessage;
+        yield {
+          type: "system", subtype: "task_progress", task_id: "T3",
+          usage: { total_tokens: 200, tool_uses: 2, duration_ms: 20 },
+        } as SdkMessage;
+        yield {
+          type: "system", subtype: "task_notification", task_id: "T3",
+          status: "failed", summary: "exploded",
+          usage: { total_tokens: 300, tool_uses: 3, duration_ms: 30 },
+        } as SdkMessage;
+        return;
+      }
+    };
+    const s = new Session("t3");
+    const driver = new AgentDriver(s, doneRun, undefined, [], undefined, 5000);
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => {
+      const evs = s.eventsFrom(0).filter((e) => e.type === "task_event") as any[];
+      expect(evs.map((e) => e.subtype)).toEqual(["progress", "done"]);
+      expect(evs[1]).toMatchObject({ status: "failed", summary: "exploded", tokens: 300 });
+    });
+    await wait(60);
+    // the pending progress (tokens: 200) was superseded — never flushed
+    const evs = s.eventsFrom(0).filter((e) => e.type === "task_event") as any[];
+    expect(evs.length).toBe(2);
+  });
+
+  it("ignores non-task system messages", async () => {
+    const sysRun: RunQuery = async function* (prompts) {
+      for await (const _prompt of prompts) {
+        yield { type: "system", subtype: "init" } as SdkMessage;
+        yield { type: "assistant", content: [{ type: "text", text: "hi" }] };
+        return;
+      }
+    };
+    const s = new Session("t4");
+    const driver = new AgentDriver(s, sysRun);
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => {
+      expect(s.eventsFrom(0).some((e) => e.type === "agent_text_delta")).toBe(true);
+    });
+    expect(s.eventsFrom(0).some((e) => e.type === "task_event")).toBe(false);
+  });
+
+  it("stopTask appends an attributed task_stop and calls the stream's stopTask", async () => {
+    const stopped: string[] = [];
+    const run: RunQuery = (prompts) => {
+      const gen = fakeRunStream(prompts as any) as any;
+      gen.stopTask = async (taskId: string) => { stopped.push(taskId); };
+      return gen;
+    };
+    const s = new Session("t5");
+    const driver = new AgentDriver(s, run);
+    const result = driver.stopTask("T9", "u1");
+    expect(result.ok).toBe(true);
+    await wait(20);
+    expect(stopped).toEqual(["T9"]);
+    const ev = s.eventsFrom(0).find((e) => e.type === "task_stop");
+    expect(ev).toMatchObject({ taskId: "T9", userId: "u1" });
+  });
+
+  it("stopTask degrades silently when the stream has no stopTask", async () => {
+    const s = new Session("t6");
+    const driver = new AgentDriver(s, fakeRun); // fakeRun has no stopTask
+    const result = driver.stopTask("T9", "u1");
+    expect(result.ok).toBe(true); // attributed request still lands on the wire
+    expect(s.eventsFrom(0).some((e) => e.type === "task_stop")).toBe(true);
+    expect(s.eventsFrom(0).some((e) => e.type === "agent_error")).toBe(false);
+  });
+
+  it("stopTask surfaces SDK rejection as agent_error, not a throw", async () => {
+    const run: RunQuery = (prompts) => {
+      const gen = fakeRunStream(prompts as any) as any;
+      gen.stopTask = async () => { throw new Error("no such task"); };
+      return gen;
+    };
+    const s = new Session("t7");
+    const driver = new AgentDriver(s, run);
+    expect(driver.stopTask("T9", "u1").ok).toBe(true);
+    await vi.waitFor(() => {
+      expect(s.eventsFrom(0).some((e) => e.type === "agent_error" && /no such task/.test((e as any).message))).toBe(true);
+    });
+  });
+});

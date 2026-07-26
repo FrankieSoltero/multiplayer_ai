@@ -28,6 +28,18 @@ export type LoggedEvent = {
   score?: number;
   action?: string;
   skillCount?: number;
+  taskId?: string;
+  subtype?: string;
+  subagentType?: string;
+  workflowName?: string;
+  description?: string;
+  status?: string;
+  summary?: string;
+  error?: string;
+  tokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+  lastTool?: string;
 };
 
 export type ProjectSessionInfo = {

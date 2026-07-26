@@ -183,14 +183,18 @@ code, pre { font-family: var(--fm); }
 
 /* ------------------------------------------------------------------- shell */
 
+/* The shell fits the viewport: the cabinet is exactly the window, the CRT
+   flexes into whatever height the marquee/legend leave over, and every scroll
+   happens inside a screen region — the page itself never scrolls. */
 .cabinet {
-  min-height: 100%;
+  height: 100%;
   display: flex; flex-direction: column; align-items: center;
   gap: var(--sp-3);
-  padding: 22px 22px 44px;
+  padding: 22px;
 }
 .cabinet-inner {
   width: 1296px; max-width: 100%;
+  flex: 1; min-height: 0;
   display: flex; flex-direction: column; gap: var(--sp-3);
 }
 .marquee { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-6); flex-wrap: wrap; }
@@ -206,6 +210,7 @@ code, pre { font-family: var(--fm); }
    off without unmounting anything. */
 .crt {
   position: relative;
+  flex: 1; min-height: 0;
   background: var(--bg);
   border: 3px solid #23282f;
   border-radius: var(--crt-curve);
@@ -676,3 +681,24 @@ code, pre { font-family: var(--fm); }
 @media (prefers-reduced-motion: reduce) {
   .subagent .lamp { animation: none; }
 }
+
+/* ================================================================ workflows
+   Task rows on the workflows screen. Same idiom as the spellbook: chunky
+   panels, pixel chrome, mono content. */
+.wfrow {
+  display: flex; align-items: flex-start; gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px dashed var(--frame);
+}
+.wfrow:last-child { border-bottom: 0; }
+.wfglyph { font-size: 15px; line-height: 1.2; }
+.wfglyph.run { color: var(--green); }
+.wfglyph.completed { color: var(--green); }
+.wfglyph.failed { color: var(--red); }
+.wfglyph.stopped { color: var(--gold); }
+.wfbody { flex: 1; min-width: 0; }
+.wfdesc { overflow-wrap: anywhere; }
+.wftag { color: var(--accent); margin-top: 2px; }
+.wfsummary { color: var(--fg); margin-top: 2px; overflow-wrap: anywhere; }
+.wfusage { font-size: var(--fs-sm); margin-top: 2px; }
+.wfstop { color: var(--gold); font-size: var(--fs-sm); margin-top: 2px; }

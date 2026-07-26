@@ -172,3 +172,36 @@ describe("deriveTranscriptGroups", () => {
     ]);
   });
 });
+
+describe("workflow tasks", () => {
+  it("folds the task lifecycle into an ordered map", () => {
+    const s = deriveState([
+      ev({ type: "task_event", taskId: "T1", subtype: "started", description: "audit", subagentType: "general-purpose", workflowName: "audit" }, 0),
+      ev({ type: "task_event", taskId: "T2", subtype: "started", description: "fix" }, 1),
+      ev({ type: "task_event", taskId: "T1", subtype: "progress", tokens: 1200, toolUses: 3, durationMs: 4000, lastTool: "Grep" }, 2),
+      ev({ type: "task_event", taskId: "T1", subtype: "done", status: "completed", summary: "3 findings", tokens: 9000, toolUses: 12, durationMs: 60000 }, 3),
+    ]);
+    expect([...s.tasks.keys()]).toEqual(["T1", "T2"]);
+    expect(s.tasks.get("T1")).toMatchObject({
+      description: "audit", subagentType: "general-purpose", workflowName: "audit",
+      status: "completed", summary: "3 findings", tokens: 9000, toolUses: 12, durationMs: 60000, lastTool: "Grep",
+    });
+    expect(s.tasks.get("T2")).toMatchObject({ status: "running" });
+  });
+
+  it("creates a row from any subtype and keeps unknown statuses verbatim", () => {
+    const s = deriveState([
+      ev({ type: "task_event", taskId: "T3", subtype: "updated", status: "paused", error: "hung" }, 0),
+    ]);
+    expect(s.tasks.get("T3")).toMatchObject({ status: "paused", error: "hung", description: "" });
+  });
+
+  it("attributes stops via task_stop", () => {
+    const s = deriveState([
+      ev({ type: "task_event", taskId: "T4", subtype: "started", description: "sweep" }, 0),
+      ev({ type: "task_stop", taskId: "T4", userId: "u2" }, 1),
+      ev({ type: "task_event", taskId: "T4", subtype: "done", status: "stopped" }, 2),
+    ]);
+    expect(s.tasks.get("T4")).toMatchObject({ status: "stopped", stoppedBy: "u2" });
+  });
+});
