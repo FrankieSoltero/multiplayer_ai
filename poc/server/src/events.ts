@@ -22,7 +22,7 @@ export type SessionEvent =
   | { type: "agent_error"; message: string }
   | { type: "intent_update"; text: string }
   | { type: "permission_request"; requestId: string; toolName: string; input: unknown }
-  | { type: "permission_decision"; requestId: string; decision: "allow" | "deny"; userId: string }
+  | { type: "permission_decision"; requestId: string; decision: "allow" | "deny"; userId: string; auto?: true }
   | { type: "model_change"; model: string; userId: string }
   | { type: "turn_end" }
   | { type: "skill_roster"; skills: SkillInfo[] }
@@ -31,7 +31,7 @@ export type SessionEvent =
   | { type: "todo_update"; todos: TodoItem[] }
   | { type: "plan_request"; requestId: string; plan: string }
   | { type: "plan_decision"; requestId: string; decision: "approve" | "reject"; userId: string }
-  | { type: "permission_mode_change"; mode: "plan" | "default"; userId: string }
+  | { type: "permission_mode_change"; mode: "plan" | "default" | "auto"; userId: string }
   | { type: "game_score"; userId: string; game: ArcadeGame; score: number };
 
 export type LoggedEvent = SessionEvent & { seq: number; ts: string };

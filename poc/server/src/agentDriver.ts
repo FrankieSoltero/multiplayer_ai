@@ -175,6 +175,11 @@ export class AgentDriver {
   private pendingPermissions = new Map<string, (d: "allow" | "deny") => void>();
   private pendingPlans = new Map<string, (d: "approve" | "reject") => void>();
   private dead = false;
+  // Relay-level permission mode. "auto" is enforced HERE, not in the SDK:
+  // the SDK keeps streaming permission_requests and this driver answers
+  // them itself, so every gate still lands on the wire (spec §2). The SDK's
+  // own mode is only ever set to "plan" or "default".
+  private permissionMode: "default" | "plan" | "auto" = "default";
   // Count of turns sent but not yet resolved by a matching "result" message.
   // A boolean here would be wrong: drivers can queue prompt B while prompt A
   // is still mid-turn (input isn't disabled), so result(A) must not flip
@@ -206,6 +211,22 @@ export class AgentDriver {
         this.session.append({ type: "intent_update", text: text.slice(0, 200) }),
       onPermissionRequest: (toolName, input, signal) => {
         const requestId = randomUUID();
+        if (this.permissionMode === "auto") {
+          this.session.append({
+            type: "permission_request",
+            requestId,
+            toolName,
+            input,
+          });
+          this.session.append({
+            type: "permission_decision",
+            requestId,
+            decision: "allow",
+            userId: this.session.driverId ?? "system",
+            auto: true,
+          });
+          return Promise.resolve("allow" as const);
+        }
         let resolve!: (d: "allow" | "deny") => void;
         const pending = new Promise<"allow" | "deny">((res) => {
           resolve = res;
@@ -369,6 +390,7 @@ export class AgentDriver {
     this.pendingPlans.delete(requestId);
     this.session.append({ type: "plan_decision", requestId, decision, userId });
     if (decision === "approve") {
+      this.permissionMode = "default";
       void this.stream.setPermissionMode?.("default").catch((err) =>
         this.session.append({
           type: "agent_error",
@@ -382,21 +404,23 @@ export class AgentDriver {
   }
 
   setPermissionMode(
-    mode: "plan" | "default",
+    mode: "plan" | "default" | "auto",
     userId: string,
   ): { ok: true } | { ok: false; error: string } {
-    if (this.dead) return { ok: false, error: "agent session has ended" };
-    if (this.pendingTurns > 0)
-      return { ok: false, error: "agent is mid-turn — wait for it to finish" };
-    if (!this.stream.setPermissionMode)
+    // Check if stream supports SDK modes only for non-auto modes
+    if (mode !== "auto" && !this.stream.setPermissionMode)
       return { ok: false, error: "plan mode not supported by this agent" };
-    void this.stream.setPermissionMode(mode).catch((err) =>
+    // auto maps to SDK "default": gates keep flowing, the relay answers them.
+    const sdkMode = mode === "auto" ? "default" : mode;
+    void this.stream.setPermissionMode?.(sdkMode).catch((err) =>
       this.session.append({
         type: "agent_error",
         message: `permission mode switch failed: ${err instanceof Error ? err.message : String(err)}`,
       }),
     );
+    this.permissionMode = mode;
     this.session.append({ type: "permission_mode_change", mode, userId });
+    if (mode === "auto") this.allowAllPending(userId);
     return { ok: true };
   }
 
@@ -484,6 +508,28 @@ export class AgentDriver {
         userId: "system",
       });
       resolve("reject");
+    }
+  }
+
+  /**
+   * Entering auto mode: allow every still-pending permission request,
+   * attributed to the driver who set the mode (server-validated). Mirrors
+   * denyAllPending's delete-first shape so the abort listeners registered in
+   * onPermissionRequest can never double-log (their delete() returns false).
+   * Plan requests are deliberately NOT touched — plan review is a human
+   * checkpoint, not a tool gate.
+   */
+  private allowAllPending(userId: string): void {
+    for (const [requestId, resolve] of this.pendingPermissions) {
+      this.pendingPermissions.delete(requestId);
+      this.session.append({
+        type: "permission_decision",
+        requestId,
+        decision: "allow",
+        userId,
+        auto: true,
+      });
+      resolve("allow");
     }
   }
 

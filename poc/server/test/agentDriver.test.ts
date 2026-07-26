@@ -113,6 +113,19 @@ const longToolResultRun: RunQuery = async function* (prompts) {
   }
 };
 
+async function waitForEvent(
+  session: Session,
+  type: string,
+  tries = 40,
+): Promise<any> {
+  for (let i = 0; i < tries; i++) {
+    const ev = session.eventsFrom(0).find((e) => e.type === type);
+    if (ev) return ev;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error(`timed out waiting for ${type}`);
+}
+
 describe("AgentDriver", () => {
   it("logs the user message, agent text, and tool calls", async () => {
     const s = new Session("s1");
@@ -290,19 +303,6 @@ describe("driver approval gate", () => {
       };
     }
   };
-
-  async function waitForEvent(
-    session: Session,
-    type: string,
-    tries = 40,
-  ): Promise<any> {
-    for (let i = 0; i < tries; i++) {
-      const ev = session.eventsFrom(0).find((e) => e.type === type);
-      if (ev) return ev;
-      await new Promise((r) => setTimeout(r, 25));
-    }
-    throw new Error(`timed out waiting for ${type}`);
-  }
 
   it("logs permission_request, resolves allow, and logs the decision", async () => {
     const session = new Session("s-perm-1");
@@ -858,11 +858,9 @@ describe("plan gate", () => {
     expect(setPermissionMode).toHaveBeenCalledWith("plan");
     expect(events.find((e) => e.type === "permission_mode_change")).toMatchObject({ mode: "plan", userId: "u1" });
 
-    driver.sendPrompt("u1", "go"); // now mid-turn
-    expect(driver.setPermissionMode("default", "u1")).toEqual({
-      ok: false,
-      error: "agent is mid-turn — wait for it to finish",
-    });
+    driver.sendPrompt("u1", "go"); // mid-turn — v6a: mode changes are allowed anytime
+    expect(driver.setPermissionMode("default", "u1")).toEqual({ ok: true });
+    expect(setPermissionMode).toHaveBeenLastCalledWith("default");
   });
 
   it("reports not-supported on fakes without setPermissionMode", () => {
@@ -872,5 +870,137 @@ describe("plan gate", () => {
       ok: false,
       error: "plan mode not supported by this agent",
     });
+  });
+});
+
+describe("auto permission mode", () => {
+  const gateRun: RunQuery = async function* (prompts, hooks) {
+    for await (const _prompt of prompts) {
+      const decision = await hooks.onPermissionRequest("Bash", {
+        command: "npm run build",
+      });
+      yield {
+        type: "assistant",
+        content: [{ type: "text", text: `decision: ${decision}` }],
+      };
+      return;
+    }
+  };
+
+  it("auto-allows a fresh permission request with driver attribution", async () => {
+    const session = new Session("s-auto-1");
+    session.join("u1", "Ana"); // first join takes the wheel → driverId = u1
+    const driver = new AgentDriver(session, gateRun);
+    expect(driver.setPermissionMode("auto", "u1")).toEqual({ ok: true });
+    driver.sendPrompt("u1", "build it");
+
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({ decision: "allow", userId: "u1", auto: true });
+    // the request itself still landed on the wire (no invisible bypass)
+    const request = await waitForEvent(session, "permission_request");
+    expect(request.requestId).toBe(decision.requestId);
+    const echoed = await waitForEvent(session, "agent_text_delta");
+    expect(echoed.text).toBe("decision: allow");
+  });
+
+  it("entering auto sweeps pending gates exactly once, attributed to the mode-setter", async () => {
+    const session = new Session("s-auto-2");
+    session.join("u1", "Ana");
+    const driver = new AgentDriver(session, gateRun);
+    driver.sendPrompt("u1", "build it");
+    const request = await waitForEvent(session, "permission_request");
+
+    expect(driver.setPermissionMode("auto", "u1")).toEqual({ ok: true });
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({
+      requestId: request.requestId,
+      decision: "allow",
+      userId: "u1",
+      auto: true,
+    });
+    // swept request is closed out — a later manual decision must be rejected
+    expect(driver.resolvePermission(request.requestId, "deny", "u1")).toBe(false);
+  });
+
+  it("leaving auto restores gating", async () => {
+    // A two-gate run WITH a setPermissionMode mock (leaving auto for
+    // "default" forwards to the SDK, so the fake must support it):
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const twoGateRun: RunQuery = (prompts, hooks) => {
+      const gen = (async function* () {
+        for await (const _prompt of prompts) {
+          const d1 = await hooks.onPermissionRequest("Bash", { command: "one" });
+          const d2 = await hooks.onPermissionRequest("Bash", { command: "two" });
+          yield {
+            type: "assistant",
+            content: [{ type: "text", text: `${d1},${d2}` }],
+          };
+          return;
+        }
+      })();
+      return Object.assign(gen, { setPermissionMode });
+    };
+    const session = new Session("s-auto-3");
+    session.join("u1", "Ana");
+    const driver = new AgentDriver(session, twoGateRun);
+    expect(driver.setPermissionMode("auto", "u1")).toEqual({ ok: true });
+    driver.sendPrompt("u1", "run both");
+    await waitForEvent(session, "permission_decision"); // gate one auto-allowed
+
+    expect(driver.setPermissionMode("default", "u1")).toEqual({ ok: true });
+    // wait for gate two to be raised, then confirm it is NOT auto-decided
+    const requests = async () =>
+      session.eventsFrom(0).filter((e) => e.type === "permission_request");
+    let tries = 40;
+    while ((await requests()).length < 2 && tries-- > 0)
+      await new Promise((r) => setTimeout(r, 25));
+    const second = (await requests())[1];
+    await new Promise((r) => setTimeout(r, 150));
+    const decisions = session
+      .eventsFrom(0)
+      .filter((e) => e.type === "permission_decision");
+    expect(decisions).toHaveLength(1); // only gate one decided so far
+    expect(driver.resolvePermission(second.requestId, "allow", "u1")).toBe(true);
+    const echoed = await waitForEvent(session, "agent_text_delta");
+    expect(echoed.text).toBe("allow,allow");
+  });
+
+  it("does not auto-approve plan requests", async () => {
+    const planRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _prompt of prompts) {
+        const d = await hooks.onPlanRequest("my plan");
+        yield {
+          type: "assistant",
+          content: [{ type: "text", text: `plan: ${d}` }],
+        };
+        return;
+      }
+    };
+    const session = new Session("s-auto-4");
+    session.join("u1", "Ana");
+    const driver = new AgentDriver(session, planRun);
+    expect(driver.setPermissionMode("auto", "u1")).toEqual({ ok: true });
+    driver.sendPrompt("u1", "plan something");
+    const request = await waitForEvent(session, "plan_request");
+    await new Promise((r) => setTimeout(r, 150));
+    expect(
+      session.eventsFrom(0).filter((e) => e.type === "plan_decision"),
+    ).toHaveLength(0);
+    expect(driver.resolvePlan(request.requestId, "approve", "u1")).toBe(true);
+  });
+
+  it("auto succeeds on fakes without setPermissionMode support", () => {
+    const session = new Session("s-auto-5");
+    const driver = new AgentDriver(session, fakeRun);
+    expect(driver.setPermissionMode("auto", "u1")).toEqual({ ok: true });
+  });
+
+  it("attributes to system when auto-allowing with no driver present", async () => {
+    const session = new Session("s-auto-6"); // no join → driverId null
+    const driver = new AgentDriver(session, gateRun);
+    expect(driver.setPermissionMode("auto", "u1")).toEqual({ ok: true });
+    driver.sendPrompt("u1", "build it");
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({ decision: "allow", userId: "system", auto: true });
   });
 });
