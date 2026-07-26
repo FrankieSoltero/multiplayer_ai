@@ -15,6 +15,7 @@ import { Session } from "./session.js";
 import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
 import { slugify, type WorkspaceLike } from "./workspace.js";
+import { staticHandler } from "./staticFiles.js";
 
 const MAX_PROMPT_LENGTH = 4000;
 const MAX_URL_LENGTH = 2048;
@@ -53,6 +54,7 @@ export async function startServer(opts: {
   runQuery?: RunQuery;
   plugins?: PluginStore;
   workspace?: WorkspaceLike;
+  staticDir?: string;
 }) {
   const runQuery = opts.runQuery ?? runAgentQuery;
   const pluginStore = opts.plugins ?? new PluginStore(process.env.AGENT_PLUGINS_ROOT);
@@ -169,7 +171,9 @@ export async function startServer(opts: {
     return buildTeammateDigest(others);
   }
 
-  const httpServer = createServer();
+  const httpServer = createServer(
+    opts.staticDir ? staticHandler(opts.staticDir) : undefined,
+  );
   const wss = new WebSocketServer({ server: httpServer });
 
   wss.on("connection", (ws: WebSocket) => {
@@ -551,7 +555,15 @@ export async function startServer(opts: {
     });
   });
 
-  await new Promise<void>((resolve) => httpServer.listen(opts.port, resolve));
+  await new Promise<void>((resolve, reject) => {
+    const onError = (err: any) => reject(err);
+    httpServer.once("error", onError);
+    httpServer.once("listening", () => {
+      httpServer.removeListener("error", onError);
+      resolve();
+    });
+    httpServer.listen(opts.port);
+  });
   const address = httpServer.address();
   const port = typeof address === "object" && address ? address.port : opts.port;
 
