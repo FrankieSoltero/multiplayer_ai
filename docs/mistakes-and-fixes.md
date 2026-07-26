@@ -21,3 +21,11 @@ Running log of non-obvious problems hit in this project and how they were fixed.
 - **Fix:** Track winning ts in the best map; replace on score > cur.score || (score === cur.score && ts < cur.ts); cross-session tie test with vi.setSystemTime (commit 0af2d90)
 - **Lesson:** When aggregating across append-only logs, session/collection iteration order is not chronology — order by the events' own timestamps, and write the test so it fails under iteration-order luck
 - **Regression test:** (none yet)
+
+## 2026-07-26 — Untracked user files (market-research.md, tour-skill-suggest.png, poc/demo-plugins/ incl. a gitlink) silently vanished from git status — a fix-wave subagent had committed them into e73cf66 via a broad git add
+
+- **Symptom:** Untracked user files (market-research.md, tour-skill-suggest.png, poc/demo-plugins/ incl. a gitlink) silently vanished from git status — a fix-wave subagent had committed them into e73cf66 via a broad git add
+- **Root cause:** The fix-wave dispatch prompt named the files to change but not the exact 'git add <paths>' command; the subagent (haiku) staged everything. Task briefs that spelled out explicit add paths never had this problem
+- **Fix:** git reset --soft to the pre-fix commit, git restore --staged the user files, recommitted only intended paths (branch was local-only so rewrite was safe); verified with git diff-tree and covering tests (44 passing)
+- **Lesson:** Every subagent dispatch that ends in a commit must include the literal 'git add <explicit paths>' command — repos with untracked user files at the root make 'git add .' a data-leak into history. Also: after any subagent commit, check 'git status --short' still shows the expected untracked files before moving on
+- **Regression test:** controller check after each subagent commit: git diff-tree --name-status on the new commit, diff against the dispatch's intended file list
