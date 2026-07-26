@@ -30,7 +30,8 @@ One class owns worktree provisioning; nothing else shells out to git for it.
 
 ## §3 Wire: `create_session` + project snapshot
 
-- New project-channel WS command: `{ type: "create_session", name: string, baseRef?: string }`.
+- New WS command `{ type: "watch_project", projectId }` (valid before `join`): adds the socket to the project's push list and sends an immediate snapshot. (Planning finding: the existing `peek` is one-shot and only joined sockets receive pushes — the picker needs a live non-joined watcher.) Removed from the push list on socket close.
+- New project-channel WS command: `{ type: "create_session", name: string, baseRef?: string }` (also valid before `join`; `projectId` optional, defaulting to `default`).
   - `name` is slugified server-side: lowercase, spaces→`-`, strip anything outside `[a-z0-9-]`, collapse dashes, trim to 40. Empty after slugify → error `"create_session requires a usable name"`.
   - `baseRef` defaults to `defaultBranch()`. Length-capped at 100 chars.
   - Flow: slugify → `workspace.provision(slug, baseRef)` → on ok, `getOrCreateSession(project, slug)` with the provisioned workdir → `pushProject`. On error: `{ type: "error", message }` to the **creator only**; no session created.
