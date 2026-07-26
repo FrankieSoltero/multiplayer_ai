@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ArcadeRecord, LoggedEvent, ProjectSessionInfo } from "./types";
+import type { ArcadeRecord, LoggedEvent, PluginInfo, ProjectSessionInfo } from "./types";
 import { SERVER_URL } from "./types";
 import type { Profile } from "./identity";
 
@@ -14,6 +14,8 @@ export function useSessionSocket(opts: {
   connected: boolean;
   projectSessions: ProjectSessionInfo[];
   arcade: ArcadeRecord[];
+  plugins: PluginInfo[];
+  pluginsEnabled: boolean;
   send: (msg: object) => void;
 } {
   const { sessionId, projectId, userId, profile } = opts;
@@ -24,6 +26,8 @@ export function useSessionSocket(opts: {
     [],
   );
   const [arcade, setArcade] = useState<ArcadeRecord[]>([]);
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [pluginsEnabled, setPluginsEnabled] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -52,6 +56,8 @@ export function useSessionSocket(opts: {
         if (msg.type === "project") {
           setProjectSessions(msg.sessions);
           setArcade(msg.arcade ?? []);
+          setPlugins(msg.plugins ?? []);
+          setPluginsEnabled(msg.pluginsEnabled ?? false);
         }
       } catch {
         return;
@@ -65,5 +71,5 @@ export function useSessionSocket(opts: {
     wsRef.current?.send(JSON.stringify(msg));
   };
 
-  return { events, errors, connected, projectSessions, arcade, send };
+  return { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, send };
 }
