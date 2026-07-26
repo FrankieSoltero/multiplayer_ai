@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ArcadeRecord, LoggedEvent, PluginInfo, ProjectSessionInfo } from "./types";
+import type { ArcadeRecord, LoggedEvent, OversightState, PluginInfo, ProjectSessionInfo } from "./types";
 import { SERVER_URL } from "./types";
 import type { Profile } from "./identity";
 
@@ -16,6 +16,7 @@ export function useSessionSocket(opts: {
   arcade: ArcadeRecord[];
   plugins: PluginInfo[];
   pluginsEnabled: boolean;
+  oversight: OversightState;
   send: (msg: object) => void;
 } {
   const { sessionId, projectId, userId, profile } = opts;
@@ -28,6 +29,7 @@ export function useSessionSocket(opts: {
   const [arcade, setArcade] = useState<ArcadeRecord[]>([]);
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [pluginsEnabled, setPluginsEnabled] = useState(false);
+  const [oversight, setOversight] = useState<OversightState>({ enabled: false, latest: null });
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -58,6 +60,7 @@ export function useSessionSocket(opts: {
           setArcade(msg.arcade ?? []);
           setPlugins(msg.plugins ?? []);
           setPluginsEnabled(msg.pluginsEnabled ?? false);
+          setOversight(msg.oversight ?? { enabled: false, latest: null });
         }
       } catch {
         return;
@@ -71,5 +74,5 @@ export function useSessionSocket(opts: {
     wsRef.current?.send(JSON.stringify(msg));
   };
 
-  return { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, send };
+  return { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, oversight, send };
 }
