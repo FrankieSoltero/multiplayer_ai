@@ -99,6 +99,16 @@ describe("harness state", () => {
     expect(s.todos).toEqual([]);
     expect(s.permissionMode).toBe("default");
   });
+
+  it("filters (removed) junk entries out of the skill roster", () => {
+    const s = deriveState([
+      ev({ type: "skill_roster", skills: [
+        { name: "review", description: "review a PR" },
+        { name: "agents", description: "(removed)…" },
+      ] }, 0),
+    ]);
+    expect(s.skills).toEqual([{ name: "review", description: "review a PR" }]);
+  });
 });
 
 describe("deriveTranscriptGroups", () => {

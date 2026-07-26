@@ -1,4 +1,5 @@
 import { hashIdentity } from "./identity";
+import { notRemoved } from "./slashMatch";
 import type { LoggedEvent } from "./types";
 
 export interface Participant {
@@ -71,7 +72,7 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
         if (ev.model) s.model = ev.model;
         break;
       case "skill_roster":
-        s.skills = ev.skills ?? [];
+        s.skills = (ev.skills ?? []).filter(notRemoved);
         break;
       case "todo_update":
         s.todos = ev.todos ?? [];
