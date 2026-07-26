@@ -407,7 +407,10 @@ export class AgentDriver {
     mode: "plan" | "default" | "auto",
     userId: string,
   ): { ok: true } | { ok: false; error: string } {
-    // Check if stream supports SDK modes only for non-auto modes
+    if (this.dead) return { ok: false, error: "agent session has ended" };
+    // v6a: no mid-turn guard — flipping to auto mid-turn is how a driver
+    // rescues a turn stuck on gates, and the SDK accepts setPermissionMode
+    // control requests mid-turn.
     if (mode !== "auto" && !this.stream.setPermissionMode)
       return { ok: false, error: "plan mode not supported by this agent" };
     // auto maps to SDK "default": gates keep flowing, the relay answers them.

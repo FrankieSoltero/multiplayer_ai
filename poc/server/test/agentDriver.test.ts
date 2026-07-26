@@ -999,4 +999,18 @@ describe("auto permission mode", () => {
     const decision = await waitForEvent(session, "permission_decision");
     expect(decision).toMatchObject({ decision: "allow", userId: "system", auto: true });
   });
+
+  it("rejects mode changes after the stream has ended", async () => {
+    const session = new Session("s-auto-dead");
+    const driver = new AgentDriver(session, fakeRun);
+    driver.sendPrompt("u1", "go");
+    // fakeRun returns after one prompt — wait for the driver to die
+    let tries = 40;
+    while (!driver.isDead && tries-- > 0) await new Promise((r) => setTimeout(r, 25));
+    expect(driver.isDead).toBe(true);
+    expect(driver.setPermissionMode("auto", "u1")).toEqual({
+      ok: false,
+      error: "agent session has ended",
+    });
+  });
 });
