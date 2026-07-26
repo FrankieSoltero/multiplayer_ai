@@ -5,7 +5,7 @@ import { AsyncQueue } from "./asyncQueue.js";
 import { MODELS, DEFAULT_MODEL, type ModelKey } from "./models.js";
 import { buildCanUseTool } from "./permissions.js";
 import type { Session } from "./session.js";
-import type { TodoItem } from "./events.js";
+import type { SkillInfo, TodoItem } from "./events.js";
 
 /**
  * Message pushed into the SDK's streaming-input queue.
@@ -61,6 +61,8 @@ export interface DriverHooks {
     signal?: AbortSignal,
   ) => Promise<"approve" | "reject">;
   workdir?: string;
+  /** Absolute paths of the project's registered plugin clones (v6c). */
+  pluginPaths?: string[];
 }
 
 export type RunQueryResult = AsyncIterable<SdkMessage> & {
@@ -68,6 +70,8 @@ export type RunQueryResult = AsyncIterable<SdkMessage> & {
   setModel?(model: string): Promise<void>;
   /** Present on the real SDK Query (sdk.d.ts Query.setPermissionMode); absent on plain test fakes. */
   setPermissionMode?(mode: string): Promise<void>;
+  /** Present on the real SDK Query; returns the live skill list (name + description). */
+  supportedCommands?(): Promise<{ name: string; description: string }[]>;
 };
 
 export type RunQuery = (
@@ -102,17 +106,6 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
     ],
   });
   const workdir = hooks.workdir ?? process.env.AGENT_WORKDIR ?? process.cwd();
-  // Env-driven skill allowlist: `skills: "all"` previously exposed the host
-  // CLI's own BUILT-IN skills (dataviz, update-config, loop, schedule, ...)
-  // to the agent — an isolation leak reproduced live. An empty array hides
-  // every skill by default (matching the settingSources: [] isolation
-  // below); ops opt specific project skills in per-demo via
-  // AGENT_SKILLS=comma,separated,names (matching SKILL.md name/dir, or
-  // plugin:skill).
-  const skillNames = (process.env.AGENT_SKILLS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
   return query({
     prompt: prompts,
     options: {
@@ -137,13 +130,16 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
       // allowlisted Bash prefixes (see permissions.ts).
       tools: { type: "preset", preset: "claude_code" },
       canUseTool: buildCanUseTool(hooks),
-      // Skills come from the project the agent works in (its worktree cwd
-      // has .claude/skills/ checked in) — the single, explicit re-opening of
-      // the settingSources isolation below. This option also enables the
-      // Skill tool; do not add 'Skill' to allowedTools. Default is an empty
-      // allowlist (no skills visible) — see the isolation-leak note above
-      // skillNames; set AGENT_SKILLS to opt specific project skills in.
-      skills: skillNames,
+      // v6c: full Claude Code skill surface, deliberately. The
+      // harness-capabilities-era decision hid built-ins ("skills: 'all'
+      // leaked host skills"); built-ins are now a chosen feature (spec §1),
+      // and plugin skills arrive via the plugins option below. AGENT_SKILLS
+      // is retired.
+      skills: "all",
+      plugins: (hooks.pluginPaths ?? []).map((p) => ({
+        type: "local" as const,
+        path: p,
+      })),
       permissionMode: "default",
       mcpServers: { awareness },
       // Isolate this demo agent from the operator's local Claude Code config:
@@ -205,6 +201,8 @@ export class AgentDriver {
     private session: Session,
     run: RunQuery = runAgentQuery,
     workdir?: string,
+    pluginPaths: string[] = [],
+    private onRoster?: (skills: SkillInfo[]) => void,
   ) {
     this.stream = run(this.prompts, {
       onIntent: (text) =>
@@ -296,12 +294,36 @@ export class AgentDriver {
         return pending;
       },
       workdir,
+      pluginPaths,
     });
     void this.consume(this.stream);
+    void this.refreshRoster();
   }
 
   get isDead(): boolean {
     return this.dead;
+  }
+
+  /**
+   * v6c: replace the static plugin-scan roster with the SDK's own skill list
+   * once the stream is up. Optional-chained: test fakes without
+   * supportedCommands keep the static roster; failures degrade silently for
+   * the same reason (roster is a UI nicety, not a correctness surface).
+   */
+  private async refreshRoster(): Promise<void> {
+    const fetchSkills = this.stream.supportedCommands?.bind(this.stream);
+    if (!fetchSkills) return;
+    try {
+      const commands = await fetchSkills();
+      const skills = commands.map((c) => ({
+        name: c.name,
+        description: (c.description ?? "").slice(0, 200),
+      }));
+      this.session.append({ type: "skill_roster", skills });
+      this.onRoster?.(skills);
+    } catch {
+      // stream died or predates the control request — static roster stands
+    }
   }
 
   sendPrompt(userId: string, text: string, contextBlock?: string): void {
