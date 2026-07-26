@@ -80,6 +80,10 @@ or rejoins does not burn additional slots for the same person.
 server resolves project and session from the token, so the URL leaks no ids and
 cannot be hand-edited to point at a different room.
 
+Redemption checks **both** `projectId` and `sessionId` against the invite. A
+token is a capability for one room, not for a session-id string that another
+project might reuse.
+
 ## 4. Architecture
 
 A new server module `poc/server/src/invites.ts` owns the whole lifecycle —
@@ -127,9 +131,21 @@ revoke. A secret in an append-only replay log is a secret you can never withdraw
 
 A new `startServer` option, **default `false`**. When false the entire feature is
 additive — every existing URL, test, and demo keeps working, and invites are a
-convenience. When true, `join` requires a valid invite token **unless the target
-session currently has zero participants**, in which case the first arrival founds
-the room and takes the wheel (existing `session.ts:58` behavior).
+convenience. When true, `join` requires a valid invite token unless **either**:
+
+- the target session currently has **zero participants** — the first arrival
+  founds the room and takes the wheel (existing `session.ts:58` behavior); or
+- the joining `userId` has been **admitted to this session before**.
+
+The second exemption is not optional politeness — without it the feature is
+broken. `Session.leave` removes a participant when their socket closes, so a
+founder who refreshes their tab is, at reconnect, indistinguishable from a
+stranger: the room is now occupied by the *other* people, and the founder never
+held a token. They would be locked out of the room they opened. Sessions
+therefore track an **admitted set** of userIds that `join` adds to and `leave`
+never removes; membership in it survives disconnects for the life of the
+process. The security property is unchanged — the set only ever grows through a
+join that was already authorized.
 
 The gate sits **before** `getOrCreateProject` / `getOrCreateSession`
 (`server.ts:260-262`) so a rejected join never provisions a worktree.
