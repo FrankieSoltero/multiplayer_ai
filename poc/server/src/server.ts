@@ -16,7 +16,7 @@ import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
 import { slugify, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
-import { Overseer, runOversightSummarize, type Summarize } from "./overseer.js";
+import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
 
 const MAX_PROMPT_LENGTH = 4000;
 const MAX_URL_LENGTH = 2048;
@@ -184,6 +184,8 @@ export async function startServer(opts: {
             newEntry.skills = liveSkills;
             schedulePush(project);
           },
+          undefined,
+          () => oversightToolText(overseer.isEnabled(project.id), overseer.latest(project.id)),
         ),
         skills,
         pendingSuggests: new Map(),
