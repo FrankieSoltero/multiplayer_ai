@@ -43,6 +43,7 @@ const INTERESTING = new Set([
   "plan_decision",
   "permission_mode_change",
   "game_score",
+  "plugin_change",
 ]);
 
 export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
