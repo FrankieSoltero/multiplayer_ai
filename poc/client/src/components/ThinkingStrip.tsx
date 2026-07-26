@@ -79,12 +79,12 @@ export function ThinkingStrip(props: {
   // fresh run + ledger on mount and on cartridge swap — NOT on busy flips,
   // so a run keeps going when the agent starts thinking mid-play
   useEffect(() => {
-    if (!mounted || !engine) return;
-    setState(engine.init(seed()));
+    if (!mounted) return;
     setPlaying(false);
     const b = readBest(game);
     setHigh(b);
     ledgerRef.current = { submitted: false, localBest: b };
+    if (engine) setState(engine.init(seed()));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, game]);
 
@@ -154,7 +154,7 @@ export function ThinkingStrip(props: {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, playing, game, engine, props.busy, props.open]);
+  }, [active, playing, game, engine, props.busy, props.open, props.onClose]);
 
   if (!mounted) return null;
   const pad = (n: number) => String(n).padStart(4, "0");
