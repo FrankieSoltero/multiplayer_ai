@@ -1503,3 +1503,5 @@ Stop for the user's demo checkpoint: `mpai` (or the dev stack) with two sessions
 ## Deviations (recorded during execution)
 
 **Task 2:** plan's dispose() listing had a re-arm race (in-flight refresh with pending follow-up could schedule a timer and call onUpdate after dispose) — fixed with a disposed flag guarding notify/refresh and the post-await write-back; +1 test = 178 server baseline entering Task 3.
+
+**Task 7:** final server count is **187**, not the plan's expected 186 — the Task 2 fix round added one test (dispose re-arm race regression test) after the 186 arithmetic was written. Full arithmetic: 161 baseline + 5 digest (T1) + 11 overseer + 1 fix-round (T2) + 8 wire (T3) + 1 driver (T4) = 187. Client 76 as planned (72 + 4). Both builds and tsc clean.
