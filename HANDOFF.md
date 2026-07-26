@@ -1,6 +1,6 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (night): **v6a BUILT — PR #5 OPEN; demo stack RUNNING on the v6a branch; user checked out v6a live and liked it.** Full brainstorm→spec→plan→SDD cycle ran this session; v6b decisions banked (§3b); `market-research.md` absorbed. NEW: user asked how to implement ACTUAL plugins & skills — candidate next cycle, see §3c. Demo state: server :3001 + vite :5173 running FROM THE FEATURE-BRANCH working tree (do NOT git checkout or edit poc/ in the main checkout while it's up — hot-reload kills live turns); worktree `v6a-accept-1` created; user demoed live in session `v5b-accept-1` as "the-goat" (wheel handoffs, skill suggest, teammates digest all verified live).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (night): **v6a BUILT — PR #5 OPEN; demo stack RUNNING on the v6a branch; user checked out v6a live and liked it.** Full brainstorm→spec→plan→SDD cycle ran this session; v6b decisions banked (§3b); `market-research.md` absorbed. NEW: user asked how to implement ACTUAL plugins & skills — candidate next cycle, see §3c. Demo state: server :3001 + vite :5173 running FROM THE FEATURE-BRANCH working tree (do NOT git checkout or edit poc/ in the main checkout while it's up — hot-reload kills live turns); worktree `v6a-accept-1` created; user demoed live in session `v5b-accept-1` as "the-goat" (wheel handoffs, skill suggest, teammates digest all verified live). PARALLEL SESSION 2026-07-25/26: **deployment strategy spec written + MERGED (PR #6)** after fresh 4-agent competitive research — see §3d; next step for that stream is writing-plans for the week-1 launch build items.*
 
 ## 0. WHERE WE ARE — v6a on a branch, PR #5 open
 
@@ -48,11 +48,42 @@ User: "how can we go about implementing actual plugins and skills?" Sketch given
 - **Layer 3:** distribution/marketplace + trust — skills are a prompt-injection surface; interacts with the Bash-allowlist containment residual (market-research known risk). Needs a real trust story.
 - Open sequencing question: does this jump ahead of the v6b fleet/interrupt cycle (§3b)? It's smaller and unblocks richer demos — user to decide.
 
+## 3d. DEPLOYMENT STRATEGY — spec MERGED (PR #6, 2026-07-25/26 background session)
+
+**Spec:** `docs/superpowers/specs/2026-07-25-deployment-strategy-design.md` (on main via merge
+commit 57aad59). Brainstormed section-by-section with the user; ALL SIX SECTIONS user-approved;
+user asked for the merge explicitly. Read the spec before doing anything launch-related — it is
+the authority; this section is only the pointer + the decisions' whys.
+
+- **What it is:** two-week blitz. Week 1 = friends beta (3–8 friends, host-driven sessions on a
+  VPS). Week 2 = public launch (~Aug 6: 60–90s approval-handoff video, Show HN, X thread, repo
+  public, gated demo signup) + YC application from launch materials.
+- **Why now (fresh 2026-07-25 research, 4 parallel web agents; all sources in spec Appendix A):**
+  live agent spectating is now table stakes (Copilot cloud sessions shared-by-default; Warp;
+  Omnigent); coarse takeover SHIPS at Factory ("take over" verbatim on their site), Warp
+  (grantable edit), Cursor (steering under the CREATOR's credentials — publicly complained
+  about); but **identity-clean per-action approval handoff is shipped by NOBODY** — that's the
+  wedge. DeltaDB (Zed) beta overdue any day; YC RFS describes this product almost verbatim →
+  race is real. `market-research.md`'s "nobody combines live stream with control transfer" claim
+  is now OUTDATED — do not repeat it; the corrected claim is the identity-clean approval gap.
+- **Key user decisions (do not re-litigate):** Approach B friends-first (not claim-stake-first);
+  gated hosted demo + video (not open playground); GitHub OAuth + username allowlist (user asked
+  for "simple OAuth" — chosen over secret URLs BECAUSE it makes wire identity verified, backing
+  the headline claim); lead public copy with "approval handoff" ("take the wheel" is contested —
+  Superconductor uses it verbatim); NO claude.ai login (Agent SDK docs explicitly disallow
+  third-party claude.ai login/rate-limits — spec §2 + Appendix A.14); BYO API key optional; no
+  persistence for launch (host-attended sessions, restart OK) but production roadmap is spec §6
+  and nothing built may foreclose it.
+- **Week-1 build items (need a writing-plans cycle):** VPS+Caddy+systemd deploy; GitHub OAuth +
+  allowlist wired into WS join + lobby identity; pull notification (lite v6b interrupt rail —
+  OVERLAPS §3b scope, coordinate the cycles!); canned demo scenario extending
+  `poc/scripts/demo-setup.sh`; per-session BYO-key plumbing (verify against installed SDK).
+
 ## 4. Ordered next steps (fresh session)
 
 1. Verify state per §8. NOTE: the main checkout may still be on `feature/v6a-modes-skills` serving the live demo — check `lsof -ti :3001` BEFORE any checkout/edit under the repo; kill the stack first if the user is done with it (the tsx supervisor respawns children — kill the `npm run dev`/`tsx watch` parents, not just the node child).
 2. If PR #5 unmerged: ask the user to review/merge (or merge locally on request — gh pr merge may be permission-blocked; local `git merge --no-ff` + push worked before).
-2b. Ask which cycle is next: plugins/skills (§3c, user's latest interest) or v6b interrupt rail (§3b). Brainstorm BEFORE building either.
+2b. Ask which cycle is next: **launch build (§3d — has a calendar deadline, ~Aug 6 launch; week-1 items need writing-plans NOW if the blitz timeline holds)**, plugins/skills (§3c), or v6b interrupt rail (§3b). NOTE the §3d pull-notification IS a slice of the §3b interrupt rail — if launch cycle is chosen, build it once, spec'd to serve both. Brainstorm/plan BEFORE building.
 3. Post-merge tidy (optional): delete remote branch; post-merge chores ledgered by final review (poll-based waits in server.test.ts; thread `PermissionMode` type through derive/Header; hotkey-guard helper to DRY App.tsx ×3) — none blocking.
 4. v6b cycle: write spec from §3b (brainstorm-level decisions are done; spec §8 of v6a design doc has the same list) → plan → SDD.
 
@@ -81,6 +112,8 @@ User: "how can we go about implementing actual plugins and skills?" Sketch given
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb
 gh pr view 5 --json state -q .state          # OPEN until user merges
+gh pr view 6 --json state -q .state          # MERGED (deployment strategy spec, §3d)
+ls docs/superpowers/specs/2026-07-25-deployment-strategy-design.md   # exists on main
 git checkout feature/v6a-modes-skills
 cd poc/server && npx tsc --noEmit && npx vitest run   # 103 passed
 cd ../client && npm test && npm run build             # 43 passed, clean build
