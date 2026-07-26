@@ -1,6 +1,6 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (late evening): **v6a BUILT — PR #5 OPEN, awaiting user review/merge.** Full brainstorm→spec→plan→SDD cycle ran this session; also banked all v6b decisions (user-answered) and absorbed `market-research.md` into the design record. Demo stack was killed (user-approved) so server edits couldn't hot-reload a live demo — relaunch commands in §6.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (night): **v6a BUILT — PR #5 OPEN; demo stack RUNNING on the v6a branch; user checked out v6a live and liked it.** Full brainstorm→spec→plan→SDD cycle ran this session; v6b decisions banked (§3b); `market-research.md` absorbed. NEW: user asked how to implement ACTUAL plugins & skills — candidate next cycle, see §3c. Demo state: server :3001 + vite :5173 running FROM THE FEATURE-BRANCH working tree (do NOT git checkout or edit poc/ in the main checkout while it's up — hot-reload kills live turns); worktree `v6a-accept-1` created; user demoed live in session `v5b-accept-1` as "the-goat" (wheel handoffs, skill suggest, teammates digest all verified live).*
 
 ## 0. WHERE WE ARE — v6a on a branch, PR #5 open
 
@@ -38,10 +38,21 @@ Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 - **TUI client** = carried future direction ("shell program like Claude Code") — keep the wire protocol client-agnostic from now on.
 - **Language:** "awareness" not "shared context"; "take the wheel"/"driver" everywhere.
 
+## 3c. PLUGINS & SKILLS — new candidate cycle (user asked 2026-07-25, not yet brainstormed)
+
+User: "how can we go about implementing actual plugins and skills?" Sketch given (user hasn't picked a layer yet — brainstorm properly next session):
+
+- **Today's reality:** skills are real (SDK `skills:` option loads from worktree `.claude/skills/`, roster on wire, suggest/gate flow, SkillsPanel union) but allowlisted by the ops-level `AGENT_SKILLS` env var — a listing filter, not a sandbox; auto-discovery under `settingSources: []` never verified (carried §7 item).
+- **Layer 1 (smallest, recommended start):** real per-project skill discovery — server scans the project repo's `.claude/skills/*/SKILL.md`, builds roster dynamically per session, drop the env var. Retires the §7 verification gap.
+- **Layer 2:** plugins = MCP servers + skills + UI affordances via a per-project manifest (e.g. `.claude/plugins.json`); precedent in code: the `awareness` in-process MCP server in `agentDriver.ts` (`createSdkMcpServer`). Install/enable driver-gated.
+- **Layer 3:** distribution/marketplace + trust — skills are a prompt-injection surface; interacts with the Bash-allowlist containment residual (market-research known risk). Needs a real trust story.
+- Open sequencing question: does this jump ahead of the v6b fleet/interrupt cycle (§3b)? It's smaller and unblocks richer demos — user to decide.
+
 ## 4. Ordered next steps (fresh session)
 
-1. Verify state per §8.
+1. Verify state per §8. NOTE: the main checkout may still be on `feature/v6a-modes-skills` serving the live demo — check `lsof -ti :3001` BEFORE any checkout/edit under the repo; kill the stack first if the user is done with it (the tsx supervisor respawns children — kill the `npm run dev`/`tsx watch` parents, not just the node child).
 2. If PR #5 unmerged: ask the user to review/merge (or merge locally on request — gh pr merge may be permission-blocked; local `git merge --no-ff` + push worked before).
+2b. Ask which cycle is next: plugins/skills (§3c, user's latest interest) or v6b interrupt rail (§3b). Brainstorm BEFORE building either.
 3. Post-merge tidy (optional): delete remote branch; post-merge chores ledgered by final review (poll-based waits in server.test.ts; thread `PermissionMode` type through derive/Header; hotkey-guard helper to DRY App.tsx ×3) — none blocking.
 4. v6b cycle: write spec from §3b (brainstorm-level decisions are done; spec §8 of v6a design doc has the same list) → plan → SDD.
 
