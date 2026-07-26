@@ -20,6 +20,8 @@ import { WorkflowsPanel } from "./components/WorkflowsPanel";
 import { OversightPanel } from "./components/OversightPanel";
 import { AgentStatus } from "./components/AgentStatus";
 import { oversightFresh } from "./oversightView";
+import { InviteLanding } from "./components/InviteLanding";
+import { inviteTokenFrom } from "./inviteLink";
 
 const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
 
@@ -34,6 +36,11 @@ export default function App() {
   // URL-only design surface (no nav points at it).
   const [screen, setScreen] = useState<string | null>(() => params.get("screen"));
 
+  // An invite link carries only the token; the landing screen resolves it to a
+  // project/session and hands them back here (spec §5).
+  const inviteToken = useMemo(() => inviteTokenFrom(window.location.search), []);
+  const [inviteTarget, setInviteTarget] = useState<{ projectId: string; sessionId: string } | null>(null);
+
   // Profile precedence: `?name=` URL param auto-derives a profile (glyph/color
   // hashed from userId) and skips the lobby entirely — demo scripts depend on
   // this. Otherwise fall back to a previously saved profile. If neither is
@@ -47,15 +54,20 @@ export default function App() {
     return loadProfile();
   });
 
+  const activeSessionId = inviteTarget?.sessionId ?? sessionId;
+  const activeProjectId = inviteTarget?.projectId ?? projectId;
+
   return (
     <Cabinet legend={LEGEND}>
       <Crt>
-        {sessionId === null ? (
-          <SessionPicker projectId={projectId} />
+        {inviteToken && !inviteTarget ? (
+          <InviteLanding token={inviteToken} onAccept={setInviteTarget} />
+        ) : activeSessionId === null ? (
+          <SessionPicker projectId={activeProjectId} />
         ) : profile === null ? (
           <Lobby
-            projectId={projectId}
-            sessionId={sessionId}
+            projectId={activeProjectId}
+            sessionId={activeSessionId}
             defaultName={`user-${userId.slice(0, 4)}`}
             onEnter={(p) => {
               saveProfile(p);
@@ -63,7 +75,15 @@ export default function App() {
             }}
           />
         ) : (
-          <SessionView userId={userId} sessionId={sessionId} projectId={projectId} profile={profile} screen={screen} onScreenChange={setScreen} />
+          <SessionView
+            userId={userId}
+            sessionId={activeSessionId}
+            projectId={activeProjectId}
+            profile={profile}
+            screen={screen}
+            onScreenChange={setScreen}
+            invite={inviteToken ?? undefined}
+          />
         )}
       </Crt>
     </Cabinet>
@@ -77,6 +97,7 @@ function SessionView(props: {
   profile: Profile;
   screen: string | null;
   onScreenChange: (screen: string | null) => void;
+  invite?: string;
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
@@ -85,6 +106,7 @@ function SessionView(props: {
     projectId,
     userId,
     profile,
+    invite: props.invite,
   });
 
   const derived = useMemo(() => deriveState(events), [events]);

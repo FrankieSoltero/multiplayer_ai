@@ -731,3 +731,9 @@ code, pre { font-family: var(--fm); }
 .ovhead { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 .ovhead .spacer { flex: 1; }
 .ovtext { margin-top: var(--sp-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ================================================================ invite landing
+   Landing screen shown when opening a ?invite= link (spec §5). */
+.invland { align-items: center; justify-content: center; display: flex; }
+.invland .panel { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; max-width: 520px; }
+.invhero { color: var(--gold); }
