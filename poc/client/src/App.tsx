@@ -13,6 +13,7 @@ import { TodoPanel } from "./components/TodoPanel";
 import { ThinkingStrip } from "./components/ThinkingStrip";
 import type { PartyBest } from "./components/ThinkingStrip";
 import { Lobby } from "./components/Lobby";
+import { SessionPicker } from "./components/SessionPicker";
 import { Cabinet, Crt } from "./components/Crt";
 import { SkillsPanel } from "./components/SkillsPanel";
 import { WorkflowsPanel } from "./components/WorkflowsPanel";
@@ -23,7 +24,8 @@ const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-
 export default function App() {
   const [userId] = useState(loadOrCreateUserId);
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
-  const sessionId = params.get("session") ?? "demo";
+  // No param → session picker (spec §4). Deep links keep exact old behavior.
+  const sessionId = params.get("session");
   const projectId = params.get("project") ?? "default";
   // v6a: screen is state seeded by ?screen= — deep links keep working, but
   // SKILLS is reachable in-app without a reload. ?screen=status stays a
@@ -46,7 +48,9 @@ export default function App() {
   return (
     <Cabinet legend={LEGEND}>
       <Crt>
-        {profile === null ? (
+        {sessionId === null ? (
+          <SessionPicker projectId={projectId} />
+        ) : profile === null ? (
           <Lobby
             projectId={projectId}
             sessionId={sessionId}

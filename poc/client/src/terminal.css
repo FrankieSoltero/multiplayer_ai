@@ -702,3 +702,25 @@ code, pre { font-family: var(--fm); }
 .wfsummary { color: var(--fg); margin-top: 2px; overflow-wrap: anywhere; }
 .wfusage { font-size: var(--fs-sm); margin-top: 2px; }
 .wfstop { color: var(--gold); font-size: var(--fs-sm); margin-top: 2px; }
+
+/* ================================================================ sessions
+   Session picker rows + create form. Same idiom as the workflows screen. */
+.sprow {
+  display: flex; align-items: flex-start; gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px dashed var(--frame);
+}
+.sprow:last-child { border-bottom: 0; }
+.spbody { flex: 1; min-width: 0; }
+.spname { overflow-wrap: anywhere; }
+.spstate { margin-left: var(--sp-2); }
+.spstate.live { color: var(--green); }
+.spstate.ended { color: var(--red); }
+.spintent { margin-top: 2px; overflow-wrap: anywhere; }
+.spwho { color: var(--accent); margin-top: 2px; }
+.spform { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
+.spinput {
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--frame); padding: 6px 8px;
+  font: inherit; min-width: 0; flex: 1;
+}
