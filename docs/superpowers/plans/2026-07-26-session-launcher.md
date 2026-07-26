@@ -1565,4 +1565,8 @@ Stop for the user's manual demo checkpoint: from a scratch git repo (or this one
 
 ## Deviations (recorded during execution)
 
-(none yet)
+**Task 2 (fix round):** watch_project re-watch leak fix added one test — server baseline entering Task 3 is 148, not 147; downstream expected counts shift by +1 (final server count 154 post-Task3, not 153).
+
+**Task 3:**
+- Extra pre-normalization `..` path-component check in `poc/server/src/staticFiles.ts` — brief's reference code relied only on post-normalization path containment; explicit check ensures traversal attempts rejected at decode stage with 403, not served as extensionless SPA routes.
+- Listen-error rejection registers error handler on BOTH `httpServer` and `wss` — brief's snippet used single `httpServer.once("error")` listener; ws library re-emits httpServer errors on WSS instance, where unhandled they throw and block httpServer listener dispatch; dual registration prevents throw and allows rejection to propagate.
