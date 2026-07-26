@@ -31,9 +31,11 @@ shared-context pool. Off by default so cost/noise doesn't grow with party size.
   Toggling on triggers one immediate refresh; toggling off stops all overseer activity
   (latest summary retained and still displayed, marked stale by its timestamp).
 - New session-wire command `pull_oversight {}` — **driver-only**. Appends an attributed
-  session event `oversight_pull { requestedBy, seq }` (append-only session wire rule;
-  everyone in the session sees who pulled team context, same pattern as `task_stop`),
-  and arms a one-shot injection (§5).
+  session event `oversight_pull { userId, summarySeq }` (append-only session wire rule;
+  everyone in the session sees who pulled team context, same pattern as `task_stop`;
+  the payload field is `summarySeq`, not `seq`, which is the wire's own event counter),
+  and arms a one-shot injection (§5). Requires an existing summary — pulling while
+  enabled-but-empty errors rather than arming a no-op.
 
 ## §3 Overseer module (`poc/server/src/overseer.ts`)
 
@@ -64,10 +66,11 @@ shared-context pool. Off by default so cost/noise doesn't grow with party size.
 - Screen contents: narrative summary text, updated-at timestamp, ENABLE/DISABLE toggle
   (anyone), PULL INTO SESSION button (driver-only; dimmed with reason for non-drivers;
   hidden while oversight is disabled).
-- Data flow: client already receives `project` snapshots; `derive.ts` folds the new
-  `oversight` field and the `oversight_pull` session event (transcript line: who pulled
-  update #N). Pure logic (freshness, labels) in a small tested module — no
-  component-test infra (recorded pattern).
+- Data flow: client already receives `project` snapshots; `useSessionSocket` carries the
+  new `oversight` field (same path as `plugins`/`arcade` — the project channel is
+  snapshot-shaped, so this is not a `derive.ts` fold), and the Transcript renders the
+  `oversight_pull` session event (line: who pulled update #N). Pure logic (freshness,
+  labels) in a small tested module — no component-test infra (recorded pattern).
 
 ## §5 Pull paths (both read the stored summary; neither triggers an LLM call)
 
@@ -83,11 +86,13 @@ shared-context pool. Off by default so cost/noise doesn't grow with party size.
 
 ## §6 Error strings (exact)
 
-- `"oversight requires driver"` — non-driver sends `pull_oversight`.
-- `"unknown project: <id>"` — `set_oversight` for an unregistered project (reuse
-  existing project validation idiom).
-- `"team oversight is disabled"` — `team_update` tool result and `pull_oversight`
-  rejection while disabled.
+- `"only the current driver can pull team updates — take the wheel first"` — non-driver
+  sends `pull_oversight` (house driver-gate idiom).
+- `"unknown project: <id>"` — `set_oversight` for an unregistered project.
+- `"team oversight is disabled"` — `pull_oversight` while disabled, and the
+  `team_update` tool result while disabled.
+- `"no team summary yet"` — `pull_oversight` while enabled but before the first
+  summary exists, and the `team_update` tool result in that state.
 
 ## §7 Testing
 
