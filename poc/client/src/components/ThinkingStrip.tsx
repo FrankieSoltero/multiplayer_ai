@@ -44,14 +44,20 @@ export function ThinkingStrip(props: {
 
   const [state, setState] = useState<unknown>(() => dinoEngine.init(seed()));
   const [playing, setPlaying] = useState(false);
-  // state must be re-initialized in the SAME render that switches engines —
-  // an effect runs after render, and the new engine would render the old
-  // game's state shape (live-crash found in v5b acceptance).
+  // state must be re-initialized in the SAME render pass that switches
+  // engines — an effect runs after render, and the new engine would render
+  // the old game's state shape (live-crash found in v5b acceptance).
+  // The setters schedule a re-render, but THIS pass still runs to the
+  // bottom, so it must render from the freshly-initialized local value.
   const [renderedGame, setRenderedGame] = useState(game);
+  let runState = state;
   if (renderedGame !== game) {
     setRenderedGame(game);
     setPlaying(false);
-    if (engine) setState(engine.init(seed()));
+    if (engine) {
+      runState = engine.init(seed());
+      setState(runState);
+    }
   }
   const [high, setHigh] = useState(() => readBest("dino"));
   const ledgerRef = useRef<RunLedger>({ submitted: false, localBest: readBest("dino") });
@@ -168,8 +174,8 @@ export function ThinkingStrip(props: {
   if (!mounted) return null;
   const pad = (n: number) => String(n).padStart(4, "0");
   const best = props.partyBests?.[game];
-  const score = engine ? engine.score(state) : 0;
-  const over = engine ? engine.over(state) : false;
+  const score = engine ? engine.score(runState) : 0;
+  const over = engine ? engine.over(runState) : false;
 
   return (
     <div className={"thinking panel" + (leaving ? " leaving" : "")}>
@@ -201,7 +207,7 @@ export function ThinkingStrip(props: {
             else setState((s: any) => engine.input(s, "click"));
           }}
         >
-          {engine.render(state).join("\n")}
+          {engine.render(runState).join("\n")}
         </pre>
       ) : (
         <pre className="lane" style={{ color: "var(--dim)" }}>
@@ -225,10 +231,10 @@ export function ThinkingStrip(props: {
           {!engine
             ? "G swaps game"
             : playing
-              ? engine.hint(state, true)
+              ? engine.hint(runState, true)
               : over
                 ? "RUN COMPLETE — SPACE to play again"
-                : engine.hint(state, false) + " · G swaps game"}
+                : engine.hint(runState, false) + " · G swaps game"}
           {!props.busy && " · ESC closes"}
         </span>
       </div>
