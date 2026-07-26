@@ -1,7 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import WebSocket from "ws";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { startServer } from "../src/server.js";
 import type { RunQuery, SdkMessage } from "../src/agentDriver.js";
+import { PluginStore, type CloneFn } from "../src/pluginStore.js";
 
 const echoRun: RunQuery = async function* (prompts) {
   for await (const prompt of prompts) {
@@ -530,35 +534,48 @@ describe("identity on join and pre-join peek", () => {
 
 describe("skill roster", () => {
   it("replays a skill_roster event to every joiner", async () => {
-    process.env.AGENT_SKILLS = "alpha, beta";
-    try {
-      const server = await startServer({ port: 0, runQuery: echoRun });
-      close = server.close;
-      const ws = await connect(server.port);
-      const seen: any[] = [];
-      collect(ws, seen);
-      ws.send(JSON.stringify({ type: "join", sessionId: "s-roster", userId: "u1", name: "Ana" }));
-      await wait(100);
-      const roster = seen.find((m) => m.event?.type === "skill_roster");
-      expect(roster.event.skills).toEqual([
-        { name: "alpha", description: "" },
-        { name: "beta", description: "" },
-      ]);
-      ws.close();
-    } finally {
-      delete process.env.AGENT_SKILLS;
-    }
+    // v6c: the roster now seeds from the plugin registry scan rather than
+    // AGENT_SKILLS (retired) — a fake-clone plugin stands in for a real one.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "plugins-roster-"));
+    const clone: CloneFn = async (_url, dest) => {
+      for (const name of ["alpha", "beta"]) {
+        const p = path.join(dest, "skills", name, "SKILL.md");
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, `---\nname: ${name}\n---\n`);
+      }
+    };
+    const store = new PluginStore(root, clone);
+    await store.add("default", "https://github.com/x/tools", "u0");
+    const server = await startServer({ port: 0, runQuery: echoRun, plugins: store });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "s-roster", userId: "u1", name: "Ana" }));
+    await wait(100);
+    const roster = seen.find((m) => m.event?.type === "skill_roster");
+    expect(roster.event.skills).toEqual([
+      { name: "tools:alpha", description: "" },
+      { name: "tools:beta", description: "" },
+    ]);
+    ws.close();
   });
 });
 
 describe("skill suggest/decide", () => {
+  // v6c: roster is plugin-seeded (AGENT_SKILLS retired) — a fake-clone
+  // plugin named "tools" provides a single skill "tools:alpha".
   async function rosterServer() {
-    process.env.AGENT_SKILLS = "alpha";
-    const server = await startServer({ port: 0, runQuery: echoRun });
-    close = async () => {
-      delete process.env.AGENT_SKILLS;
-      await server.close();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "plugins-suggest-"));
+    const clone: CloneFn = async (_url, dest) => {
+      const p = path.join(dest, "skills", "alpha", "SKILL.md");
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, "---\nname: alpha\n---\n");
     };
+    const store = new PluginStore(root, clone);
+    await store.add("default", "https://github.com/x/tools", "u0");
+    const server = await startServer({ port: 0, runQuery: echoRun, plugins: store });
+    close = server.close;
     return server;
   }
 
@@ -569,7 +586,7 @@ describe("skill suggest/decide", () => {
     collect(ws, seen);
     ws.send(JSON.stringify({ type: "join", sessionId: "sk1", userId: "u1", name: "Ana" }));
     await wait(50);
-    ws.send(JSON.stringify({ type: "suggest_skill", skill: "alpha", args: "the login flow" }));
+    ws.send(JSON.stringify({ type: "suggest_skill", skill: "tools:alpha", args: "the login flow" }));
     await wait(200);
     const types = seen.map((m) => m.event?.type);
     expect(types).toContain("skill_suggest");
@@ -595,7 +612,7 @@ describe("skill suggest/decide", () => {
     wsB.send(JSON.stringify({ type: "join", sessionId: "sk2", userId: "u2", name: "Ben" }));
     await wait(50);
 
-    wsB.send(JSON.stringify({ type: "suggest_skill", skill: "alpha", args: "" }));
+    wsB.send(JSON.stringify({ type: "suggest_skill", skill: "tools:alpha", args: "" }));
     await wait(150);
     const suggest = seenA.find((m) => m.event?.type === "skill_suggest").event;
     expect(suggest.userId).toBe("u2");
@@ -715,6 +732,146 @@ describe("auto mode (e2e)", () => {
     await wait(100);
     const errors = seen.filter((m) => m.type === "error").map((m) => m.message);
     expect(errors.some((e) => /plan\|default\|auto/.test(e))).toBe(true);
+    ws.close();
+  });
+});
+
+describe("plugin registry", () => {
+  const skeleton: Record<string, string> = {
+    "skills/agent-handoff/SKILL.md":
+      "---\nname: agent-handoff\ndescription: resume packets\n---\n",
+  };
+  function storeWithFakeClone(): { store: PluginStore; root: string } {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "plugins-e2e-"));
+    const clone: CloneFn = async (_url, dest) => {
+      for (const [rel, content] of Object.entries(skeleton)) {
+        const p = path.join(dest, rel);
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, content);
+      }
+    };
+    return { store: new PluginStore(root, clone), root };
+  }
+
+  it("add_plugin appends plugin_change and pushes the registry; later sessions get the paths", async () => {
+    const { store } = storeWithFakeClone();
+    const hookCaptures: { pluginPaths?: string[] }[] = [];
+    const capturingRun: RunQuery = (prompts, hooks) => {
+      hookCaptures.push({ pluginPaths: hooks.pluginPaths });
+      return echoRun(prompts, hooks);
+    };
+    const server = await startServer({ port: 0, runQuery: capturingRun, plugins: store });
+    close = server.close;
+
+    const ws1 = await connect(server.port);
+    const seen1: any[] = [];
+    collect(ws1, seen1);
+    ws1.send(JSON.stringify({ type: "join", sessionId: "pa", projectId: "prj", userId: "u1", name: "Ana" }));
+    await wait(50);
+    ws1.send(JSON.stringify({ type: "add_plugin", url: "https://github.com/x/tools" }));
+    await wait(200);
+
+    const evTypes = seen1.map((m) => m.event?.type);
+    expect(evTypes).toContain("plugin_change");
+    const change = seen1.find((m) => m.event?.type === "plugin_change").event;
+    expect(change.action).toBe("add");
+    expect(change.name).toBe("tools");
+    expect(change.skillCount).toBe(1);
+    expect(change.userId).toBe("u1");
+    const snap = seen1.filter((m) => m.type === "project").at(-1);
+    expect(snap.pluginsEnabled).toBe(true);
+    expect(snap.plugins.map((p: any) => p.name)).toEqual(["tools"]);
+
+    // session created BEFORE the add carries no plugin paths...
+    expect(hookCaptures[0].pluginPaths).toEqual([]);
+    // ...a session created AFTER carries the clone path
+    const ws2 = await connect(server.port);
+    collect(ws2, []);
+    ws2.send(JSON.stringify({ type: "join", sessionId: "pb", projectId: "prj", userId: "u2", name: "Ben" }));
+    await wait(100);
+    expect(hookCaptures[1].pluginPaths).toEqual(store.paths("prj"));
+    ws1.close();
+    ws2.close();
+  });
+
+  it("new sessions seed their roster from the plugin scan", async () => {
+    const { store } = storeWithFakeClone();
+    const server = await startServer({ port: 0, runQuery: echoRun, plugins: store });
+    close = server.close;
+    await store.add("prj2", "https://github.com/x/tools", "u0");
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "pr", projectId: "prj2", userId: "u1", name: "Ana" }));
+    await wait(100);
+    const roster = seen.find((m) => m.event?.type === "skill_roster").event;
+    expect(roster.skills).toEqual([
+      { name: "tools:agent-handoff", description: "resume packets" },
+    ]);
+    ws.close();
+  });
+
+  it("remove_plugin appends plugin_change remove and shrinks the registry", async () => {
+    const { store } = storeWithFakeClone();
+    const server = await startServer({ port: 0, runQuery: echoRun, plugins: store });
+    close = server.close;
+    await store.add("prj3", "https://github.com/x/tools", "u0");
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "pc", projectId: "prj3", userId: "u1", name: "Ana" }));
+    await wait(50);
+    ws.send(JSON.stringify({ type: "remove_plugin", name: "tools" }));
+    await wait(200);
+    const change = seen.find((m) => m.event?.type === "plugin_change")?.event;
+    expect(change).toMatchObject({ action: "remove", name: "tools", userId: "u1" });
+    const snap = seen.filter((m) => m.type === "project").at(-1);
+    expect(snap.plugins).toEqual([]);
+    ws.close();
+  });
+
+  it("rejects bad requests with sendError and appends nothing", async () => {
+    const { store } = storeWithFakeClone();
+    const server = await startServer({ port: 0, runQuery: echoRun, plugins: store });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "pd", projectId: "prj4", userId: "u1", name: "Ana" }));
+    await wait(50);
+    ws.send(JSON.stringify({ type: "add_plugin" }));
+    ws.send(JSON.stringify({ type: "add_plugin", url: "git@github.com:x/y.git" }));
+    ws.send(JSON.stringify({ type: "remove_plugin", name: "ghost" }));
+    await wait(200);
+    const errs = seen.filter((m) => m.type === "error").map((m) => m.message);
+    expect(errs).toContain("add_plugin requires url");
+    expect(errs).toContain("plugin url must be https://");
+    expect(errs).toContain('unknown plugin "ghost"');
+    expect(seen.some((m) => m.event?.type === "plugin_change")).toBe(false);
+    ws.close();
+  });
+
+  it("reports the feature as off without a root", async () => {
+    const server = await startServer({
+      port: 0,
+      runQuery: echoRun,
+      plugins: new PluginStore(undefined),
+    });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "pe", projectId: "prj5", userId: "u1", name: "Ana" }));
+    await wait(50);
+    const snap = seen.filter((m) => m.type === "project").at(-1);
+    expect(snap.pluginsEnabled).toBe(false);
+    ws.send(JSON.stringify({ type: "add_plugin", url: "https://github.com/x/y" }));
+    await wait(100);
+    expect(seen.filter((m) => m.type === "error").map((m) => m.message)).toContain(
+      "plugin import is off — set AGENT_PLUGINS_ROOT on the server",
+    );
     ws.close();
   });
 });
