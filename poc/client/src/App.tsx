@@ -15,6 +15,7 @@ import type { PartyBest } from "./components/ThinkingStrip";
 import { Lobby } from "./components/Lobby";
 import { Cabinet, Crt } from "./components/Crt";
 import { SkillsPanel } from "./components/SkillsPanel";
+import { WorkflowsPanel } from "./components/WorkflowsPanel";
 import { AgentStatus } from "./components/AgentStatus";
 
 const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
@@ -100,6 +101,11 @@ function SessionView(props: {
     [events, derived.permissionDecisions],
   );
 
+  const runningTasks = useMemo(
+    () => [...derived.tasks.values()].filter((t) => t.status === "running").length,
+    [derived.tasks],
+  );
+
   const isDriver = derived.driverId === userId;
   const canSetModel = isDriver && !derived.agentBusy;
   const permissionMode = derived.permissionMode;
@@ -156,7 +162,7 @@ function SessionView(props: {
     return () => window.removeEventListener("keydown", onKey);
   }, [isDriver, arcadeCapturing, permissionMode, send, props.screen]);
 
-  // "S" toggles the skills screen; Esc always returns to the session.
+  // "S" toggles the skills screen; "W" toggles the workflows screen; Esc always returns to the session.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
@@ -166,7 +172,11 @@ function SessionView(props: {
         e.preventDefault();
         props.onScreenChange(props.screen === "skills" ? null : "skills");
       }
-      if (e.key === "Escape" && props.screen === "skills") {
+      if ((e.key === "w" || e.key === "W") && !arcadeCapturing) {
+        e.preventDefault();
+        props.onScreenChange(props.screen === "workflows" ? null : "workflows");
+      }
+      if (e.key === "Escape" && (props.screen === "skills" || props.screen === "workflows")) {
         props.onScreenChange(null);
       }
     };
@@ -251,6 +261,17 @@ function SessionView(props: {
       />
     );
   }
+  if (props.screen === "workflows") {
+    return (
+      <WorkflowsPanel
+        tasks={derived.tasks}
+        participants={derived.participants}
+        isDriver={isDriver}
+        onStopTask={(taskId) => send({ type: "stop_task", taskId })}
+        onBack={() => props.onScreenChange(null)}
+      />
+    );
+  }
   if (props.screen === "status") {
     return <AgentStatus model={derived.model} canSetModel={canSetModel} onSetModel={onSetModel} rosterCount={derived.skills.length} />;
   }
@@ -272,6 +293,8 @@ function SessionView(props: {
         canToggleArcade={!derived.agentBusy}
         onToggleArcade={() => setArcadeOpen((v) => !v)}
         onOpenSkills={() => props.onScreenChange("skills")}
+        onOpenWorkflows={() => props.onScreenChange("workflows")}
+        runningTasks={runningTasks}
         hud={hud}
       />
 
