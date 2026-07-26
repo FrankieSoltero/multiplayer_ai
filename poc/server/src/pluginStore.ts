@@ -98,8 +98,10 @@ export class PluginStore {
       fs.rmSync(tmp, { recursive: true, force: true });
       return { ok: false, error: `plugin "${name}" already registered` };
     }
+    let renamed = false;
     try {
       fs.renameSync(tmp, dest);
+      renamed = true;
       const plugin: PluginInfo = { name, url, skills, addedBy };
       fs.writeFileSync(
         path.join(projectDir, `${name}.meta.json`),
@@ -109,8 +111,16 @@ export class PluginStore {
       this.registry.get(projectId)!.set(name, plugin);
       return { ok: true, plugin };
     } catch (err) {
-      fs.rmSync(tmp, { recursive: true, force: true });
-      fs.rmSync(dest, { recursive: true, force: true });
+      // Only delete dest if the rename succeeded (this call owns it);
+      // if rename itself threw (e.g., race: dest exists from a concurrent add),
+      // dest belongs to another call and must survive.
+      if (renamed) {
+        fs.rmSync(dest, { recursive: true, force: true });
+      }
+      // Always clean up tmp if it still exists (rename didn't claim it).
+      if (!renamed) {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
       const msg = err instanceof Error ? err.message : String(err);
       return { ok: false, error: `finalization failed: ${msg}` };
     }

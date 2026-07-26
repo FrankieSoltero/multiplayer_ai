@@ -111,14 +111,14 @@ describe("PluginStore.add", () => {
     expect(store.paths("proj")).toEqual([]);
   });
 
-  it("handles finalization failure (rename/meta-write) and cleans up", async () => {
+  it("handles finalization failure gracefully: cleans up tmp, not dest, on rename failure", async () => {
     const store = new PluginStore(root, fakeClone(SOLTERO));
     const projectDir = path.join(root, "proj");
     fs.mkdirSync(projectDir, { recursive: true });
 
-    // Mock renameSync to throw an error simulating a race/permissions issue
+    // Mock renameSync to throw before renaming (simulating ENOTEMPTY from a race)
     const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation(() => {
-      throw new Error("ENOTEMPTY");
+      throw new Error("ENOTEMPTY: dest already exists");
     });
 
     const result = await store.add("proj", "https://github.com/x/soltero-skills", "u1");
@@ -126,9 +126,11 @@ describe("PluginStore.add", () => {
     if (result.ok) return;
     expect(result.error).toMatch(/^finalization failed: /);
 
-    // Verify tmp dirs are cleaned up (only meta files or dest attempt should be gone)
+    // Key: tmp should be cleaned up (rename failed, so this call never took ownership)
     const remaining = fs.readdirSync(projectDir);
     expect(remaining.every((f) => !f.startsWith(".clone-"))).toBe(true);
+    // And we never try to delete dest since rename failed (no crash, clean error)
+    expect(result.error).toContain("ENOTEMPTY");
 
     renameSpy.mockRestore();
   });
