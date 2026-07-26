@@ -17,6 +17,7 @@ import { ARCADE_GAMES } from "./events.js";
 import { slugify, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
 import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
+import { InviteStore } from "./invites.js";
 
 const MAX_PROMPT_LENGTH = 4000;
 const MAX_URL_LENGTH = 2048;
@@ -65,6 +66,9 @@ export async function startServer(opts: {
   staticDir?: string;
   summarize?: Summarize;
   oversightDebounceMs?: number;
+  requireInvite?: boolean;
+  inviteTtlMs?: number;
+  inviteMaxUses?: number;
 }) {
   const runQuery = opts.runQuery ?? runAgentQuery;
   const pluginStore = opts.plugins ?? new PluginStore(process.env.AGENT_PLUGINS_ROOT);
@@ -76,6 +80,10 @@ export async function startServer(opts: {
   const projects = new Map<string, Project>();
   const lastPush = new Map<Project, number>();
   const pushTimers = new Map<Project, NodeJS.Timeout>();
+  const invites = new InviteStore({
+    ttlMs: opts.inviteTtlMs,
+    maxUses: opts.inviteMaxUses,
+  });
 
   const overseer = new Overseer(
     opts.summarize ?? runOversightSummarize,
@@ -223,6 +231,16 @@ export async function startServer(opts: {
     const sendError = (message: string) =>
       ws.send(JSON.stringify({ type: "error", message }));
 
+    // The token rides this reply and nothing else — never the session log,
+    // which is replayed to every late joiner and cannot be un-replayed.
+    const sendInviteList = (c: ClientContext) =>
+      ws.send(
+        JSON.stringify({
+          type: "invite_list",
+          invites: invites.listFor(c.entry.session.id),
+        }),
+      );
+
     // Without a listener, an "error" event on this socket would be an
     // unhandled EventEmitter error and crash the whole process. Cleanup
     // (unsubscribe/leave) is handled by the "close" handler, which always
@@ -257,6 +275,21 @@ export async function startServer(opts: {
             "projectId and sessionId must be 1-40 chars of a-z, 0-9, -",
           );
         }
+        // Invite gate (spec §4). Sits before getOrCreateProject/Session so a
+        // rejected join never provisions a git worktree.
+        let redeemedId: string | null = null;
+        if (typeof msg.invite === "string" && msg.invite) {
+          const result = invites.redeem(msg.invite, msg.userId, msg.sessionId);
+          if (!result.ok) return sendError(result.error);
+          redeemedId = result.invite.id;
+        } else if (opts.requireInvite) {
+          // The founder slot stays open: an empty room can be opened by
+          // whoever arrives first (spec §7 states this bound explicitly).
+          const occupied = projects.get(projectId)?.sessions.get(msg.sessionId);
+          if (occupied && occupied.session.participantList.length > 0) {
+            return sendError("this session requires an invite");
+          }
+        }
         const project = getOrCreateProject(projectId);
         const entry = getOrCreateSession(project, msg.sessionId);
         if ("error" in entry) return sendError(entry.error);
@@ -282,6 +315,13 @@ export async function startServer(opts: {
             ? msg.color.toLowerCase()
             : undefined;
         entry.session.join(msg.userId, msg.name.slice(0, 40), { glyph, color });
+        if (redeemedId) {
+          entry.session.append({
+            type: "invite_redeemed",
+            userId: msg.userId,
+            inviteId: redeemedId,
+          });
+        }
         // Immediate personal snapshot so the sidebar isn't blank until the
         // next throttled push.
         ws.send(JSON.stringify(snapshotFor(project)));
@@ -300,6 +340,25 @@ export async function startServer(opts: {
               ? snapshotFor(project)
               : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: repo && { defaultBranch: repo.defaultBranch }, oversight: { enabled: false, latest: null } },
           ),
+        );
+        return;
+      }
+
+      if (msg.type === "peek_invite") {
+        if (typeof msg.token !== "string" || !msg.token) {
+          return sendError("peek_invite requires a token");
+        }
+        const result = invites.peek(msg.token);
+        if (!result.ok) return sendError(result.error);
+        ws.send(
+          JSON.stringify({
+            type: "invite_info",
+            projectId: result.invite.projectId,
+            sessionId: result.invite.sessionId,
+            inviterName: result.invite.createdByName,
+            expiresAt: result.invite.expiresAt,
+            remaining: result.invite.maxUses - result.invite.redeemedBy.size,
+          }),
         );
         return;
       }
@@ -529,6 +588,48 @@ export async function startServer(opts: {
           userId: ctx.userId,
           summarySeq: latest.seq,
         });
+        return;
+      }
+
+      // Inviting is team infrastructure, not a driver capability (spec §9.3):
+      // any participant may mint, list, or revoke. Every action is attributed.
+      if (msg.type === "create_invite") {
+        const invite = invites.mint({
+          projectId: ctx.project.id,
+          sessionId: ctx.entry.session.id,
+          createdBy: ctx.userId,
+          createdByName: ctx.entry.session.nameOf(ctx.userId) ?? ctx.userId,
+        });
+        ctx.entry.session.append({
+          type: "invite_created",
+          userId: ctx.userId,
+          inviteId: invite.id,
+          expiresAt: invite.expiresAt,
+          maxUses: invite.maxUses,
+        });
+        sendInviteList(ctx);
+        return;
+      }
+
+      if (msg.type === "list_invites") {
+        sendInviteList(ctx);
+        return;
+      }
+
+      if (msg.type === "revoke_invite") {
+        if (typeof msg.inviteId !== "string" || !msg.inviteId) {
+          return sendError("revoke_invite requires an inviteId");
+        }
+        const id = msg.inviteId.slice(0, 40);
+        if (!invites.revoke(id, ctx.entry.session.id)) {
+          return sendError(`unknown invite: ${id}`);
+        }
+        ctx.entry.session.append({
+          type: "invite_revoked",
+          userId: ctx.userId,
+          inviteId: id,
+        });
+        sendInviteList(ctx);
         return;
       }
 

@@ -42,6 +42,10 @@ export class Session {
     }));
   }
 
+  nameOf(userId: string): string | undefined {
+    return this.participants.get(userId);
+  }
+
   join(
     userId: string,
     name: string,

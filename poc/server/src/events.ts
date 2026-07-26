@@ -40,6 +40,9 @@ export type SessionEvent =
       status?: string; summary?: string; error?: string;
       tokens?: number; toolUses?: number; durationMs?: number; lastTool?: string }
   | { type: "task_stop"; taskId: string; userId: string }
-  | { type: "oversight_pull"; userId: string; summarySeq: number };
+  | { type: "oversight_pull"; userId: string; summarySeq: number }
+  | { type: "invite_created"; userId: string; inviteId: string; expiresAt: number; maxUses: number }
+  | { type: "invite_revoked"; userId: string; inviteId: string }
+  | { type: "invite_redeemed"; userId: string; inviteId: string };
 
 export type LoggedEvent = SessionEvent & { seq: number; ts: string };
