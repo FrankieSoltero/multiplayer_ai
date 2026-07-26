@@ -22,6 +22,7 @@ export function Header(props: {
   projectId: string; sessionId: string; model: string; connected: boolean;
   objective: string | null; canSetModel: boolean; onSetModel: (key: string) => void;
   planMode: boolean; canTogglePlan: boolean; onTogglePlan: () => void;
+  arcadeOpen: boolean; canToggleArcade: boolean; onToggleArcade: () => void;
   hud?: HudData;
 }) {
   const hud = props.hud ?? {};
@@ -62,6 +63,18 @@ export function Header(props: {
           }
         >
           {props.planMode ? "◉ PLAN" : "▢ PLAN"}
+        </button>
+        <button
+          className={props.arcadeOpen ? "planmode on" : "planmode"}
+          disabled={!props.canToggleArcade}
+          onClick={props.onToggleArcade}
+          title={
+            props.canToggleArcade
+              ? "open the arcade while you wait (A)"
+              : "the agent is thinking — the arcade is already on screen"
+          }
+        >
+          {props.arcadeOpen ? "◉ ARCADE" : "▢ ARCADE"}
         </button>
         <span className={props.connected ? "conn" : "conn off"}>
           {props.connected ? "● ONLINE" : "○ OFFLINE"}

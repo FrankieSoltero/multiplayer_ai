@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "./terminal.css";
 import { deriveState, deriveTranscriptGroups } from "./derive";
 import { hashIdentity, loadOrCreateUserId, loadProfile, saveProfile } from "./identity";
@@ -10,6 +10,7 @@ import { Transcript } from "./components/Transcript";
 import { PartyPane } from "./components/PartyPane";
 import { TodoPanel } from "./components/TodoPanel";
 import { ThinkingStrip } from "./components/ThinkingStrip";
+import type { PartyBest } from "./components/ThinkingStrip";
 import { Lobby } from "./components/Lobby";
 import { Cabinet, Crt } from "./components/Crt";
 import { SkillsPanel } from "./components/SkillsPanel";
@@ -67,7 +68,7 @@ function SessionView(props: {
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
-  const { events, errors, connected, projectSessions, send } = useSessionSocket({
+  const { events, errors, connected, projectSessions, arcade, send } = useSessionSocket({
     sessionId,
     projectId,
     userId,
@@ -104,6 +105,43 @@ function SessionView(props: {
     .map(([, p]) => p.name);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const [arcadeOpen, setArcadeOpen] = useState(false);
+
+  // "A" opens the idle arcade; while busy the strip is already mounted and
+  // letters belong to the games, so the hotkey only fires when closed + idle.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (document.activeElement as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      if (
+        (e.key === "a" || e.key === "A") &&
+        !e.metaKey && !e.ctrlKey && !e.altKey &&
+        !arcadeOpen && !derived.agentBusy
+      ) {
+        e.preventDefault();
+        setArcadeOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [arcadeOpen, derived.agentBusy]);
+
+  // per-game party records; glyph/color fall back to hashIdentity like derive.ts
+  const partyBests = useMemo(() => {
+    const out: Record<string, PartyBest> = {};
+    for (const r of arcade) {
+      const fallback = hashIdentity(r.userId);
+      out[r.game] = {
+        name: r.name,
+        glyph: r.glyph ?? fallback.glyph,
+        color: r.color ?? fallback.color,
+        score: r.score,
+        game: r.game,
+      };
+    }
+    return out;
+  }, [arcade]);
 
   function onPrompt(text: string) {
     send({ type: "prompt", text });
@@ -177,6 +215,9 @@ function SessionView(props: {
         planMode={planMode}
         canTogglePlan={canTogglePlan}
         onTogglePlan={onTogglePlan}
+        arcadeOpen={arcadeOpen}
+        canToggleArcade={!derived.agentBusy}
+        onToggleArcade={() => setArcadeOpen((v) => !v)}
         hud={hud}
       />
 
@@ -202,7 +243,15 @@ function SessionView(props: {
         <TodoPanel todos={derived.todos} />
       </div>
 
-      <ThinkingStrip busy={derived.agentBusy} modelLabel={MODEL_LABELS[derived.model] ?? derived.model} currentTool={currentTool} />
+      <ThinkingStrip
+        busy={derived.agentBusy}
+        open={arcadeOpen}
+        onClose={() => setArcadeOpen(false)}
+        modelLabel={MODEL_LABELS[derived.model] ?? derived.model}
+        currentTool={currentTool}
+        partyBests={partyBests}
+        onScore={(game, score) => send({ type: "game_score", game, score })}
+      />
 
       {errors.length > 0 && <div className="line red">⚠ {errors.at(-1)}</div>}
 
