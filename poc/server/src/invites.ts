@@ -98,11 +98,12 @@ export class InviteStore {
   redeem(token: unknown, userId: string, sessionId: string): InviteResult {
     this.prune();
     const invite = this.lookup(token);
+    // A token that exists but belongs elsewhere reports "not found" rather
+    // than confirming it is real for some other session — checked before
+    // classify() so revoked/expired/full states don't leak either.
+    if (invite && invite.sessionId !== sessionId) return { ok: false, error: "invite not found" };
     const failure = this.classify(invite, userId);
     if (failure) return { ok: false, error: failure };
-    // A token that exists but belongs elsewhere reports "not found" rather
-    // than confirming it is real for some other session.
-    if (invite!.sessionId !== sessionId) return { ok: false, error: "invite not found" };
     invite!.redeemedBy.add(userId);
     return { ok: true, invite: invite! };
   }
@@ -112,7 +113,8 @@ export class InviteStore {
     const live: InviteView[] = [];
     for (const invite of this.byToken.values()) {
       if (invite.sessionId !== sessionId) continue;
-      if (this.classify(invite)) continue;
+      // Include full invites (they show zero seats left); hide only revoked/expired
+      if (invite.revoked || invite.expiresAt <= this.now()) continue;
       live.push({
         id: invite.id,
         token: invite.token,

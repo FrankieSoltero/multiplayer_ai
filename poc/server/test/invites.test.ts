@@ -100,4 +100,57 @@ describe("InviteStore", () => {
     expect(store.mint(mintArgs).maxUses).toBe(DEFAULT_INVITE_MAX_USES);
     expect(DEFAULT_INVITE_MAX_USES).toBe(10);
   });
+
+  it("revoke returns false for a nonexistent id", () => {
+    const store = new InviteStore();
+    expect(store.revoke("nonexistent", "alpha")).toBe(false);
+  });
+
+  it("when invite is both revoked and expired, peek reports revoked first", () => {
+    let now = 1_000;
+    const store = new InviteStore({ ttlMs: 100, now: () => now });
+    const inv = store.mint(mintArgs);
+    store.revoke(inv.id, "alpha");
+    now = 1_200; // past expiry
+    expect(store.peek(inv.token)).toEqual({ ok: false, error: "invite revoked" });
+  });
+
+  it("revoked invite with wrong session returns invite not found", () => {
+    const store = new InviteStore();
+    const inv = store.mint(mintArgs);
+    store.revoke(inv.id, "alpha");
+    // Trying to redeem with a different session should NOT leak "revoked" state
+    expect(store.redeem(inv.token, "u2", "beta")).toEqual({ ok: false, error: "invite not found" });
+  });
+
+  it("full invite with wrong session returns invite not found", () => {
+    const store = new InviteStore({ maxUses: 1 });
+    const inv = store.mint(mintArgs);
+    // Redeem the only seat in session alpha
+    store.redeem(inv.token, "u2", "alpha");
+    // Now it's full, but try to redeem from a different session
+    expect(store.redeem(inv.token, "u3", "beta")).toEqual({ ok: false, error: "invite not found" });
+  });
+
+  it("full invite still appears in listFor with zero seats left", () => {
+    const store = new InviteStore({ maxUses: 1 });
+    const inv = store.mint(mintArgs);
+    store.redeem(inv.token, "u2", "alpha");
+    // Should still be listed even though it's full
+    const list = store.listFor("alpha");
+    expect(list).toHaveLength(1);
+    expect(list[0].id).toBe(inv.id);
+    expect(list[0].uses).toBe(1);
+    expect(list[0].maxUses).toBe(1);
+  });
+
+  it("revoke succeeds on a full invite", () => {
+    const store = new InviteStore({ maxUses: 1 });
+    const inv = store.mint(mintArgs);
+    store.redeem(inv.token, "u2", "alpha");
+    // Should be able to revoke a full invite
+    expect(store.revoke(inv.id, "alpha")).toBe(true);
+    // And it should disappear from the list after revoke
+    expect(store.listFor("alpha")).toHaveLength(0);
+  });
 });
