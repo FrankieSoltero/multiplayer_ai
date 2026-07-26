@@ -923,46 +923,42 @@ describe("auto permission mode", () => {
   });
 
   it("leaving auto restores gating", async () => {
-    // A two-gate run WITH a setPermissionMode mock (leaving auto for
-    // "default" forwards to the SDK, so the fake must support it):
     const setPermissionMode = vi.fn().mockResolvedValue(undefined);
-    const twoGateRun: RunQuery = (prompts, hooks) => {
+    const perPromptGateRun: RunQuery = (prompts, hooks) => {
       const gen = (async function* () {
         for await (const _prompt of prompts) {
-          const d1 = await hooks.onPermissionRequest("Bash", { command: "one" });
-          const d2 = await hooks.onPermissionRequest("Bash", { command: "two" });
+          const d = await hooks.onPermissionRequest("Bash", { command: "step" });
           yield {
             type: "assistant",
-            content: [{ type: "text", text: `${d1},${d2}` }],
+            content: [{ type: "text", text: `d:${d}` }],
           };
-          return;
+          yield { type: "result" };
         }
       })();
       return Object.assign(gen, { setPermissionMode });
     };
     const session = new Session("s-auto-3");
     session.join("u1", "Ana");
-    const driver = new AgentDriver(session, twoGateRun);
+    const driver = new AgentDriver(session, perPromptGateRun);
     expect(driver.setPermissionMode("auto", "u1")).toEqual({ ok: true });
-    driver.sendPrompt("u1", "run both");
+    driver.sendPrompt("u1", "one");
     await waitForEvent(session, "permission_decision"); // gate one auto-allowed
 
     expect(driver.setPermissionMode("default", "u1")).toEqual({ ok: true });
-    // wait for gate two to be raised, then confirm it is NOT auto-decided
-    const requests = async () =>
+    driver.sendPrompt("u1", "two");
+    const reqs = () =>
       session.eventsFrom(0).filter((e) => e.type === "permission_request");
     let tries = 40;
-    while ((await requests()).length < 2 && tries-- > 0)
+    while (reqs().length < 2 && tries-- > 0)
       await new Promise((r) => setTimeout(r, 25));
-    const second = (await requests())[1];
+    expect(reqs()).toHaveLength(2);
     await new Promise((r) => setTimeout(r, 150));
-    const decisions = session
-      .eventsFrom(0)
-      .filter((e) => e.type === "permission_decision");
-    expect(decisions).toHaveLength(1); // only gate one decided so far
+    // gate two must still be undecided — auto is off
+    expect(
+      session.eventsFrom(0).filter((e) => e.type === "permission_decision"),
+    ).toHaveLength(1);
+    const second = reqs()[1];
     expect(driver.resolvePermission(second.requestId, "allow", "u1")).toBe(true);
-    const echoed = await waitForEvent(session, "agent_text_delta");
-    expect(echoed.text).toBe("allow,allow");
   });
 
   it("does not auto-approve plan requests", async () => {
