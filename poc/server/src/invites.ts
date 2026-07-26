@@ -112,11 +112,13 @@ export class InviteStore {
     return { ok: true, invite: invite! };
   }
 
-  listFor(sessionId: string): InviteView[] {
+  listFor(projectId: string, sessionId: string): InviteView[] {
     this.prune();
     const live: InviteView[] = [];
     for (const invite of this.byToken.values()) {
-      if (invite.sessionId !== sessionId) continue;
+      // Sessions are per-project, so a bare sessionId is not unique across
+      // projects — both must match or this leaks another project's tokens.
+      if (invite.projectId !== projectId || invite.sessionId !== sessionId) continue;
       // Include full invites (they show zero seats left); hide only revoked/expired
       if (invite.revoked || invite.expiresAt <= this.now()) continue;
       live.push({
@@ -133,10 +135,10 @@ export class InviteStore {
     return live;
   }
 
-  revoke(id: string, sessionId: string): boolean {
+  revoke(id: string, projectId: string, sessionId: string): boolean {
     this.prune();
     for (const invite of this.byToken.values()) {
-      if (invite.id === id && invite.sessionId === sessionId) {
+      if (invite.id === id && invite.projectId === projectId && invite.sessionId === sessionId) {
         invite.revoked = true;
         return true;
       }

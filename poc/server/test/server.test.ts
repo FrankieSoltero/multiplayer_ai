@@ -1400,6 +1400,60 @@ describe("oversight wire", () => {
     b.close();
   });
 
+  it("cross-project attacker cannot list or revoke another project's invites for the same session id", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    // Victim founds project "default", session "alpha", and mints an invite.
+    const victim = await connect(server.port);
+    const sinkVictim: any[] = [];
+    collect(victim, sinkVictim);
+    victim.send(
+      JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana", projectId: "default" }),
+    );
+    await wait(30);
+    victim.send(JSON.stringify({ type: "create_invite" }));
+    await wait(30);
+    const victimInvite = sinkVictim.find((m) => m.type === "invite_list").invites[0];
+
+    // Attacker founds an empty room with the SAME session id "alpha" but a
+    // DIFFERENT project — the founder slot is open by design, and session
+    // ids are guessable `mpai new` slugs (alpha, demo, fix-login).
+    const attacker = await connect(server.port);
+    const sinkAttacker: any[] = [];
+    collect(attacker, sinkAttacker);
+    attacker.send(
+      JSON.stringify({ type: "join", sessionId: "alpha", userId: "u2", name: "eve", projectId: "evil" }),
+    );
+    await wait(30);
+
+    attacker.send(JSON.stringify({ type: "list_invites" }));
+    await wait(30);
+    const attackerLists = sinkAttacker.filter((m) => m.type === "invite_list");
+    expect(attackerLists[attackerLists.length - 1].invites).toEqual([]);
+
+    attacker.send(JSON.stringify({ type: "revoke_invite", inviteId: victimInvite.id }));
+    await wait(30);
+    const attackerErrors = sinkAttacker.filter((m) => m.type === "error").map((m) => m.message);
+    expect(attackerErrors).toContain(`unknown invite: ${victimInvite.id}`);
+
+    // The victim's invite must still be live — unaffected by the failed
+    // cross-project revoke attempt.
+    const checker = await connect(server.port);
+    const sinkChecker: any[] = [];
+    collect(checker, sinkChecker);
+    checker.send(JSON.stringify({ type: "peek_invite", token: victimInvite.token }));
+    await wait(30);
+    expect(sinkChecker.find((m) => m.type === "invite_info")).toMatchObject({
+      projectId: "default",
+      sessionId: "alpha",
+    });
+
+    victim.close();
+    attacker.close();
+    checker.close();
+  });
+
   it("requireInvite blocks an uninvited join of an occupied session without provisioning", async () => {
     const workspace = fakeWorkspace();
     const server = await startServer({ port: 0, runQuery: echoRun, workspace, requireInvite: true });

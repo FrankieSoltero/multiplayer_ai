@@ -237,7 +237,7 @@ export async function startServer(opts: {
       ws.send(
         JSON.stringify({
           type: "invite_list",
-          invites: invites.listFor(c.entry.session.id),
+          invites: invites.listFor(c.project.id, c.entry.session.id),
         }),
       );
 
@@ -630,7 +630,7 @@ export async function startServer(opts: {
           return sendError("revoke_invite requires an inviteId");
         }
         const id = msg.inviteId.slice(0, 40);
-        if (!invites.revoke(id, ctx.entry.session.id)) {
+        if (!invites.revoke(id, ctx.project.id, ctx.entry.session.id)) {
           return sendError(`unknown invite: ${id}`);
         }
         ctx.entry.session.append({
