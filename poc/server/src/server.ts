@@ -329,11 +329,11 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
       }
 
       if (msg.type === "set_permission_mode") {
-        if (msg.mode !== "plan" && msg.mode !== "default") {
-          return sendError("set_permission_mode requires mode: plan|default");
+        if (msg.mode !== "plan" && msg.mode !== "default" && msg.mode !== "auto") {
+          return sendError("set_permission_mode requires mode: plan|default|auto");
         }
         if (!ctx.entry.session.canPrompt(ctx.userId)) {
-          return sendError("only the current driver can toggle plan mode — take the wheel first");
+          return sendError("only the current driver can change the permission mode — take the wheel first");
         }
         const result = ctx.entry.driver.setPermissionMode(msg.mode, ctx.userId);
         if (!result.ok) return sendError(result.error);
