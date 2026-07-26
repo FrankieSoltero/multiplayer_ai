@@ -44,6 +44,15 @@ export function ThinkingStrip(props: {
 
   const [state, setState] = useState<unknown>(() => dinoEngine.init(seed()));
   const [playing, setPlaying] = useState(false);
+  // state must be re-initialized in the SAME render that switches engines —
+  // an effect runs after render, and the new engine would render the old
+  // game's state shape (live-crash found in v5b acceptance).
+  const [renderedGame, setRenderedGame] = useState(game);
+  if (renderedGame !== game) {
+    setRenderedGame(game);
+    setPlaying(false);
+    if (engine) setState(engine.init(seed()));
+  }
   const [high, setHigh] = useState(() => readBest("dino"));
   const ledgerRef = useRef<RunLedger>({ submitted: false, localBest: readBest("dino") });
   const [elapsed, setElapsed] = useState(0);
