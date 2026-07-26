@@ -1283,4 +1283,35 @@ Stop for the user's review. Push the branch and open a PR **stacked on `feature/
 
 ## Deviations (recorded during execution)
 
-_None yet._
+**Task 1 (fix round 1):** the plan's `redeem()` listing checked `classify()`
+before the session match, so a revoked/expired/full invite reported its true
+state to a caller from another session — contradicting both the code's own
+comment and spec §3/§7. Controller ruled the spec's intent governs (precedent:
+the oversight branch's dispose-race). Also confirmed a real gap in the plan's
+`listFor()`: it hid saturated invites, so a full invite could never be revoked
+through the UI even though existing seat-holders can still rejoin with it.
+Fixed both; +6 tests.
+
+**Task 2 (fix round 1, spec amended twice):**
+1. `requireInvite` locked out reconnecting participants. `Session.leave` drops a
+   participant when their socket closes, so a founder who refreshes is
+   indistinguishable from a stranger once anyone else is in the room — she would
+   be permanently locked out of the room she opened, and the demo would have
+   failed on the first reload. Spec §4 amended: a per-session **admitted set**
+   that `join` adds to and `leave` never removes.
+2. `redeem()` ignored `projectId`, so a token for project A / session `alpha`
+   redeemed against project B / session `alpha`. Spec §3 amended: redemption
+   matches **both** ids.
+   Also: the "no worktree provisioned" test asserted nothing about provisioning
+   and used a scenario that structurally could not prove the ordering claim;
+   replaced with a real one targeting a never-created session. +4 tests.
+
+**Task 5 (folded in from Task 4's review):** `InviteLanding` hand-rolled its seat
+text (`"0 SEATS LEFT"`) instead of the tested helper (`"NO SEATS LEFT"`). Rather
+than let the new panel add a third variant, a `seatsLeftLabel(remaining)` helper
+became the single source of truth and `seatsLabel({uses,maxUses})` was
+reimplemented on top of it. +1 test.
+
+**Final counts:** server **212** (plan predicted 202 — the two fix rounds added
+10 tests: 187 baseline + 16 store + 9 wire), client **84** (plan predicted 83;
++1 from `seatsLeftLabel`). Both builds and `tsc --noEmit` clean.
