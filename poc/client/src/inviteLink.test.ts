@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expiryLabel, inviteLinkFor, inviteTokenFrom, seatsLabel } from "./inviteLink";
+import { expiryLabel, inviteLinkFor, inviteTokenFrom, seatsLabel, seatsLeftLabel } from "./inviteLink";
 
 describe("inviteTokenFrom", () => {
   it("reads the invite param", () => {
@@ -27,6 +27,15 @@ describe("seatsLabel", () => {
     expect(seatsLabel({ uses: 0, maxUses: 10 })).toBe("10 SEATS LEFT");
     expect(seatsLabel({ uses: 9, maxUses: 10 })).toBe("1 SEAT LEFT");
     expect(seatsLabel({ uses: 10, maxUses: 10 })).toBe("NO SEATS LEFT");
+  });
+});
+
+describe("seatsLeftLabel", () => {
+  it("reports the single source of truth text for 0, 1, many, and negative", () => {
+    expect(seatsLeftLabel(0)).toBe("NO SEATS LEFT");
+    expect(seatsLeftLabel(1)).toBe("1 SEAT LEFT");
+    expect(seatsLeftLabel(2)).toBe("2 SEATS LEFT");
+    expect(seatsLeftLabel(-3)).toBe("NO SEATS LEFT");
   });
 });
 

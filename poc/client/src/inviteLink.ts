@@ -12,10 +12,17 @@ export function inviteTokenFrom(search: string): string | null {
   return token ? token : null;
 }
 
-export function seatsLabel(view: { uses: number; maxUses: number }): string {
-  const left = Math.max(0, view.maxUses - view.uses);
+/** Single source of truth for "N seats left" text — used by both the
+ *  pre-join landing screen (which only has `remaining`) and the in-session
+ *  invite panel (which has `{uses, maxUses}` via `seatsLabel`). */
+export function seatsLeftLabel(remaining: number): string {
+  const left = Math.max(0, remaining);
   if (left === 0) return "NO SEATS LEFT";
   return `${left} SEAT${left === 1 ? "" : "S"} LEFT`;
+}
+
+export function seatsLabel(view: { uses: number; maxUses: number }): string {
+  return seatsLeftLabel(view.maxUses - view.uses);
 }
 
 export function expiryLabel(expiresAt: number, now: number): string {

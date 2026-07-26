@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { SERVER_URL } from "../types";
-import { expiryLabel } from "../inviteLink";
+import { expiryLabel, seatsLeftLabel } from "../inviteLink";
 
 type Info = {
   projectId: string;
@@ -59,8 +59,7 @@ export function InviteLanding(props: {
         <div className="pix lg invhero">{info.inviterName.toUpperCase()} INVITED YOU</div>
         <div className="line">{info.projectId} / {info.sessionId}</div>
         <div className="line dim">
-          {expiryLabel(info.expiresAt, Date.now())} · {info.remaining} SEAT
-          {info.remaining === 1 ? "" : "S"} LEFT
+          {expiryLabel(info.expiresAt, Date.now())} · {seatsLeftLabel(info.remaining)}
         </div>
         <button
           className="btn"
