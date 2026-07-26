@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -109,6 +109,28 @@ describe("PluginStore.add", () => {
     });
     expect(store.list("proj")).toEqual([]);
     expect(store.paths("proj")).toEqual([]);
+  });
+
+  it("handles finalization failure (rename/meta-write) and cleans up", async () => {
+    const store = new PluginStore(root, fakeClone(SOLTERO));
+    const projectDir = path.join(root, "proj");
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    // Mock renameSync to throw an error simulating a race/permissions issue
+    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      throw new Error("ENOTEMPTY");
+    });
+
+    const result = await store.add("proj", "https://github.com/x/soltero-skills", "u1");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/^finalization failed: /);
+
+    // Verify tmp dirs are cleaned up (only meta files or dest attempt should be gone)
+    const remaining = fs.readdirSync(projectDir);
+    expect(remaining.every((f) => !f.startsWith(".clone-"))).toBe(true);
+
+    renameSpy.mockRestore();
   });
 });
 

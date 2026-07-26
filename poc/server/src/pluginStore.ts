@@ -98,15 +98,22 @@ export class PluginStore {
       fs.rmSync(tmp, { recursive: true, force: true });
       return { ok: false, error: `plugin "${name}" already registered` };
     }
-    fs.renameSync(tmp, dest);
-    const plugin: PluginInfo = { name, url, skills, addedBy };
-    fs.writeFileSync(
-      path.join(projectDir, `${name}.meta.json`),
-      JSON.stringify({ url, addedBy }),
-    );
-    if (!this.registry.has(projectId)) this.registry.set(projectId, new Map());
-    this.registry.get(projectId)!.set(name, plugin);
-    return { ok: true, plugin };
+    try {
+      fs.renameSync(tmp, dest);
+      const plugin: PluginInfo = { name, url, skills, addedBy };
+      fs.writeFileSync(
+        path.join(projectDir, `${name}.meta.json`),
+        JSON.stringify({ url, addedBy }),
+      );
+      if (!this.registry.has(projectId)) this.registry.set(projectId, new Map());
+      this.registry.get(projectId)!.set(name, plugin);
+      return { ok: true, plugin };
+    } catch (err) {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(dest, { recursive: true, force: true });
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: `finalization failed: ${msg}` };
+    }
   }
 
   remove(projectId: string, name: string): { ok: true } | { ok: false; error: string } {
