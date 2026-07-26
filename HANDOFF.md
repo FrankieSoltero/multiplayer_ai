@@ -1,6 +1,6 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-26 (later session): **v6c IMPLEMENTED on `feature/v6c-plugins` (12 commits, afc64b1..27e4e22), subagent-driven per plan, final whole-branch review CLEAN after one fix wave.** All 7 plan tasks done; suites green (server 123, client 45). NOT merged, NOT pushed — plan Task 7 Step 4 (manual demo checkpoint WITH THE USER) + PR creation remain. 8 deviations recorded in the plan's Deviations section.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-26 (same session, post-demo): **v6c DEMO CHECKPOINT PASSED** — user imported soltero-skills live (26 plugin skills cloned under project "default"), new session roster refreshed to 71 entries (built-ins + namespaced plugin skills). Two demo discoveries: (1) slashmenu CSS regression FOUND+FIXED+verified in-browser (`9df6f6d`); (2) **plan's known unknown CONFIRMED: live roster contains non-skill junk** (e.g. `/agents` "(removed)…") — deviation NOT yet recorded in plan, filter decision NOT yet made (user hasn't answered). **NEW FEATURE REQUESTED (not yet spec'd): slash-autocomplete v2** — see §1. Branch afc64b1..9df6f6d (14 commits), not merged, not pushed.*
 
 ## 0. WHERE WE ARE — v6c built and reviewed; demo checkpoint + PR remain
 
@@ -13,7 +13,9 @@
 
 Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 
-**CURRENT TASK:** finish v6c per plan Task 7 Steps 4-5: (1) **manual demo checkpoint with the user** — launch stack with `AGENT_PLUGINS_ROOT`, import the real soltero-skills repo by URL on the skills screen, verify PLUGINS row + transcript line + (in a NEW session) roster showing built-ins + namespaced plugin skills + agent able to run one via the Skill tool. **Demo-time checks:** (a) does the live roster include non-skill slash commands? (plan's known unknown — record deviation + filter only if junk appears); (b) plugin with non-slug plugin.json name → seeded namespace may mismatch SDK canonical names (suggest_skill window); (c) skills-column spacing (.pix.top now fixed margin — eyeball it). (2) User review / PR creation. **Plan says: do not merge.** Launch build (§3d) stays PARKED behind v6c.
+**CURRENT TASK:** slash-autocomplete v2, mid-brainstorm (superpowers:brainstorming → spec → writing-plans → SDD, the usual cycle). **User requirements so far (2026-07-26, their words):** paginate the slashmenu list, make it scrollable, show ~5-8 at a time, arrow keys to cycle through them. Existing menu (PromptBar.tsx:14-17 filter, :55-64 render; terminal.css:566-577) is prefix-match + click-only. Open brainstorm questions when resuming: Enter/Tab-to-select behavior; substring vs prefix matching (namespaced `soltero-skills:x` names make prefix weak — typing /handoff finds nothing); whether menu survives typing args; and the UNANSWERED junk-filter question (user was asked "filter built-in commands out of the roster?" — no answer yet; SlashCommand type has NO skill-vs-command discriminator, sdk.d.ts:6596-6613, so any filter is heuristic). Ride on `feature/v6c-plugins` or branch after v6c merges — ask.
+
+**ALSO PENDING:** (a) record the confirmed junk-roster deviation in the plan's Deviations section; (b) v6c PR creation on user go (plan says do not merge); (c) demo-time check (b) from before — non-slug plugin.json name namespace mismatch — never exercised. Launch build (§3d) stays PARKED.
 
 **PROCESS NOTES (standing):** context hook ≈40% = HARD STOP. Don't pair AskUserQuestion with long content in the same turn. SDD per superpowers skills (worked well for v5b and v6a — 1 fix round total across v6a's 7 tasks).
 
@@ -88,11 +90,13 @@ Anyone in a project imports a skills plugin by **https git URL** (e.g. soltero-s
 
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # feature/v6c-plugins (local, no remote); untracked: market-research.md, tour-skill-suggest.png
-git log --oneline afc64b1..HEAD | wc -l      # 12 commits (dd0d6a4..27e4e22)
+git log --oneline afc64b1..HEAD | wc -l      # 14 commits (dd0d6a4..9df6f6d incl. HANDOFF + slashmenu fix)
 gh pr view 5 --json state -q .state          # MERGED (v6a)
 gh pr view 6 --json state -q .state          # MERGED (deployment strategy spec)
 cd poc/server && npx tsc --noEmit && npx vitest run   # clean, 123 passed
 cd ../client && npm test && npm run build             # 45 passed, clean build
 ```
 
-Resume at §4 step 2: demo checkpoint with the user, then PR on their go.
+Demo stack may still be RUNNING from this session (server :3001 with `AGENT_PLUGINS_ROOT=<repo>/poc/demo-plugins` + `AGENT_WORKDIR_ROOT=<repo>/poc/demo-worktrees`, vite :5173) — check `lsof -ti :3001` per §4 step 1 before editing poc/server or switching branches. Plugin clone persists at `poc/demo-plugins/default/soltero-skills` (26 skills). Client URLs: `http://localhost:5173/?session=v6c-accept-1` / `v6c-accept-2` (session id must match a demo-worktree dir; bare URL defaults to session "demo" which has NO worktree → misleading "native binary failed to launch"). Worktrees v6c-accept-1/2 exist.
+
+Resume at §1: continue the slash-autocomplete-v2 brainstorm (requirements captured there), get the junk-filter answer, then spec → plan → SDD.
