@@ -983,4 +983,4 @@ Stop for the user's manual demo checkpoint (fan a subagent out from the live ses
 
 ## Deviations (recorded during execution)
 
-(none yet)
+- Task 4 / final review: the plan's verbatim WorkflowsPanel code showed the "no workflows this session" sentence whenever RUNNING was empty, contradicting spec §6 (screen-level empty state). Fixed post-final-review: spec sentence only when `tasks.size === 0`, else "none running." Also retitled the SKILLS button tooltip from "skills & workflows (S)" to "skills (S)" to avoid collision with the new WORKFLOWS button.

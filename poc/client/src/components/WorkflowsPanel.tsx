@@ -38,7 +38,11 @@ export function WorkflowsPanel(props: {
         <div className="panel">
           <div className="pix">RUNNING</div>
           {running.length === 0 && (
-            <div className="line dim">no workflows this session — the agent spawns them when work fans out.</div>
+            <div className="line dim">
+              {props.tasks.size === 0
+                ? "no workflows this session — the agent spawns them when work fans out."
+                : "none running."}
+            </div>
           )}
           {running.map((t) => (
             <div className="wfrow" key={t.id}>

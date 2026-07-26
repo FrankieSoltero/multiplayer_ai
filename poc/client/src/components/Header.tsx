@@ -95,7 +95,7 @@ export function Header(props: {
         <button
           className="planmode"
           onClick={props.onOpenSkills}
-          title="skills & workflows (S)"
+          title="skills (S)"
         >
           ▢ SKILLS
         </button>
