@@ -1197,4 +1197,44 @@ describe("task events (workflows)", () => {
     });
     expect(s.eventsFrom(0).some((e) => e.type === "task_event")).toBe(false);
   });
+
+  it("stopTask appends an attributed task_stop and calls the stream's stopTask", async () => {
+    const stopped: string[] = [];
+    const run: RunQuery = (prompts) => {
+      const gen = fakeRunStream(prompts as any) as any;
+      gen.stopTask = async (taskId: string) => { stopped.push(taskId); };
+      return gen;
+    };
+    const s = new Session("t5");
+    const driver = new AgentDriver(s, run);
+    const result = driver.stopTask("T9", "u1");
+    expect(result.ok).toBe(true);
+    await wait(20);
+    expect(stopped).toEqual(["T9"]);
+    const ev = s.eventsFrom(0).find((e) => e.type === "task_stop");
+    expect(ev).toMatchObject({ taskId: "T9", userId: "u1" });
+  });
+
+  it("stopTask degrades silently when the stream has no stopTask", async () => {
+    const s = new Session("t6");
+    const driver = new AgentDriver(s, fakeRun); // fakeRun has no stopTask
+    const result = driver.stopTask("T9", "u1");
+    expect(result.ok).toBe(true); // attributed request still lands on the wire
+    expect(s.eventsFrom(0).some((e) => e.type === "task_stop")).toBe(true);
+    expect(s.eventsFrom(0).some((e) => e.type === "agent_error")).toBe(false);
+  });
+
+  it("stopTask surfaces SDK rejection as agent_error, not a throw", async () => {
+    const run: RunQuery = (prompts) => {
+      const gen = fakeRunStream(prompts as any) as any;
+      gen.stopTask = async () => { throw new Error("no such task"); };
+      return gen;
+    };
+    const s = new Session("t7");
+    const driver = new AgentDriver(s, run);
+    expect(driver.stopTask("T9", "u1").ok).toBe(true);
+    await vi.waitFor(() => {
+      expect(s.eventsFrom(0).some((e) => e.type === "agent_error" && /no such task/.test((e as any).message))).toBe(true);
+    });
+  });
 });

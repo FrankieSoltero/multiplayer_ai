@@ -81,6 +81,8 @@ export type RunQueryResult = AsyncIterable<SdkMessage> & {
   setModel?(model: string): Promise<void>;
   /** Present on the real SDK Query (sdk.d.ts Query.setPermissionMode); absent on plain test fakes. */
   setPermissionMode?(mode: string): Promise<void>;
+  /** Present on the real SDK Query (sdk.d.ts Query.stopTask); absent on plain test fakes. */
+  stopTask?(taskId: string): Promise<void>;
   /** Present on the real SDK Query; returns the live skill list (name + description). */
   supportedCommands?(): Promise<{ name: string; description: string }[]>;
 };
@@ -484,6 +486,29 @@ export class AgentDriver {
       }),
     );
     this.session.append({ type: "model_change", model: key, userId });
+    return { ok: true };
+  }
+
+  /**
+   * Human-requested stop of a running SDK task (spec §4). The attributed
+   * task_stop lands on the wire BEFORE the SDK call — the request is a fact
+   * even if the task finishes first. Confirmation is never synthesized: the
+   * SDK's own task_notification (status "stopped") flows back via
+   * handleTaskMessage. Fire-and-forget like setModel: SDK rejection surfaces
+   * as agent_error, an absent stopTask (fakes/old streams) is a no-op.
+   */
+  stopTask(
+    taskId: string,
+    userId: string,
+  ): { ok: true } | { ok: false; error: string } {
+    if (this.dead) return { ok: false, error: "agent session has ended" };
+    this.session.append({ type: "task_stop", taskId, userId });
+    void this.stream.stopTask?.(taskId).catch((err) =>
+      this.session.append({
+        type: "agent_error",
+        message: `task stop failed: ${err instanceof Error ? err.message : String(err)}`,
+      }),
+    );
     return { ok: true };
   }
 

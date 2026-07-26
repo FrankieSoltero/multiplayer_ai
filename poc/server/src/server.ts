@@ -375,6 +375,18 @@ export async function startServer(opts: {
         return;
       }
 
+      if (msg.type === "stop_task") {
+        if (typeof msg.taskId !== "string" || msg.taskId.length === 0) {
+          return sendError("stop_task requires taskId");
+        }
+        if (!ctx.entry.session.canPrompt(ctx.userId)) {
+          return sendError("only the current driver can stop tasks — take the wheel first");
+        }
+        const result = ctx.entry.driver.stopTask(msg.taskId, ctx.userId);
+        if (!result.ok) return sendError(result.error);
+        return;
+      }
+
       if (msg.type === "add_plugin") {
         if (typeof msg.url !== "string") {
           return sendError("add_plugin requires url");
