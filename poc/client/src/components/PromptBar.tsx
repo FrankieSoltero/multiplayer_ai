@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { matchSkills, moveHighlight } from "../slashMatch";
 
 export function PromptBar(props: {
   isDriver: boolean; agentBusy: boolean; watcherNames: string[];
@@ -10,11 +11,28 @@ export function PromptBar(props: {
 }) {
   const [text, setText] = useState("");
   const [hint, setHint] = useState<string | null>(null);
+  const [highlight, setHighlight] = useState(0);
+  const [dismissed, setDismissed] = useState(false); // Esc closes until the text changes
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   const slash = text.match(/^\/(\S*)$/); // "/par" while still typing the name
-  const matches = slash
-    ? props.skills.filter((s) => s.name.startsWith(slash[1]))
-    : [];
+  const matches = slash ? matchSkills(slash[1], props.skills) : [];
+  const menuOpen = matches.length > 0 && !dismissed;
+
+  // one rule: any change to the match list resets the highlight to the top
+  const matchKey = matches.map((m) => m.name).join("\n");
+  useEffect(() => { setHighlight(0); }, [matchKey]);
+
+  // the 3-row window follows the keyboard highlight
+  useEffect(() => {
+    listRef.current?.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
+  }, [highlight, matchKey]);
+
+  const accept = (name: string) => {
+    setText(`/${name} `); // trailing space ends the name token → menu closes itself
+    setHint(null);
+    props.inputRef.current?.focus();
+  };
 
   const submit = () => {
     const t = text.trim();
@@ -35,6 +53,21 @@ export function PromptBar(props: {
     setHint(null);
   };
 
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (menuOpen) {
+      // clamp: the reset-to-0 effect runs post-render, so guard a stale index
+      const sel = matches[Math.min(highlight, matches.length - 1)];
+      if (e.key === "ArrowDown") { e.preventDefault(); setHighlight((h) => moveHighlight(h, 1, matches.length)); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => moveHighlight(h, -1, matches.length)); return; }
+      if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); accept(sel.name); return; } // Shift+Tab stays reverse focus traversal (accessibility floor, v6a ruling)
+      if (e.key === "Enter") { accept(sel.name); return; }
+      if (e.key === "Escape") { setDismissed(true); return; }
+    }
+    if (e.key === "Enter") submit();
+  };
+
+  const selName = matches[Math.min(highlight, matches.length - 1)]?.name;
+
   return (
     <div className="promptbar">
       <div className="inputbox">
@@ -42,8 +75,13 @@ export function PromptBar(props: {
         <input
           ref={props.inputRef}
           value={text}
-          onChange={(e) => { setText(e.target.value); setHint(null); }}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
+          onChange={(e) => { setText(e.target.value); setHint(null); setDismissed(false); }}
+          onKeyDown={onKeyDown}
+          role="combobox"
+          aria-expanded={menuOpen}
+          aria-controls="slashmenu-list"
+          aria-autocomplete="list"
+          aria-activedescendant={menuOpen && selName ? `slashopt-${selName}` : undefined}
           placeholder={
             props.isDriver
               ? "you're driving — prompt the agent, or /skill…"
@@ -52,10 +90,17 @@ export function PromptBar(props: {
           maxLength={4000}
         />
         <span className="keys">⏎ send</span>
-        {matches.length > 0 && (
-          <div className="slashmenu">
-            {matches.map((s) => (
-              <button key={s.name} onClick={() => { setText(`/${s.name} `); props.inputRef.current?.focus(); }}>
+        {menuOpen && (
+          <div className="slashmenu" id="slashmenu-list" role="listbox" ref={listRef}>
+            {matches.map((s, i) => (
+              <button
+                key={s.name}
+                id={`slashopt-${s.name}`}
+                role="option"
+                aria-selected={i === highlight}
+                className={i === highlight ? "sel" : undefined}
+                onClick={() => accept(s.name)}
+              >
                 <span className="tag">{props.isDriver ? "RUN" : "SUGGEST"}</span>
                 <b>/{s.name}</b>{s.description && <span className="dim"> — {s.description}</span>}
               </button>

@@ -569,12 +569,18 @@ code, pre { font-family: var(--fm); }
   background: var(--input); border: 2px solid var(--accent);
   box-shadow: var(--chunk-sm); z-index: 5;
   display: flex; flex-direction: column;
+  max-height: 108px; /* 3 rows: 20px --line + 8px --sp-2 padding ×2 each */
+  overflow-y: auto;
 }
 .slashmenu button {
   text-align: left; padding: var(--sp-2) var(--sp-3);
   background: none; border: 0; color: var(--fg); cursor: pointer; font: inherit;
 }
 .slashmenu button:hover { background: rgba(217, 119, 87, 0.12); }
+.slashmenu button.sel {
+  background: rgba(217, 119, 87, 0.22);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
 .slashmenu .tag { font-family: var(--pf); font-size: 8px; color: var(--accent); margin-right: var(--sp-2); }
 
 /* suggest chip — a passenger's proposed skill riding the perm-card frame, gold */
