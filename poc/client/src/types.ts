@@ -26,6 +26,8 @@ export type LoggedEvent = {
   auto?: boolean;
   game?: string;
   score?: number;
+  action?: string;
+  skillCount?: number;
 };
 
 export type ProjectSessionInfo = {
@@ -45,6 +47,13 @@ export type ArcadeRecord = {
   name: string;
   glyph?: string;
   color?: string;
+};
+
+export type PluginInfo = {
+  name: string;
+  url: string;
+  skills: { name: string; description: string }[];
+  addedBy: string;
 };
 
 export const SERVER_URL = "ws://localhost:3001";

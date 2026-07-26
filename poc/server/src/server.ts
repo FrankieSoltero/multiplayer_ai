@@ -12,10 +12,11 @@ import {
   type ProjectSessionEntry,
 } from "./project.js";
 import { Session } from "./session.js";
-import { loadSkillRoster } from "./skillRoster.js";
+import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
 
 const MAX_PROMPT_LENGTH = 4000;
+const MAX_URL_LENGTH = 2048;
 const MAX_GAME_SCORE = 99999;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
 const ALLOWED_GLYPHS = new Set(["■", "▲", "●", "✦", "◆", "♠"]);
@@ -43,16 +44,32 @@ const INTERESTING = new Set([
   "plan_decision",
   "permission_mode_change",
   "game_score",
+  "plugin_change",
 ]);
 
-export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
+export async function startServer(opts: {
+  port: number;
+  runQuery?: RunQuery;
+  plugins?: PluginStore;
+}) {
   const runQuery = opts.runQuery ?? runAgentQuery;
+  const pluginStore = opts.plugins ?? new PluginStore(process.env.AGENT_PLUGINS_ROOT);
   const projects = new Map<string, Project>();
   const lastPush = new Map<Project, number>();
   const pushTimers = new Map<Project, NodeJS.Timeout>();
 
   function pushProject(project: Project): void {
-    const payload = JSON.stringify(projectSnapshot(project));
+    const timer = pushTimers.get(project);
+    if (timer) {
+      clearTimeout(timer);
+      pushTimers.delete(project);
+    }
+    const payload = JSON.stringify(
+      projectSnapshot(project, {
+        plugins: pluginStore.list(project.id),
+        enabled: pluginStore.enabled,
+      }),
+    );
     for (const watcher of project.watchers) {
       if (watcher.readyState === WebSocket.OPEN) watcher.send(payload);
     }
@@ -91,22 +108,28 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
       const session = new Session(sessionId);
       const root = process.env.AGENT_WORKDIR_ROOT;
       const workdir = root ? path.join(root, sessionId) : undefined;
-      const skillNames = (process.env.AGENT_SKILLS ?? "")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const skills = loadSkillRoster(workdir, skillNames);
-      // Appended (not side-channeled) so late joiners get the roster from the
-      // same replay path as everything else. Empty roster still appends — the
-      // client treats "no skill_roster yet" and "empty roster" identically,
-      // but a uniform log is easier to reason about.
+      // v6c: roster seeds from the plugin registry scan (instant, accurate
+      // for plugin skills); the driver replaces it with the SDK's live list
+      // — built-ins included — once the stream is up. Appended (not
+      // side-channeled) so late joiners replay it like everything else.
+      const skills = pluginStore.skillsFor(project.id);
       session.append({ type: "skill_roster", skills });
-      entry = {
+      const newEntry: ProjectSessionEntry = {
         session,
-        driver: new AgentDriver(session, runQuery, workdir),
+        driver: new AgentDriver(
+          session,
+          runQuery,
+          workdir,
+          pluginStore.paths(project.id),
+          (liveSkills) => {
+            newEntry.skills = liveSkills;
+            schedulePush(project);
+          },
+        ),
         skills,
         pendingSuggests: new Map(),
       };
+      entry = newEntry;
       project.sessions.set(sessionId, entry);
       session.subscribe((event) => {
         if (INTERESTING.has(event.type)) schedulePush(project);
@@ -193,7 +216,14 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
         entry.session.join(msg.userId, msg.name.slice(0, 40), { glyph, color });
         // Immediate personal snapshot so the sidebar isn't blank until the
         // next throttled push.
-        ws.send(JSON.stringify(projectSnapshot(project)));
+        ws.send(
+          JSON.stringify(
+            projectSnapshot(project, {
+              plugins: pluginStore.list(project.id),
+              enabled: pluginStore.enabled,
+            }),
+          ),
+        );
         return;
       }
 
@@ -205,7 +235,12 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
         const project = projects.get(projectId);
         ws.send(
           JSON.stringify(
-            project ? projectSnapshot(project) : { type: "project", sessions: [] },
+            project
+              ? projectSnapshot(project, {
+                  plugins: pluginStore.list(project.id),
+                  enabled: pluginStore.enabled,
+                })
+              : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled },
           ),
         );
         return;
@@ -337,6 +372,56 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
         }
         const result = ctx.entry.driver.setPermissionMode(msg.mode, ctx.userId);
         if (!result.ok) return sendError(result.error);
+        return;
+      }
+
+      if (msg.type === "add_plugin") {
+        if (typeof msg.url !== "string") {
+          return sendError("add_plugin requires url");
+        }
+        const url = msg.url.trim();
+        if (url.length === 0) {
+          return sendError("add_plugin requires url");
+        }
+        if (url.length > MAX_URL_LENGTH) {
+          return sendError(`url too long (max ${MAX_URL_LENGTH})`);
+        }
+        const { project, entry, userId } = ctx;
+        // Anyone in the project may register a plugin (spec §1) — no driver
+        // gate. Accountability is the attributed plugin_change on the wire.
+        void pluginStore.add(project.id, url, userId).then((result) => {
+          if (!result.ok) return sendError(result.error);
+          entry.session.append({
+            type: "plugin_change",
+            action: "add",
+            name: result.plugin.name,
+            skillCount: result.plugin.skills.length,
+            userId,
+          });
+          // Registry changes are rare, deliberate user actions (not a hot
+          // event stream) — push the updated registry immediately rather
+          // than riding the 1s throttle, same rationale as join's immediate
+          // personal snapshot.
+          pushProject(project);
+        });
+        return;
+      }
+
+      if (msg.type === "remove_plugin") {
+        if (typeof msg.name !== "string" || msg.name.length === 0) {
+          return sendError("remove_plugin requires name");
+        }
+        const removed = pluginStore.remove(ctx.project.id, msg.name);
+        if (!removed.ok) return sendError(removed.error);
+        ctx.entry.session.append({
+          type: "plugin_change",
+          action: "remove",
+          name: msg.name,
+          skillCount: 0,
+          userId: ctx.userId,
+        });
+        // Immediate push — see add_plugin above.
+        pushProject(ctx.project);
         return;
       }
 

@@ -2,6 +2,7 @@ import type { AgentDriver } from "./agentDriver.js";
 import { summarizeSession } from "./digest.js";
 import type { Session } from "./session.js";
 import type { SkillInfo } from "./events.js";
+import type { PluginInfo } from "./pluginStore.js";
 
 export const SLUG = /^[a-z0-9-]{1,40}$/;
 
@@ -87,9 +88,14 @@ export interface ProjectMessage {
     skills: SkillInfo[];
   }[];
   arcade: ArcadeRecord[];
+  plugins: PluginInfo[];
+  pluginsEnabled: boolean;
 }
 
-export function projectSnapshot(project: Project): ProjectMessage {
+export function projectSnapshot(
+  project: Project,
+  pluginState?: { plugins: PluginInfo[]; enabled: boolean },
+): ProjectMessage {
   const sessions = [...project.sessions.entries()].map(([id, entry]) => {
     const events = entry.session.eventsFrom(0);
     const summary = summarizeSession(id, events, entry.driver.isDead);
@@ -106,5 +112,11 @@ export function projectSnapshot(project: Project): ProjectMessage {
       skills: entry.skills,
     };
   });
-  return { type: "project", sessions, arcade: arcadeRecords(project) };
+  return {
+    type: "project",
+    sessions,
+    arcade: arcadeRecords(project),
+    plugins: pluginState?.plugins ?? [],
+    pluginsEnabled: pluginState?.enabled ?? false,
+  };
 }

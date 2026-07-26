@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { ProjectSessionInfo } from "../types";
+import { useEffect, useState } from "react";
+import type { PluginInfo, ProjectSessionInfo } from "../types";
 import { suiteFromSessions } from "../skillSuite";
 
 /** ?screen=skills — the party's skill surface. Real data everywhere it exists:
@@ -11,11 +11,22 @@ export function SkillsPanel(props: {
   sessionId: string;
   roster: { name: string; description: string }[];
   subruns: { label: string; status: "running" | "done"; rows: number }[];
+  plugins: PluginInfo[];
+  pluginsEnabled: boolean;
+  errors: string[];
+  onAddPlugin: (url: string) => void;
+  onRemovePlugin: (name: string) => void;
   onBack?: () => void;
 }) {
   const suite = suiteFromSessions(props.sessions);
   const [selected, setSelected] = useState<string | null>(null);
   const active = suite.find((s) => s.name === selected) ?? suite[0];
+
+  const [url, setUrl] = useState("");
+  const [pendingUrl, setPendingUrl] = useState<string | null>(null);
+  // A registry change or a fresh server error both mean the in-flight add
+  // has resolved — clear the cloning row.
+  useEffect(() => setPendingUrl(null), [props.plugins.length, props.errors.length]);
 
   return (
     <div className="screen">
@@ -32,7 +43,55 @@ export function SkillsPanel(props: {
 
       <div className="row">
         <div className="spellbook panel">
-          <div className="pix" style={{ color: "var(--dim)" }}>SKILL SUITE · {suite.length}</div>
+          <div className="pix" style={{ color: "var(--dim)" }}>PLUGINS · {props.plugins.length}</div>
+          {props.plugins.map((p) => (
+            <div key={p.name} className="cmd">
+              <b>{p.name}</b>{" "}
+              <span className="meta">
+                {p.skills.length} skills · added by {p.addedBy}
+              </span>
+              <button
+                className="btn"
+                onClick={() => props.onRemovePlugin(p.name)}
+                title={`remove ${p.name} (${p.url})`}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          {pendingUrl && <div className="note">cloning {pendingUrl}…</div>}
+          {props.pluginsEnabled ? (
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https:// git url — import a skills plugin"
+                style={{ flex: 1 }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && url) {
+                    props.onAddPlugin(url);
+                    setPendingUrl(url);
+                    setUrl("");
+                  }
+                }}
+              />
+              <button
+                className="btn"
+                disabled={!url}
+                onClick={() => {
+                  props.onAddPlugin(url);
+                  setPendingUrl(url);
+                  setUrl("");
+                }}
+              >
+                ADD
+              </button>
+            </div>
+          ) : (
+            <div className="note">plugin import is off — set AGENT_PLUGINS_ROOT on the server</div>
+          )}
+          <div className="note">plugins apply to sessions started from now — this session keeps its loadout</div>
+          <div className="pix top" style={{ color: "var(--dim)" }}>SKILL SUITE · {suite.length}</div>
           {suite.map((s) => (
             <button
               key={s.name}
@@ -110,6 +169,7 @@ export function SkillsPanel(props: {
           </div>
         </div>
       </div>
+      {props.errors.length > 0 && <div className="line red">⚠ {props.errors.at(-1)}</div>}
     </div>
   );
 }

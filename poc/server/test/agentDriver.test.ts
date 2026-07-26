@@ -15,6 +15,16 @@ const fakeRun: RunQuery = async function* (prompts) {
   }
 };
 
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Bare generator (no supportedCommands) reused by capturing/augmented runs.
+async function* fakeRunStream(prompts: AsyncIterable<{ message: { content: { text: string }[] } }>) {
+  for await (const _prompt of prompts) {
+    yield { type: "assistant", content: [{ type: "text", text: "ok" }] } as SdkMessage;
+    return;
+  }
+}
+
 const failingRun: RunQuery = async function* (prompts) {
   for await (const _prompt of prompts) {
     throw new Error("api exploded");
@@ -1012,5 +1022,47 @@ describe("auto permission mode", () => {
       ok: false,
       error: "agent session has ended",
     });
+  });
+});
+
+describe("plugin plumbing and live roster", () => {
+  it("passes pluginPaths through hooks to the run function", async () => {
+    let seenPaths: string[] | undefined;
+    const capturingRun: RunQuery = (prompts, hooks) => {
+      seenPaths = hooks.pluginPaths;
+      return fakeRunStream(prompts);
+    };
+    new AgentDriver(new Session("s-pp"), capturingRun, undefined, ["/plugins/p/soltero-skills"]);
+    await wait(20);
+    expect(seenPaths).toEqual(["/plugins/p/soltero-skills"]);
+  });
+
+  it("refreshes the roster from supportedCommands and notifies onRoster", async () => {
+    const session = new Session("s-roster");
+    const withCommands: RunQuery = (prompts) =>
+      Object.assign(fakeRunStream(prompts), {
+        supportedCommands: async () => [
+          { name: "dataviz", description: "make charts" },
+          { name: "soltero-skills:agent-handoff", description: "x".repeat(300) },
+        ],
+      });
+    const rosters: { name: string; description: string }[][] = [];
+    new AgentDriver(session, withCommands, undefined, [], (skills) => rosters.push(skills));
+    await vi.waitFor(() => {
+      expect(session.eventsFrom(0).some((e) => e.type === "skill_roster")).toBe(true);
+    });
+    const ev = session.eventsFrom(0).find((e) => e.type === "skill_roster");
+    expect(ev && "skills" in ev && ev.skills).toEqual([
+      { name: "dataviz", description: "make charts" },
+      { name: "soltero-skills:agent-handoff", description: "x".repeat(200) },
+    ]);
+    expect(rosters).toHaveLength(1);
+  });
+
+  it("appends no roster when the stream lacks supportedCommands (test fakes)", async () => {
+    const session = new Session("s-noroster");
+    new AgentDriver(session, fakeRun);
+    await wait(50);
+    expect(session.eventsFrom(0).some((e) => e.type === "skill_roster")).toBe(false);
   });
 });

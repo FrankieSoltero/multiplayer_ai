@@ -120,3 +120,26 @@ describe("arcade records", () => {
     }
   });
 });
+
+describe("projectSnapshot plugins", () => {
+  it("carries the plugin registry and enabled flag when provided", () => {
+    const project = new Project("p1");
+    const plugins = [
+      {
+        name: "soltero-skills",
+        url: "https://github.com/x/soltero-skills",
+        skills: [{ name: "soltero-skills:agent-handoff", description: "d" }],
+        addedBy: "u1",
+      },
+    ];
+    const snap = projectSnapshot(project, { plugins, enabled: true });
+    expect(snap.plugins).toEqual(plugins);
+    expect(snap.pluginsEnabled).toBe(true);
+  });
+
+  it("defaults to an empty, disabled registry when omitted (back-compat)", () => {
+    const snap = projectSnapshot(new Project("p2"));
+    expect(snap.plugins).toEqual([]);
+    expect(snap.pluginsEnabled).toBe(false);
+  });
+});

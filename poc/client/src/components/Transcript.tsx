@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { deriveTranscriptGroups, type DerivedState } from "../derive";
 import type { LoggedEvent } from "../types";
+import { pluginLine } from "../pluginLine";
 
 const isFresh = (ev: LoggedEvent) => Date.now() - new Date(ev.ts).getTime() < 5000;
 
@@ -247,6 +248,12 @@ export function Transcript(props: {
           >
             ✦ {nameOf(ev.userId)} set permission mode to {(ev.mode ?? "default").toUpperCase()}
             {ev.mode === "auto" && " — gates self-approve until it's switched off"}
+          </div>
+        );
+      case "plugin_change":
+        return (
+          <div key={ev.seq} className="line gold">
+            ✦ {nameOf(ev.userId)} {pluginLine(ev.action, ev.name, ev.skillCount)}
           </div>
         );
       default:

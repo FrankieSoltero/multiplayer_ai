@@ -35,7 +35,7 @@ for dev teams. See `docs/research-report.md` for the research and
 Setup is the same as v2 (demo-setup.sh, `AGENT_WORKDIR_ROOT`, two tabs), except
 the server start line for v3 is:
 
-`cd poc/server && AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees AGENT_SKILLS=auth-migration-guide npm run dev`
+`cd poc/server && AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees AGENT_PLUGINS_ROOT=$(pwd)/../demo-plugins npm run dev`
 
 New in v3:
 
@@ -46,15 +46,10 @@ New in v3:
   teammate decide a pending request (drop in just to approve something).
 - The demo repo ships a project skill (`.claude/skills/auth-migration-guide/`);
   ask the ana agent to "migrate auth to JWT" and it should consult the skill.
-  Skills default to none for isolation from the host CLI's own built-in
-  skills; `AGENT_SKILLS` is a context filter over *discovered* skills (which
-  ones get exposed to the agent), not a discovery mechanism itself — and
-  project-skill auto-discovery under the current `settingSources: []`
-  isolation is an open item, not yet verified to work end-to-end. Today the
-  demo works because the agent reads `.claude/skills/*/SKILL.md` directly
-  when asked to use the skill, which does work reliably. The filter is also
-  listing-level, not a sandbox: built-in skill files remain readable via
-  Read/Bash regardless of `AGENT_SKILLS`.
+  As of v6c, skills plugins are imported per-project from the skills screen
+  by git URL (`AGENT_PLUGINS_ROOT` sets where clones land); every session
+  started after an import runs with Claude Code's built-in skills
+  (`skills: "all"`) plus that project's imported plugin skills.
 
 ### Residual risk (PoC scope)
 

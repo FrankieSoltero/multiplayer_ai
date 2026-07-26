@@ -32,6 +32,7 @@ export type SessionEvent =
   | { type: "plan_request"; requestId: string; plan: string }
   | { type: "plan_decision"; requestId: string; decision: "approve" | "reject"; userId: string }
   | { type: "permission_mode_change"; mode: "plan" | "default" | "auto"; userId: string }
-  | { type: "game_score"; userId: string; game: ArcadeGame; score: number };
+  | { type: "game_score"; userId: string; game: ArcadeGame; score: number }
+  | { type: "plugin_change"; action: "add" | "remove"; name: string; skillCount: number; userId: string };
 
 export type LoggedEvent = SessionEvent & { seq: number; ts: string };

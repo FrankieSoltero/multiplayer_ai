@@ -73,7 +73,7 @@ function SessionView(props: {
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
-  const { events, errors, connected, projectSessions, arcade, send } = useSessionSocket({
+  const { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, send } = useSessionSocket({
     sessionId,
     projectId,
     userId,
@@ -242,6 +242,11 @@ function SessionView(props: {
         sessionId={sessionId}
         roster={derived.skills}
         subruns={subruns}
+        plugins={plugins}
+        pluginsEnabled={pluginsEnabled}
+        errors={errors}
+        onAddPlugin={(url) => send({ type: "add_plugin", url })}
+        onRemovePlugin={(name) => send({ type: "remove_plugin", name })}
         onBack={() => props.onScreenChange(null)}
       />
     );

@@ -94,6 +94,7 @@ code, pre { font-family: var(--fm); }
 .pix.sm { font-size: 8px; }
 .pix.lg { font-size: 11px; }
 .pix.xl { font-size: 15px; }
+.pix.top { margin-top: var(--sp-3); border-top: 1px dashed var(--frame); padding-top: var(--sp-2); }
 
 .panel {
   background: var(--panel);
@@ -383,6 +384,7 @@ code, pre { font-family: var(--fm); }
 
 .promptbar { display: flex; flex-direction: column; gap: var(--sp-1); }
 .promptbar .inputbox {
+  position: relative; /* anchor for .slashmenu — absolute popup above the input */
   display: flex; gap: var(--sp-2); align-items: center;
   padding: 10px var(--sp-3);
   border: 2px solid var(--accent); background: var(--input);
