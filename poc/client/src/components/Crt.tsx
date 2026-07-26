@@ -24,7 +24,7 @@ export function Crt(props: {
 
   return (
     <div className={intensity === "off" ? "crt off" : "crt"} style={vars as React.CSSProperties}>
-      <div className="crt-screen" style={{ height: props.height ?? 764 }}>
+      <div className="crt-screen" style={{ height: props.height ?? "100%" }}>
         {props.children}
       </div>
       <div className="crt-fx crt-scan" />
