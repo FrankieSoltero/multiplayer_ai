@@ -24,7 +24,10 @@ export default function App() {
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   const sessionId = params.get("session") ?? "demo";
   const projectId = params.get("project") ?? "default";
-  const screen = params.get("screen");
+  // v6a: screen is state seeded by ?screen= — deep links keep working, but
+  // SKILLS is reachable in-app without a reload. ?screen=status stays a
+  // URL-only design surface (no nav points at it).
+  const [screen, setScreen] = useState<string | null>(() => params.get("screen"));
 
   // Profile precedence: `?name=` URL param auto-derives a profile (glyph/color
   // hashed from userId) and skips the lobby entirely — demo scripts depend on
@@ -53,7 +56,7 @@ export default function App() {
             }}
           />
         ) : (
-          <SessionView userId={userId} sessionId={sessionId} projectId={projectId} profile={profile} screen={screen} />
+          <SessionView userId={userId} sessionId={sessionId} projectId={projectId} profile={profile} screen={screen} onScreenChange={setScreen} />
         )}
       </Crt>
     </Cabinet>
@@ -66,6 +69,7 @@ function SessionView(props: {
   projectId: string;
   profile: Profile;
   screen: string | null;
+  onScreenChange: (screen: string | null) => void;
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
@@ -124,7 +128,7 @@ function SessionView(props: {
       if (
         (e.key === "a" || e.key === "A") &&
         !e.metaKey && !e.ctrlKey && !e.altKey &&
-        !arcadeOpen && !derived.agentBusy && gatesPending === 0
+        !arcadeOpen && !derived.agentBusy && gatesPending === 0 && props.screen === null
       ) {
         e.preventDefault();
         setArcadeOpen(true);
@@ -132,7 +136,7 @@ function SessionView(props: {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [arcadeOpen, derived.agentBusy, gatesPending]);
+  }, [arcadeOpen, derived.agentBusy, gatesPending, props.screen]);
 
   // "M" cycles the permission mode (driver only, works even while the agent
   // is busy — that's the point: flipping to AUTO rescues a gate-stuck turn).
@@ -143,14 +147,32 @@ function SessionView(props: {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if ((e.key === "m" || e.key === "M") && isDriver && !arcadeCapturing) {
+      if ((e.key === "m" || e.key === "M") && isDriver && !arcadeCapturing && props.screen === null) {
         e.preventDefault();
         send({ type: "set_permission_mode", mode: nextMode(permissionMode) });
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isDriver, arcadeCapturing, permissionMode, send]);
+  }, [isDriver, arcadeCapturing, permissionMode, send, props.screen]);
+
+  // "S" toggles the skills screen; Esc always returns to the session.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (document.activeElement as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if ((e.key === "s" || e.key === "S") && !arcadeCapturing) {
+        e.preventDefault();
+        props.onScreenChange(props.screen === "skills" ? null : "skills");
+      }
+      if (e.key === "Escape" && props.screen === "skills") {
+        props.onScreenChange(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [props.screen, props.onScreenChange, arcadeCapturing]);
 
   // per-game party records; glyph/color fall back to hashIdentity like derive.ts
   const partyBests = useMemo(() => {
@@ -220,6 +242,7 @@ function SessionView(props: {
         sessionId={sessionId}
         roster={derived.skills}
         subruns={subruns}
+        onBack={() => props.onScreenChange(null)}
       />
     );
   }
@@ -243,6 +266,7 @@ function SessionView(props: {
         arcadeOpen={arcadeOpen}
         canToggleArcade={!derived.agentBusy}
         onToggleArcade={() => setArcadeOpen((v) => !v)}
+        onOpenSkills={() => props.onScreenChange("skills")}
         hud={hud}
       />
 

@@ -11,6 +11,7 @@ export function SkillsPanel(props: {
   sessionId: string;
   roster: { name: string; description: string }[];
   subruns: { label: string; status: "running" | "done"; rows: number }[];
+  onBack?: () => void;
 }) {
   const suite = suiteFromSessions(props.sessions);
   const [selected, setSelected] = useState<string | null>(null);
@@ -22,6 +23,11 @@ export function SkillsPanel(props: {
         <span className="pix xl" style={{ color: "var(--gold)" }}>SKILLS &amp; WORKFLOWS</span>
         <span className="rule" />
         <span style={{ color: "var(--dim)" }}>every skill the party&apos;s sessions bring</span>
+        {props.onBack && (
+          <button className="btn" onClick={props.onBack} title="back to the session (S or Esc)">
+            ⮐ BACK [S]
+          </button>
+        )}
       </div>
 
       <div className="row">

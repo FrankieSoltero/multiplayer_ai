@@ -23,6 +23,7 @@ export function Header(props: {
   objective: string | null; canSetModel: boolean; onSetModel: (key: string) => void;
   permissionMode: string; canCycleMode: boolean; onCycleMode: () => void;
   arcadeOpen: boolean; canToggleArcade: boolean; onToggleArcade: () => void;
+  onOpenSkills: () => void;
   hud?: HudData;
 }) {
   const hud = props.hud ?? {};
@@ -89,6 +90,13 @@ export function Header(props: {
           }
         >
           {props.arcadeOpen ? "◉ ARCADE" : "▢ ARCADE"}
+        </button>
+        <button
+          className="planmode"
+          onClick={props.onOpenSkills}
+          title="skills & workflows (S)"
+        >
+          ▢ SKILLS
         </button>
         <span className={props.connected ? "conn" : "conn off"}>
           {props.connected ? "● ONLINE" : "○ OFFLINE"}
