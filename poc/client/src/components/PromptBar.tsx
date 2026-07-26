@@ -53,10 +53,12 @@ export function PromptBar(props: {
     setHint(null);
   };
 
+  const effectiveHighlight = Math.min(highlight, matches.length - 1);
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (menuOpen) {
       // clamp: the reset-to-0 effect runs post-render, so guard a stale index
-      const sel = matches[Math.min(highlight, matches.length - 1)];
+      const sel = matches[effectiveHighlight];
       if (e.key === "ArrowDown") { e.preventDefault(); setHighlight((h) => moveHighlight(h, 1, matches.length)); return; }
       if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => moveHighlight(h, -1, matches.length)); return; }
       if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); accept(sel.name); return; } // Shift+Tab stays reverse focus traversal (accessibility floor, v6a ruling)
@@ -66,7 +68,7 @@ export function PromptBar(props: {
     if (e.key === "Enter") submit();
   };
 
-  const selName = matches[Math.min(highlight, matches.length - 1)]?.name;
+  const selName = matches[effectiveHighlight]?.name;
 
   return (
     <div className="promptbar">
@@ -97,8 +99,8 @@ export function PromptBar(props: {
                 key={s.name}
                 id={`slashopt-${s.name}`}
                 role="option"
-                aria-selected={i === highlight}
-                className={i === highlight ? "sel" : undefined}
+                aria-selected={i === effectiveHighlight}
+                className={i === effectiveHighlight ? "sel" : undefined}
                 onClick={() => accept(s.name)}
               >
                 <span className="tag">{props.isDriver ? "RUN" : "SUGGEST"}</span>
