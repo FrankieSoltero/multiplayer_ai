@@ -5,7 +5,7 @@ import { AsyncQueue } from "./asyncQueue.js";
 import { MODELS, DEFAULT_MODEL, type ModelKey } from "./models.js";
 import { buildCanUseTool } from "./permissions.js";
 import type { Session } from "./session.js";
-import type { SkillInfo, TodoItem } from "./events.js";
+import type { SessionEvent, SkillInfo, TodoItem } from "./events.js";
 
 /**
  * Message pushed into the SDK's streaming-input queue.
@@ -29,9 +29,20 @@ export interface SdkUserMessage {
 
 export interface SdkMessage {
   type: string;
+  subtype?: string;
   content?: unknown[];
   message?: { content?: unknown[] };
   parent_tool_use_id?: string | null;
+  // system task messages (task_started/task_progress/task_updated/task_notification)
+  task_id?: string;
+  description?: string;
+  subagent_type?: string;
+  workflow_name?: string;
+  status?: string;
+  summary?: string;
+  last_tool_name?: string;
+  usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
+  patch?: { status?: string; description?: string; error?: string };
 }
 
 export interface DriverHooks {
@@ -196,6 +207,11 @@ export class AgentDriver {
   // 50-item cap, so ids assigned after the cap kicks in stay aligned with
   // the SDK's own numbering (which keeps counting past 50).
   private nextTaskId = 1;
+  // Per-task progress throttle (spec §3): leading append + trailing flush of
+  // the latest pending progress. done supersedes and clears. Timers are
+  // cleared when the stream dies so nothing appends after teardown.
+  private pendingProgress = new Map<string, SessionEvent & { type: "task_event" }>();
+  private progressTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(
     private session: Session,
@@ -203,6 +219,7 @@ export class AgentDriver {
     workdir?: string,
     pluginPaths: string[] = [],
     private onRoster?: (skills: SkillInfo[]) => void,
+    private progressThrottleMs = 2000,
   ) {
     this.stream = run(this.prompts, {
       onIntent: (text) =>
@@ -488,11 +505,13 @@ export class AgentDriver {
       // The stream ended normally (the SDK query completed/closed) — the
       // driver can no longer accept prompts.
       this.dead = true;
+      this.clearProgressTimers(true);
       this.denyAllPending("stream ended");
     } catch (err) {
       // Fatal errors on the stream itself (e.g. the iterable throws) still
       // need to be surfaced, but at this point the stream is done for good.
       this.dead = true;
+      this.clearProgressTimers(false);
       this.denyAllPending("stream failed");
       this.session.append({
         type: "agent_error",
@@ -559,6 +578,10 @@ export class AgentDriver {
   }
 
   private handleMessage(message: SdkMessage): void {
+    if (message.type === "system") {
+      this.handleTaskMessage(message);
+      return;
+    }
     // Docs show content on the message; some SDK versions nest it under .message
     const blocks = (message.content ?? message.message?.content ?? []) as {
       type: string;
@@ -701,5 +724,89 @@ export class AgentDriver {
       if (typeof content !== "string" || typeof status !== "string" || !valid.has(status)) return [];
       return [{ text: content.slice(0, 200), status: status as TodoItem["status"] }];
     });
+  }
+
+  /** Forward the SDK's task lifecycle onto the wire as task_event (spec §3).
+   *  Non-task system subtypes are ignored. */
+  private handleTaskMessage(message: SdkMessage): void {
+    const taskId = message.task_id;
+    if (typeof taskId !== "string" || taskId.length === 0) return;
+    const usage = message.usage ?? {};
+    if (message.subtype === "task_started") {
+      this.session.append({
+        type: "task_event", taskId, subtype: "started",
+        ...(message.description ? { description: message.description } : {}),
+        ...(message.subagent_type ? { subagentType: message.subagent_type } : {}),
+        ...(message.workflow_name ? { workflowName: message.workflow_name } : {}),
+      });
+    } else if (message.subtype === "task_progress") {
+      const ev: SessionEvent & { type: "task_event" } = {
+        type: "task_event", taskId, subtype: "progress",
+        ...(message.description ? { description: message.description } : {}),
+        ...(message.summary ? { summary: message.summary } : {}),
+        ...(message.last_tool_name ? { lastTool: message.last_tool_name } : {}),
+        ...(usage.total_tokens !== undefined ? { tokens: usage.total_tokens } : {}),
+        ...(usage.tool_uses !== undefined ? { toolUses: usage.tool_uses } : {}),
+        ...(usage.duration_ms !== undefined ? { durationMs: usage.duration_ms } : {}),
+      };
+      this.throttleProgress(taskId, ev);
+    } else if (message.subtype === "task_updated") {
+      const patch = message.patch ?? {};
+      this.session.append({
+        type: "task_event", taskId, subtype: "updated",
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.description ? { description: patch.description } : {}),
+        ...(patch.error ? { error: patch.error } : {}),
+      });
+    } else if (message.subtype === "task_notification") {
+      // Terminal: supersedes any pending progress for this task.
+      const timer = this.progressTimers.get(taskId);
+      if (timer) clearTimeout(timer);
+      this.progressTimers.delete(taskId);
+      this.pendingProgress.delete(taskId);
+      this.session.append({
+        type: "task_event", taskId, subtype: "done",
+        ...(message.status ? { status: message.status } : {}),
+        ...(message.summary ? { summary: message.summary } : {}),
+        ...(usage.total_tokens !== undefined ? { tokens: usage.total_tokens } : {}),
+        ...(usage.tool_uses !== undefined ? { toolUses: usage.tool_uses } : {}),
+        ...(usage.duration_ms !== undefined ? { durationMs: usage.duration_ms } : {}),
+      });
+    }
+  }
+
+  /** Leading append + trailing latest-wins flush, one window per task. */
+  private throttleProgress(taskId: string, ev: SessionEvent & { type: "task_event" }): void {
+    if (this.progressTimers.has(taskId)) {
+      this.pendingProgress.set(taskId, ev); // latest wins
+      return;
+    }
+    this.session.append(ev);
+    this.progressTimers.set(
+      taskId,
+      setTimeout(() => {
+        this.progressTimers.delete(taskId);
+        const pending = this.pendingProgress.get(taskId);
+        this.pendingProgress.delete(taskId);
+        // Re-enter so the flush opens a fresh window (a follow-up burst
+        // throttles again instead of appending unthrottled).
+        if (pending) this.throttleProgress(taskId, pending);
+      }, this.progressThrottleMs),
+    );
+  }
+
+  /**
+   * Stream teardown. On a normal end the pending trailing progress is real
+   * data that would otherwise be silently dropped — flush it before clearing.
+   * On a fatal stream error, discard: appending task telemetry after an
+   * error event would misrepresent the failure order on the wire.
+   */
+  private clearProgressTimers(flushPending: boolean): void {
+    for (const timer of this.progressTimers.values()) clearTimeout(timer);
+    this.progressTimers.clear();
+    if (flushPending) {
+      for (const pending of this.pendingProgress.values()) this.session.append(pending);
+    }
+    this.pendingProgress.clear();
   }
 }
