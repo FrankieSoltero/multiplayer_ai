@@ -266,6 +266,7 @@ export async function startServer(opts: {
           return sendError("watch_project requires a valid projectId");
         }
         const project = getOrCreateProject(projectId);
+        if (watching) watching.watchers.delete(ws);
         project.watchers.add(ws);
         watching = project;
         ws.send(JSON.stringify(snapshotFor(project)));

@@ -967,6 +967,36 @@ describe("session initiation", () => {
     joiner.close();
   });
 
+  it("watch_project unsubscribes from the previous project on re-watch", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const watcher = await connect(server.port);
+    const seen: any[] = [];
+    collect(watcher, seen);
+    // Watch default project
+    watcher.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(30);
+    const initialSnap = seen.find((m) => m.type === "project");
+    expect(initialSnap).toBeTruthy();
+    const snapCount = seen.filter((m) => m.type === "project").length;
+    // Switch to watching other project
+    watcher.send(JSON.stringify({ type: "watch_project", projectId: "other" }));
+    await wait(30);
+    // Have a session join the default project (watcher is no longer subscribed)
+    const joiner = await connect(server.port);
+    joiner.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana", projectId: "default" }));
+    await wait(100);
+    // Count project messages received: initial "default" + initial "other" + should NOT get updated "default"
+    const projectMessages = seen.filter((m) => m.type === "project");
+    expect(projectMessages.length).toBe(snapCount + 1); // only the "other" project added
+    // Verify the last project message is from "other" (empty sessions initially)
+    const lastProjectMsg = projectMessages.at(-1);
+    expect(lastProjectMsg).toBeTruthy();
+    watcher.close();
+    joiner.close();
+  });
+
   it("create_session provisions, acks, and pushes the new session", async () => {
     const workspace = fakeWorkspace();
     const server = await startServer({ port: 0, runQuery: echoRun, workspace });
