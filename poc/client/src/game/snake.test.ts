@@ -69,4 +69,11 @@ describe("snake", () => {
     expect(rows.join("")).toContain("●");
     expect(rows[2][8]).toBe("█"); // head start position
   });
+
+  it("applies the post-eat speed to later steps within the same tick", () => {
+    let s: SnakeState = { ...initialState(1), food: [9, 2] }; // one step ahead of the head at [8,2]
+    s = tick(s, 0.245); // step 1 eats at 0.125s; remaining 0.120s ≥ 1/8.5 ≈ 0.1176s only under the new speed
+    expect(s.eaten).toBe(1);
+    expect(s.body[0][0]).toBe(10); // stale-speed code would stop at 9
+  });
 });

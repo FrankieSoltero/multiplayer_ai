@@ -77,11 +77,12 @@ function step(s: SnakeState): SnakeState {
 
 export function tick(s: SnakeState, dt: number): SnakeState {
   if (!s.alive) return s;
-  const speed = Math.min(MAX_SPEED, BASE_SPEED + SPEED_PER_FOOD * s.eaten);
-  const stepTime = 1 / speed;
   let acc = s.moveAcc + dt;
   let cur = s;
-  while (acc >= stepTime && cur.alive) {
+  for (;;) {
+    const speed = Math.min(MAX_SPEED, BASE_SPEED + SPEED_PER_FOOD * cur.eaten);
+    const stepTime = 1 / speed;
+    if (acc < stepTime || !cur.alive) break;
     acc -= stepTime;
     cur = step(cur);
   }
