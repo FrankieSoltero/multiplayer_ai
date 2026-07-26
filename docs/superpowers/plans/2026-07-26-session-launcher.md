@@ -1570,3 +1570,10 @@ Stop for the user's manual demo checkpoint: from a scratch git repo (or this one
 **Task 3:**
 - Extra pre-normalization `..` path-component check in `poc/server/src/staticFiles.ts` — brief's reference code relied only on post-normalization path containment; explicit check ensures traversal attempts rejected at decode stage with 403, not served as extensionless SPA routes.
 - Listen-error rejection registers error handler on BOTH `httpServer` and `wss` — brief's snippet used single `httpServer.once("error")` listener; ws library re-emits httpServer errors on WSS instance, where unhandled they throw and block httpServer listener dispatch; dual registration prevents throw and allows rejection to propagate.
+- staticHandler also serves HEAD requests — spec §5 describes GET only; additive, no conflict.
+
+**Task 5:**
+- SessionPicker no-repo hint reads "launch via the CLI (mpai) to create sessions." vs spec §4's "launch via the CLI to create sessions" — UI copy only, not a §6 locked error string.
+
+**Task 6:**
+- `mpai new` adds a 10s connect timeout ("timed out waiting for the server", exit 1) — robustness addition beyond spec §5/§6; fires only if the server never responds, distinct from the "no server" path.
