@@ -442,4 +442,4 @@ Stop for the user's manual demo checkpoint (checklist: type `/handoff` → solte
 
 ## Deviations (recorded during execution)
 
-(none yet)
+- **Task 3 (PromptBar):** The plan's reference component code carried a clamp inconsistency — the JSX map compared `i === highlight` (raw) while the keydown handler and `aria-activedescendant` used a `Math.min`-clamped index, producing a one-frame ARIA/visual mismatch when the match list narrows (the `setHighlight(0)` reset is a `useEffect`, not guaranteed to flush before paint). Caught by the task review; fixed in `ec75ee2` by computing `effectiveHighlight = Math.min(highlight, matches.length - 1)` once and using it in all three places.
