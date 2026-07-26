@@ -23,6 +23,8 @@ export type LoggedEvent = {
   todos?: { text: string; status: string }[];
   plan?: string;
   mode?: string;
+  game?: string;
+  score?: number;
 };
 
 export type ProjectSessionInfo = {
@@ -33,6 +35,15 @@ export type ProjectSessionInfo = {
   lastActivityTs: string | null;
   ended: boolean;
   skills?: { name: string; description: string }[];
+};
+
+export type ArcadeRecord = {
+  game: string;
+  score: number;
+  userId: string;
+  name: string;
+  glyph?: string;
+  color?: string;
 };
 
 export const SERVER_URL = "ws://localhost:3001";

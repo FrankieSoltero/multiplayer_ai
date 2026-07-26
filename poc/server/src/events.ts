@@ -8,6 +8,9 @@ export interface TodoItem {
   status: "pending" | "in_progress" | "completed";
 }
 
+export const ARCADE_GAMES = ["dino", "snake", "typerace"] as const;
+export type ArcadeGame = (typeof ARCADE_GAMES)[number];
+
 export type SessionEvent =
   | { type: "user_message"; userId: string; text: string }
   | { type: "agent_text_delta"; text: string; parentToolUseId?: string }
@@ -28,6 +31,7 @@ export type SessionEvent =
   | { type: "todo_update"; todos: TodoItem[] }
   | { type: "plan_request"; requestId: string; plan: string }
   | { type: "plan_decision"; requestId: string; decision: "approve" | "reject"; userId: string }
-  | { type: "permission_mode_change"; mode: "plan" | "default"; userId: string };
+  | { type: "permission_mode_change"; mode: "plan" | "default"; userId: string }
+  | { type: "game_score"; userId: string; game: ArcadeGame; score: number };
 
 export type LoggedEvent = SessionEvent & { seq: number; ts: string };

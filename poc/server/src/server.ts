@@ -13,8 +13,10 @@ import {
 } from "./project.js";
 import { Session } from "./session.js";
 import { loadSkillRoster } from "./skillRoster.js";
+import { ARCADE_GAMES } from "./events.js";
 
 const MAX_PROMPT_LENGTH = 4000;
+const MAX_GAME_SCORE = 99999;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
 const ALLOWED_GLYPHS = new Set(["■", "▲", "●", "✦", "◆", "♠"]);
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
@@ -40,6 +42,7 @@ const INTERESTING = new Set([
   "plan_request",
   "plan_decision",
   "permission_mode_change",
+  "game_score",
 ]);
 
 export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
@@ -350,6 +353,27 @@ export async function startServer(opts: { port: number; runQuery?: RunQuery }) {
         if (!ctx.entry.driver.resolvePlan(msg.requestId, msg.decision, ctx.userId)) {
           return sendError("unknown or already-decided plan request");
         }
+        return;
+      }
+
+      if (msg.type === "game_score") {
+        if (
+          typeof msg.game !== "string" ||
+          !(ARCADE_GAMES as readonly string[]).includes(msg.game)
+        ) {
+          return sendError("game_score requires game: dino|snake|typerace");
+        }
+        if (!Number.isInteger(msg.score) || msg.score <= 0 || msg.score > MAX_GAME_SCORE) {
+          return sendError(`game_score requires an integer score 1-${MAX_GAME_SCORE}`);
+        }
+        // No driver check: passengers play too. Identity comes from the
+        // connection context — a client cannot claim someone else's record.
+        ctx.entry.session.append({
+          type: "game_score",
+          userId: ctx.userId,
+          game: msg.game as (typeof ARCADE_GAMES)[number],
+          score: msg.score,
+        });
         return;
       }
 

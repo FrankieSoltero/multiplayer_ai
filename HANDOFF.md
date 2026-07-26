@@ -1,71 +1,70 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25 (night): v5c MERGED (PR #3 → main `ee4c8a8`, branch deleted, main green: server 90 / client 22 / clean build). User said "start on v5b". Stopped at the ~40% context hook BEFORE any v5b work — fresh session starts the v5b cycle at brainstorming.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-25: v5b DONE — snake vertical-speed feedback implemented (`057fb6d`), branch pushed, **PR #4 open against main** (user chose push+PR). Suites: server 94, client 39, builds clean. Nothing in flight; next session starts at PR merge or the next cycle.*
 
-## 0. WHERE WE ARE — v5c shipped, v5b not started
+## 0. WHERE WE ARE — v5b complete, PR #4 awaiting merge
 
-- v1–v5c all merged to main. v5c history: PR #3 (15 commits + screenshots + fix wave); its SDD ledger was deleted per skill (record is git history).
-- ZERO v5b artifacts exist: no brainstorm, no spec, no plan, no branch. Do not look for them.
+- v5b cycle fully closed this session: the last user feedback (snake vertical speed) implemented TDD-style, finishing menu answered (push + PR, matching v5a #2 / v5c #3 precedent).
+- Branch `feature/v5b-arcade` pushed; PR: https://github.com/FrankieSoltero/multiplayer_ai/pull/4 (base `main` @ `185404a`). NOT merged.
+- Local branch/checkout preserved for PR-feedback iteration.
 
 ## 1. Goal & current task
 
 Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 
-**CURRENT TASK:** run the v5b cycle from the very beginning, same shape as v5a/v5c: superpowers:brainstorming (user in the loop) → user-approved spec in `docs/superpowers/specs/` → superpowers:writing-plans → plan committed on a new `feature/v5b-*` branch off main → subagent-driven execution. Nothing is decided yet beyond the one-line concept.
+**CURRENT TASK:** none in flight. Next session either (a) handles PR #4 feedback / merge, or (b) starts the next cycle (brainstorm first, per process).
 
-**PROCESS NOTE (standing):** context-watch hook at ~40% = HARD STOP (refresh this file, tell user to /clear, end turn).
+**PROCESS NOTES (standing):** context hook ≈40% = HARD STOP (refresh this file, tell user /clear, end turn). Don't pair AskUserQuestion with long content in the same turn (dialog hides the text — user correction, saved in memory). SDD process per superpowers skills; user picked subagent-driven for v5b.
 
-## 2. What v5b is (only what's known — everything else is for the brainstorm)
+## 2. Snake vertical-speed fix (DONE — `057fb6d`)
 
-One line carried since v5a: **"game roster + party high score."** Deliberately deferred hooks already in main:
-- `ThinkingStrip` has a 4-lane game roster where only dino is playable; snake/breakout/typerace render "cartridge not inserted" (`poc/client/src/components/ThinkingStrip.tsx:10-15` GAMES list, `:152` roster row).
-- `ThinkingStrip` already accepts an optional `partyBest?: PartyBest` prop (`ThinkingStrip.tsx:17-19,30,124`) — NEVER passed anywhere; when absent it renders YOUR BEST from localStorage. Party-wide high score needs a wire/server story (brainstorm question).
-- HUD `partyXp` field exists and renders `—` (`poc/client/src/components/Header.tsx:8-15`); usage/XP events were explicitly excluded from v5c (spec §8) and earmarked "v5b+".
-- Dino engine: `poc/client/src/game/dino.ts:1-65` (pure functions: initialState/jump/tick/renderLane) — the pattern new game engines would follow.
+User feedback "same speed when going up vs sideways" implemented: `V_ASPECT = 2` in `poc/client/src/game/snake.ts:7`; `tick()` scales step time by pending direction (`snake.ts:85` — `(cur.pendingDir[1] !== 0 ? V_ASPECT : 1) / speed`), keeping the per-iteration speed recompute (review fix `0a86b30`). New test `snake.test.ts:73-79`; the pre-existing self-collision test's tick duration updated 0.2→0.3s (`snake.test.ts:55`) because its single step is now vertical (0.25s). Client baseline 38 → 39.
 
 ## 3. Decisions + why (do not re-litigate)
 
-- All v1–v5c decisions stand: append-only wire + client derivation; server = relay + gate; no fake affordances / dash-honest surfaces; pixel face = chrome only; accessibility floor (reduced-motion killswitch, --dim ≥ 5.72:1, :focus-visible).
-- CSS gotcha now documented in-file: new animations must be declared above the reduced-motion kill list or added to the trailing override block (`poc/client/src/terminal.css` end-of-file comment) — a v5c final-review find; don't regress it.
-- Cycle process locked by precedent: brainstorm → spec (user approves) → plan with full code inline → SDD execution with per-task review → final whole-branch review → push + PR (v5a PR #2, v5c PR #3).
+- All v1–v5c decisions stand (append-only wire + client derivation; server = relay + gate; no fake affordances; accessibility floor; terminal.css animation-ordering rule).
+- v5b decisions (user-approved in brainstorm): game_score as server event on the append-only wire (only honest party-wide option); per-game records (cross-game scores incomparable); party = PROJECT-wide, aggregated server-side into the throttled ProjectMessage snapshot (lobby pattern); engines = snake + typerace only, breakout stays "cartridge not inserted"; party XP stays deferred (HUD renders —); arcade playable anytime via header toggle + `A` hotkey (user chose this over ThinkingStrip-only); shared GameEngine interface, zero per-game host branches.
+- Finishing choice: push + PR against main (user answered the menu this session; PR #4).
+- Final-review rulings (parked, do not reopen): placeFood unbounded loop unreachable (~197 foods); dino >99999 after 2.8h theoretical; same-millisecond cross-session ties iteration-dependent (vanishing); canToggleArcade deliberately NOT driver-gated (arcade is local UI; PLAN is a wire action).
+- Spec deviation (recorded in plan): submit-once tested via pure `settleRun` (no component-test infra exists).
 
 ## 4. Ordered next steps (fresh session)
 
-1. `git checkout main && git pull` (expect HEAD `ee4c8a8` or later; verify main green per §8).
-2. Invoke superpowers:brainstorming for v5b scope. Seed questions the brainstorm must answer: which game(s) get real engines; what "party high score" means (per-game? per-project? persistence: localStorage vs server event on the append-only wire); whether usage/XP events (HUD partyXp, CONTEXT) enter scope or stay deferred; whether the ThinkingStrip-only surface expands.
-3. Write user-approved spec to `docs/superpowers/specs/2026-MM-DD-v5b-<name>.md`, commit on main or the feature branch per precedent (v5c committed spec+plan on the feature branch).
-4. superpowers:writing-plans → `docs/superpowers/plans/…`, branch `feature/v5b-<name>` off main, then superpowers:subagent-driven-development.
-5. Carry §7 open items into the brainstorm agenda where relevant (esp. #9 meta-tools bypass, plan-mode pairing observation).
+1. Check PR #4 state (`gh pr view 4`). If review feedback exists, iterate on `feature/v5b-arcade` (checkout, fix, push).
+2. If/when user merges: `git checkout main && git pull`, then optionally delete the local branch.
+3. Next cycle: brainstorm first (superpowers:brainstorming) — carried open items in §7 are candidates.
 
-## 5. Files with line refs (main @ ee4c8a8)
+## 5. Files with line refs (branch, post-`057fb6d`)
 
-- Game/arcade: `poc/client/src/components/ThinkingStrip.tsx:10-15` (GAMES), `:17-19` (PartyBest iface), `:30` (prop), `:112-113` (g-swap), `:124-133` (best-line render); `poc/client/src/game/dino.ts:1-65` (engine pattern).
-- HUD: `poc/client/src/components/Header.tsx:8-15` (HudData incl. partyXp), `App.tsx:80-88` (hud memo), `App.tsx:180` (hud prop).
-- Wire (if server events enter v5b): `poc/server/src/events.ts` (event union), `poc/server/src/project.ts:31-60` (ProjectMessage/projectSnapshot — v5c added skills here), `poc/client/src/derive.ts` (client derivation).
-- Process reference: `docs/superpowers/specs/2026-07-25-v5c-restyle-design.md`, `docs/superpowers/plans/2026-07-25-v5c-restyle.md` (the shape a v5b spec/plan should follow).
+- Snake: `poc/client/src/game/snake.ts:7` (V_ASPECT), `:78-91` (tick, direction-scaled stepTime), `:49-54` (steer); tests `snake.test.ts:73-79` (vertical-speed), `:49-58` (self-collision, 0.3s tick).
+- Engine contract: `poc/client/src/game/engine.ts` (GameEngine, LANE_WIDTH=40, lcg, settleRun/RunLedger); adapters at bottom of `dino.ts`, `snake.ts`, `typerace.ts`.
+- Host: `poc/client/src/components/ThinkingStrip.tsx` — render-phase runState pattern `:48-63` (do NOT move reset back into an effect — live-crash lesson, see Docs/mistakes-and-fixes.md), capturing notify `:94-99`, settle effect `:140-153`, keydown `:128-172`.
+- Plumbing: `App.tsx:112-127` (A-hotkey guard incl. gatesPending===0), `:98-110` (partyBests memo), Header ARCADE button `Header.tsx:54-77`; `Transcript.tsx:47` (hotkeysMuted guard); `useSessionSocket.ts` (arcade capture); `types.ts` (ArcadeRecord).
+- Server: `events.ts` (ARCADE_GAMES + game_score), `server.ts` (~line 359 gate, INTERESTING), `project.ts` (arcadeRecords + ts tie-break + cost comment), tests in `server/test/{server,project}.test.ts`.
+- Spec/plan: `docs/superpowers/specs/2026-07-25-v5b-arcade-design.md`, `docs/superpowers/plans/2026-07-25-v5b-arcade.md`.
 
 ## 6. Gotchas / constraints
 
-- All carried gotchas stand: `Docs/`==`docs/`; no client auto-reconnect; `.superpowers/` git-excluded; subagent sandbox CANNOT launch the SDK binary (controller runs the demo stack); tsx watch hot-reload kills live turns (never edit poc/server mid-demo).
-- Fresh demo session needs a worktree FIRST: `cd poc/demo-project && git worktree add ../demo-worktrees/<session> -b <session>` — else SDK spawn fails with a MISLEADING "native binary failed to launch" banner. Existing worktrees: ana, ben, v5a-retest-3, v5c-accept-1, v5c-accept-2. Stack: server :3001 `AGENT_WORKDIR_ROOT=<repo>/poc/demo-worktrees AGENT_SKILLS=auth-migration-guide npm run dev` (from poc/server); vite :5173 (from poc/client).
-- Test baselines on main: server 90, client 22.
-- Live SDK facts (documented, not bugs): Skill "Unknown skill" under settingSources:[] (agent self-recovers); meta-tools (ToolSearch/TaskCreate/TaskUpdate/Agent) bypass canUseTool; a/d keys ignored while an input is focused; server emits paired plan-mode on/off events around SDK session restarts (e.g. after model switch) — pre-existing, single toggle click = exactly one event.
-- terminal.css animation ordering (§3) — new animated rules appended after the reduced-motion kill block silently escape it; use the trailing override block.
+- All carried gotchas stand: `Docs/`==`docs/` (case-insensitive FS — use `docs/` in git commands); no client auto-reconnect; `.superpowers/` git-excluded; subagent sandbox can't launch the SDK binary; tsx watch hot-reload kills live turns (NEVER edit poc/server mid-demo; client HMR is safe).
+- Demo stack: worktree FIRST (`cd poc/demo-project && git worktree add ../demo-worktrees/<s> -b <s>`), else MISLEADING "native binary failed to launch". Existing worktrees: ana, ben, v5a-retest-3, v5c-accept-1/2, v5b-accept-1. Server: from poc/server `AGENT_WORKDIR_ROOT=<repo>/poc/demo-worktrees AGENT_SKILLS=auth-migration-guide npm run dev`; client: vite :5173. A STALE server may hold :3001 (`lsof -ti :3001` → kill) — hit this live.
+- PromptBar submits via input keydown Enter (no form). ThinkingStrip keyboard guard ignores keys while INPUT/SELECT/TEXTAREA focused — synthetic tests must blur first.
+- Test baselines on branch: server 94, client 39.
+- terminal.css: no new animations were added in v5b; the ordering rule stands.
+- Playwright acceptance evidence: all 6 checks passed incl. WPM formula exact (370 = 372−2×1 miss) and busy-flip survival. (The snake aspect fix landed after acceptance; covered by unit test, not re-run live.)
 
 ## 7. Open questions / USER DECISIONS (carried)
 
-Carried v3: (1) worktree-containment Write/Edit approval; (2) Bash-allowlist two-hop residual risk; (3) skill discovery under settingSources:[] broken — accept self-recovery or investigate SDK.
-Carried v4/v5a: (5) stale skill name in v4 spec text; (6) 4 polish items in frontend-design-skill-notes; (8) v5a deferred minors (git history of this file @ bf889d4); (9) meta-tools bypassing the gate — accept or raise upstream.
-Carried v5c: (10) AgentStatus TOOLS lists "Agent · spawns subagents" ungated — factually correct today because of #9; revisit together. (11) plan-mode on/off pairing around SDK restarts — cosmetic transcript noise; fix in v5b or accept.
-v5b scope questions themselves → §4 step 2 (they're brainstorm inputs, not blockers).
+- Carried v3/v4/v5a/v5c items unchanged: worktree-containment Write/Edit approval; Bash-allowlist two-hop risk; skill discovery under settingSources:[]; stale skill name in v4 spec; frontend-design polish items; meta-tools bypass gate (#9) + AgentStatus TOOLS line (#10); plan-mode on/off pairing around SDK restarts (#11 — still unaddressed in v5b, cosmetic).
+- Deferred minors (ledgered in final review, none blocking): [mounted,game] effect double-init one-frame flash; seed() Date.now impurity if StrictMode ever enabled; Transcript keydown effect deps churn (pre-existing).
 
 ## 8. Resume & verify
 
 ```bash
-cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git checkout main && git pull
-git log --oneline -1                                  # ee4c8a8 Merge pull request #3 …
-cd poc/server && npx tsc --noEmit && npx vitest run   # clean, 90 passed
-cd ../client && npm test && npm run build             # 22 passed, clean build
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git checkout feature/v5b-arcade
+git log --oneline -2   # <HANDOFF commit> / 057fb6d fix(v5b): snake — aspect-scaled vertical step time…
+gh pr view 4           # v5b: arcade — playable snake + typerace with party-wide records (open, base main)
+cd poc/server && npx tsc --noEmit && npx vitest run   # clean, 94 passed
+cd ../client && npm test && npm run build             # 39 passed, clean build
 ```
 
-Resume at §4 step 2: superpowers:brainstorming for v5b ("game roster + party high score"). Nothing about v5b is decided — the brainstorm is the first move.
+Resume at §4: PR #4 feedback/merge, then next cycle.

@@ -10,6 +10,10 @@ export function Transcript(props: {
   onPermission: (requestId: string, decision: "allow" | "deny") => void;
   onDecideSkill: (suggestId: string, decision: "run" | "dismiss") => void;
   onDecidePlan: (requestId: string, decision: "approve" | "reject") => void;
+  /** v5b final-review: true while an arcade run has the keyboard captured
+   *  (game letters overlap a/d) — mutes the a/d permission hotkeys so
+   *  steering never silently allows/denies a tool call. */
+  hotkeysMuted?: boolean;
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -40,6 +44,7 @@ export function Transcript(props: {
   useEffect(() => {
     if (!props.isDriver || !newest?.requestId) return;
     const onKey = (e: KeyboardEvent) => {
+      if (props.hotkeysMuted) return;
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       if (e.key === "a") props.onPermission(newest.requestId!, "allow");

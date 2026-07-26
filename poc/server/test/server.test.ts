@@ -164,6 +164,32 @@ describe("WebSocket hub", () => {
     wsZero.close();
     wsNeg.close();
   });
+
+  it("gates game_score and appends valid scores with the sender's identity", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "arc", userId: "u1", name: "Ana" }));
+    await wait(50);
+
+    ws.send(JSON.stringify({ type: "game_score", game: "breakout", score: 10 }));
+    ws.send(JSON.stringify({ type: "game_score", game: "dino", score: 3.5 }));
+    ws.send(JSON.stringify({ type: "game_score", game: "dino", score: 0 }));
+    ws.send(JSON.stringify({ type: "game_score", game: "dino", score: 100000 }));
+    ws.send(JSON.stringify({ type: "game_score", game: "dino", score: 120, userId: "someone-else" }));
+    await wait(100);
+
+    const errors = seen.filter((m) => m.type === "error").map((m) => m.message);
+    expect(errors).toHaveLength(4);
+    const scores = seen.filter((m) => m.event?.type === "game_score");
+    expect(scores).toHaveLength(1);
+    // userId comes from the connection, not the message payload
+    expect(scores[0].event).toMatchObject({ game: "dino", score: 120, userId: "u1" });
+    ws.close();
+  });
 });
 
 describe("project awareness", () => {

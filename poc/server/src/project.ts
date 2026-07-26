@@ -28,6 +28,53 @@ export class Project {
   }
 }
 
+export interface ArcadeRecord {
+  game: string;
+  score: number;
+  userId: string;
+  name: string;
+  glyph?: string;
+  color?: string;
+}
+
+/** Best score per game across every session in the project. Holder identity
+ *  is resolved from presence_join events (NOT the live participants map) so
+ *  a record survives its holder leaving. Ties break chronologically (earliest
+ *  timestamp wins), regardless of session iteration order.
+ *  Cost: O(total project events) per throttled push — fine for an in-memory
+ *  POC; an incremental best-map is the upgrade path if event counts grow. */
+function arcadeRecords(project: Project): ArcadeRecord[] {
+  const identities = new Map<string, { name: string; glyph?: string; color?: string }>();
+  const best = new Map<string, { userId: string; score: number; ts: string }>();
+  for (const entry of project.sessions.values()) {
+    for (const ev of entry.session.eventsFrom(0)) {
+      if (ev.type === "presence_join" && ev.userId && ev.name) {
+        identities.set(ev.userId, { name: ev.name, glyph: ev.glyph, color: ev.color });
+      }
+      if (ev.type === "game_score") {
+        if (!Number.isInteger(ev.score) || ev.score <= 0) continue; // degrade, don't crash
+        const cur = best.get(ev.game);
+        if (!cur || ev.score > cur.score || (ev.score === cur.score && ev.ts < cur.ts)) {
+          best.set(ev.game, { userId: ev.userId, score: ev.score, ts: ev.ts });
+        }
+      }
+    }
+  }
+  const out: ArcadeRecord[] = [];
+  for (const [game, rec] of best) {
+    const id = identities.get(rec.userId);
+    out.push({
+      game,
+      score: rec.score,
+      userId: rec.userId,
+      name: id?.name ?? "unknown",
+      glyph: id?.glyph,
+      color: id?.color,
+    });
+  }
+  return out.sort((a, b) => a.game.localeCompare(b.game));
+}
+
 export interface ProjectMessage {
   type: "project";
   sessions: {
@@ -39,6 +86,7 @@ export interface ProjectMessage {
     ended: boolean;
     skills: SkillInfo[];
   }[];
+  arcade: ArcadeRecord[];
 }
 
 export function projectSnapshot(project: Project): ProjectMessage {
@@ -58,5 +106,5 @@ export function projectSnapshot(project: Project): ProjectMessage {
       skills: entry.skills,
     };
   });
-  return { type: "project", sessions };
+  return { type: "project", sessions, arcade: arcadeRecords(project) };
 }
