@@ -21,8 +21,9 @@ const k = (n?: number) => (n === undefined ? "—" : n >= 1000 ? `${(n / 1000).t
 export function Header(props: {
   projectId: string; sessionId: string; model: string; connected: boolean;
   objective: string | null; canSetModel: boolean; onSetModel: (key: string) => void;
-  planMode: boolean; canTogglePlan: boolean; onTogglePlan: () => void;
+  permissionMode: string; canCycleMode: boolean; onCycleMode: () => void;
   arcadeOpen: boolean; canToggleArcade: boolean; onToggleArcade: () => void;
+  onOpenSkills: () => void;
   hud?: HudData;
 }) {
   const hud = props.hud ?? {};
@@ -53,16 +54,30 @@ export function Header(props: {
           </select>
         </label>
         <button
-          className={props.planMode ? "planmode on" : "planmode"}
-          disabled={!props.canTogglePlan}
-          onClick={props.onTogglePlan}
+          className={
+            props.permissionMode === "auto"
+              ? "planmode auto on"
+              : props.permissionMode === "plan"
+                ? "planmode on"
+                : "planmode"
+          }
+          disabled={!props.canCycleMode}
+          onClick={props.onCycleMode}
           title={
-            props.canTogglePlan
-              ? "plan mode: the agent must present a plan for approval before acting"
-              : "only the driver can toggle plan mode, between turns"
+            props.canCycleMode
+              ? props.permissionMode === "auto"
+                ? "AUTO: permission gates self-approve — every decision still lands on the wire. Click or press M to cycle."
+                : props.permissionMode === "plan"
+                  ? "PLAN: the agent must present a plan for approval before acting. Click or press M to cycle."
+                  : "DEFAULT: gates ask the driver. Click or press M to cycle."
+              : "only the driver can change the permission mode — take the wheel first"
           }
         >
-          {props.planMode ? "◉ PLAN" : "▢ PLAN"}
+          {props.permissionMode === "auto"
+            ? "⚡ MODE: AUTO"
+            : props.permissionMode === "plan"
+              ? "◉ MODE: PLAN"
+              : "▢ MODE: DEFAULT"}
         </button>
         <button
           className={props.arcadeOpen ? "planmode on" : "planmode"}
@@ -75,6 +90,13 @@ export function Header(props: {
           }
         >
           {props.arcadeOpen ? "◉ ARCADE" : "▢ ARCADE"}
+        </button>
+        <button
+          className="planmode"
+          onClick={props.onOpenSkills}
+          title="skills & workflows (S)"
+        >
+          ▢ SKILLS
         </button>
         <span className={props.connected ? "conn" : "conn off"}>
           {props.connected ? "● ONLINE" : "○ OFFLINE"}

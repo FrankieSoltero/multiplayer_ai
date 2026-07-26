@@ -138,7 +138,15 @@ export function Transcript(props: {
             <code className="perm-input">{preview?.slice(0, 300)}</code>
             {decided ? (
               <div className="perm-outcome">
-                {decided.decision === "allow" ? "✅ approved" : "⛔ denied"} by {nameOf(decided.userId)}
+                {decided.auto ? (
+                  <span style={{ color: "var(--amber)" }}>
+                    ⚡ auto-approved · AUTO set by {nameOf(decided.userId)}
+                  </span>
+                ) : (
+                  <>
+                    {decided.decision === "allow" ? "✅ approved" : "⛔ denied"} by {nameOf(decided.userId)}
+                  </>
+                )}
               </div>
             ) : props.isDriver && ev.requestId ? (
               <div className="perm-actions">
@@ -232,8 +240,13 @@ export function Transcript(props: {
         return null; // folded into the plan card via planDecisions
       case "permission_mode_change":
         return (
-          <div key={ev.seq} className="line gold">
-            ✦ {nameOf(ev.userId)} switched plan mode {ev.mode === "plan" ? "on" : "off"}
+          <div
+            key={ev.seq}
+            className="line gold"
+            style={ev.mode === "auto" ? { color: "var(--amber)" } : undefined}
+          >
+            ✦ {nameOf(ev.userId)} set permission mode to {(ev.mode ?? "default").toUpperCase()}
+            {ev.mode === "auto" && " — gates self-approve until it's switched off"}
           </div>
         );
       default:

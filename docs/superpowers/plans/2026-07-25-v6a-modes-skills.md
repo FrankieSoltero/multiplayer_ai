@@ -932,3 +932,8 @@ git add -A && git commit -m "chore(v6a): verification fixes" # only if anything 
 ```
 
 Then follow superpowers:finishing-a-development-branch (PR against main, same no-ff merge style as PRs #2-#4).
+
+## Deviations (recorded during execution)
+
+- **"Leaving auto restores gating" test restructured** (commit d76b44f): the plan's single-prompt two-gate version was non-deterministic — relay auto-approval resolves synchronously, so the fake's second gate fired before the mode could flip back. Replaced with a two-prompt structure (gate 1 under auto, mode flip, gate 2 on a second prompt stays pending). Controller-authorized.
+- **⚡ AUTO gate-card marker renders the driver's name, not glyph** (spec §3 said "with the driver's glyph beside it"): plan's Task 6 code block used `nameOf`, consistent with every other decision line in the transcript. Accepted as spec drift at final review.

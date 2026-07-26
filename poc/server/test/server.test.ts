@@ -654,9 +654,67 @@ describe("plan mode", () => {
     wsB.send(JSON.stringify({ type: "decide_plan", requestId: "r1", decision: "approve" }));
     await wait(100);
     const errors = seenB.filter((m) => m.type === "error").map((m) => m.message);
-    expect(errors.some((e) => /toggle plan mode/.test(e))).toBe(true);
+    expect(errors.some((e) => /change the permission mode/.test(e))).toBe(true);
     expect(errors.some((e) => /decide plans/.test(e))).toBe(true);
     wsA.close();
     wsB.close();
+  });
+});
+
+describe("auto mode (e2e)", () => {
+  it("auto-approves gates end-to-end with driver attribution on the wire", async () => {
+    const gateRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _prompt of prompts) {
+        const decision = await hooks.onPermissionRequest("Bash", {
+          command: "npm run build",
+        });
+        yield {
+          type: "assistant",
+          content: [{ type: "text", text: `went: ${decision}` }],
+        };
+      }
+    };
+    const server = await startServer({ port: 0, runQuery: gateRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "auto1", userId: "u1", name: "Ana" }));
+    await wait(50);
+    ws.send(JSON.stringify({ type: "set_permission_mode", mode: "auto" }));
+    ws.send(JSON.stringify({ type: "prompt", text: "build it" }));
+    await wait(300);
+
+    const events = seen.map((m) => m.event).filter(Boolean);
+    expect(events.find((e) => e.type === "permission_mode_change")).toMatchObject({
+      mode: "auto",
+      userId: "u1",
+    });
+    expect(events.find((e) => e.type === "permission_request")).toBeTruthy();
+    expect(events.find((e) => e.type === "permission_decision")).toMatchObject({
+      decision: "allow",
+      userId: "u1",
+      auto: true,
+    });
+    expect(
+      events.some((e) => e.type === "agent_text_delta" && e.text === "went: allow"),
+    ).toBe(true);
+    ws.close();
+  });
+
+  it("rejects an unknown mode", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "auto2", userId: "u1", name: "Ana" }));
+    await wait(50);
+    ws.send(JSON.stringify({ type: "set_permission_mode", mode: "yolo" }));
+    await wait(100);
+    const errors = seen.filter((m) => m.type === "error").map((m) => m.message);
+    expect(errors.some((e) => /plan\|default\|auto/.test(e))).toBe(true);
+    ws.close();
   });
 });

@@ -12,7 +12,7 @@ export interface DerivedState {
   participants: Map<string, Participant>;
   objective: string | null;
   lastIntentSeq: number | null;
-  permissionDecisions: Map<string, { decision: string; userId: string }>;
+  permissionDecisions: Map<string, { decision: string; userId: string; auto?: boolean }>;
   model: string;
   agentBusy: boolean;
   skills: { name: string; description: string }[];
@@ -64,6 +64,7 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
           s.permissionDecisions.set(ev.requestId, {
             decision: ev.decision,
             userId: ev.userId,
+            ...(ev.auto ? { auto: true } : {}),
           });
         break;
       case "model_change":

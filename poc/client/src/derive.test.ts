@@ -64,6 +64,16 @@ describe("deriveState", () => {
       deriveState([...base, ev({ type: "turn_end" }, 3)]).agentBusy,
     ).toBe(false);
   });
+
+  it("tracks auto permission mode and auto-marked decisions", () => {
+    const s = deriveState([
+      ev({ type: "permission_mode_change", mode: "auto", userId: "u1" }, 0),
+      ev({ type: "permission_request", requestId: "r9", toolName: "Bash", input: {} }, 1),
+      ev({ type: "permission_decision", requestId: "r9", decision: "allow", userId: "u1", auto: true }, 2),
+    ]);
+    expect(s.permissionMode).toBe("auto");
+    expect(s.permissionDecisions.get("r9")).toEqual({ decision: "allow", userId: "u1", auto: true });
+  });
 });
 
 describe("harness state", () => {

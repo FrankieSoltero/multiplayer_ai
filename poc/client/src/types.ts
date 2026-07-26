@@ -23,6 +23,7 @@ export type LoggedEvent = {
   todos?: { text: string; status: string }[];
   plan?: string;
   mode?: string;
+  auto?: boolean;
   game?: string;
   score?: number;
 };
