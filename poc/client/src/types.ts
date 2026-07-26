@@ -41,6 +41,19 @@ export type LoggedEvent = {
   durationMs?: number;
   lastTool?: string;
   summarySeq?: number;
+  inviteId?: string;
+  expiresAt?: number;
+  maxUses?: number;
+};
+
+export type InviteView = {
+  id: string;
+  token: string;
+  sessionId: string;
+  createdByName: string;
+  expiresAt: number;
+  uses: number;
+  maxUses: number;
 };
 
 export type ProjectSessionInfo = {

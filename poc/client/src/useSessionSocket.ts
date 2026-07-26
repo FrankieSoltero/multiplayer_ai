@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ArcadeRecord, LoggedEvent, OversightState, PluginInfo, ProjectSessionInfo } from "./types";
+import type { ArcadeRecord, InviteView, LoggedEvent, OversightState, PluginInfo, ProjectSessionInfo } from "./types";
 import { SERVER_URL } from "./types";
 import type { Profile } from "./identity";
 
@@ -8,6 +8,7 @@ export function useSessionSocket(opts: {
   projectId: string;
   userId: string;
   profile: Profile;
+  invite?: string;
 }): {
   events: LoggedEvent[];
   errors: string[];
@@ -17,9 +18,10 @@ export function useSessionSocket(opts: {
   plugins: PluginInfo[];
   pluginsEnabled: boolean;
   oversight: OversightState;
+  invites: InviteView[];
   send: (msg: object) => void;
 } {
-  const { sessionId, projectId, userId, profile } = opts;
+  const { sessionId, projectId, userId, profile, invite } = opts;
   const [events, setEvents] = useState<LoggedEvent[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
   const [connected, setConnected] = useState(false);
@@ -30,6 +32,7 @@ export function useSessionSocket(opts: {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [pluginsEnabled, setPluginsEnabled] = useState(false);
   const [oversight, setOversight] = useState<OversightState>({ enabled: false, latest: null });
+  const [invites, setInvites] = useState<InviteView[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -47,6 +50,7 @@ export function useSessionSocket(opts: {
           glyph: profile.glyph,
           color: profile.color,
           lastSeq: 0,
+          ...(invite ? { invite } : {}),
         }),
       );
     };
@@ -62,17 +66,18 @@ export function useSessionSocket(opts: {
           setPluginsEnabled(msg.pluginsEnabled ?? false);
           setOversight(msg.oversight ?? { enabled: false, latest: null });
         }
+        if (msg.type === "invite_list") setInvites(msg.invites ?? []);
       } catch {
         return;
       }
     };
     ws.onclose = () => setConnected(false);
     return () => ws.close();
-  }, [projectId, sessionId, userId, profile.name, profile.glyph, profile.color]);
+  }, [projectId, sessionId, userId, profile.name, profile.glyph, profile.color, invite]);
 
   const send = (msg: object) => {
     wsRef.current?.send(JSON.stringify(msg));
   };
 
-  return { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, oversight, send };
+  return { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, oversight, invites, send };
 }
