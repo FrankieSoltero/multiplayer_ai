@@ -39,10 +39,11 @@ export interface ArcadeRecord {
 
 /** Best score per game across every session in the project. Holder identity
  *  is resolved from presence_join events (NOT the live participants map) so
- *  a record survives its holder leaving. Ties keep the earlier holder. */
+ *  a record survives its holder leaving. Ties break chronologically (earliest
+ *  timestamp wins), regardless of session iteration order. */
 function arcadeRecords(project: Project): ArcadeRecord[] {
   const identities = new Map<string, { name: string; glyph?: string; color?: string }>();
-  const best = new Map<string, { userId: string; score: number }>();
+  const best = new Map<string, { userId: string; score: number; ts: string }>();
   for (const entry of project.sessions.values()) {
     for (const ev of entry.session.eventsFrom(0)) {
       if (ev.type === "presence_join" && ev.userId && ev.name) {
@@ -51,7 +52,9 @@ function arcadeRecords(project: Project): ArcadeRecord[] {
       if (ev.type === "game_score") {
         if (!Number.isInteger(ev.score) || ev.score <= 0) continue; // degrade, don't crash
         const cur = best.get(ev.game);
-        if (!cur || ev.score > cur.score) best.set(ev.game, { userId: ev.userId, score: ev.score });
+        if (!cur || ev.score > cur.score || (ev.score === cur.score && ev.ts < cur.ts)) {
+          best.set(ev.game, { userId: ev.userId, score: ev.score, ts: ev.ts });
+        }
       }
     }
   }

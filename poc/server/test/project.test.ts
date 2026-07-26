@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { Project, projectSnapshot, SLUG } from "../src/project.js";
 import { Session } from "../src/session.js";
 import { AgentDriver, type RunQuery } from "../src/agentDriver.js";
@@ -92,5 +92,31 @@ describe("arcade records", () => {
     ana.append({ type: "game_score", userId: "u1", game: "dino", score: 2.5 } as never);
     ana.append({ type: "game_score", userId: "u1", game: "dino", score: -5 } as never);
     expect(projectSnapshot(project).arcade).toEqual([]);
+  });
+
+  it("breaks ties chronologically across sessions, not by iteration order", () => {
+    vi.useFakeTimers();
+    try {
+      const project = new Project("demo");
+      const ana = addSession(project, "ana");
+      ana.join("u1", "Ana");
+
+      // Ana scores 100 at timestamp 1000
+      vi.setSystemTime(1000);
+      ana.append({ type: "game_score", userId: "u1", game: "dino", score: 100 });
+
+      // Later session Ben created, but scores 100 (tie) at timestamp 500 (earlier)
+      vi.setSystemTime(500);
+      const ben = addSession(project, "ben");
+      ben.join("u2", "Ben");
+      ben.append({ type: "game_score", userId: "u2", game: "dino", score: 100 });
+
+      const snap = projectSnapshot(project);
+      const dino = snap.arcade.find((r) => r.game === "dino")!;
+      // Ben's score has earlier timestamp (500 < 1000), so Ben should win the tie
+      expect(dino).toMatchObject({ userId: "u2", name: "Ben", score: 100 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
