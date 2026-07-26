@@ -69,6 +69,10 @@ export function staticHandler(
       res.end();
       return;
     }
-    fs.createReadStream(filePath).pipe(res);
+    // File may vanish between existsSync and open; destroy response if stream
+    // emits error (headers already sent at this point).
+    fs.createReadStream(filePath)
+      .on("error", () => res.destroy())
+      .pipe(res);
   };
 }

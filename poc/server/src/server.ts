@@ -286,7 +286,7 @@ export async function startServer(opts: {
         if (typeof msg.name !== "string") {
           return sendError("create_session requires name");
         }
-        const slug = slugify(msg.name);
+        const slug = slugify(String(msg.name ?? "").slice(0, 200));
         if (!slug) return sendError("create_session requires a usable name");
         const project = getOrCreateProject(projectId);
         if (project.sessions.has(slug)) {

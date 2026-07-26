@@ -1577,3 +1577,4 @@ Stop for the user's manual demo checkpoint: from a scratch git repo (or this one
 
 **Task 6:**
 - `mpai new` adds a 10s connect timeout ("timed out waiting for the server", exit 1) — robustness addition beyond spec §5/§6; fires only if the server never responds, distinct from the "no server" path.
+- Spec §7's "unit tests for … URL construction" not implemented as unit tests — join/launch URL formatting in cli.ts verified by the end-to-end smoke instead.
