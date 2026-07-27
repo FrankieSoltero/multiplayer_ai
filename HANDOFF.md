@@ -1,19 +1,20 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #10).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #12).*
 
-**🔴 READ THIS FIRST — WORK IS IN FLIGHT ON A BRANCH (session #11, 2026-07-27).**
+**🔴 READ THIS FIRST — v7a IS CODE-COMPLETE AND REVIEW-CLEAN ON A BRANCH. NOT MERGED. Two decisions are waiting on the user (session #12, 2026-07-27).**
 
-**You are on `feature/v7a-repo-identity-lifecycle`, mid-way through executing the v7a plan via `superpowers:subagent-driven-development`. NOT on main. Nothing is merged.**
+**You are on `feature/v7a-repo-identity-lifecycle` at `d893e48`. All 4 tasks are done, every task review is closed, and the whole-branch review plus its single fix wave came back "Ready to merge: Yes." Nothing is in flight and nothing stopped mid-way.**
 
-- **The ledger is your recovery map — read it before anything else:** `.superpowers/sdd/2026-07-27-v7a-repo-identity-lifecycle/progress.md`. It records every task, review, fix round and ruling, and ends with an explicit `>>> RESUME POINT`. Trust it and `git log` over any recollection.
-- **Plan:** `docs/superpowers/plans/2026-07-27-v7a-repo-identity-lifecycle.md` (4 tasks). **Spec:** `docs/superpowers/specs/2026-07-27-v7-hub-architecture-design.md`.
-- **Done and reviewed clean:** Task 1 (`repoKey.ts`, commits `4a178ab`+`d4c1ebf`), Task 2 (repo key on the wire, `f048aa1`).
-- **Task 3 (lifecycle + `close_session`) is MID-FIX-LOOP.** Implemented at `a34a7f9`, reviewed (spec ✅, quality Approved, 1 Important), fix committed at `bd373a3` — **but the scoped re-review has NOT been run.** That is the exact next action.
-- **Task 4 (presence + client rendering) has not started.** Then the final whole-branch review.
-- **Suites on the branch: server 341, client 160, tsc clean both, working tree clean.** The plan's written test counts are stale by +7 (Task 1's fix round added tests) — the ledger has the corrected numbers. Do not treat the plan's counts as authoritative.
-- **Two rulings that must not be re-litigated:** `close_session` uses `pushProject`, not `schedulePush` (the plan said otherwise and the plan was wrong — `session_closed` is not in the `INTERESTING` set, so without an explicit push project watchers never see `lifecycle` flip). And `permission`/`decide_plan` are **deliberately left unguarded** on a closed session — guarding them would strand a live agent waiting forever on a promise nobody can resolve.
-- Not yet decided by the user: whether v7a merges locally or goes up as a PR (§7g).
+- **The ledger is the full record:** `.superpowers/sdd/2026-07-27-v7a-repo-identity-lifecycle/progress.md` — every task, review, fix round, ruling and parked residual, ending in a `>>> RESUME POINT`. It was deliberately NOT deleted at final-review-clean (the SDD skill's default) because the branch is not finished. Delete it after the merge/PR call. Trust it and `git log` over any recollection.
+- **Plan:** `docs/superpowers/plans/2026-07-27-v7a-repo-identity-lifecycle.md` — **its Deviations section is now filled in and is the authority on why the shipped code differs from the listings.** Read it before touching v7a code. **Spec:** `docs/superpowers/specs/2026-07-27-v7-hub-architecture-design.md`.
+- **Suites at `d893e48`, independently verified by the controller (not just claimed by subagents): server 345, client 179, `tsc --noEmit` clean in both, client build clean, working tree clean apart from the three permanently-untracked user files.** The plan's written test counts are stale throughout — the ledger has the real ones.
+- **TWO DECISIONS BELONG TO THE USER BEFORE THIS BRANCH IS FINISHED:**
+  1. **No client control sends `close_session`.** The command, the event and the server-side guards all ship, but nothing in `poc/client/src` can invoke it — so the plan's own browser-verification step 2 is not performable through the UI. No task's Files list ever included a close control, so this is outside the plan's scope rather than a departure from it. Recorded in the plan's Deviations as deferred to v7b. Ship as-is, or add a close control first?
+  2. **Merge locally or open a PR?** (Carried unanswered from session #11, §7g.)
+- **Four rulings that must not be re-litigated:** `close_session` uses `pushProject`, not `schedulePush` (the plan said otherwise and the plan was wrong — `session_closed` is not in the `INTERESTING` set, so without an explicit push project watchers never see `lifecycle` flip). `permission`/`decide_plan` are **deliberately left unguarded** on a closed session — guarding them would strand a live agent waiting forever on a promise nobody can resolve, and a test pins the exemption. `presence` is a hardcoded `"online"` by design (spec §3.4: the client learns the wire shape before v7b makes the value vary). And `sessionState.ts` **deliberately departs from the plan's verbatim listing** — the user ruled the duplicated precedence chain be refactored into one `degradedState()` with exhaustive lookup tables, so drift is now a compile error.
+- **What the final review caught that four task reviews missed, worth knowing:** the branch had shipped `lifecycle` to only ONE of the two client surfaces that show session state — `SessionPicker` still read `s.ended` alone, so a deliberately closed session listed as **LIVE with a JOIN button**. The exact conflation v7a exists to remove, surviving on the screen where the join decision is made. Fixed in `c386651`. Also caught: `repoKey`'s `lastIndexOf("@")` scanned past the authority, so `https://github.com/acme/a@b/c.git` produced the fabricated key `b/c` — the module's only violation of its own "a wrong match is worse than no match" contract. Fixed in `64839e6` by splitting the authority at the first `/` first, which keeps credential-stripping working for passwords containing `@`.
+- **Parked residuals (adjudicated, not fixed — there is no second fix wave):** `agentStateLabel` (`sessionRow.ts:12-14`) is now production-dead and should be retired in the v7 scrub pass; a closed session still shows a JOIN button (deliberate — joining is how a human resolves an in-flight gate); `.spstate.closed`/`.ended` are both `var(--red)`, distinguished by label text alone. Full rulings in the ledger.
 
 ---
 
