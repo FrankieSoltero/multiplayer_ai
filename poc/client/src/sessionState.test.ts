@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { sessionStateLabel, sessionStateClass, type SessionStateFacts } from "./sessionState";
+import {
+  sessionStateLabel,
+  sessionStateClass,
+  sessionBadgeLabel,
+  type SessionStateFacts,
+} from "./sessionState";
 
 const base = { presence: "online" as const, lifecycle: "open" as const, ended: false };
 
@@ -38,6 +43,24 @@ describe("sessionStateClass", () => {
     expect(sessionStateClass({ ...base, ended: true })).toBe("ended");
     expect(sessionStateClass({ ...base, presence: "offline" })).toBe("offline");
     expect(sessionStateClass({ ...base, lifecycle: "closed" })).toBe("closed");
+  });
+});
+
+describe("sessionBadgeLabel", () => {
+  test("a healthy session still gets a badge — LIVE, not blank", () => {
+    // Unlike sessionStateLabel (null for a healthy session, meaning "render
+    // no suffix" in PartyPane), SessionPicker's badge is always present.
+    expect(sessionBadgeLabel(base)).toBe("LIVE");
+  });
+
+  test("uses sessionStateLabel's text, upper-cased, for a degraded session", () => {
+    expect(sessionBadgeLabel({ ...base, ended: true })).toBe("AGENT STOPPED");
+    expect(sessionBadgeLabel({ ...base, presence: "offline" })).toBe("OFFLINE");
+    expect(sessionBadgeLabel({ ...base, lifecycle: "closed" })).toBe("CLOSED");
+  });
+
+  test("treats a snapshot from an older server as LIVE", () => {
+    expect(sessionBadgeLabel({ ended: false })).toBe("LIVE");
   });
 });
 

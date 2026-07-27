@@ -54,3 +54,16 @@ export function sessionStateClass(s: SessionStateFacts): string {
   const state = degradedState(s);
   return state === null ? "" : CLASS_BY_STATE[state];
 }
+
+/** `SessionPicker`'s badge, unlike the party pane's suffix, is always
+ *  present — there is no "render nothing" option for a list row. Reuses
+ *  `sessionStateLabel`'s precedence and falls back to "LIVE" for the healthy
+ *  case, so a healthy row still reads as a badge rather than going blank.
+ *
+ *  Upper-cased on the way out: `.pix` (terminal.css) deliberately applies no
+ *  CSS text-transform — components own their own casing — and every other
+ *  badge in the picker is sent in caps. */
+export function sessionBadgeLabel(s: SessionStateFacts): string {
+  const label = sessionStateLabel(s);
+  return label === null ? "LIVE" : label.toUpperCase();
+}

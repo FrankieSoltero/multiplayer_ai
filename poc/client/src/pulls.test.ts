@@ -67,6 +67,20 @@ describe("pullsFrom", () => {
 
     expect(pulls).toEqual([]);
   });
+
+  test("still pulls a closed session with an unanswered gate (pinned, not a bug)", () => {
+    // `permission` stays answerable after close (server.ts) so an in-flight
+    // gate can be resolved; a pull is how a teammate notices it needs
+    // resolving. Only `ended` (the agent process is gone) suppresses a pull —
+    // `closed` and `offline` deliberately do not.
+    const pulls = pullsFrom([session({ lifecycle: "closed" })], {
+      thresholdMs: 60_000, currentSessionId: "mine", now: T0 + 300_000,
+    });
+
+    expect(pulls).toEqual([
+      { sessionId: "ana", toolName: "Bash", sinceTs: "2026-07-27T10:00:00.000Z", driverName: "ana" },
+    ]);
+  });
 });
 
 describe("waitedLabel", () => {

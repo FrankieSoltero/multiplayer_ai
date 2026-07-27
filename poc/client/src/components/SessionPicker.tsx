@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { SERVER_URL } from "../types";
 import type { ProjectSessionInfo, RepoInfo } from "../types";
-import { agentStateLabel, slugPreview, sortSessions } from "../sessionRow";
+import { slugPreview, sortSessions } from "../sessionRow";
+import { sessionBadgeLabel, sessionStateClass } from "../sessionState";
 
 /** Entry screen when no ?session= is present (spec §4): live list of the
  *  project's sessions plus a NEW SESSION form. Watches the project channel;
@@ -78,8 +79,8 @@ export function SessionPicker(props: { projectId: string }) {
               <div className="spbody">
                 <div className="spname">
                   {s.id}
-                  <span className={`spstate pix sm ${s.ended ? "ended" : "live"}`}>
-                    {agentStateLabel(s.ended)}
+                  <span className={`spstate pix sm ${sessionStateClass(s) || "live"}`}>
+                    {sessionBadgeLabel(s)}
                   </span>
                 </div>
                 {s.intent && <div className="spintent dim">{s.intent}</div>}

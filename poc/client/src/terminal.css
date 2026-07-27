@@ -727,6 +727,8 @@ code, pre { font-family: var(--fm); }
 .spstate { margin-left: var(--sp-2); }
 .spstate.live { color: var(--green); }
 .spstate.ended { color: var(--red); }
+.spstate.closed { color: var(--red); }
+.spstate.offline { color: var(--dim); }
 .spintent { margin-top: 2px; overflow-wrap: anywhere; }
 .spwho { color: var(--accent); margin-top: 2px; }
 .spform { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
