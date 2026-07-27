@@ -28,6 +28,7 @@ import { Landing } from "./components/Landing";
 import { InviteSignIn } from "./components/InviteSignIn";
 import { Denied } from "./components/Denied";
 import { authStateFrom, type AuthState } from "./authState";
+import { screenFor } from "./authRoute";
 import { API_BASE } from "./types";
 
 const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
@@ -82,42 +83,58 @@ export default function App() {
   const activeSessionId = inviteTarget?.sessionId ?? sessionId;
   const activeProjectId = inviteTarget?.projectId ?? projectId;
 
-  return (
-    <Cabinet legend={LEGEND}>
-      <Crt>
-        {auth === null ? (
-          <div className="authscreen"><div className="authsub">CHECKING SESSION…</div></div>
-        ) : auth.status === "signed-out" ? (
-          inviteToken ? <InviteSignIn token={inviteToken} /> : <Landing />
-        ) : auth.status === "denied" ? (
-          <Denied login={auth.login} />
-        ) : inviteToken && !inviteTarget ? (
-          <InviteLanding token={inviteToken} onAccept={setInviteTarget} />
-        ) : activeSessionId === null ? (
-          <SessionPicker projectId={activeProjectId} />
-        ) : profile === null ? (
+  // The precedence itself lives in authRoute.ts so it can be tested (spec
+  // §3.5); this switch only maps the decision onto a component.
+  const route = screenFor({ auth, inviteToken, inviteTarget, activeSessionId, profile });
+
+  function screenBody() {
+    switch (route) {
+      case "checking":
+        return <div className="authscreen"><div className="authsub">CHECKING SESSION…</div></div>;
+      case "invite-signin":
+        return <InviteSignIn token={inviteToken!} />;
+      case "landing":
+        return <Landing />;
+      case "denied":
+        // The ternary is narrowing, not a fallback: screenFor returns "denied"
+        // only for a denied AuthState, so the empty branch is unreachable.
+        return <Denied login={auth?.status === "denied" ? auth.login : ""} />;
+      case "invite-landing":
+        return <InviteLanding token={inviteToken!} onAccept={setInviteTarget} />;
+      case "picker":
+        return <SessionPicker projectId={activeProjectId} />;
+      case "lobby":
+        // `!`: screenFor only returns lobby/session once a session id exists.
+        return (
           <Lobby
             projectId={activeProjectId}
-            sessionId={activeSessionId}
-            defaultName={auth.status === "signed-in" ? auth.login : `user-${userId.slice(0, 4)}`}
-            lockedName={auth.status === "signed-in" ? auth.login : undefined}
+            sessionId={activeSessionId!}
+            defaultName={auth?.status === "signed-in" ? auth.login : `user-${userId.slice(0, 4)}`}
+            lockedName={auth?.status === "signed-in" ? auth.login : undefined}
             onEnter={(p) => {
               saveProfile(p);
               setProfile(p);
             }}
           />
-        ) : (
+        );
+      case "session":
+        return (
           <SessionView
             userId={userId}
-            sessionId={activeSessionId}
+            sessionId={activeSessionId!}
             projectId={activeProjectId}
-            profile={profile}
+            profile={profile!}
             screen={screen}
             onScreenChange={setScreen}
             invite={inviteToken ?? undefined}
           />
-        )}
-      </Crt>
+        );
+    }
+  }
+
+  return (
+    <Cabinet legend={LEGEND}>
+      <Crt>{screenBody()}</Crt>
     </Cabinet>
   );
 }
