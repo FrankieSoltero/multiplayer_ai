@@ -949,3 +949,66 @@ Then, with two browser tabs on one session (`§6` of HANDOFF.md has the stack re
 Record every divergence from this plan here as you go, with the reason. This section is part
 of the deliverable — later sessions read it to understand why the shipped code differs from
 the listings above.
+
+- **Task 3 — `close_session` uses `pushProject`, not `schedulePush`.** The plan's listing called
+  `schedulePush(ctx.project)`. The plan text was wrong: `session_closed` is not in the
+  `INTERESTING` set that drives the debounced push path, so without an explicit `pushProject`
+  call a watcher would never see `lifecycle` flip until something else happened to push the
+  project. The shipped code (`pushProject`, matching `create_session`'s deliberate-action
+  rationale) is correct; the plan's listing is not.
+- **Task 3 (fix round) — `suggest_skill` and `decide_skill` gained closed-session guards the plan
+  never asked for.** The plan's listing guarded only `prompt`. A task review found that
+  `suggest_skill` and `decide_skill` each reach `ctx.entry.driver.runSkill(...)` — real agent
+  execution — so a closed session could still be driven through the skill path even with the
+  prompt path shut. An audit of every `ctx.entry.driver.*` call site followed. `permission` and
+  `decide_plan` were deliberately left unguarded: both resolve a request already in flight, and
+  guarding them would strand a live agent on a promise nobody can resolve. A test now pins that
+  exemption so it is not "fixed" by accident later.
+- **Task 1 — `repoKey.ts` rejects more shapes than the plan's listing did.** Added guards for
+  filesystem paths, Windows drive letters, backslash paths, and a post-port-strip colon check.
+  The plan's verbatim `normalizeRemote` accepted filesystem paths as remotes, and a Windows
+  drive-letter path (`C:/Users/...`) leaked the unhashed absolute path into the key, defeating
+  `localRepoKey`'s stated privacy property. Deliberately does NOT require a dot in the host,
+  which would wrongly reject legitimate bare-hostname remotes like `git@myserver:api.git`.
+- **Task 4 — `sessionState.ts` departs from the plan's verbatim listing.** The plan's listing
+  duplicated the same three-branch precedence chain across `sessionStateLabel` and
+  `sessionStateClass`. A review flagged the duplication; the human partner ruled it be
+  refactored. A single `degradedState()` now owns the ordering, with two exhaustive
+  `Record<DegradedState, string>` lookup tables, so a missing key is a compile error rather than
+  a silent gap. Public signatures, precedence, and every observable output are unchanged.
+- **Whole-branch review (I2) — `SessionPicker` was brought into scope.** The plan scoped the
+  client rendering of `presence`/`lifecycle`/`ended` to `PartyPane.tsx` only (Task 4). The
+  whole-branch review found that `SessionPicker.tsx` is the other surface that renders session
+  state, and it still derived its badge purely from `s.ended` — so a deliberately closed session
+  listed as **LIVE** with a **JOIN ▸** button, contradicting `PartyPane`'s `· closed` on the same
+  data. Fixed by having `SessionPicker` consume `sessionStateClass` the same way `PartyPane`
+  does, plus a new pure `sessionBadgeLabel` in `sessionState.ts`: the picker's badge is always
+  present (unlike the party pane's suffix, which is `null`-shaped for a healthy session), so
+  `sessionBadgeLabel` reuses `sessionStateLabel`'s precedence and falls back to `"LIVE"` rather
+  than rendering a blank badge. `ProjectSessionInfo` already carried `presence`/`lifecycle` from
+  Task 4, so no type widening was needed.
+
+### Deferred to v7b / not done
+
+- **No client control sends `close_session`.** The command and event ship, and the server
+  enforces the guards, but no UI can invoke it — so the plan's own verification step 2 ("send
+  `close_session` from the passenger tab") is not performable through the UI as written. No
+  task's Files list ever included a close control, so this is outside the plan's scope rather
+  than a departure from it. Awaiting the human partner's decision on whether a close control
+  lands before merge.
+- **`repoKey.ts:78` puts the machine hostname on the wire in cleartext**
+  (`local:${hostname}:${digest}`), broadcast to every watcher. The path is hashed so the stated
+  privacy property holds, but the hostname is a separate disclosure that will land on a shared
+  hub in v7b. The `local:<host>:<hash>` shape is mandated by spec §3.3, so this is a question for
+  the spec owner, NOT something to change here.
+- **Bracketed-IPv6 SSH remotes** (`ssh://user@[2001:db8::1]/repo`) normalize to `null` and fall
+  back to the hashed local key. Fails safe — silence, not a wrong match.
+- **`.member.closed` is distinguished by opacity (0.55) rather than structurally**, while
+  `closed` and `ended` otherwise render identically (both dashed). A comment deleted in this
+  branch had warned against fading rows until they fail contrast. Plan-mandated styling; worth
+  revisiting.
+- **`server.ts:453`'s peek fallback snapshot is a hand-built, un-type-checked duplicate of
+  `ProjectMessage`** and already drifts (no `arcade` field). Harmless today because
+  `SessionPicker` reads only `sessions` and `repo`, but the next added field pays the same
+  two-place tax. A typed `emptySnapshot()` helper in `project.ts` would let the compiler catch
+  it.
