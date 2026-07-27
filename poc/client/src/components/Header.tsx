@@ -43,9 +43,14 @@ export function Header(props: {
           <span className="sep">▸</span> session <b>{props.sessionId}</b>
         </span>
         <span className="rule" />
-        <label className="pix">
+        {/* NOT a <label> wrapper: a label that wraps its control forwards a
+          * second, synthesized click to it, so the native dropdown opened and
+          * instantly closed again — clicking the model picker looked dead.
+          * The accessible name comes from aria-label instead. */}
+        <span className="pix">
           AGENT{" "}
           <select
+            aria-label="agent model"
             value={props.model}
             disabled={!props.canSetModel}
             onChange={(e) => props.onSetModel(e.target.value)}
@@ -55,7 +60,7 @@ export function Header(props: {
               <option key={key} value={key}>{label}</option>
             ))}
           </select>
-        </label>
+        </span>
         <button
           className={
             props.permissionMode === "auto"

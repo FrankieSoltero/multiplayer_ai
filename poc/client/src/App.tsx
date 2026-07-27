@@ -14,6 +14,7 @@ import { ThinkingStrip } from "./components/ThinkingStrip";
 import type { PartyBest } from "./components/ThinkingStrip";
 import { Lobby } from "./components/Lobby";
 import { SessionPicker } from "./components/SessionPicker";
+import { useArrowNav } from "./useArrowNav";
 import { Cabinet, Crt } from "./components/Crt";
 import { SkillsPanel } from "./components/SkillsPanel";
 import { WorkflowsPanel } from "./components/WorkflowsPanel";
@@ -151,6 +152,10 @@ function SessionView(props: {
   // v5b final-review: whether a live arcade run currently has the keyboard
   // captured (game letters overlap a/d permission hotkeys).
   const [arcadeCapturing, setArcadeCapturing] = useState(false);
+
+  // Arrows move focus around the whole terminal whenever the prompt is empty;
+  // a live arcade run steers with arrows, so it takes them back for itself.
+  useArrowNav(!arcadeCapturing);
 
   const [seenOversightSeq, setSeenOversightSeq] = useState(0);
   useEffect(() => {
