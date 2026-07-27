@@ -332,7 +332,11 @@ export async function startServer(opts: {
         // any provisioning: a rejected join must never create a worktree.
         // On success userId is REPLACED by the verified GitHub login — the
         // client's claim is discarded, which is the whole point of A2a
-        // (spec §2).
+        // (spec §2). The display name is locked to the same login (spec
+        // §3.4): it is the string humans actually read, so leaving it
+        // client-chosen would relocate the impersonation rather than remove
+        // it. Enforced here, not in the client Lobby — a hand-rolled
+        // WebSocket client bypasses any browser UI.
         if (opts.auth) {
           const user = verifySession(
             parseCookies(cookieHeader)[SESSION_COOKIE],
@@ -343,6 +347,7 @@ export async function startServer(opts: {
             return sendError("not on the allowlist");
           }
           msg.userId = user.login;
+          msg.name = user.login;
         }
         // Invite gate (spec §4). Sits before getOrCreateProject/Session so a
         // rejected join never provisions a git worktree.

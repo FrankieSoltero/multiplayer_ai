@@ -1644,6 +1644,36 @@ describe("auth gate on join", () => {
     ws.close();
   });
 
+  // The display name is the string humans actually read, so it is locked to
+  // the verified login too (spec §3.4) — otherwise the impersonation simply
+  // relocates from userId to the rendered name.
+  it("overwrites a spoofed display name with the verified GitHub login", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const cookie = `${SESSION_COOKIE}=${signSession("ana", AUTH.sessionSecret)}`;
+    const ws = await connectWithCookie(server.port, cookie);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(
+      JSON.stringify({
+        type: "join",
+        sessionId: "s1",
+        userId: "ana",
+        name: "Ben",
+      }),
+    );
+    await wait(80);
+
+    const join = seen.find((m) => m.type === "event" && m.event.type === "presence_join");
+    expect(join).toBeTruthy();
+    expect(join.event.name).toBe("ana");
+    // Covers the roster in the project snapshot as well as the event, since
+    // both are carried in `seen`.
+    expect(JSON.stringify(seen)).not.toContain("Ben");
+    ws.close();
+  });
+
   it("leaves the anonymous path untouched when auth is not configured", async () => {
     const server = await startServer({ port: 0, runQuery: echoRun });
     close = server.close;
