@@ -746,3 +746,15 @@ code, pre { font-family: var(--fm); }
    In-session invite screen (spec §5). Same idiom as oversight/workflows. */
 .invrow { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--frame); }
 .invlink { width: 100%; background: #000; color: var(--fg); border: 1px solid var(--frame); font: inherit; padding: 4px 6px; }
+
+/* ================================================================ auth screens
+   Signed-out landing, invite sign-in, and the not-allowlisted screen (spec §3). */
+.authscreen { display:flex; flex-direction:column; align-items:center; justify-content:center;
+  height:100%; gap:18px; text-align:center; padding:24px; }
+.authhero { font-size:28px; letter-spacing:3px; }
+.authsub { opacity:.75; max-width:52ch; line-height:1.6; }
+.authbtn { display:inline-block; padding:10px 22px; border:1px solid currentColor;
+  text-decoration:none; letter-spacing:2px; cursor:pointer; background:none;
+  color:inherit; font:inherit; }
+.authbtn:hover { filter:brightness(1.3); }
+.lobby-locked { opacity:.9; letter-spacing:1px; }

@@ -83,6 +83,56 @@ clone works and the deploy-key steps above can be skipped.
     sudo chmod 0600 /etc/multiplayer-ai/env
     sudo -e /etc/multiplayer-ai/env      # fill in ANTHROPIC_API_KEY
 
+## 4a. GitHub sign-in (A2a) — required in production
+
+**NOT YET VERIFIED against a real GitHub OAuth app.** Written during A2a.
+
+Since A2a the process **refuses to boot** without this. With `CLIENT_DIST`
+set, a missing variable exits 1 with e.g.
+`config error: GITHUB_CLIENT_ID is required when CLIENT_DIST is set
+(production mode)`. That is correct behaviour, not a bug — fill these in.
+
+**Register the OAuth app first.** GitHub → Settings → Developer settings →
+OAuth Apps → New OAuth App:
+
+  - **Homepage URL:** `https://<domain>`
+  - **Authorization callback URL:** `https://<domain>/auth/callback`
+
+The callback path is `/auth/callback` on the **same origin that serves the
+client** — the server handles both, so there is nothing extra to add to the
+Caddyfile. Register it exactly; GitHub matches it literally.
+
+Then add to `/etc/multiplayer-ai/env`:
+
+    GITHUB_CLIENT_ID=<from the OAuth app>
+    GITHUB_CLIENT_SECRET=<generate one on the OAuth app page>
+    SESSION_SECRET=<openssl rand -hex 32>
+    GITHUB_ALLOWLIST=alice,bob
+    OAUTH_CALLBACK_URL=https://<domain>/auth/callback
+
+  - `SESSION_SECRET` signs the session cookie and **must be high-entropy**
+    (`openssl rand -hex 32`), never a reused password. There is no revocation
+    list (A2a spec §7): **rotating it signs everyone out**, which is also the
+    only way to kill a leaked cookie. Sessions last 7 days.
+  - `GITHUB_ALLOWLIST` is **comma-separated GitHub logins, case-insensitive**;
+    whitespace around entries is ignored. An **empty list admits nobody** —
+    fail-closed, not a wildcard. Anyone signed in but unlisted gets the "not on
+    the list" screen, and their join is refused by the server too. Adding
+    someone requires editing this file and
+    `sudo systemctl restart multiplayer-ai`.
+  - `OAUTH_CALLBACK_URL` is technically optional but **set it in production**.
+    It is sent to GitHub as `redirect_uri` (so it must match the registered
+    callback URL exactly), and an `https://` value is what tells the server it
+    is a TLS deployment — without it, a proxy that omits `x-forwarded-proto`
+    would get a session cookie issued **without `Secure`**. The post-login
+    destination, including an invite token, rides in its own cookie and
+    survives the round trip either way.
+
+Never paste the client secret into a shell command; `sudo -e` the env file.
+After editing, restart and confirm the boot line reads
+`GitHub auth ON — N login(s) on the allowlist` (the roster itself is
+deliberately not printed to the journal).
+
 ## 5. Service
 
     sudo cp /opt/multiplayer-ai/deploy/multiplayer-ai.service /etc/systemd/system/
@@ -130,6 +180,15 @@ depth, not the primary control.
 - [ ] `https://<domain>` loads the client with a valid certificate
 - [ ] `https://<domain>/healthz` returns JSON, not HTML
 - [ ] DevTools → Network → WS shows an established **wss://** connection
+- [ ] `https://<domain>/auth/me` returns `{"enabled":true}` with a 401 when
+      signed out — **not** `{"enabled":false}`, which would mean auth is off
+- [ ] Signing in with an allowlisted GitHub account reaches the session; the
+      name shown is the GitHub login and cannot be edited
+- [ ] Signing in with a **non**-allowlisted account lands on "NOT ON THE LIST"
+- [ ] DevTools → Application → Cookies: `mpai_session` has **Secure**,
+      **HttpOnly** and **SameSite=Lax**
+- [ ] An invite link opened while signed out survives the sign-in round trip
+      and lands back on the invited session, not on `/`
 - [ ] **Two people on two different networks run a session together**
 - [ ] **A real permission gate is reached and approved**
 - [ ] An agent turn completes end to end

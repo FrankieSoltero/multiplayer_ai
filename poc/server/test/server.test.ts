@@ -6,6 +6,7 @@ import path from "node:path";
 import { startServer } from "../src/server.js";
 import type { RunQuery, SdkMessage } from "../src/agentDriver.js";
 import { PluginStore, type CloneFn } from "../src/pluginStore.js";
+import { signSession, SESSION_COOKIE } from "../src/auth.js";
 
 const echoRun: RunQuery = async function* (prompts) {
   for await (const prompt of prompts) {
@@ -19,6 +20,14 @@ const echoRun: RunQuery = async function* (prompts) {
 function connect(port: number): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    ws.on("open", () => resolve(ws));
+    ws.on("error", reject);
+  });
+}
+
+function connectWithCookie(port: number, cookie: string): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { cookie } });
     ws.on("open", () => resolve(ws));
     ws.on("error", reject);
   });
@@ -1569,5 +1578,301 @@ describe("oversight wire", () => {
 
     a.close();
     c.close();
+  });
+});
+
+describe("auth gate on join", () => {
+  const AUTH = {
+    clientId: "cid",
+    clientSecret: "csecret",
+    sessionSecret: "sekrit",
+    allowlist: "ana",
+  };
+
+  // The rejection assertions below deliberately check for the ABSENCE of the
+  // side effects too. An error frame alone proves nothing: a gate that called
+  // sendError() and forgot to `return` would emit the error AND admit the
+  // user, and a message-only assertion would stay green through it. This is
+  // the one boundary the whole feature rests on.
+  it("rejects a join with no session cookie, admitting nobody and provisioning nothing", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH, workspace });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
+    await wait(50);
+
+    expect(seen.some((m) => m.type === "error" && /authentication required/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "event" && m.event.type === "presence_join")).toBe(false);
+    expect(workspace.calls).toEqual([]);
+    ws.close();
+  });
+
+  it("rejects a verified user who is not on the allowlist, admitting nobody and provisioning nothing", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH, workspace });
+    close = server.close;
+    const cookie = `${SESSION_COOKIE}=${signSession("mallory", AUTH.sessionSecret)}`;
+    const ws = await connectWithCookie(server.port, cookie);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "M" }));
+    await wait(50);
+
+    expect(seen.some((m) => m.type === "error" && /allowlist/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "event" && m.event.type === "presence_join")).toBe(false);
+    expect(workspace.calls).toEqual([]);
+    ws.close();
+  });
+
+  // THE load-bearing assertion: the client's claim is discarded.
+  it("overwrites a spoofed userId with the verified GitHub login", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const cookie = `${SESSION_COOKIE}=${signSession("ana", AUTH.sessionSecret)}`;
+    const ws = await connectWithCookie(server.port, cookie);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(
+      JSON.stringify({
+        type: "join",
+        sessionId: "s1",
+        userId: "totally-not-ana",
+        name: "Ana",
+      }),
+    );
+    await wait(80);
+
+    const join = seen.find((m) => m.type === "event" && m.event.type === "presence_join");
+    expect(join).toBeTruthy();
+    expect(join.event.userId).toBe("ana");
+    expect(JSON.stringify(seen)).not.toContain("totally-not-ana");
+    ws.close();
+  });
+
+  // The display name is the string humans actually read, so it is locked to
+  // the verified login too (spec §3.4) — otherwise the impersonation simply
+  // relocates from userId to the rendered name.
+  it("overwrites a spoofed display name with the verified GitHub login", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const cookie = `${SESSION_COOKIE}=${signSession("ana", AUTH.sessionSecret)}`;
+    const ws = await connectWithCookie(server.port, cookie);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(
+      JSON.stringify({
+        type: "join",
+        sessionId: "s1",
+        userId: "ana",
+        name: "Ben",
+      }),
+    );
+    await wait(80);
+
+    const join = seen.find((m) => m.type === "event" && m.event.type === "presence_join");
+    expect(join).toBeTruthy();
+    expect(join.event.name).toBe("ana");
+    // Covers the roster in the project snapshot as well as the event, since
+    // both are carried in `seen`.
+    expect(JSON.stringify(seen)).not.toContain("Ben");
+    ws.close();
+  });
+
+  it("leaves the anonymous path untouched when auth is not configured", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
+    await wait(80);
+
+    const join = seen.find((m) => m.type === "event" && m.event.type === "presence_join");
+    expect(join.event.userId).toBe("u1");
+    ws.close();
+  });
+});
+
+/** C2: six message types sit ABOVE the `if (!ctx) return sendError("join a
+ *  session first")` choke point, so before this gate they were reachable by
+ *  anyone who could open a WebSocket — no cookie, no join, no allowlist.
+ *
+ *  `create_session` is the expensive one: it provisions a real git worktree
+ *  and constructs an AgentDriver, whose constructor eagerly spawns the Claude
+ *  Agent SDK subprocess against the box's ANTHROPIC_API_KEY. `peek` and
+ *  `watch_project` disclose the participant roster — post-A2a a list of real
+ *  GitHub logins — plus the LLM-written oversight summary of the team's work.
+ *
+ *  `peek_invite` stays open on purpose (spec §4.3): the invite sign-in screen
+ *  calls it while signed out, and an unguessable token already gates it. */
+describe("auth gate on the pre-join message types", () => {
+  const AUTH = {
+    clientId: "cid",
+    clientSecret: "csecret",
+    sessionSecret: "sekrit",
+    allowlist: "ana",
+  };
+
+  it("rejects create_session with no cookie and provisions no worktree", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH, workspace });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "create_session", projectId: "p1", name: "free lunch" }));
+    await wait(60);
+
+    expect(seen.some((m) => m.type === "error" && /authentication required/.test(m.message))).toBe(true);
+    // The assertion that actually costs the attacker nothing: no git
+    // worktree, no branch, and therefore no agent subprocess.
+    expect(workspace.calls).toEqual([]);
+    expect(seen.some((m) => m.type === "session_created")).toBe(false);
+    ws.close();
+  });
+
+  it("rejects peek with no cookie and discloses no roster", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "peek", projectId: "default" }));
+    await wait(60);
+
+    expect(seen.some((m) => m.type === "error" && /authentication required/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "project")).toBe(false);
+    ws.close();
+  });
+
+  it("rejects watch_project with no cookie and discloses no roster", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(60);
+
+    expect(seen.some((m) => m.type === "error" && /authentication required/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "project")).toBe(false);
+    ws.close();
+  });
+
+  it("rejects set_oversight with no cookie and mutates nothing", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    // Ana creates the project so set_oversight has a real target to mutate.
+    const cookie = `${SESSION_COOKIE}=${signSession("ana", AUTH.sessionSecret)}`;
+    const owner = await connectWithCookie(server.port, cookie);
+    const ownerSeen: any[] = [];
+    collect(owner, ownerSeen);
+    owner.send(JSON.stringify({ type: "join", sessionId: "s1", projectId: "default", userId: "x", name: "x" }));
+    await wait(60);
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "set_oversight", projectId: "default", enabled: true }));
+    await wait(60);
+
+    expect(seen.some((m) => m.type === "error" && /authentication required/.test(m.message))).toBe(true);
+    // The owner's snapshots would show oversight.enabled flipping if the
+    // mutation had landed.
+    const snapshots = ownerSeen.filter((m) => m.type === "project");
+    expect(snapshots.length).toBeGreaterThan(0);
+    expect(snapshots.some((m) => m.oversight?.enabled === true)).toBe(false);
+    ws.close();
+    owner.close();
+  });
+
+  it("rejects an allowlisted-but-not signed-in user the same way", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH, workspace });
+    close = server.close;
+    const cookie = `${SESSION_COOKIE}=${signSession("mallory", AUTH.sessionSecret)}`;
+    const ws = await connectWithCookie(server.port, cookie);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "create_session", projectId: "p1", name: "free lunch" }));
+    await wait(60);
+
+    expect(seen.some((m) => m.type === "error" && /allowlist/.test(m.message))).toBe(true);
+    expect(workspace.calls).toEqual([]);
+    ws.close();
+  });
+
+  it("still lets a signed-in allowlisted user through all four", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH, workspace });
+    close = server.close;
+    const cookie = `${SESSION_COOKIE}=${signSession("ana", AUTH.sessionSecret)}`;
+    const ws = await connectWithCookie(server.port, cookie);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "create_session", projectId: "p1", name: "real work" }));
+    ws.send(JSON.stringify({ type: "peek", projectId: "p1" }));
+    ws.send(JSON.stringify({ type: "watch_project", projectId: "p1" }));
+    ws.send(JSON.stringify({ type: "set_oversight", projectId: "p1", enabled: true }));
+    await wait(120);
+
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+    expect(seen.some((m) => m.type === "session_created")).toBe(true);
+    expect(workspace.calls.map((c) => c.slug)).toEqual(["real-work"]);
+    ws.close();
+  });
+
+  // peek_invite is the one pre-join type that MUST stay open: InviteSignIn
+  // renders it for a signed-out visitor. Rejecting at the WS upgrade instead
+  // of here would have broken exactly this.
+  it("leaves peek_invite reachable with no cookie", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "peek_invite", token: "nope" }));
+    await wait(60);
+
+    // The token is bogus, so this is an invite error — NOT an auth error.
+    // The point is that the auth gate did not consume the message.
+    const err = seen.find((m) => m.type === "error");
+    expect(err).toBeTruthy();
+    expect(err.message).not.toMatch(/authentication required/);
+    ws.close();
+  });
+
+  it("leaves all four unguarded when auth is not configured", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "create_session", projectId: "p1", name: "dev flow" }));
+    ws.send(JSON.stringify({ type: "peek", projectId: "p1" }));
+    ws.send(JSON.stringify({ type: "watch_project", projectId: "p1" }));
+    ws.send(JSON.stringify({ type: "set_oversight", projectId: "p1", enabled: true }));
+    await wait(120);
+
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+    expect(seen.some((m) => m.type === "session_created")).toBe(true);
+    expect(workspace.calls.map((c) => c.slug)).toEqual(["dev-flow"]);
+    ws.close();
   });
 });

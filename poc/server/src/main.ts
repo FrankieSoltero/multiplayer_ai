@@ -45,8 +45,17 @@ const { port: actual } = await startServer({
   requireInvite,
   inviteTtlMs,
   inviteMaxUses,
+  auth: config.auth,
 });
 
 console.log(`multiplayer-ai server listening on http://${host}:${actual}`);
 if (config.staticDir) console.log(`serving client from ${config.staticDir}`);
 if (requireInvite) console.log("REQUIRE_INVITE=1 — invite gate is ON");
+if (config.auth) {
+  // Count, not contents: the journal is readable by anyone with box access
+  // and the roster of who can drive is not something to print on every boot.
+  const listed = config.auth.allowlist.split(",").filter((e) => e.trim()).length;
+  console.log(`GitHub auth ON — ${listed} login(s) on the allowlist`);
+} else {
+  console.log("GitHub auth OFF — anonymous identities (development)");
+}
