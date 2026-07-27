@@ -1,3 +1,5 @@
+import { browserSignOut } from "../signOut";
+
 export const MODEL_LABELS: Record<string, string> = {
   opus: "opus 4.8", sonnet: "sonnet 5", haiku: "haiku 4.5",
 };
@@ -27,6 +29,10 @@ export function Header(props: {
   onOpenWorkflows: () => void; runningTasks: number;
   onOpenOversight: () => void; oversightFresh: boolean;
   onOpenInvite: () => void;
+  /** The verified GitHub login, or null when auth is off / anonymous. Absent
+   *  means no sign-out control renders at all — there is nothing to sign out
+   *  of, and a dead button would be worse than none. */
+  signedInAs?: string | null;
   hud?: HudData;
 }) {
   const hud = props.hud ?? {};
@@ -130,6 +136,16 @@ export function Header(props: {
         <span className={props.connected ? "conn" : "conn off"}>
           {props.connected ? "● ONLINE" : "○ OFFLINE"}
         </span>
+        {props.signedInAs && (
+          <button
+            className="planmode"
+            onClick={() => void browserSignOut()}
+            title={`signed in as ${props.signedInAs} — sign out`}
+            aria-label={`signed in as ${props.signedInAs} — sign out`}
+          >
+            ⏻ {props.signedInAs}
+          </button>
+        )}
       </div>
 
       <div className="hud">
