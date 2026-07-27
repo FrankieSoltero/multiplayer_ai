@@ -60,9 +60,9 @@ We are ON `main`, in sync with origin at `b8d5652`. No dev stack running (:3001 
 
 Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 
-**STATUS: A2a is merged and closed. No code task is in flight.** Working tree clean apart from the three permanently-untracked user files. The SDD workspace `.superpowers/sdd/2026-07-27-a2a-github-oauth/` was NOT deleted — A2a is done, so it can go whenever (`rm -rf`), but everything it recorded already survives in the plan's Deviations section, which is committed.
+**STATUS: A2a and A3 are both merged and closed. No code task is in flight, and nothing stopped mid-way.** Working tree clean apart from the three permanently-untracked user files. The SDD workspace `.superpowers/sdd/2026-07-27-a2a-github-oauth/` was NOT deleted — A2a is done, so it can go whenever (`rm -rf`), but everything it recorded already survives in the plan's Deviations section, which is committed.
 
-**Next real work: BUILD A3.** Spec and plan are written, committed and user-approved — the design phase is closed, do not re-run brainstorming or writing-plans on it.
+**Next real work: v6b — file-collision detection. It starts at `superpowers:brainstorming`: banked decisions exist in §3b but there is NO SPEC.** Do not start writing code from §3b alone. Full framing and the two unsettled design questions are in §4 step 2.
 
 - Every deviation from the plan is recorded in the plan's **Deviations** section (committed). Ten divergences plus the two whole-branch Criticals. Read that section before touching A2a code — it explains why the shipped code differs from the plan's listings in ten places, and re-litigating any of them would reintroduce a security hole.
 - `docs/superpowers/specs/2026-07-27-a2a-github-oauth-design.md` remains the authority. **One part of it is now known stale:** §4.3's rationale for join-level-only gating claims the landing and invite screens depend on unauthenticated `peek`. They do not — `Landing.tsx` opens no socket and `InviteSignIn.tsx` sends only `peek_invite`. That staleness hid Critical 2.
@@ -202,7 +202,7 @@ Spec `docs/superpowers/specs/2026-07-27-a1a-deployment-wiring-design.md`, plan `
 
 **Verified live in a real browser** (not just unit tests): the built bundle loaded through the production single-port path, joined over `ws://`, and two participants appeared in one session (`PARTY · 2`, alice driving, ben with TAKE THE WHEEL). Loopback bind confirmed `127.0.0.1:3001`, not `*:3001`. Fail-fast confirmed unprompted — the first launch attempt exited with `config error: ANTHROPIC_API_KEY is required when CLIENT_DIST is set`.
 
-## 4f. A2a — touchpoints the plan will modify (verified line refs, nothing built yet)
+## 4f. A2a — touchpoints the plan modified (historical: written before the build; see §4g for as-built)
 
 Spec `docs/superpowers/specs/2026-07-27-a2a-github-oauth-design.md`, plan `docs/superpowers/plans/2026-07-27-a2a-github-oauth.md` (8 tasks, 1603 lines, full code in every step). **No branch exists yet** — create one before Task 1.
 
