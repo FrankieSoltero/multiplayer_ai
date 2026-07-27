@@ -1993,3 +1993,105 @@ describe("repo identity on the project snapshot", () => {
     ws.close();
   });
 });
+
+describe("session lifecycle", () => {
+  const lastProject = (seen: any[]) => [...seen].reverse().find((m) => m.type === "project");
+
+  it("reports open by default and closed after close_session", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    await wait(200);
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "ana").lifecycle).toBe("open");
+
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "ana").lifecycle).toBe("closed");
+
+    ws.close();
+  });
+
+  it("attributes the close on the wire so history says who did it", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+
+    const closed = seen.filter((m: any) => m.type === "event" && m.event.type === "session_closed");
+    expect(closed).toHaveLength(1);
+    expect(closed[0].event.userId).toBe("u1");
+
+    ws.close();
+  });
+
+  it("lets any participant close, not only the driver", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    collect(wsAna, []);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    await wait(100);
+
+    // Ben joins second, so Ana holds the wheel and Ben is a passenger.
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(100);
+    wsBen.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+
+    expect(lastProject(seenBen).sessions.find((s: any) => s.id === "s").lifecycle).toBe("closed");
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("refuses a prompt to a closed session", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+    ws.send(JSON.stringify({ type: "prompt", text: "keep going" }));
+    await wait(200);
+
+    const errors = seen.filter((m: any) => m.type === "error");
+    expect(errors.some((e: any) => /closed/i.test(e.message))).toBe(true);
+
+    ws.close();
+  });
+
+  it("refuses a second close rather than appending a duplicate event", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "close_session" }));
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+
+    expect(
+      seen.filter((m: any) => m.type === "event" && m.event.type === "session_closed"),
+    ).toHaveLength(1);
+
+    ws.close();
+  });
+});

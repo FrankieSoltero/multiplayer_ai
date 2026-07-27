@@ -15,6 +15,7 @@ import {
 import { Session } from "./session.js";
 import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
+import { lifecycleOf } from "./lifecycle.js";
 import { slugify, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
 import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
@@ -528,6 +529,9 @@ export async function startServer(opts: {
       if (!ctx) return sendError("join a session first");
 
       if (msg.type === "prompt") {
+        if (lifecycleOf(ctx.entry.session.eventsFrom(0)) === "closed") {
+          return sendError("this session has been closed");
+        }
         if (typeof msg.text !== "string" || msg.text.length === 0) {
           return sendError("prompt requires text");
         }
@@ -555,6 +559,21 @@ export async function startServer(opts: {
 
       if (msg.type === "take_wheel") {
         ctx.entry.session.takeWheel(ctx.userId);
+        return;
+      }
+
+      if (msg.type === "close_session") {
+        // Any participant may close, attributed on the wire — session scope,
+        // matching the standing no-owner-role precedent and the task_stop /
+        // oversight_pull posture of attributing rather than restricting
+        // (spec §3.4). Hub-wide close by the host is v7b.
+        if (lifecycleOf(ctx.entry.session.eventsFrom(0)) === "closed") {
+          return sendError("session already closed");
+        }
+        ctx.entry.session.append({ type: "session_closed", userId: ctx.userId });
+        // Deliberate user action, not a hot stream — immediate push (same
+        // rationale as add_plugin / create_session).
+        pushProject(ctx.project);
         return;
       }
 

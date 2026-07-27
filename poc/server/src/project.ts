@@ -5,6 +5,7 @@ import type { Session } from "./session.js";
 import type { SkillInfo } from "./events.js";
 import type { PluginInfo } from "./pluginStore.js";
 import type { OversightSummary } from "./overseer.js";
+import { lifecycleOf, type Lifecycle } from "./lifecycle.js";
 
 export const SLUG = /^[a-z0-9-]{1,40}$/;
 
@@ -100,6 +101,9 @@ export interface ProjectMessage {
      *  carries the SAME key — it is per-session because v7b's hub holds
      *  sessions from many repos at once. */
     repoKey: string | null;
+    /** Has someone deliberately ended this session (spec §3.4)? Orthogonal to
+     *  `ended`, which is about the agent process. */
+    lifecycle: Lifecycle;
   }[];
   arcade: ArcadeRecord[];
   plugins: PluginInfo[];
@@ -130,6 +134,7 @@ export function projectSnapshot(
       pendingGate: pendingGateOf(events),
       skills: entry.skills,
       repoKey: repo?.key ?? null,
+      lifecycle: lifecycleOf(events),
     };
   });
   return {

@@ -43,6 +43,7 @@ export type SessionEvent =
   | { type: "oversight_pull"; userId: string; summarySeq: number }
   | { type: "invite_created"; userId: string; inviteId: string; expiresAt: number; maxUses: number }
   | { type: "invite_revoked"; userId: string; inviteId: string }
-  | { type: "invite_redeemed"; userId: string; inviteId: string };
+  | { type: "invite_redeemed"; userId: string; inviteId: string }
+  | { type: "session_closed"; userId: string };
 
 export type LoggedEvent = SessionEvent & { seq: number; ts: string };
