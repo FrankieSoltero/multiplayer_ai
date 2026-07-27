@@ -6,6 +6,7 @@ import path from "node:path";
 import { startServer } from "../src/server.js";
 import type { RunQuery, SdkMessage } from "../src/agentDriver.js";
 import { PluginStore, type CloneFn } from "../src/pluginStore.js";
+import { signSession, SESSION_COOKIE } from "../src/auth.js";
 
 const echoRun: RunQuery = async function* (prompts) {
   for await (const prompt of prompts) {
@@ -19,6 +20,14 @@ const echoRun: RunQuery = async function* (prompts) {
 function connect(port: number): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    ws.on("open", () => resolve(ws));
+    ws.on("error", reject);
+  });
+}
+
+function connectWithCookie(port: number, cookie: string): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { cookie } });
     ws.on("open", () => resolve(ws));
     ws.on("error", reject);
   });
@@ -1569,5 +1578,84 @@ describe("oversight wire", () => {
 
     a.close();
     c.close();
+  });
+});
+
+describe("auth gate on join", () => {
+  const AUTH = {
+    clientId: "cid",
+    clientSecret: "csecret",
+    sessionSecret: "sekrit",
+    allowlist: "ana",
+  };
+
+  it("rejects a join with no session cookie", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
+    await wait(50);
+
+    expect(seen.some((m) => m.type === "error" && /authentication required/.test(m.message))).toBe(true);
+    ws.close();
+  });
+
+  it("rejects a verified user who is not on the allowlist", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const cookie = `${SESSION_COOKIE}=${signSession("mallory", AUTH.sessionSecret)}`;
+    const ws = await connectWithCookie(server.port, cookie);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "M" }));
+    await wait(50);
+
+    expect(seen.some((m) => m.type === "error" && /allowlist/.test(m.message))).toBe(true);
+    ws.close();
+  });
+
+  // THE load-bearing assertion: the client's claim is discarded.
+  it("overwrites a spoofed userId with the verified GitHub login", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const cookie = `${SESSION_COOKIE}=${signSession("ana", AUTH.sessionSecret)}`;
+    const ws = await connectWithCookie(server.port, cookie);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(
+      JSON.stringify({
+        type: "join",
+        sessionId: "s1",
+        userId: "totally-not-ana",
+        name: "Ana",
+      }),
+    );
+    await wait(80);
+
+    const join = seen.find((m) => m.type === "event" && m.event.type === "presence_join");
+    expect(join).toBeTruthy();
+    expect(join.event.userId).toBe("ana");
+    expect(JSON.stringify(seen)).not.toContain("totally-not-ana");
+    ws.close();
+  });
+
+  it("leaves the anonymous path untouched when auth is not configured", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
+    await wait(80);
+
+    const join = seen.find((m) => m.type === "event" && m.event.type === "presence_join");
+    expect(join.event.userId).toBe("u1");
+    ws.close();
   });
 });

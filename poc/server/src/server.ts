@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
@@ -18,7 +19,14 @@ import { slugify, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
 import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
 import { InviteStore } from "./invites.js";
-import { authRoutes, type AuthConfig } from "./auth.js";
+import {
+  authRoutes,
+  parseCookies,
+  verifySession,
+  isAllowlisted,
+  SESSION_COOKIE,
+  type AuthConfig,
+} from "./auth.js";
 
 const MAX_PROMPT_LENGTH = 4000;
 const MAX_URL_LENGTH = 2048;
@@ -267,7 +275,9 @@ export async function startServer(opts: {
   });
   const wss = new WebSocketServer({ server: httpServer });
 
-  wss.on("connection", (ws: WebSocket) => {
+  wss.on("connection", (ws: WebSocket, upgradeReq: IncomingMessage) => {
+    // Captured once: the cookie cannot change for the life of this socket.
+    const cookieHeader = upgradeReq.headers.cookie;
     let ctx: ClientContext | null = null;
     let watching: Project | null = null;
 
@@ -317,6 +327,22 @@ export async function startServer(opts: {
           return sendError(
             "projectId and sessionId must be 1-40 chars of a-z, 0-9, -",
           );
+        }
+        // Auth gate (spec §4.3). Before the invite gate and therefore before
+        // any provisioning: a rejected join must never create a worktree.
+        // On success userId is REPLACED by the verified GitHub login — the
+        // client's claim is discarded, which is the whole point of A2a
+        // (spec §2).
+        if (opts.auth) {
+          const user = verifySession(
+            parseCookies(cookieHeader)[SESSION_COOKIE],
+            opts.auth.sessionSecret,
+          );
+          if (!user) return sendError("authentication required");
+          if (!isAllowlisted(user.login, opts.auth.allowlist)) {
+            return sendError("not on the allowlist");
+          }
+          msg.userId = user.login;
         }
         // Invite gate (spec §4). Sits before getOrCreateProject/Session so a
         // rejected join never provisions a git worktree.
