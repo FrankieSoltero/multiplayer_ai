@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { screenFor, type RouteInput } from "./authRoute";
+import { screenFor, selfIdFor, type RouteInput } from "./authRoute";
 
 /** A fully-resolved signed-in user with a session and a profile: the "nothing
  *  special is happening" row. Each test overrides only what it is about. */
@@ -65,5 +65,46 @@ describe("screenFor — spec §3.5 routing precedence", () => {
     expect(route({ auth: { status: "anonymous" }, activeSessionId: null })).toBe("picker");
     expect(route({ auth: { status: "anonymous" }, profile: null })).toBe("lobby");
     expect(route({ auth: { status: "anonymous" } })).toBe("session");
+  });
+});
+
+/** C1. `isDriver` is `derived.driverId === userId`, and derived.driverId comes
+ *  from control_change.userId — which, with auth on, the server sets to the
+ *  verified GitHub login. A client comparing against its local sessionStorage
+ *  UUID can never match, so the driver's own browser shows "watching" and the
+ *  permission gate has no approve/deny control at all. These cases pin the
+ *  mapping so that regression cannot come back silently. */
+describe("selfIdFor", () => {
+  const LOCAL = "9f3c-4b1a-local-uuid";
+
+  it("uses the verified GitHub login when signed in", () => {
+    expect(selfIdFor({ status: "signed-in", login: "ana" }, LOCAL)).toBe("ana");
+  });
+
+  it("uses the local id when auth is off (anonymous)", () => {
+    expect(selfIdFor({ status: "anonymous" }, LOCAL)).toBe(LOCAL);
+  });
+
+  it("uses the local id while the auth probe is still in flight", () => {
+    expect(selfIdFor(null, LOCAL)).toBe(LOCAL);
+  });
+
+  // Neither state can reach the session screen, so this is a definition
+  // rather than a behaviour — asserted so it is a decision, not an accident.
+  it("uses the local id when signed out or denied", () => {
+    expect(selfIdFor({ status: "signed-out" }, LOCAL)).toBe(LOCAL);
+    expect(selfIdFor({ status: "denied", login: "mallory" }, LOCAL)).toBe(LOCAL);
+  });
+
+  it("makes a signed-in driver match the server-authored driverId", () => {
+    // What the wire actually carries once the server overwrites the claim
+    // at the join gate: control_change.userId is the verified login.
+    const driverIdFromControlChange: string = "ana";
+    const selfId = selfIdFor({ status: "signed-in", login: "ana" }, LOCAL);
+    // This is exactly App.tsx's `isDriver = derived.driverId === userId`.
+    expect(driverIdFromControlChange === selfId).toBe(true);
+    // And the pre-fix comparison, for contrast: the local UUID never matched,
+    // which is what made the permission gate unanswerable.
+    expect(driverIdFromControlChange === LOCAL).toBe(false);
   });
 });

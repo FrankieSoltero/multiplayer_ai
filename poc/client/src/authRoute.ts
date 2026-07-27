@@ -43,3 +43,26 @@ export function screenFor(input: RouteInput): Screen {
   if (profile === null) return "lobby";
   return "session";
 }
+
+/** The id this client is known by ON THE WIRE, which is the only id worth
+ *  comparing against.
+ *
+ *  With auth on the server discards the client's asserted userId at the join
+ *  gate and substitutes the verified GitHub login (spec §2), so every
+ *  server-authored event — control_change, presence_join, permission_decision
+ *  — carries the login. A client still comparing against its local
+ *  sessionStorage UUID can therefore never match: `isDriver` is false for the
+ *  actual driver, which puts the prompt bar in "watching" mode and hides the
+ *  approve/deny controls, making the permission gate literally unanswerable.
+ *
+ *  Signed-out and denied both fall back to the local id. Neither state can
+ *  reach the session screen (screenFor routes them to landing / invite-signin
+ *  / denied), so the value is never used for a comparison; falling back keeps
+ *  it a non-empty string rather than something that could accidentally equal
+ *  another participant's id.
+ *
+ *  Anonymous — which is every state when auth is off — returns the local id
+ *  unchanged, so the whole no-auth path behaves exactly as it always has. */
+export function selfIdFor(auth: AuthState | null, localId: string): string {
+  return auth?.status === "signed-in" ? auth.login : localId;
+}

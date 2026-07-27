@@ -28,13 +28,14 @@ import { Landing } from "./components/Landing";
 import { InviteSignIn } from "./components/InviteSignIn";
 import { Denied } from "./components/Denied";
 import { authStateFrom, type AuthState } from "./authState";
-import { screenFor } from "./authRoute";
-import { API_BASE } from "./types";
+import { screenFor, selfIdFor } from "./authRoute";
 
 const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
 
 export default function App() {
-  const [userId] = useState(loadOrCreateUserId);
+  // The per-tab anonymous id. With auth on it is NOT the identity the wire
+  // uses — see selfId below.
+  const [localUserId] = useState(loadOrCreateUserId);
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   // No param → session picker (spec §4). Deep links keep exact old behavior.
   const sessionId = params.get("session");
@@ -54,12 +55,23 @@ export default function App() {
   const [auth, setAuth] = useState<AuthState | null>(null);
   useEffect(() => {
     let live = true;
-    fetch(`${API_BASE}/auth/me`, { credentials: "include" })
+    // Bounded: `auth === null` gates EVERY screen, including the anonymous
+    // one, so a request that hangs (a wedged proxy, a half-open socket) would
+    // otherwise park the app on "CHECKING SESSION…" forever with no way out.
+    // A timeout lands in the same .catch as any other failure and degrades to
+    // anonymous, which is the pre-auth behaviour.
+    fetch("/auth/me", { credentials: "include", signal: AbortSignal.timeout(5000) })
       .then(async (res) => authStateFrom(res.status, await res.json().catch(() => null)))
       .catch(() => ({ status: "anonymous" }) as AuthState)
       .then((state) => { if (live) setAuth(state); });
     return () => { live = false; };
   }, []);
+
+  // The identity this client is known by on the wire. With auth on the server
+  // replaces the asserted userId with the verified GitHub login, so every
+  // comparison against a server-authored event (isDriver, "YOU" in the party
+  // pane, self-filtering in the watcher list) must use the login too.
+  const selfId = selfIdFor(auth, localUserId);
 
   // Profile precedence: `?name=` URL param auto-derives a profile (glyph/color
   // hashed from userId) and skips the lobby entirely — demo scripts depend on
@@ -74,11 +86,17 @@ export default function App() {
     return loadProfile();
   });
 
-  // A verified login always wins over a previously saved profile name.
+  // A verified login always wins over a previously saved profile name. The
+  // correction is PERSISTED: without saveProfile it re-ran on every load, and
+  // since profile.name sits in useSessionSocket's dep array that cost one
+  // aborted WebSocket connection per load.
   useEffect(() => {
     if (auth?.status !== "signed-in") return;
-    setProfile((p) => (p && p.name !== auth.login ? { ...p, name: auth.login } : p));
-  }, [auth]);
+    if (!profile || profile.name === auth.login) return;
+    const corrected = { ...profile, name: auth.login };
+    saveProfile(corrected);
+    setProfile(corrected);
+  }, [auth, profile]);
 
   const activeSessionId = inviteTarget?.sessionId ?? sessionId;
   const activeProjectId = inviteTarget?.projectId ?? projectId;
@@ -109,7 +127,7 @@ export default function App() {
           <Lobby
             projectId={activeProjectId}
             sessionId={activeSessionId!}
-            defaultName={auth?.status === "signed-in" ? auth.login : `user-${userId.slice(0, 4)}`}
+            defaultName={auth?.status === "signed-in" ? auth.login : `user-${localUserId.slice(0, 4)}`}
             lockedName={auth?.status === "signed-in" ? auth.login : undefined}
             onEnter={(p) => {
               saveProfile(p);
@@ -120,7 +138,7 @@ export default function App() {
       case "session":
         return (
           <SessionView
-            userId={userId}
+            userId={selfId}
             sessionId={activeSessionId!}
             projectId={activeProjectId}
             profile={profile!}
