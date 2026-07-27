@@ -1,0 +1,22 @@
+# NOT YET VERIFIED against a real box — written during A1a, executed in A1b.
+# Replace <hostname> with the real domain before use.
+#
+# Caddy terminates TLS and reverse-proxies everything to the Node process,
+# which serves both the built client and the WebSocket from one origin.
+# reverse_proxy passes WebSocket upgrades through natively — no extra config.
+
+<hostname> {
+    encode gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options nosniff
+        # Not boilerplate: this product's core interaction is a human clicking
+        # "approve" on a privileged action. Without frame denial that UI can be
+        # clickjacked via an invisible overlaid iframe to harvest a real approval.
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+    }
+
+    reverse_proxy 127.0.0.1:3001
+}

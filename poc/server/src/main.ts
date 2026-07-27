@@ -1,6 +1,19 @@
+import fs from "node:fs";
+import path from "node:path";
 import { startServer } from "./server.js";
+import { validateProductionConfig } from "./config.js";
 
-if (!process.env.ANTHROPIC_API_KEY) {
+const config = validateProductionConfig(process.env, (dir) =>
+  fs.existsSync(path.join(dir, "index.html")),
+);
+if (!config.ok) {
+  console.error(`config error: ${config.error}`);
+  process.exit(1);
+}
+
+// Development keeps the old advisory warning: the Claude CLI's own
+// credentials may be available even with no key in the environment.
+if (!config.staticDir && !process.env.ANTHROPIC_API_KEY) {
   console.warn(
     "ANTHROPIC_API_KEY not set — the agent will rely on Claude CLI credentials if available",
   );
@@ -17,15 +30,23 @@ function positiveIntEnv(name: string): number | undefined {
 }
 
 const port = Number(process.env.PORT ?? 3001);
+// Loopback by default so the deployed port is reachable only through the
+// reverse proxy. Set HOST=0.0.0.0 for LAN access, e.g. testing from a phone.
+const host = process.env.HOST ?? "127.0.0.1";
 // Off by default (spec §7's bound only applies once an operator opts in).
 const requireInvite = process.env.REQUIRE_INVITE === "1";
 const inviteTtlMs = positiveIntEnv("INVITE_TTL_MS");
 const inviteMaxUses = positiveIntEnv("INVITE_MAX_USES");
+
 const { port: actual } = await startServer({
   port,
+  host,
+  staticDir: config.staticDir,
   requireInvite,
   inviteTtlMs,
   inviteMaxUses,
 });
-console.log(`multiplayer-ai server listening on ws://localhost:${actual}`);
+
+console.log(`multiplayer-ai server listening on http://${host}:${actual}`);
+if (config.staticDir) console.log(`serving client from ${config.staticDir}`);
 if (requireInvite) console.log("REQUIRE_INVITE=1 — invite gate is ON");

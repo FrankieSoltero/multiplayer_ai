@@ -1,0 +1,36 @@
+# NOT YET VERIFIED against a real box — written during A1a, executed in A1b.
+# Install to /etc/systemd/system/multiplayer-ai.service
+
+[Unit]
+Description=multiplayer-ai relay server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mpai
+WorkingDirectory=/opt/multiplayer-ai/poc/server
+# Secrets live here, never inline in this unit: unit files in
+# /etc/systemd/system are world-readable.
+EnvironmentFile=/etc/multiplayer-ai/env
+ExecStart=/usr/bin/node dist/main.js
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+# Deliberately modest. ProtectSystem=strict and ProtectHome=yes are NOT set:
+# the agent legitimately writes git worktrees, clones plugins, runs Bash that
+# may install packages, and needs ~/.claude for its own config. Those
+# directives would surface as mysterious agent failures rather than clean
+# permission errors.
+#
+# Stated honestly: these two directives on a process whose purpose is spawning
+# an unconstrained agent are close to theatre. They cost nothing so we take
+# them, but they are not isolation. Real isolation is a Reading B item and
+# means namespaces or containers per agent session.
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

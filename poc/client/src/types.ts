@@ -1,3 +1,5 @@
+import { socketUrlFor } from "./socketUrl";
+
 export type LoggedEvent = {
   seq: number;
   ts: string;
@@ -87,7 +89,7 @@ export type PluginInfo = {
  *  host. The DEV short-circuit also keeps window untouched under vitest. */
 export const SERVER_URL = import.meta.env.DEV
   ? "ws://localhost:3001"
-  : `ws://${window.location.host}`;
+  : socketUrlFor(window.location.protocol, window.location.host);
 
 export type RepoInfo = { defaultBranch: string };
 

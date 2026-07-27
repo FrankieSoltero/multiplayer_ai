@@ -619,13 +619,14 @@ Create `poc/server/tsconfig.build.json`:
   "compilerOptions": {
     "noEmit": false,
     "outDir": "dist",
+    "rootDir": "src",
     "sourceMap": true
   },
   "include": ["src"]
 }
 ```
 
-`include` narrows to `src` so `test/` is not emitted. The base config's `noEmit: true` is overridden here only.
+`include` narrows to `src` so `test/` is not emitted. The base config's `noEmit: true` is overridden here only. `rootDir: "src"` is required: without it TypeScript 7.0.2 fails with TS5011, and if forced, emits to `dist/src/main.js` instead of `dist/main.js`, breaking `node dist/main.js` and the systemd unit's `ExecStart`.
 
 - [ ] **Step 2: Add the build script**
 
