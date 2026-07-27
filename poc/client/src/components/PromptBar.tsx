@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { matchSkills, moveHighlight } from "../slashMatch";
+import { parseClientCommand, type ClientCommand } from "../clientCommands";
 
 export function PromptBar(props: {
   isDriver: boolean; agentBusy: boolean; watcherNames: string[];
@@ -7,6 +8,7 @@ export function PromptBar(props: {
   gatesPending: number;
   onPrompt: (text: string) => void; onTakeWheel: () => void;
   onSuggestSkill: (skill: string, args: string) => void;
+  onClientCommand: (command: ClientCommand) => void;
   inputRef: React.RefObject<HTMLInputElement | null>;
 }) {
   const [text, setText] = useState("");
@@ -37,6 +39,15 @@ export function PromptBar(props: {
   const submit = () => {
     const t = text.trim();
     if (!t) return;
+    // Before the skill router: `/exit` is ours, not the agent's. Also before
+    // the isDriver check — leaving is not a driving privilege.
+    const command = parseClientCommand(t);
+    if (command) {
+      setText("");
+      setHint(null);
+      props.onClientCommand(command);
+      return;
+    }
     const cmd = t.match(/^\/(\S+)\s*(.*)$/);
     if (cmd) {
       props.onSuggestSkill(cmd[1], cmd[2]);

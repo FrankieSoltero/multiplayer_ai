@@ -535,6 +535,7 @@ function SessionView(props: {
         onPrompt={onPrompt}
         onTakeWheel={onTakeWheel}
         onSuggestSkill={onSuggestSkill}
+        onClientCommand={() => {}}
         inputRef={inputRef}
       />
     </div>
