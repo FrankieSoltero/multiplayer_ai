@@ -1,20 +1,26 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #7).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #8).*
 
-**STATE: A1a (deployment wiring) IS MERGED TO MAIN AND PUSHED. Zero open PRs. The production-readiness track has begun; A2 (GitHub OAuth) is next and needs no box, no domain, and no API key.**
+**STATE: A2a spec AND implementation plan are written, reviewed, approved and committed. Nothing is built yet. The user chose subagent-driven execution. The immediate next action is to start Task 1 of the plan — no further design questions are open for A2a.**
+
+Session #8 was design-only: no production code changed. Two commits, both docs (`5116fe8` spec, `fc89bdf` plan). **A2 was split in two** because its billing half turned out to depend on an unresolved model-provider question while its identity half depended on nothing:
+
+- **A2a — identity.** GitHub OAuth + allowlist + landing/sign-in screens + server-verified `userId`. **Fully unblocked**: no box, no domain, no API key, no pending decision. Spec + plan committed.
+- **A2b — provider + session credential.** Provider-scoped model registry and one API key per session. **Gated on a spike** (§7a) that needs an API key the user does not yet have.
 
 Session #7 turned "let's get this production ready" into a scoped programme. That request spans 8–10 independent subsystems, so it was split into two readings and the user chose the first:
 
 - **Reading A (chosen, in progress):** ready to run in front of real users on a real box — deploy, TLS, auth. This is `docs/superpowers/specs/2026-07-25-deployment-strategy-design.md` §2/§4.
 - **Reading B (after A):** real teams unattended — persistence, reconnect, multi-tenancy, sandboxing, audit, rate limiting. That spec's §6 roadmap, unchanged.
 
-Reading A decomposes into five sub-projects, **built in this order: A1a → A2 → A3 → A4 → A1b.**
+Reading A now decomposes into six sub-projects, **built in this order: A1a → A2a → A2b → A3 → A4 → A1b.**
 
 | ID | Scope | Status |
 |---|---|---|
 | **A1a** | Deployment wiring, in-repo only | **DONE — merged `f33ce06`** |
-| A2 | GitHub OAuth + allowlist; per-session BYO Anthropic key | **NEXT** |
+| **A2a** | GitHub OAuth + allowlist + verified `userId` | **SPEC + PLAN DONE — build next** |
+| A2b | Provider-scoped models + one API key per session | designed at decision level (§3f); blocked on the §7a spike |
 | A3 | Pull notification ("🔐 Ana's session needs an approval — drop in") | not started |
 | A4 | Canned demo scenario reaching a permission gate | not started |
 | A1b | Deployment execution: provision, DNS, Caddy, systemd, live verify | last, blocked on hardware |
@@ -43,13 +49,18 @@ We are ON `main`, in sync with origin (tip `f33ce06`). No dev stack running (:30
 
 Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 
-**STATUS: no task is in flight.** Session #7 ended at a clean boundary — A1a merged to main and pushed, main verified green (227/120) BEFORE the push, working tree clean apart from the three permanently-untracked user files. Nothing was left half-done.
+**STATUS: no code task is in flight.** Session #8 ended at a clean boundary — spec and plan committed to main, working tree clean apart from the three permanently-untracked user files. **No source file was touched this session**; baselines are unchanged at 227 server / 120 client.
 
-**Next real work: A2 — GitHub OAuth + allowlist, plus per-session BYO Anthropic key.** Needs no box, no domain, no API key. Start by brainstorming it (the process skill chain is brainstorming → writing-plans → subagent-driven-development; that is what produced A1a and it worked well).
+**Next real work: BUILD A2a, task by task, from `docs/superpowers/plans/2026-07-27-a2a-github-oauth.md`.**
 
-**A2 carries one unresolved design collision — see §7.** The deployment strategy spec says OAuth "replaces both the week-1 secret-URL idea and the week-2 invite-token idea", but that was written *before* the invite system was built and merged (#12). Invites now exist with project-scoped tokens, TTL and revocation. Put the question to the user before designing A2.
+- Brainstorming and writing-plans are **DONE and user-approved** — do not redo them.
+- The user explicitly chose **subagent-driven execution** (option 1 of 2), so use `superpowers:subagent-driven-development`: one fresh subagent per task, review between.
+- Start at **Task 1** (auth primitives). Tasks 1–7 need nothing from the user; **Task 8 needs a GitHub OAuth app** the user must register (§7).
+- `docs/superpowers/specs/2026-07-27-a2a-github-oauth-design.md` is the authority if plan and reality disagree. Record divergences in the plan's **Deviations** section rather than silently adapting.
 
-**Do NOT re-litigate these — they are decided:** the arcade design questions (§4c), the arrow-navigation contract (§4d), the piggyback research conclusions (§7), and everything in §3e below (the Reading A decomposition, the identity-vs-billing split, and the hosting choice).
+**The A2 invite-vs-OAuth collision that used to block this is RESOLVED — see §3f.** Do not re-open it.
+
+**Do NOT re-litigate these — they are decided:** the arcade design questions (§4c), the arrow-navigation contract (§4d), the piggyback research conclusions (§7), everything in §3e (the Reading A decomposition, the identity-vs-billing split, the hosting choice), and everything in §3f (the A2 split, the auth model, the provider strategy, one-key-per-session).
 
 **The `PreToolUse` gate spike (§7) is now deprioritised, not cancelled.** It decides whether the claude-code piggyback strategy is viable. The user chose production-readiness over it in session #7; it remains the right next research item once Reading A lands.
 
@@ -99,14 +110,29 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 - **SSH: the user pastes commands.** No agent access to the box. Runbook is written as copy-paste blocks with expected output per step.
 - **The API key must never be pasted into chat.** It goes directly into `/etc/multiplayer-ai/env` on the box (0600, `mpai:mpai`), and must be a **capped Anthropic Console workspace key** — that cap is the spend control and kill switch. User confirmed they have no key yet and will supply one at A1b.
 
+## 3f. A2 DECISIONS (session #8 — user-approved, do not re-litigate)
+
+- **A2 SPLIT into A2a (identity) and A2b (provider + credential).** Why: the credential half depends on an unresolved model-provider question which depends on an unrun spike; the identity half depends on nothing. Splitting unblocks real work instead of parking it behind an experiment.
+- **Invites and OAuth are TWO LAYERS, not alternatives.** This resolves the §7 blocker carried since session #7. OAuth answers *who are you* (required for the wedge); invites answer *which session may you enter* (already built, #12). The deployment spec §4's "OAuth replaces the invite-token idea" is **formally amended** in the A2a spec §1.2 — it predated the invite system existing. `REQUIRE_INVITE` stays **off** for the friends beta; the allowlist gates the server.
+- **Invite links get their own sign-in screen** showing what you were invited to, rather than a generic landing page. Chosen over a single shared landing page because an invite is a personal artifact and being met with a generic login discards the moment the product is trying to create. Costs one extra screen. `peek_invite` already returns the metadata unauthenticated without spending the token.
+- **Name is locked to the GitHub login; glyph and colour stay user-chosen.** A free-text name would reintroduce exactly the impersonation A2a removes.
+- **Auth activates only when `GITHUB_CLIENT_ID` is set**, mirroring A1a's `CLIENT_DIST` production signal — dev, all 227 tests, and `?name=alice` deep links stay untouched. The risk of shipping with auth off is closed by the config validator refusing to boot production without it.
+- **Subscriptions (Claude Pro/Max, ChatGPT) are NOT an option — do not re-explore.** Anthropic's Agent SDK docs disallow third-party products offering claude.ai login (quoted in deployment spec §2, Appendix A.14; captured 2026-07-25 and **not re-verified live** — flag before it reaches a public claim). OpenAI subscriptions are architecturally irrelevant: our agent *is* the Claude Agent SDK, so there is no OpenAI model to attach one to. BYO key is the standard cost model in this space — competitors face the same constraint.
+- **MODEL PROVIDER IS PLUGGABLE — the user's stated priority is "actual model choice"** (GPT, DeepSeek, later local models), not just billing flexibility. Seam goes at the **transport** (gateway via `ANTHROPIC_BASE_URL`), not at the driver. Why: `canUseTool` is a *harness* feature that fires before the model is consulted, so **the permission gate — the wedge — survives a model swap**. Separate agent runtimes per model would mean N gates, N event mappings, and a backend-dependent wedge.
+- **What does NOT survive a model swap** (expect these, don't rediscover them): thinking blocks (no non-Anthropic equivalent), server-side tools (WebSearch/WebFetch run on Anthropic infra), prompt caching. Also the system prompt at `agentDriver.ts:137` is ~1,500 words written for Claude — per-provider prompt tuning is real work the user has accepted.
+- **ONE API KEY PER SESSION** (deployment spec §3e stands, unamended). Per-user keys were analysed in depth and deferred — see §7b for the analysis and the shape it would take.
+- **Build the seam, not the backends.** Ship the Anthropic arm wired and the other arms as empty config. Rationale: zero users yet, and each additional backend multiplies the fidelity-testing and demo surface. Model choice is a *procurement* differentiator, not a product one.
+
 ## 4. Ordered next steps (fresh session)
 
-1. **Verify state per §8** (one paste; expect `main` in sync at `f33ce06`, zero open PRs, 227 + 120 green).
-2. **Put the invite-vs-OAuth collision to the user** (§7, first bullet) — it shapes A2's design and must be answered before brainstorming it.
-3. **Brainstorm and build A2: GitHub OAuth + allowlist + per-session BYO key.** Use the chain that produced A1a: `superpowers:brainstorming` → `superpowers:writing-plans` → `superpowers:subagent-driven-development`. Scope from `docs/superpowers/specs/2026-07-25-deployment-strategy-design.md` §4: authorization-code flow (`/auth/login`, `/auth/callback`, signed session cookie), WS join validates the cookie, `userId` on the wire becomes the verified GitHub login, allowlist = flat list of usernames. Out of scope there: email/password, user database, roles, org management. Plus the BYO-key item from §3e. Register a GitHub OAuth app with an `http://localhost:3001/auth/callback` callback — no public URL needed.
-4. Then A3 (pull notification — note it overlaps the v6b interrupt rail §3b and the spec says build it once), then A4 (canned demo scenario).
-5. **A1b last, and it is blocked on the user**: needs the box, the domain with a live A record, and the API key. **A1b cannot be declared done until the §0 workspace-provisioning blocker is fixed** — that is a code change, not a deploy step.
-6. Optional, user's call only: run the oversight demo (never done live — §0), confirm the model picker (§0), delete merged branches (§0), decide on `tour-skill-suggest.png` (§7).
+1. **Verify state per §8** (one paste; expect `main` in sync at `fc89bdf`, zero open PRs, 227 + 120 green, nothing running).
+2. **Build A2a via `superpowers:subagent-driven-development`** — the user already chose this over inline execution. Plan: `docs/superpowers/plans/2026-07-27-a2a-github-oauth.md`. Eight tasks, TDD, one commit each. **Start at Task 1.** Tasks 1–7 need nothing from the user.
+3. **Task 4 is the load-bearing one** — its central test sends `userId: "totally-not-ana"` with a valid cookie for `ana` and asserts that string never appears in the output. If that test is weakened, A2a is decorative. Do not let a subagent soften it.
+4. **Task 8 needs the user**: a GitHub OAuth app (callback `http://localhost:3001/auth/callback`, two minutes, no public URL). Ask for the client ID and secret when Tasks 1–7 are green. Task 8 is a live browser pass and is **not skippable** — `SameSite` behaviour across the OAuth redirect is invisible to unit tests.
+5. **Then the provider spike (§7a)** once the user supplies an API key, which gates A2b.
+6. Then A3 (pull notification — overlaps the v6b interrupt rail §3b; the spec says build it once), then A4 (canned demo scenario).
+7. **A1b last, and it is blocked on the user**: needs the box, the domain with a live A record, and the API key. **A1b cannot be declared done until the §0 workspace-provisioning blocker is fixed** — that is a code change, not a deploy step.
+8. Optional, user's call only: run the oversight demo (never done live — §0), confirm the model picker (§0), delete merged branches (§0), decide on `tour-skill-suggest.png` (§7).
 
 ## 4b. Invite system — files with line refs (MERGED to main via #12)
 
@@ -169,6 +195,25 @@ Spec `docs/superpowers/specs/2026-07-27-a1a-deployment-wiring-design.md`, plan `
 
 **Verified live in a real browser** (not just unit tests): the built bundle loaded through the production single-port path, joined over `ws://`, and two participants appeared in one session (`PARTY · 2`, alice driving, ben with TAKE THE WHEEL). Loopback bind confirmed `127.0.0.1:3001`, not `*:3001`. Fail-fast confirmed unprompted — the first launch attempt exited with `config error: ANTHROPIC_API_KEY is required when CLIENT_DIST is set`.
 
+## 4f. A2a — touchpoints the plan will modify (verified line refs, nothing built yet)
+
+Spec `docs/superpowers/specs/2026-07-27-a2a-github-oauth-design.md`, plan `docs/superpowers/plans/2026-07-27-a2a-github-oauth.md` (8 tasks, 1603 lines, full code in every step). **No branch exists yet** — create one before Task 1.
+
+- **The vulnerability A2a closes:** `poc/client/src/identity.ts:20` mints a `crypto.randomUUID()` into sessionStorage; `poc/client/src/useSessionSocket.ts:44` sends it in the join payload; `poc/server/src/server.ts:295-304` validates only that `userId` is a *string*. Anyone can claim to be anyone, and every downstream attribution (approvals, take-the-wheel, `oversight_pull`, arcade scores) inherits that.
+- **Server files to create:** `poc/server/src/auth.ts` (cookie sign/verify, allowlist, four `/auth/*` routes; token exchange **injected** so tests never touch the network — same pattern as `config.ts:12`'s injected fs probe), `poc/server/test/auth.test.ts`.
+- **Server files to modify:** `server.ts` — options object (add `auth?: AuthConfig` after `inviteMaxUses`), the composed handler at `:224-258` (auth goes **between** healthz and static, for the same SPA-fallback reason A1a documented at `staticFiles.ts:51-53`), `:262` `wss.on("connection", (ws: WebSocket) => {` gains a second `req` param for the cookie header, and the join branch at `:295` gains the auth gate **before** the invite gate at `:315` so a rejected join never provisions a worktree. `config.ts:12-31` gains the auth vars and returns a built `AuthConfig`. `main.ts` passes it through.
+- **Client files to create:** `authState.ts` + test (pure), `components/Landing.tsx`, `components/InviteSignIn.tsx`, `components/Denied.tsx`.
+- **Client files to modify:** `App.tsx:64-67` (the invite branch currently runs first; new precedence is in spec §3.5), `components/Lobby.tsx` (name locked — and the wrapping `<label>` must become a `<div>`+`<span>`, per the model-picker bug in §6), `types.ts` (add `API_BASE` beside `SERVER_URL` at `:88-92`), `terminal.css`.
+- **Auth is only exercisable through the single-port build.** Vite dev on :5173 is cross-origin from :3001 and its cookies would need CORS, which A2a deliberately does not add. Dev-with-vite always runs anonymous.
+
+**SDK facts verified this session against the installed `poc/server/node_modules/@anthropic-ai/claude-agent-sdk` — do not re-derive:**
+
+- `sdk.d.ts:1416-1432` — `Options.env` **REPLACES** the subprocess environment; must spread `process.env` or the agent loses `PATH`/`HOME` and will not launch.
+- `sdk.d.ts:5039` — `model?: string`, a free string, so any model id passes through to whatever endpoint the process points at.
+- `sdk.d.ts:1784` — `resume?: string` loads history from `~/.claude/projects/`; `:1590` references a resume-materialisation timeout.
+- Provider env vars honoured by the shipped bundle (grepped from `sdk.mjs`/`bridge.mjs`): `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`, `CLAUDE_CODE_USE_GATEWAY`, `ANTHROPIC_BEDROCK_BASE_URL`, `ANTHROPIC_VERTEX_PROJECT_ID`.
+- Agent driver anchors: `agentDriver.ts:133` workdir fallback, `:134` the `query()` call (no `env` passed today — that is A2b's seam), `:137` the ~1,500-word Claude-specific system prompt, `:146` `canUseTool`.
+
 ## 5. Oversight — files with line refs (MERGED to main via #13; never demoed live)
 
 - **Server:** `poc/server/src/digest.ts:49-100` (oversightSessionDigest — structured digest, no transcript prose); `poc/server/src/overseer.ts` (whole file: Overseer class w/ disposed flag + schedule-once debounce + in-flight coalesce, oversightToolText w/ exact fallback strings :25-26, runOversightSummarize haiku one-shot :159-165); `poc/server/src/events.ts:43` (oversight_pull w/ summarySeq); `poc/server/src/project.ts:17` (pendingOversight), `:98,130` (ProjectMessage.oversight); `poc/server/src/server.ts:97-102` (onUpdate → immediate pushProject), `:320-333` (set_oversight, anyone), `:517-533` (pull_oversight, driver-gated), `:383-392` (one-shot `<oversight>` injection — flag consumed before latest check); `poc/server/src/agentDriver.ts:117-130` (team_update tool, NOT in allowedTools :140-145 → driver gate).
@@ -202,7 +247,10 @@ Spec `docs/superpowers/specs/2026-07-27-a1a-deployment-wiring-design.md`, plan `
 
 ## 7. Open questions / USER DECISIONS (carried)
 
-- **A2 BLOCKER — invites vs OAuth. Ask the user before designing A2.** `docs/superpowers/specs/2026-07-25-deployment-strategy-design.md` §4 says GitHub OAuth "replaces both the week-1 secret-URL idea and the week-2 invite-token idea." That was written **before** the invite system was built and merged (#12), which now ships project-scoped tokens, TTL, revocation, an admitted-set and a `REQUIRE_INVITE` operator switch. So: do invites remain the in-session seat mechanic with OAuth as the door to the server, or does OAuth subsume them entirely? Both are defensible; the spec predates the code and cannot decide it.
+- **~~A2 BLOCKER — invites vs OAuth~~ RESOLVED session #8.** Two layers, both kept. See §3f and A2a spec §1.2. Do not re-open.
+- **§7a — PROVIDER SPIKE, blocks A2b. Needs an API key from the user.** Stand up a gateway (LiteLLM class), point `ANTHROPIC_BASE_URL` at it, run the demo scenario until it hits a Bash gate, and check three things: does the task complete; does `canUseTool` still fire with the driver's name attached; does the transcript render. The architecture says it should work and the SDK types allow it (`model?: string` at `sdk.d.ts:5039` is a free string, not a Claude-only union), but **this is reasoning from the shipped bundle, not from a run** — exactly the "live-behaviour drift" class that has burned this project twice (the `skills:"all"` reversal, the `canUseTool` shadowing). A day of work; it either validates the provider strategy or kills it before anything is built on it. User named **GPT-5 and DeepSeek** as the models to test first.
+- **§7b — PER-USER API KEYS: analysed, deferred by the user, research after A2b.** Architecturally possible — `sdk.d.ts:1784` documents `resume?: string`, loading history from `~/.claude/projects/`, so a turn *can* start a fresh agent process under a different key and continue the same conversation. **This invalidates the original §3e reasoning** ("re-keying would kill the context"), but the conclusion was kept anyway on cost grounds: (1) per-turn process startup — `sdk.d.ts:1590` references a resume-materialisation timeout, and cost scales with conversation length; (2) **prompt-cache invalidation, the expensive one** — caches are per key, so strict alternation between drivers yields zero cache hits and can cost several times a single shared key, meaning naive per-user keys make the total *larger* for everyone; (3) cross-provider replay — handing off Claude-shaped history to another model family drops thinking blocks and mismatches tool-result formats. **If it is ever built, the shape is:** billing follows the wheel (whoever starts a turn pays; approvals never re-key), re-key on *handoff* not per turn (bounding costs 1 and 2 to handoff boundaries), provider pinned per session with only the key varying (eliminating cost 3). Still unresolved: custody of N live keys in memory (§3e's assume-breach ruling warned against exactly this), and the failure UX when one participant's key is rate-limited.
+- **A2a needs a GitHub OAuth app from the user before Task 8** — callback `http://localhost:3001/auth/callback`. GitHub accepts localhost callbacks, which is why deploy could be moved last. Not needed for Tasks 1–7.
 - **A1b unverified surface — the risk lives in the Caddyfile, not the client.** The `wss://` client fix is covered by unit tests AND was exercised for real in a browser (the built bundle ran `socketUrlFor` with `import.meta.env.DEV` false; only the `http:` branch was hit, and the `https:` branch differs solely in which of two string literals a ternary returns). What remains genuinely unproven: WebSocket **upgrade passthrough through Caddy**, `encode gzip` interaction with the WS handshake, and proxy timeouts on a long-lived socket. Spec §6.2 formally reassigns the `tls internal` rehearsal and the real-permission-gate run to A1b rather than leaving them as unmet A1a criteria.
 - **A1b hard blocker — workspace provisioning (see §0).** Not a deploy step; a code change. Must land before any real session runs on a box.
 - **claude-code / codex piggyback — RESEARCHED 2026-07-26, answered in conversation, never written to a doc. Findings, so they are not re-derived:** `anthropics/claude-code` LICENSE.md is *"© Anthropic PBC. All rights reserved. Use is subject to Anthropic's Commercial Terms of Service"* — proprietary, **not forkable** — and the CLI source is not in that repo anyway (it is plugins/examples/docs/issues; the binary ships via installers). `openai/codex` is **Apache-2.0 with full Rust source** (`codex-rs`, plus an `sdk/`), so forking it is legal with notice/attribution/trademark conditions. Conclusion reached: forking Codex buys a single-player terminal UI, which is the wrong half — our differentiator is the relay server (shared sessions, driver/passenger, per-action gating, awareness), so **the server is the product and clients are distribution**. The sanctioned Claude Code piggyback is its extension surface (plugins/skills/MCP/hooks/subagents + the Agent SDK), which `poc/server` already uses. **The blocking unknown, and the recommended next spike:** per-action approval is our stated wedge but relies on `canUseTool`, which we only own because we host the SDK process — inside someone else's Claude Code it would have to ride a `PreToolUse` hook instead. Live evidence this is real: the server logged `[CLAUDE_SDK_CAN_USE_TOOL_SHADOWED]` warning that `canUseTool` is not invoked for `Read`/`Glob`/`Grep`/`mcp__awareness__set_intent` because bare `allowedTools` entries auto-approve first, explicitly recommending a PreToolUse hook. Do that spike before committing to the strategy. Caveat: the full Anthropic Commercial ToS was not read, only LICENSE.md.
@@ -220,7 +268,7 @@ Spec `docs/superpowers/specs/2026-07-27-a1a-deployment-wiring-design.md`, plan `
 
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # main, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
-git log --oneline -3                          # f33ce06 Merge A1a: deployment wiring
+git log --oneline -3                          # fc89bdf A2a plan / 5116fe8 A2a spec / 168441e lessons
 gh pr list --state open                       # EMPTY — zero open PRs
 cd poc/server && npx tsc --noEmit && npx vitest run   # tsc clean, 227 passed (~14s)
 cd ../client && npx tsc --noEmit && npm test && npm run build   # tsc clean, 120 passed, build clean
@@ -242,4 +290,8 @@ kill $(lsof -ti:3001)
 
 To re-run the invite demo: build the client (`cd poc/client && npm run build`), then `cd poc/server && REQUIRE_INVITE=1 npx tsx src/main.ts` — **as of `4f9ea92` the env var is the supported route**; `main.ts` has no `staticDir`, so for the single-port UI demo use a `.mts` harness calling `startServer({port:3001, staticDir:<repo>/poc/client/dist, requireInvite:true})`. Full recipe in `docs/demos/2026-07-26-invite-and-oversight.md` (that doc predates the env var and still shows only the harness route — worth updating). **A harness must be `.mts` or live inside `poc/server/`**; a stray `.ts` outside the package is transformed as CJS and top-level `await` fails.
 
-Resume at §4: A1a is merged to main and main is verified green (227 server / 120 client). Nothing to review, nothing to merge. **Next: put the invite-vs-OAuth question (§7) to the user, then brainstorm and build A2.** A2 needs no box, no domain and no API key, so it can start immediately.
+**Resume at §4.** Main is green (227 server / 120 client) and no source file changed in session #8 — only two docs commits. Nothing to review, nothing to merge, nothing half-finished.
+
+**Next action, concretely:** create a branch (`feature/a2a-github-oauth`), then run `superpowers:subagent-driven-development` against `docs/superpowers/plans/2026-07-27-a2a-github-oauth.md` starting at **Task 1**. The user has already approved the spec, approved the plan, and chosen subagent-driven over inline execution — **no further questions are needed to begin**. Ask for the GitHub OAuth app only when Tasks 1–7 are green (Task 8 needs it).
+
+Design phases are closed for A2a: do not re-run brainstorming or writing-plans on it.
