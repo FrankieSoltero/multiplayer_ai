@@ -2,7 +2,22 @@
 
 *Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #10).*
 
-**STATE: A2a AND A3 ARE BOTH MERGED AND PUSHED. `main` == `origin/main` (pushed this session; verify with `git ls-remote origin refs/heads/main`, which is authoritative — the `origin/main` tracking ref has been observed stale in this repo). Code tip is `0450c8d` (merge of A3); anything above it is handoff/docs commits. Suites: server 305, client 160, both tsc clean, client build clean. Nothing running, nothing half-finished.**
+**🔴 READ THIS FIRST — WORK IS IN FLIGHT ON A BRANCH (session #11, 2026-07-27).**
+
+**You are on `feature/v7a-repo-identity-lifecycle`, mid-way through executing the v7a plan via `superpowers:subagent-driven-development`. NOT on main. Nothing is merged.**
+
+- **The ledger is your recovery map — read it before anything else:** `.superpowers/sdd/2026-07-27-v7a-repo-identity-lifecycle/progress.md`. It records every task, review, fix round and ruling, and ends with an explicit `>>> RESUME POINT`. Trust it and `git log` over any recollection.
+- **Plan:** `docs/superpowers/plans/2026-07-27-v7a-repo-identity-lifecycle.md` (4 tasks). **Spec:** `docs/superpowers/specs/2026-07-27-v7-hub-architecture-design.md`.
+- **Done and reviewed clean:** Task 1 (`repoKey.ts`, commits `4a178ab`+`d4c1ebf`), Task 2 (repo key on the wire, `f048aa1`).
+- **Task 3 (lifecycle + `close_session`) is MID-FIX-LOOP.** Implemented at `a34a7f9`, reviewed (spec ✅, quality Approved, 1 Important), fix committed at `bd373a3` — **but the scoped re-review has NOT been run.** That is the exact next action.
+- **Task 4 (presence + client rendering) has not started.** Then the final whole-branch review.
+- **Suites on the branch: server 341, client 160, tsc clean both, working tree clean.** The plan's written test counts are stale by +7 (Task 1's fix round added tests) — the ledger has the corrected numbers. Do not treat the plan's counts as authoritative.
+- **Two rulings that must not be re-litigated:** `close_session` uses `pushProject`, not `schedulePush` (the plan said otherwise and the plan was wrong — `session_closed` is not in the `INTERESTING` set, so without an explicit push project watchers never see `lifecycle` flip). And `permission`/`decide_plan` are **deliberately left unguarded** on a closed session — guarding them would strand a live agent waiting forever on a promise nobody can resolve.
+- Not yet decided by the user: whether v7a merges locally or goes up as a PR (§7g).
+
+---
+
+**STATE (pre-branch, still true of `main`): A2a AND A3 ARE BOTH MERGED AND PUSHED. `main` == `origin/main` (pushed this session; verify with `git ls-remote origin refs/heads/main`, which is authoritative — the `origin/main` tracking ref has been observed stale in this repo). Code tip is `0450c8d` (merge of A3); anything above it is handoff/docs commits. Suites: server 305, client 160, both tsc clean, client build clean. Nothing running, nothing half-finished.**
 
 **A3 (pull notifications) is DONE and verified in a real browser** — spec, plan, all four tasks, deviations recorded, merged at `0450c8d`. The behaviour: a permission gate in another session that goes unanswered past *your* threshold lights that session's OTHER PARTIES row amber and shows `🔐 PULLS ▸ N` in the header. Off by default; the delay is per-recipient (OFF / 30s / 1m / 2m / 5m) in `localStorage["mpai-pull-after-ms"]`.
 
@@ -414,7 +429,9 @@ To re-run the invite demo: build the client (`cd poc/client && npm run build`), 
 
 **Resume at §4.** Main is green (297 server / 147 client) and nothing is half-finished.
 
-**Next action, concretely: WRITE THE v7a IMPLEMENTATION PLAN** via `superpowers:writing-plans`, from `docs/superpowers/specs/2026-07-27-v7-hub-architecture-design.md`. Brainstorming for v7a+v7b is **DONE and user-approved** (session #11) — do not redo it. v7a is repo identity (`repoKey.ts`, normalized `origin` URL) plus the three lifecycle facts of spec §3.4 replacing today's conflated `ended`; it deliberately ships against the **standalone** server, where the repo key is trivially constant and `presence` is always online, so it is independently verifiable before any relay exists.
+**Next action, concretely: RESUME THE SDD LOOP AT TASK 3's SCOPED RE-REVIEW.** Read `.superpowers/sdd/2026-07-27-v7a-repo-identity-lifecycle/progress.md` first — its `>>> RESUME POINT` line is authoritative. Concretely: run `scripts/review-package docs/superpowers/plans/2026-07-27-v7a-repo-identity-lifecycle.md a34a7f9 bd373a3`, dispatch `re-review-prompt.md` with the one open finding (`suggest_skill`/`decide_skill` unguarded against closed sessions), verdict it, then close Task 3, run Task 4, and finish with the whole-branch review on the most capable model. The SDD scripts are at `~/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/`.
+
+**The v7a plan and the v7+v7b spec are both written, committed and user-approved — do not redo either.** Brainstorming for v7a+v7b is **DONE and user-approved** (session #11) — do not redo it. v7a is repo identity (`repoKey.ts`, normalized `origin` URL) plus the three lifecycle facts of spec §3.4 replacing today's conflated `ended`; it deliberately ships against the **standalone** server, where the repo key is trivially constant and `presence` is always online, so it is independently verifiable before any relay exists.
 
 **Do NOT brainstorm v6b.** It was shelved mid-brainstorm in session #11 and is now **v7e**, blocked on the hub existing: until a hub holds two repos, "which sessions share a repo" is always "all of them." Its banked decisions in §3b still stand, plus four settled in session #11 that never reached a spec — collision = both diverged from the shared base on the same path (git-derived, whole-file); its own header badge in a calmer colour, sharing the OTHER PARTIES row, with amber reserved for gates; agent gets two tiers (digest naming contested files, plus withdrawal of auto-approve on a contested write, asked once per file per session); on by default; ended sessions included and labelled.
 
