@@ -219,9 +219,38 @@ export async function startServer(opts: {
     return buildTeammateDigest(others);
   }
 
-  const httpServer = createServer(
-    opts.staticDir ? staticHandler(opts.staticDir) : undefined,
-  );
+  const serveStatic = opts.staticDir ? staticHandler(opts.staticDir) : null;
+  const httpServer = createServer((req, res) => {
+    let pathname: string;
+    try {
+      pathname = new URL(req.url ?? "/", "http://x").pathname;
+    } catch {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    // Registered unconditionally and BEFORE the static handler. That handler's
+    // SPA fallback (staticFiles.ts:51-53) serves index.html for any
+    // extensionless path, so wiring /healthz after it would return HTML with a
+    // 200 — a probe that passes forever while the app is broken (spec §3.4).
+    // Body carries no internal state: it is publicly reachable via the domain.
+    if (pathname === "/healthz") {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        res.writeHead(405);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(req.method === "HEAD" ? undefined : JSON.stringify({ status: "ok" }));
+      return;
+    }
+    if (serveStatic) {
+      serveStatic(req, res);
+      return;
+    }
+    res.writeHead(404);
+    res.end("not found");
+  });
   const wss = new WebSocketServer({ server: httpServer });
 
   wss.on("connection", (ws: WebSocket) => {
