@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { pullsFrom, thresholdFromStorage, THRESHOLD_OPTIONS } from "./pulls";
+import { pullsFrom, thresholdFromStorage, waitedLabel, THRESHOLD_OPTIONS } from "./pulls";
 import type { ProjectSessionInfo } from "./types";
 
 const T0 = Date.parse("2026-07-27T10:00:00.000Z");
@@ -66,6 +66,23 @@ describe("pullsFrom", () => {
     });
 
     expect(pulls).toEqual([]);
+  });
+});
+
+describe("waitedLabel", () => {
+  // The party pane's ago() appends "ago", which reads wrong after "waiting" —
+  // the browser pass showed "waiting 2m ago — approval to run Bash". This is
+  // the duration on its own.
+  test("reads as a duration, not a point in time", () => {
+    expect(waitedLabel(T0, T0 + 120_000)).toBe("2m");
+  });
+
+  test("collapses anything under a minute rather than showing 0m", () => {
+    expect(waitedLabel(T0, T0 + 30_000)).toBe("under a minute");
+  });
+
+  test("floors to whole minutes", () => {
+    expect(waitedLabel(T0, T0 + 119_000)).toBe("1m");
   });
 });
 

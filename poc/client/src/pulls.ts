@@ -29,6 +29,17 @@ export function thresholdFromStorage(raw: string | null): number | null {
   return THRESHOLD_OPTIONS.some((o) => o.ms === n) ? n : null;
 }
 
+/** How long a gate has been waiting, phrased as a duration.
+ *
+ *  Deliberately not the party pane's `ago()`: that appends "ago", which after
+ *  the word "waiting" produces "waiting 2m ago". Caught in the browser pass —
+ *  no unit test would have noticed, because both strings are individually
+ *  correct. */
+export function waitedLabel(sinceMs: number, nowMs: number): string {
+  const m = Math.floor((nowMs - sinceMs) / 60_000);
+  return m < 1 ? "under a minute" : `${m}m`;
+}
+
 /** Which sessions are pulling this viewer right now.
  *
  *  The threshold is compared client-side on purpose: the server publishes only
