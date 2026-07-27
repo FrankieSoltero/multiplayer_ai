@@ -924,4 +924,22 @@ the reviewer knows the untestable path was actually exercised.
 
 *(Fill in during execution — record anything that departs from this plan or the spec, with the reason.)*
 
+- **Task 4 result (live gate PASSED, 2026-07-26).** Drove the real UI on a vite
+  dev stack. Confirmed: all four cartridges cycle with `G` — SNAKE(5 rows) →
+  TETRIS(20) → DOODLE JUMP(20) → DINO RUN(2) → SNAKE(5) — with no crash and no
+  console errors across the 2-row ↔ 20-row transitions, which is the swap path
+  that crashed in `docs/mistakes-and-fixes.md:9-14`. Tetris: spawn, gravity,
+  left/right with correct wall clamping, rotate, hard drop, lock, game over,
+  and a 20×40 lane on every frame. Doodle Jump: auto-bounce, steering, camera
+  scroll, rising score, death on falling out. Score submission round-tripped
+  through the **new** server allowlist — a doodlejump run returned
+  `PARTY BEST 0005 ★ tester` from the project snapshot, and the server log
+  recorded no validation errors. Hotkey capture verified: S/W/O/I are
+  suppressed during a live run while `G` still swaps the cartridge (correct,
+  since neither engine sets `capturesText`).
+- **Not observed live: a Tetris line clear.** Piece order is random and the
+  crude column-sweep used to drive the browser left holes, so no row ever
+  completed in a live run. Line clearing, the score table, and the level
+  multiplier are covered deterministically by `tetris.test.ts` instead. Worth
+  hitting by hand the next time this code is touched.
 - **Task 2, keydown-only steering.** The spec describes ← → horizontal movement without saying how it terminates. The host forwards keydown only (`ThinkingStrip.tsx:186`), so movement is steer-style — a press sets a persistent direction — and `ArrowDown` is bound to "stop". Noted here rather than amending the spec because it refines an unspecified detail rather than contradicting one.
