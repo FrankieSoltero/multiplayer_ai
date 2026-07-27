@@ -95,18 +95,23 @@ export interface ProjectMessage {
      *  when the waiting started and holds no opinion about when it matters. */
     pendingGate: PendingGate | null;
     skills: SkillInfo[];
+    /** Stable cross-machine repo identity (spec §3.3). Null when the server
+     *  was launched outside a repo. Every session on a standalone server
+     *  carries the SAME key — it is per-session because v7b's hub holds
+     *  sessions from many repos at once. */
+    repoKey: string | null;
   }[];
   arcade: ArcadeRecord[];
   plugins: PluginInfo[];
   pluginsEnabled: boolean;
-  repo: { defaultBranch: string } | null;
+  repo: { defaultBranch: string; key: string } | null;
   oversight: { enabled: boolean; latest: OversightSummary | null };
 }
 
 export function projectSnapshot(
   project: Project,
   pluginState?: { plugins: PluginInfo[]; enabled: boolean },
-  repo?: { defaultBranch: string } | null,
+  repo?: { defaultBranch: string; key: string } | null,
   oversight?: { enabled: boolean; latest: OversightSummary | null },
 ): ProjectMessage {
   const sessions = [...project.sessions.entries()].map(([id, entry]) => {
@@ -124,6 +129,7 @@ export function projectSnapshot(
       ended: summary.ended,
       pendingGate: pendingGateOf(events),
       skills: entry.skills,
+      repoKey: repo?.key ?? null,
     };
   });
   return {

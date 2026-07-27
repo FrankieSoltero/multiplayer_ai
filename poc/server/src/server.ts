@@ -79,7 +79,13 @@ export async function startServer(opts: {
   // Cached once at startup: the default branch changing mid-run is rare and
   // harmless (it only seeds the create form's base-ref field).
   const repo = opts.workspace
-    ? { workspace: opts.workspace, defaultBranch: opts.workspace.defaultBranch() }
+    ? {
+        workspace: opts.workspace,
+        defaultBranch: opts.workspace.defaultBranch(),
+        // Cached at startup like defaultBranch: a repo's origin changing
+        // mid-run is not a case worth re-reading git for on every push.
+        key: opts.workspace.repoKey(),
+      }
     : null;
   const projects = new Map<string, Project>();
   const lastPush = new Map<Project, number>();
@@ -117,7 +123,7 @@ export async function startServer(opts: {
     return projectSnapshot(
       project,
       { plugins: pluginStore.list(project.id), enabled: pluginStore.enabled },
-      repo && { defaultBranch: repo.defaultBranch },
+      repo && { defaultBranch: repo.defaultBranch, key: repo.key },
       { enabled: overseer.isEnabled(project.id), latest: overseer.latest(project.id) },
     );
   }
@@ -429,7 +435,7 @@ export async function startServer(opts: {
           JSON.stringify(
             project
               ? snapshotFor(project)
-              : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: repo && { defaultBranch: repo.defaultBranch }, oversight: { enabled: false, latest: null } },
+              : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: repo && { defaultBranch: repo.defaultBranch, key: repo.key }, oversight: { enabled: false, latest: null } },
           ),
         );
         return;

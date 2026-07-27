@@ -70,6 +70,9 @@ export type ProjectSessionInfo = {
    *  not break the client. */
   pendingGate?: { toolName: string; sinceTs: string } | null;
   skills?: { name: string; description: string }[];
+  /** Stable cross-machine repo identity. Optional so a snapshot from an older
+   *  server does not break the client — same posture as pendingGate. */
+  repoKey?: string | null;
 };
 
 export type ArcadeRecord = {
@@ -109,7 +112,7 @@ export const SERVER_URL = import.meta.env.DEV
  *  a built bundle, forwarded by the `/auth` proxy in vite.config.ts in dev.
  *  One convention, no CORS, and cookies work in both. */
 
-export type RepoInfo = { defaultBranch: string };
+export type RepoInfo = { defaultBranch: string; key?: string };
 
 export type OversightState = {
   enabled: boolean;

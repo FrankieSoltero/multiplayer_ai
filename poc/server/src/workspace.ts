@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { repoKeyFor } from "./repoKey.js";
 
 export type ProvisionResult =
   | { ok: true; workdir: string }
@@ -10,6 +12,8 @@ export type ProvisionResult =
 export interface WorkspaceLike {
   provision(slug: string, baseRef: string): ProvisionResult;
   defaultBranch(): string;
+  /** Stable cross-machine identity for this repo (spec §3.3). */
+  repoKey(): string;
 }
 
 /** Server-side git worktree provisioning (spec §2). Trusted code path — the
@@ -67,6 +71,19 @@ export class WorkspaceManager implements WorkspaceLike {
     } catch {
       return "main";
     }
+  }
+
+  /** Stable identity for this repo, shared by every machine that cloned it.
+   *  A repo with no `origin` gets a machine-local key that can never match
+   *  another laptop's copy — silence beats a wrong match (spec §3.3). */
+  repoKey(): string {
+    let remote: string | null = null;
+    try {
+      remote = this.git(["remote", "get-url", "origin"]);
+    } catch {
+      remote = null;
+    }
+    return repoKeyFor(remote, { hostname: os.hostname(), repoRoot: this.repoRoot });
   }
 }
 

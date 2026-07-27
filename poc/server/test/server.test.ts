@@ -48,6 +48,7 @@ function fakeWorkspace() {
       return { ok: true as const, workdir: `/tmp/wt/${slug}` };
     },
     defaultBranch: () => "main",
+    repoKey: () => "local:test:000000000000",
   };
 }
 
@@ -1035,7 +1036,7 @@ describe("session initiation", () => {
     await wait(50);
     const snap = seen.find((m) => m.type === "project");
     expect(snap).toBeTruthy();
-    expect(snap.repo).toEqual({ defaultBranch: "main" });
+    expect(snap.repo).toEqual({ defaultBranch: "main", key: "local:test:000000000000" });
     expect(snap.sessions).toEqual([]);
     const joiner = await connect(server.port);
     joiner.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
@@ -1133,6 +1134,7 @@ describe("session initiation", () => {
     const workspace = {
       provision: () => ({ ok: false as const, error: "unknown base ref: dev" }),
       defaultBranch: () => "main",
+      repoKey: () => "local:test:000000000000",
     };
     const server = await startServer({ port: 0, runQuery: echoRun, workspace });
     close = server.close;
@@ -1184,6 +1186,7 @@ describe("session initiation", () => {
     const workspace = {
       provision: () => ({ ok: false as const, error: "session name taken (branch mpai/adhoc exists)" }),
       defaultBranch: () => "main",
+      repoKey: () => "local:test:000000000000",
     };
     const server = await startServer({ port: 0, runQuery: echoRun, workspace });
     close = server.close;
@@ -1945,6 +1948,48 @@ describe("auth gate on the pre-join message types", () => {
     expect(seen.some((m) => m.type === "error")).toBe(false);
     expect(seen.some((m) => m.type === "session_created")).toBe(true);
     expect(workspace.calls.map((c) => c.slug)).toEqual(["dev-flow"]);
+    ws.close();
+  });
+});
+
+describe("repo identity on the project snapshot", () => {
+  const lastProject = (seen: any[]) => [...seen].reverse().find((m) => m.type === "project");
+
+  it("stamps every session with the repo key", async () => {
+    const server = await startServer({
+      port: 0,
+      runQuery: echoRun,
+      workspace: { ...fakeWorkspace(), repoKey: () => "github.com/acme/api" },
+    });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    await wait(200);
+
+    const snap = lastProject(seen);
+    expect(snap.repo).toEqual({ defaultBranch: "main", key: "github.com/acme/api" });
+    expect(snap.sessions.find((s: any) => s.id === "ana").repoKey).toBe("github.com/acme/api");
+
+    ws.close();
+  });
+
+  it("reports a null repo key when the server has no workspace", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    await wait(200);
+
+    const snap = lastProject(seen);
+    expect(snap.repo).toBeNull();
+    expect(snap.sessions.find((s: any) => s.id === "ana").repoKey).toBeNull();
+
     ws.close();
   });
 });
