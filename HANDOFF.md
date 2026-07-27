@@ -2,13 +2,21 @@
 
 *Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #12).*
 
-**🔴 READ THIS FIRST — v7a IS MERGED TO MAIN. The live work is the EXIT/LEAVE feature, which has an approved spec and NO PLAN YET (session #12, 2026-07-27).**
+**🔴 READ THIS FIRST — v7a IS MERGED. v7a2 (exit/leave) IS IN FLIGHT ON A BRANCH, MID-FIX-LOOP AT TASK 2 (session #12, 2026-07-27).**
 
-**v7a shipped: PR #17 merged at `a6e9d76`. `main` == `origin/main`. Suites on merged main, independently verified: server 345, client 179, `tsc --noEmit` clean both, client build clean.** The SDD workspace for v7a was deleted on completion — git history is the record now. `feature/v7a-repo-identity-lifecycle` still exists locally (deleting branches is the user's call).
+**v7a shipped: PR #17 merged at `a6e9d76`. `main` == `origin/main`.** The SDD workspace for v7a was deleted on completion — git history is the record. `feature/v7a-repo-identity-lifecycle` still exists locally (deleting branches is the user's call).
 
-**You are on `feature/exit-and-session-leave`, one docs commit above main.** It carries only the spec. **Next step: `superpowers:writing-plans` against that spec — then subagent-driven-development.** Do NOT start code from the spec alone.
+**You are on `feature/exit-and-session-leave` at `1d55cf0`, executing v7a2 via `superpowers:subagent-driven-development`. NOT on main. Nothing is merged.**
 
+- **The ledger is your recovery map — read it before anything else:** `.superpowers/sdd/2026-07-27-v7a2-exit-and-session-leave/progress.md`. It records every task, review, ruling and deferred minor, and ends with an explicit `>>> RESUME POINT`. Trust it and `git log` over any recollection.
+- **Plan:** `docs/superpowers/plans/2026-07-27-v7a2-exit-and-session-leave.md` (5 tasks). **Its Deviations section already has two entries — read them; Task 2's listing was corrected in place because the plan's own code contained a bug.**
+- **Done and reviewed clean:** Task 1 (`Session.leave` idempotency, commit `7a97f3b`).
+- **Task 2 (`leave_session` + auto-close) is MID-FIX-LOOP.** Implemented at `c271df8`, reviewed (spec ✅, 1 Important + 3 Minor), fix committed at `1d55cf0` — **but the scoped re-review has NOT been run.** That is the exact next action.
+- **Tasks 3, 4, 5 have not started.** Then the final whole-branch review.
+- **Suites on the branch: server 358, client 179 (untouched so far), tsc clean both.** Plan step counts assume the pre-fix numbers; the ledger has the real ones.
+- **The bug the Task 2 review caught, so nobody reintroduces it:** the auto-close must key on whether **this** leave emptied the room, not on the room being empty. `Session.leave` is idempotent, so a repeat `leave_session` from someone who already left removes nobody — but if a **socket close** emptied the room meanwhile, keying on emptiness closes a session a disconnect ended. v7a made closing one-way, so that strands the party's work permanently, and it blames a departure that did not cause it. `Session.leave` now returns `boolean` and the handler gates on it.
 - **Spec (approved, do not re-brainstorm):** `docs/superpowers/specs/2026-07-27-exit-and-session-leave-design.md`. Its §2 records every decision with the reasoning; §7 is the out-of-scope list.
+- **v7a2 is NOT v7b.** v7b is the hub, `relay.ts`, device pairing, the trust inversion and host settings (v7 spec §1.2). v7a2 is v7a's tail: it gives `close_session` its first caller. Everything v7a2 defers — server shutdown, host-initiated close, the settings screen — lands in v7b's scope by design, not by accident.
 - **What it builds:** `/exit` and an EXIT header control, both meaning *I leave, the party continues*. There is no way to leave a session today — `presence_leave` fires only on socket close (`server.ts:865`) and there is no route back to the picker.
 - **The load-bearing decision, do not soften it:** only a **deliberate** `/exit` may auto-close a session; a disconnect never may. v7a made closing **one-way with no reopen path**, so letting a dropped wifi connection close the last participant's session would permanently strand the party's work. That is why the design needs a new `leave_session` wire command at all — the server otherwise cannot tell "I'm done" from "my laptop slept."
 - **A hazard the spec already solved, don't re-derive it:** the client sends `leave_session` then reloads, so the server sees the command *and then* the socket close — and `server.ts:873` also calls `session.leave()`. Without an idempotency guard in `Session.leave()` itself, every deliberate exit writes **two `presence_leave` events** into an append-only log that is replayed to late joiners, and fires the auto-close twice.

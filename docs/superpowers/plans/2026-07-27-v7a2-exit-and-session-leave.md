@@ -396,22 +396,79 @@ In `poc/server/src/server.ts`, immediately **after** the `close_session` handler
       if (msg.type === "leave_session") {
         // Deliberate departure. Deliberately NOT lifecycle-guarded: someone
         // sitting in an already-closed session still needs a way out.
-        ctx.entry.session.leave(ctx.userId);
-        // Auto-close only on a DELIBERATE last departure. A socket close runs
-        // `session.leave` too (see the "close" handler) but never reaches
-        // here — that asymmetry IS the feature: v7a made closing one-way, so
-        // a dropped connection must not be able to end a session forever
-        // (spec §2, §3.1).
-        if (ctx.entry.session.participantList.length === 0 && !isClosed(ctx.entry)) {
+        const departed = ctx.entry.session.leave(ctx.userId);
+        // Auto-close only when THIS leave emptied the room. `departed` is
+        // load-bearing, not defensive: leave() is idempotent, so a repeat
+        // leave_session from someone who already left removes nobody — but
+        // the room may have been emptied meanwhile by a SOCKET CLOSE. Keying
+        // on emptiness alone would then close a session a disconnect ended,
+        // which is the one thing spec §2 forbids (v7a made closing one-way,
+        // so there is no way back), and would attribute it to a departure
+        // that did not end it.
+        //
+        // A socket close runs `session.leave` too (see the "close" handler)
+        // but never reaches here — that asymmetry IS the feature.
+        if (departed && ctx.entry.session.participantList.length === 0 && !isClosed(ctx.entry)) {
           ctx.entry.session.append({ type: "session_closed", userId: ctx.userId });
         }
-        // Deliberate user action, not a hot stream — immediate push. Same
-        // rationale as close_session: `presence_leave` and `session_closed`
-        // are not in the INTERESTING set, so without this watchers never see
-        // the roster empty or the lifecycle flip.
+        // Deliberate user action, not a hot stream — immediate push.
+        // `session_closed` is not in the INTERESTING set at all, and
+        // `presence_leave` IS but goes through `schedulePush`, which throttles
+        // by PROJECT_PUSH_INTERVAL_MS (1000). Without this push a watcher can
+        // wait a second to see the roster empty, and would never see the
+        // lifecycle flip.
         pushProject(ctx.project);
         return;
       }
+```
+
+This requires `Session.leave` to report whether it removed anyone. Change its signature in `poc/server/src/session.ts` — the return is `false` when the guard from Task 1 short-circuits, `true` otherwise:
+
+```ts
+  leave(userId: string): boolean {
+    if (!this.participants.has(userId)) return false;
+    // … body unchanged …
+    return true;
+  }
+```
+
+The other caller (`ws.on("close")`, `server.ts:893`) ignores the value and needs no change.
+
+**Add this test** alongside the seven above — it is the only thing that pins the rule:
+
+```ts
+  it("a repeat leave_session does not close a session that a DISCONNECT emptied", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsWatch = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsWatch, seen);
+    wsWatch.send(JSON.stringify({ type: "watch_project", projectId: "demo" }));
+
+    const wsAna = await connect(server.port);
+    collect(wsAna, []);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    const wsBen = await connect(server.port);
+    const benSeen: any[] = [];
+    collect(wsBen, benSeen);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+    wsAna.close(); // a DISCONNECT empties the room — must not close the session
+    await wait(300);
+    wsBen.send(JSON.stringify({ type: "leave_session" })); // stale repeat
+    await wait(300);
+
+    const closed = benSeen.filter((m: any) => m.type === "event" && m.event.type === "session_closed");
+    expect(closed).toHaveLength(0);
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "s").lifecycle).toBe("open");
+
+    wsBen.close();
+    wsWatch.close();
+  });
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -1119,3 +1176,7 @@ Then, with two browser tabs on one session (HANDOFF §6 has the stack recipe):
 ## Deviations
 
 Record every divergence from this plan here as you go, with the reason. This section is part of the deliverable — later sessions read it to understand why the shipped code differs from the listings above, and HANDOFF instructs them to treat it as the authoritative record.
+
+**Task 2 — the plan's own close condition was wrong, and Task 2's listing above has been corrected in place.** As originally written, the handler closed the session whenever `participantList.length === 0`. Because `Session.leave` is idempotent and returned `void`, the handler could not tell whether *this* call removed anyone — so a repeat `leave_session` from someone who had already left would see an empty room and close the session, **even when a socket close was what emptied it.** That is the exact outcome spec §2 calls the load-bearing decision of the design (v7a made closing one-way, so there is no way back), and it attributed the close to a departure that did not cause it. Found by the Task 2 review via mutation testing plus an empirical probe. Fixed by giving `Session.leave` a `boolean` return and gating on it, with a regression test reproducing the three-step sequence. The listing above now shows the corrected code; a future re-run of this task from the original text would have reintroduced the bug.
+
+**Task 2 — a comment in the plan's listing stated something false.** It claimed `presence_leave` is not in the `INTERESTING` set. It is (`server.ts:42`); only `session_closed` is absent. The `pushProject` call is still correct, but the real reason is that `presence_leave`'s push goes through `schedulePush`, which throttles by `PROJECT_PUSH_INTERVAL_MS` (1000ms). Corrected in the listing above. This same false claim is what led the implementer to misdiagnose why three of its tests passed before the implementation existed.
