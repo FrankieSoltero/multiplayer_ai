@@ -608,6 +608,9 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "suggest_skill") {
+        if (lifecycleOf(ctx.entry.session.eventsFrom(0)) === "closed") {
+          return sendError("this session has been closed");
+        }
         if (typeof msg.skill !== "string") {
           return sendError("suggest_skill requires skill");
         }
@@ -640,6 +643,9 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "decide_skill") {
+        if (lifecycleOf(ctx.entry.session.eventsFrom(0)) === "closed") {
+          return sendError("this session has been closed");
+        }
         if (
           typeof msg.suggestId !== "string" ||
           (msg.decision !== "run" && msg.decision !== "dismiss")

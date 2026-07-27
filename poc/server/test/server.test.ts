@@ -2094,4 +2094,81 @@ describe("session lifecycle", () => {
 
     ws.close();
   });
+
+  it("refuses a skill suggestion on a closed session — it would start a new agent run", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+    ws.send(JSON.stringify({ type: "suggest_skill", skill: "tools:alpha", args: "" }));
+    await wait(200);
+
+    const errors = seen.filter((m: any) => m.type === "error");
+    expect(errors.some((e: any) => /closed/i.test(e.message))).toBe(true);
+    expect(seen.some((m: any) => m.event?.type === "skill_suggest")).toBe(false);
+
+    ws.close();
+  });
+
+  it("refuses a skill decision on a closed session — approving would start a new agent run", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+    ws.send(JSON.stringify({ type: "decide_skill", suggestId: "whatever", decision: "run" }));
+    await wait(200);
+
+    const errors = seen.filter((m: any) => m.type === "error");
+    expect(errors.some((e: any) => /closed/i.test(e.message))).toBe(true);
+    expect(seen.some((m: any) => m.event?.type === "skill_decision")).toBe(false);
+
+    ws.close();
+  });
+
+  it("still lets the driver resolve an in-flight permission request after the session is closed", async () => {
+    // Deliberate exemption: `permission` resolves a request already in flight
+    // (the agent is paused waiting for a decision). Guarding it would strand
+    // that agent forever on a promise nobody can resolve, which is worse than
+    // the problem closing is meant to solve. Do not "tidy" this into a guard.
+    const bashAskRun: RunQuery = async function* (prompts, hooks) {
+      for await (const prompt of prompts) {
+        const decision = await hooks.onPermissionRequest("Bash", { command: "npm run build" });
+        yield { type: "assistant", content: [{ type: "text", text: `bash: ${decision}` }] };
+      }
+    };
+    const server = await startServer({ port: 0, runQuery: bashAskRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "prompt", text: "build it" }));
+    await wait(200);
+
+    const req = seen.map((m) => m.event).find((e) => e?.type === "permission_request");
+    expect(req).toBeTruthy();
+
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+
+    ws.send(JSON.stringify({ type: "permission", requestId: req.requestId, decision: "allow" }));
+    await wait(200);
+
+    const decision = seen.find((m) => m.event?.type === "permission_decision")?.event;
+    expect(decision).toMatchObject({ requestId: req.requestId, decision: "allow" });
+    expect(seen.some((m: any) => m.type === "error" && /closed/i.test(m.message))).toBe(false);
+
+    ws.close();
+  });
 });
