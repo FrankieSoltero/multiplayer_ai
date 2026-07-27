@@ -339,12 +339,75 @@ Out of scope for v7a/v7b. It matters to **v7e**, which must dedupe by resolved w
 a shared working copy as "same copy," not as collision — otherwise every file either session
 touches reads as contested.
 
-## 10. Open questions
+## 10. Security requirements
+
+v7 puts a process on the public internet that accepts connections from many machines, so
+several things that are tolerable in a localhost POC become requirements.
+
+### 10.1 Secrets never travel in query parameters
+
+**Uplink tokens and pairing codes must use the `Authorization` header or the WebSocket
+subprotocol — never a query string.** Query strings land in browser history, screen shares,
+`Referer` headers, and any access log the operator later enables.
+
+This is a rule the current code already bends: the invite token rides in `?invite=` and is
+propagated into `/auth/login?next=<...&invite=token>` by `InviteSignIn.tsx:29` +
+`authState.ts:30-32`, and no `history.replaceState` exists anywhere in the client, so it
+persists in the address bar. Today's blast radius is limited — `deploy/Caddyfile` sets
+`Referrer-Policy: no-referrer` and enables no access log — but that safety is one ops change
+away from evaporating. v7 must not extend the pattern, and should strip `invite` from `next`
+and `replaceState` the token out after redemption.
+
+### 10.2 Payload limits are mandatory, and must precede authentication
+
+`server.ts:269` constructs `new WebSocketServer({ server: httpServer })` with no `maxPayload`,
+so the `ws` default of **100 MB** applies. The upgrade completes before any join or auth gate,
+so an unauthenticated peer can push a 100 MB frame into `JSON.parse` (`server.ts:301`).
+
+The hub must set an explicit `maxPayload` (~1 MB; `MAX_PROMPT_LENGTH` is 4000), enforce it on
+**both** the browser-facing and uplink-facing sockets, and apply it before authentication —
+a limit that only protects authenticated peers protects nothing.
+
+### 10.3 Every wire field is bounded and charset-checked
+
+`server.ts:330-336` type-checks `msg.userId` and stops there, while `sessionId` and `projectId`
+both go through `SLUG.test`. With auth on, `:353-357` overwrites `userId` with the verified
+login; with auth off it flows unbounded into the event log, snapshots, `arcadeRecords` and
+`<teammates>` digests. The hub applies length caps and charset validation to **every** inbound
+field regardless of auth mode. Known stragglers to sweep: `stop_task`'s `taskId`, and summary
+and tool-target text flowing into prompts and snapshots.
+
+### 10.4 The trust inversion needs defence in depth
+
+§3.5 has the laptop trust hub-stamped identity. That trust covers **identity only**: the laptop
+still validates the shape, length and charset of every tunnelled `payload` exactly as it does
+for a direct socket today. A compromised or buggy hub must not be able to hand a laptop a
+malformed command.
+
+Correspondingly, **`channelId` is assigned by the hub and never accepted from a browser** —
+a client-chosen channel identifier would let one browser address another's tunnel.
+
+### 10.5 Pairing codes and uplink tokens
+
+Device-pairing codes are short, human-transcribed secrets and are therefore brute-forceable by
+construction. They require a **short TTL**, **single use**, and **rate limiting per hub**.
+Uplink tokens are long-lived bearers and need revocation (§11) plus binding to the GitHub
+identity that approved them.
+
+### 10.6 Carried forward from A2a, now load-bearing
+
+- **No `Origin` check on the WebSocket upgrade** (HANDOFF §7e). Cross-site WebSocket hijacking
+  is currently blocked by `SameSite=Lax` alone. Once the hub is internet-facing and the cookie
+  confers identity across a whole team, an explicit origin check stops being defence in depth
+  and becomes a control.
+- **No rate limiting anywhere.** Acceptable for a localhost POC; not for a public hub.
+
+## 11. Open questions
 
 - **Session close semantics on reconnect.** If a host closes a session while its laptop is
   offline, what does the laptop do when it returns — accept the close, or resurrect? Proposed:
   accept, and surface it to the returning user.
 - **Uplink token revocation.** Device pairing issues long-lived tokens; the host needs a way to
-  revoke a lost laptop. Shape is straightforward, but it is unspecified here.
+  revoke a lost laptop (§10.5). Shape is straightforward, but it is unspecified here.
 - **Multiple `mpai` instances for one repo on one machine.** Permitted by the design; whether
   the UI should discourage it is undecided.
