@@ -2,7 +2,9 @@
 
 *Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #10).*
 
-**STATE: A2a IS MERGED. Task 8 walked, sign-out shipped, A3 spec + plan written. We are on `main`, tip `9b3b5e7`, ahead of origin by 29 unpushed commits. Suites on merged main: server 297, client 147, both tsc clean, client build clean. Nothing running, nothing half-finished.**
+**STATE: A2a AND A3 ARE BOTH MERGED. We are on `main`, tip `0450c8d`, ahead of origin by 39 unpushed commits. Suites on merged main: server 305, client 160, both tsc clean, client build clean. Nothing running, nothing half-finished.**
+
+**A3 (pull notifications) is DONE and verified in a real browser** — spec, plan, all four tasks, deviations recorded, merged at `0450c8d`. The behaviour: a permission gate in another session that goes unanswered past *your* threshold lights that session's OTHER PARTIES row amber and shows `🔐 PULLS ▸ N` in the header. Off by default; the delay is per-recipient (OFF / 30s / 1m / 2m / 5m) in `localStorage["mpai-pull-after-ms"]`. **Next is v6b collision detection, which starts at brainstorming — it has banked decisions (§3b) but no spec.**
 
 **What session #10 did, in order:** ran Task 8 (results in the A2a plan's Deviations) → merged `feature/a2a-github-oauth` into main (`0283e14`, no-ff, verified green after the merge) → built the sign-out control (`ed09d9f`) → deleted the user's test session → wrote and committed the A3 spec (`0fe0cc9`) and plan (`9b3b5e7`).
 
@@ -28,8 +30,8 @@ Session #7 turned "let's get this production ready" into a scoped programme. Tha
 |---|---|---|
 | **A1a** | Deployment wiring, in-repo only | **DONE — merged `f33ce06`** |
 | **A2a** | GitHub OAuth + allowlist + verified `userId` | **DONE — merged `0283e14`.** Sign-out control followed in `ed09d9f`. |
-| **A3** | Pull notification ("🔐 Ana's session needs an approval — drop in") | **SPEC + PLAN WRITTEN, user-approved, nothing built.** Spec `2026-07-27-a3-pull-notifications-design.md`, plan `2026-07-27-a3-pull-notifications.md` (4 tasks). **NEXT BUILD.** |
-| **v6b** | File-collision detection surfaced as human-facing interrupts | **AFTER A3 — user's explicit priority.** Banked decisions in §3b; **no spec yet, needs brainstorming → writing-plans.** Shares A3's delivery surface (OTHER PARTIES rows + header badge), which is why it goes second: it extends that rail rather than inventing one. |
+| **A3** | Pull notification ("🔐 Ana's session needs an approval — drop in") | **DONE — merged `0450c8d`.** Verified in a real browser. Files: `poc/server/src/pendingGate.ts`, `poc/client/src/pulls.ts`, plus PartyPane/Header/App wiring. |
+| **v6b** | File-collision detection surfaced as human-facing interrupts | **NEXT — user's explicit priority.** Banked decisions in §3b; **no spec yet, needs brainstorming → writing-plans.** Shares A3's delivery surface (OTHER PARTIES rows + header badge), which is why it goes second: it extends that rail rather than inventing one. |
 | **A1b** | Deployment execution: provision, DNS, Caddy, systemd, live verify | **LAST.** Blocked on user hardware (box, domain, API key) **and on a code fix** — see the workspace-provisioning blocker in §0, which is not a deploy step. |
 | A2b | Provider-scoped models + one API key per session | **DEFERRED.** Designed at decision level (§3f); blocked on the §7a spike, which needs an API key the user does not have. Nothing in A3, v6b or A1b depends on it. |
 | A4 | Canned demo scenario reaching a permission gate | **DEFERRED.** Not needed to deploy; needed for the demo/YC moment. Note the coupling: A3 is off by default, so an A4 script must include an explicit "set PULL AFTER to 30s" step or the pull will not fire while anyone is watching (A3 spec §6). |
@@ -134,11 +136,10 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 ## 4. Ordered next steps (fresh session)
 
 1. **Verify state per §8** (expect `main` at `9b3b5e7`, 297 + 147 green, nothing running, ahead of origin by 29).
-2. **BUILD A3.** The spec and plan are written, committed, and user-approved — do not re-brainstorm or re-plan. Execute `docs/superpowers/plans/2026-07-27-a3-pull-notifications.md` (4 tasks) via `superpowers:subagent-driven-development`. **Create a branch first.** The plan's Task 4 Step 6 is a real browser pass with two sessions; the failure it is built to catch is the pull appearing only when you click something, which means the 10s tick is not wired.
-3. **Then v6b — file-collision detection.** The user's stated priority and, by their ordering, the last feature before deployment. **It has banked decisions (§3b) but no spec**, so it starts at `superpowers:brainstorming`, not at code. Build it as an extension of A3's rail (OTHER PARTIES rows + `PULLS ▸ N` badge), not a parallel one. The two open design questions §3b does not settle: what counts as a collision (same file touched by two live sessions? same file *and* both uncommitted? overlapping hunks?), and whether the signal is advisory-only — §3b is explicit that coordination means awareness and advisory warnings, **never locks or task boards**.
-4. **Then A1b — deployment.** Blocked on the user for the box, the domain with a live A record, and the API key. **It is also blocked on code:** the §0 workspace-provisioning fix must land first, and it needs no hardware, so it can be done at any time — doing it early would shorten the deploy day.
-5. **Deferred, revisit only when unblocked or asked:** A2b (needs the §7a provider spike, which needs an API key) and A4 (canned demo scenario).
-6. Optional, user's call only: walk the invite return path end-to-end in a private window (the one Task 8 gap), push the unpushed commits to origin, run the oversight demo (never done live — §0), confirm the model picker (§0), delete merged branches including `feature/a2a-github-oauth` and `feature/signout-ui` (§0), decide on `tour-skill-suggest.png` (§7).
+2. **BUILD v6b — file-collision detection.** The user's stated priority and, by their ordering, the last feature before deployment. **It has banked decisions (§3b) but no spec**, so it starts at `superpowers:brainstorming`, not at code. Build it as an extension of A3's rail (OTHER PARTIES rows + `PULLS ▸ N` badge), not a parallel one. The two open design questions §3b does not settle: what counts as a collision (same file touched by two live sessions? same file *and* both uncommitted? overlapping hunks?), and whether the signal is advisory-only — §3b is explicit that coordination means awareness and advisory warnings, **never locks or task boards**.
+3. **Then A1b — deployment.** Blocked on the user for the box, the domain with a live A record, and the API key. **It is also blocked on code:** the §0 workspace-provisioning fix must land first, and it needs no hardware, so it can be done at any time — doing it early would shorten the deploy day.
+4. **Deferred, revisit only when unblocked or asked:** A2b (needs the §7a provider spike, which needs an API key) and A4 (canned demo scenario).
+5. Optional, user's call only: walk the invite return path end-to-end in a private window (the one Task 8 gap), push the unpushed commits to origin, run the oversight demo (never done live — §0), confirm the model picker (§0), delete merged branches including `feature/a2a-github-oauth` and `feature/signout-ui` (§0), decide on `tour-skill-suggest.png` (§7).
 
 ## 4b. Invite system — files with line refs (MERGED to main via #12)
 
@@ -339,9 +340,9 @@ To re-run the invite demo: build the client (`cd poc/client && npm run build`), 
 
 **Resume at §4.** Main is green (297 server / 147 client) and nothing is half-finished.
 
-**Next action, concretely: BUILD A3.** Branch first, then execute `docs/superpowers/plans/2026-07-27-a3-pull-notifications.md` via `superpowers:subagent-driven-development`. Four tasks: derive the pending gate (pure, server) → publish it on the project snapshot → derive pulls against a personal threshold (pure, client) → render and verify in a real browser with two sessions.
+**Next action, concretely: BRAINSTORM v6b (file-collision detection).** It has banked decisions in §3b but **no spec**, so it starts at `superpowers:brainstorming`, not at code. Build it as an extension of A3's rail (OTHER PARTIES rows + the header badge), not a parallel one. The two questions §3b does not settle: what counts as a collision (same file touched by two live sessions? same file *and* both uncommitted? overlapping hunks?), and holding the line that the signal stays **advisory** — §3b is explicit that coordination means awareness and advisory warnings, never locks or task boards.
 
-**The one thing most likely to go wrong in A3, so it is not rediscovered:** while a gate sits pending, *no events fire*, so no fresh snapshot arrives and nothing re-renders. Crossing the threshold is an event only the client's own clock can observe — hence the 10-second tick in Task 4 Step 1. If the pull appears only when you click something, that tick is not wired.
+**A3 lesson worth carrying into v6b:** the project snapshot is pushed on activity and throttled to ~1/second (`schedulePush`, `server.ts:138-151`). Anything whose *display* changes with elapsed time rather than with events needs a client-side tick — A3 uses a 10s interval in `SessionView`. A collision that "becomes stale after N minutes" would need the same.
 
 **Do not ask the user to re-supply credentials — they are already on disk.** Never print the contents of `poc/server/.env`; inspect it with `cut -d= -f1` (keys only) if you need to confirm it is intact. To test auth behaviour, use a throwaway config in the shell rather than editing `.env` (see the STATE block at the top for the exact recipe).
 
