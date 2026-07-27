@@ -27,10 +27,14 @@ export function validateProductionConfig(
   hasIndexHtml: (dir: string) => boolean,
 ): ConfigResult {
   const staticDir = env.CLIENT_DIST;
-  const anyAuthVar = AUTH_VARS.some((name) => (env[name] ?? "").trim());
+  // Auth intent is signalled by GITHUB_CLIENT_ID alone (spec §4.5), not by
+  // any of the four vars — SESSION_SECRET is a generic name that could
+  // plausibly be set in a dev shell for unrelated reasons, and that must not
+  // by itself force auth configuration or a boot failure.
+  const authIntended = Boolean((env.GITHUB_CLIENT_ID ?? "").trim());
 
   // Production must have auth; development must have all of it or none.
-  if (staticDir || anyAuthVar) {
+  if (staticDir || authIntended) {
     for (const name of AUTH_VARS) {
       if (!(env[name] ?? "").trim()) {
         return {
@@ -43,7 +47,7 @@ export function validateProductionConfig(
     }
   }
 
-  const auth: AuthConfig | undefined = anyAuthVar || staticDir
+  const auth: AuthConfig | undefined = authIntended || staticDir
     ? {
         clientId: env.GITHUB_CLIENT_ID!,
         clientSecret: env.GITHUB_CLIENT_SECRET!,

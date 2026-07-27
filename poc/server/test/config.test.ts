@@ -86,6 +86,16 @@ const OK_AUTH = {
 const yes = () => true;
 
 describe("auth configuration", () => {
+  it("production with no auth vars at all is rejected, not silently anonymous", () => {
+    // The §4.4 headline case: CLIENT_DIST set, zero GITHUB_* vars — this must
+    // never boot. Regression check: this fails if the staticDir branch of the
+    // gate (config.ts) is ever dropped, e.g. `if (staticDir || authIntended)`
+    // narrowed to `if (authIntended)`.
+    const result = validateProductionConfig(OK_DIST, yes);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("GITHUB_CLIENT_ID");
+  });
+
   it("production requires every auth variable", () => {
     for (const missing of Object.keys(OK_AUTH)) {
       const env: Record<string, string> = { ...OK_DIST, ...OK_AUTH };
@@ -134,5 +144,15 @@ describe("auth configuration", () => {
     const result = validateProductionConfig({ ...OK_AUTH }, yes);
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.auth?.clientId).toBe("cid");
+  });
+
+  it("dev SESSION_SECRET alone, with no GITHUB_CLIENT_ID, stays anonymous", () => {
+    // Auth intent is signalled by GITHUB_CLIENT_ID specifically (spec §4.5),
+    // not by any of the four auth vars. SESSION_SECRET is a generic name
+    // that could plausibly already be set in someone's dev shell for
+    // unrelated reasons and must not by itself force auth configuration.
+    const result = validateProductionConfig({ SESSION_SECRET: "ssecret" }, yes);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.auth).toBeUndefined();
   });
 });
