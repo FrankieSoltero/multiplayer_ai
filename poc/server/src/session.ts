@@ -72,7 +72,20 @@ export class Session {
     if (this.currentDriverId === null) this.takeWheel(userId);
   }
 
+  /** Idempotent: a user who is not currently a participant produces no event.
+   *
+   *  Load-bearing, not defensive. A deliberate exit sends `leave_session` and
+   *  then reloads the page, so the server sees the command AND the socket
+   *  close — and the close handler also calls this. Without the guard every
+   *  deliberate exit writes two `presence_leave` events into an append-only
+   *  log that is replayed to late joiners, and fires the last-leaver
+   *  auto-close twice. Guarding here rather than at the call site covers both
+   *  callers and any future one.
+   *
+   *  Keyed on current membership, not on history: a user who leaves, rejoins
+   *  and leaves again has genuinely departed twice. */
   leave(userId: string): void {
+    if (!this.participants.has(userId)) return;
     this.participants.delete(userId);
     this.append({ type: "presence_leave", userId });
     if (this.currentDriverId === userId) {
