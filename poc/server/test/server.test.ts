@@ -2171,4 +2171,19 @@ describe("session lifecycle", () => {
 
     ws.close();
   });
+
+  it("reports presence online on a standalone server, which owns every session", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    await wait(200);
+
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "ana").presence).toBe("online");
+
+    ws.close();
+  });
 });

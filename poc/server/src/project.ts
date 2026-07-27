@@ -104,6 +104,11 @@ export interface ProjectMessage {
     /** Has someone deliberately ended this session (spec §3.4)? Orthogonal to
      *  `ended`, which is about the agent process. */
     lifecycle: Lifecycle;
+    /** Is the machine that owns this session reachable (spec §3.4)? Always
+     *  "online" on a standalone server, which owns every session it reports.
+     *  v7b derives it from the hub uplink and it becomes a real signal — the
+     *  field exists now so the client learns the shape before the hub does. */
+    presence: "online" | "offline";
   }[];
   arcade: ArcadeRecord[];
   plugins: PluginInfo[];
@@ -135,6 +140,7 @@ export function projectSnapshot(
       skills: entry.skills,
       repoKey: repo?.key ?? null,
       lifecycle: lifecycleOf(events),
+      presence: "online" as const,
     };
   });
   return {

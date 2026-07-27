@@ -3,6 +3,7 @@ import { hashIdentity } from "../identity";
 import type { ProjectSessionInfo } from "../types";
 import type { Participant } from "../derive";
 import { THRESHOLD_OPTIONS, waitedLabel, type Pull } from "../pulls";
+import { sessionStateLabel, sessionStateClass } from "../sessionState";
 
 const ago = (ts: string | null) => {
   if (!ts) return "";
@@ -87,15 +88,17 @@ export function PartyPane(props: {
       {others.map((s) => {
         const id = hashIdentity(s.id);
         const pull = pullBySession.get(s.id);
+        const stateClass = sessionStateClass(s);
+        const stateLabel = sessionStateLabel(s);
         return (
           <a
             key={s.id}
-            className={(s.ended ? "member ended" : "member") + (pull ? " pull" : "")}
+            className={["member", stateClass, pull ? "pull" : ""].filter(Boolean).join(" ")}
             href={`?project=${props.projectId}&session=${s.id}`}
           >
             <div className="member-head">
               <span style={{ color: id.color }}>{id.glyph}</span> {s.id}
-              {s.ended && <span className="here"> · ended</span>}
+              {stateLabel && <span className="here"> · {stateLabel}</span>}
             </div>
             {pull && (
               <div className="member-pull">

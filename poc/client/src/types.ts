@@ -73,6 +73,9 @@ export type ProjectSessionInfo = {
   /** Stable cross-machine repo identity. Optional so a snapshot from an older
    *  server does not break the client — same posture as pendingGate. */
   repoKey?: string | null;
+  /** Spec §3.4. Optional so an older server's snapshot still renders. */
+  presence?: "online" | "offline";
+  lifecycle?: "open" | "closed";
 };
 
 export type ArcadeRecord = {
