@@ -34,6 +34,23 @@ export function useArrowNav(enabled: boolean): void {
 
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return; // leave browser/OS chords alone
+
+      // A <select> is the one focusable that Enter does NOT open — unlike a
+      // button, there is no native activation, so the focus ring could land on
+      // the model picker with no way to see its options. showPicker() is the
+      // supported way to open it; guarded because it is not universal.
+      const focused = document.activeElement as HTMLSelectElement | null;
+      if (
+        (e.key === "Enter" || e.key === " ") &&
+        focused?.tagName === "SELECT" &&
+        !focused.disabled &&
+        typeof focused.showPicker === "function"
+      ) {
+        e.preventDefault();
+        focused.showPicker();
+        return;
+      }
+
       const horizontal = e.key === "ArrowLeft" || e.key === "ArrowRight";
       const vertical = e.key === "ArrowUp" || e.key === "ArrowDown";
       if (!horizontal && !vertical) return;
