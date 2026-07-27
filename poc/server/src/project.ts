@@ -1,5 +1,6 @@
 import type { AgentDriver } from "./agentDriver.js";
 import { summarizeSession } from "./digest.js";
+import { pendingGateOf, type PendingGate } from "./pendingGate.js";
 import type { Session } from "./session.js";
 import type { SkillInfo } from "./events.js";
 import type { PluginInfo } from "./pluginStore.js";
@@ -89,6 +90,10 @@ export interface ProjectMessage {
     intent: string | null;
     lastActivityTs: string | null;
     ended: boolean;
+    /** The oldest permission request nobody has answered, or null. Recipients
+     *  compare `sinceTs` against their own threshold — the server publishes
+     *  when the waiting started and holds no opinion about when it matters. */
+    pendingGate: PendingGate | null;
     skills: SkillInfo[];
   }[];
   arcade: ArcadeRecord[];
@@ -117,6 +122,7 @@ export function projectSnapshot(
       intent: summary.intent,
       lastActivityTs: events.at(-1)?.ts ?? null,
       ended: summary.ended,
+      pendingGate: pendingGateOf(events),
       skills: entry.skills,
     };
   });
