@@ -1,5 +1,4 @@
 import type { FormEvent } from "react";
-import { API_BASE } from "../types";
 
 /** Signed in with GitHub, but the login is not on the operator's allowlist.
  *  The only way out is to sign out and try another account. */
@@ -10,7 +9,7 @@ export function Denied(props: { login: string }) {
   const signOut = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" });
+      await fetch("/auth/logout", { method: "POST", credentials: "include" });
     } catch { /* reload anyway — a failed logout still deserves a fresh probe */ }
     window.location.reload();
   };
@@ -21,7 +20,7 @@ export function Denied(props: { login: string }) {
       <div className="authsub">
         YOU ARE SIGNED IN AS <b>{props.login}</b> — ASK THE OPERATOR TO ADD THAT USERNAME.
       </div>
-      <form method="post" action={`${API_BASE}/auth/logout`} onSubmit={signOut}>
+      <form method="post" action="/auth/logout" onSubmit={signOut}>
         <button className="authbtn" type="submit">SIGN OUT</button>
       </form>
     </div>

@@ -20,6 +20,13 @@ export function authStateFrom(status: number, body: unknown): AuthState {
     : { status: "denied", login: b.login };
 }
 
+/** Same-origin and relative, like every other /auth/* URL in the client.
+ *
+ *  This is a browser NAVIGATION, not a fetch, so it must land on the origin
+ *  the session cookie will be set for — the vite `/auth` proxy in dev, the
+ *  server itself in a built bundle. Prefixing an API origin here would put the
+ *  state cookie on one origin and read it back on another. There is no
+ *  API_BASE for auth for exactly this reason (see types.ts). */
 export function loginUrl(next: string): string {
   return `/auth/login?next=${encodeURIComponent(next)}`;
 }

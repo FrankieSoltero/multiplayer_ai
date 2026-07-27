@@ -91,9 +91,19 @@ export const SERVER_URL = import.meta.env.DEV
   ? "ws://localhost:3001"
   : socketUrlFor(window.location.protocol, window.location.host);
 
-/** HTTP origin for /auth/* calls. Mirrors SERVER_URL: in vite dev the server
- *  is separate; in a built bundle the page is served BY the server. */
-export const API_BASE = import.meta.env.DEV ? "http://localhost:3001" : "";
+/** There is deliberately no API_BASE for /auth/*.
+ *
+ *  It used to mirror SERVER_URL (http://localhost:3001 under vite dev), which
+ *  made `fetch("/auth/me", {credentials:"include"})` cross-origin. The server
+ *  sends no CORS headers — A2a avoids CORS on purpose — so the fetch rejected,
+ *  landed in App.tsx's `.catch(() => anonymous)`, and the client silently
+ *  concluded auth was OFF: it rendered the pre-auth flow and the join was then
+ *  refused with "authentication required". The whole auth UI was untestable
+ *  under `vite dev`.
+ *
+ *  Every /auth/* URL is now same-origin and relative — served by the server in
+ *  a built bundle, forwarded by the `/auth` proxy in vite.config.ts in dev.
+ *  One convention, no CORS, and cookies work in both. */
 
 export type RepoInfo = { defaultBranch: string };
 

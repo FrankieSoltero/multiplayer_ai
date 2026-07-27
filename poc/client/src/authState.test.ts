@@ -55,4 +55,16 @@ describe("loginUrl", () => {
   it("defaults to the root", () => {
     expect(loginUrl("/")).toBe("/auth/login?next=%2F");
   });
+
+  // I1. /auth/* must be same-origin everywhere: cross-origin broke the
+  // credentialed /auth/me fetch under `vite dev` (no CORS by design), and an
+  // absolute login URL would set the state cookie on one origin and read it
+  // back on another. Pinned so an API_BASE prefix cannot creep back in.
+  it("stays same-origin and relative", () => {
+    const url = loginUrl("/?invite=abc");
+    expect(url.startsWith("/auth/")).toBe(true);
+    expect(url).not.toMatch(/^https?:\/\//);
+    expect(url).not.toContain("//");
+    expect(url).not.toContain("localhost");
+  });
 });
