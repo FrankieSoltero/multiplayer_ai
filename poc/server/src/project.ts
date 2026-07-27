@@ -5,6 +5,7 @@ import type { Session } from "./session.js";
 import type { SkillInfo } from "./events.js";
 import type { PluginInfo } from "./pluginStore.js";
 import type { OversightSummary } from "./overseer.js";
+import { lifecycleOf, type Lifecycle } from "./lifecycle.js";
 
 export const SLUG = /^[a-z0-9-]{1,40}$/;
 
@@ -95,18 +96,31 @@ export interface ProjectMessage {
      *  when the waiting started and holds no opinion about when it matters. */
     pendingGate: PendingGate | null;
     skills: SkillInfo[];
+    /** Stable cross-machine repo identity (spec §3.3). Null when the server
+     *  was launched outside a repo. Every session on a standalone server
+     *  carries the SAME key — it is per-session because v7b's hub holds
+     *  sessions from many repos at once. */
+    repoKey: string | null;
+    /** Has someone deliberately ended this session (spec §3.4)? Orthogonal to
+     *  `ended`, which is about the agent process. */
+    lifecycle: Lifecycle;
+    /** Is the machine that owns this session reachable (spec §3.4)? Always
+     *  "online" on a standalone server, which owns every session it reports.
+     *  v7b derives it from the hub uplink and it becomes a real signal — the
+     *  field exists now so the client learns the shape before the hub does. */
+    presence: "online" | "offline";
   }[];
   arcade: ArcadeRecord[];
   plugins: PluginInfo[];
   pluginsEnabled: boolean;
-  repo: { defaultBranch: string } | null;
+  repo: { defaultBranch: string; key: string } | null;
   oversight: { enabled: boolean; latest: OversightSummary | null };
 }
 
 export function projectSnapshot(
   project: Project,
   pluginState?: { plugins: PluginInfo[]; enabled: boolean },
-  repo?: { defaultBranch: string } | null,
+  repo?: { defaultBranch: string; key: string } | null,
   oversight?: { enabled: boolean; latest: OversightSummary | null },
 ): ProjectMessage {
   const sessions = [...project.sessions.entries()].map(([id, entry]) => {
@@ -124,6 +138,9 @@ export function projectSnapshot(
       ended: summary.ended,
       pendingGate: pendingGateOf(events),
       skills: entry.skills,
+      repoKey: repo?.key ?? null,
+      lifecycle: lifecycleOf(events),
+      presence: "online" as const,
     };
   });
   return {

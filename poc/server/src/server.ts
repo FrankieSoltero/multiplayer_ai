@@ -15,6 +15,7 @@ import {
 import { Session } from "./session.js";
 import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
+import { lifecycleOf } from "./lifecycle.js";
 import { slugify, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
 import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
@@ -79,7 +80,13 @@ export async function startServer(opts: {
   // Cached once at startup: the default branch changing mid-run is rare and
   // harmless (it only seeds the create form's base-ref field).
   const repo = opts.workspace
-    ? { workspace: opts.workspace, defaultBranch: opts.workspace.defaultBranch() }
+    ? {
+        workspace: opts.workspace,
+        defaultBranch: opts.workspace.defaultBranch(),
+        // Cached at startup like defaultBranch: a repo's origin changing
+        // mid-run is not a case worth re-reading git for on every push.
+        key: opts.workspace.repoKey(),
+      }
     : null;
   const projects = new Map<string, Project>();
   const lastPush = new Map<Project, number>();
@@ -117,7 +124,7 @@ export async function startServer(opts: {
     return projectSnapshot(
       project,
       { plugins: pluginStore.list(project.id), enabled: pluginStore.enabled },
-      repo && { defaultBranch: repo.defaultBranch },
+      repo && { defaultBranch: repo.defaultBranch, key: repo.key },
       { enabled: overseer.isEnabled(project.id), latest: overseer.latest(project.id) },
     );
   }
@@ -221,6 +228,20 @@ export async function startServer(opts: {
         summarizeSession(id, entry.session.eventsFrom(0), entry.driver.isDead),
       );
     return buildTeammateDigest(others);
+  }
+
+  // Single seam for the closed-session guard shared by prompt / suggest_skill
+  // / decide_skill / close_session. `permission` and `decide_plan` deliberately
+  // do NOT call this — they resolve requests already in flight, and guarding
+  // them would strand a live agent on a promise nobody can resolve.
+  //
+  // Performance note (not fixed here): `eventsFrom(0)` is `this.log.slice(0)`,
+  // so every call still copies the full event log before scanning it — same
+  // cost as before extraction, just paid in one place instead of four. This
+  // is the seam to change if that cost is ever worth removing (e.g. caching
+  // lifecycle state on the entry when `session_closed` is appended).
+  function isClosed(entry: ProjectSessionEntry): boolean {
+    return lifecycleOf(entry.session.eventsFrom(0)) === "closed";
   }
 
   // Registered unconditionally so /auth/me can report {enabled:false} rather
@@ -429,7 +450,7 @@ export async function startServer(opts: {
           JSON.stringify(
             project
               ? snapshotFor(project)
-              : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: repo && { defaultBranch: repo.defaultBranch }, oversight: { enabled: false, latest: null } },
+              : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: repo && { defaultBranch: repo.defaultBranch, key: repo.key }, oversight: { enabled: false, latest: null } },
           ),
         );
         return;
@@ -522,6 +543,9 @@ export async function startServer(opts: {
       if (!ctx) return sendError("join a session first");
 
       if (msg.type === "prompt") {
+        if (isClosed(ctx.entry)) {
+          return sendError("this session has been closed");
+        }
         if (typeof msg.text !== "string" || msg.text.length === 0) {
           return sendError("prompt requires text");
         }
@@ -549,6 +573,21 @@ export async function startServer(opts: {
 
       if (msg.type === "take_wheel") {
         ctx.entry.session.takeWheel(ctx.userId);
+        return;
+      }
+
+      if (msg.type === "close_session") {
+        // Any participant may close, attributed on the wire — session scope,
+        // matching the standing no-owner-role precedent and the task_stop /
+        // oversight_pull posture of attributing rather than restricting
+        // (spec §3.4). Hub-wide close by the host is v7b.
+        if (isClosed(ctx.entry)) {
+          return sendError("session already closed");
+        }
+        ctx.entry.session.append({ type: "session_closed", userId: ctx.userId });
+        // Deliberate user action, not a hot stream — immediate push (same
+        // rationale as add_plugin / create_session).
+        pushProject(ctx.project);
         return;
       }
 
@@ -583,6 +622,9 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "suggest_skill") {
+        if (isClosed(ctx.entry)) {
+          return sendError("this session has been closed");
+        }
         if (typeof msg.skill !== "string") {
           return sendError("suggest_skill requires skill");
         }
@@ -615,6 +657,9 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "decide_skill") {
+        if (isClosed(ctx.entry)) {
+          return sendError("this session has been closed");
+        }
         if (
           typeof msg.suggestId !== "string" ||
           (msg.decision !== "run" && msg.decision !== "dismiss")

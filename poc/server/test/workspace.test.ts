@@ -94,3 +94,25 @@ describe("slugify", () => {
     expect(slugify("x".repeat(60))).toBe("x".repeat(40));
   });
 });
+
+describe("WorkspaceManager.repoKey", () => {
+  it("normalizes the origin remote when one is configured", () => {
+    const dir = makeRepo();
+    execFileSync("git", ["remote", "add", "origin", "git@github.com:acme/api.git"], { cwd: dir });
+    const wm = new WorkspaceManager(dir, path.join(dir, ".mpai", "worktrees"));
+    expect(wm.repoKey()).toBe("github.com/acme/api");
+  });
+
+  it("falls back to a machine-local key when there is no origin", () => {
+    const dir = makeRepo();
+    const wm = new WorkspaceManager(dir, path.join(dir, ".mpai", "worktrees"));
+    // No remote configured — must never produce a key another machine could match.
+    expect(wm.repoKey().startsWith("local:")).toBe(true);
+  });
+
+  it("is stable across calls", () => {
+    const dir = makeRepo();
+    const wm = new WorkspaceManager(dir, path.join(dir, ".mpai", "worktrees"));
+    expect(wm.repoKey()).toBe(wm.repoKey());
+  });
+});

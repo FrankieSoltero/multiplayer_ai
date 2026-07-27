@@ -55,6 +55,13 @@ export function pullsFrom(
   for (const s of sessions) {
     if (s.id === opts.currentSessionId) continue;
     if (s.ended) continue;
+    // Deliberately NOT `if (s.lifecycle === "closed") continue` — a closed
+    // session can still carry an unanswered permission gate (server.ts's
+    // `permission` handler stays unguarded on purpose so an in-flight
+    // request can be resolved after close), and a pull is exactly how a
+    // teammate notices it needs resolving. Written before `lifecycle`
+    // existed; `ended` was the only signal then. Do not "fix" this to also
+    // skip `closed` — see docs/superpowers/plans/2026-07-27-v7a-repo-identity-lifecycle.md Deviations.
     const gate = s.pendingGate;
     if (!gate) continue;
     const waited = opts.now - Date.parse(gate.sinceTs);

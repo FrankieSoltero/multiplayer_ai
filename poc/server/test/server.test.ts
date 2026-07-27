@@ -48,6 +48,7 @@ function fakeWorkspace() {
       return { ok: true as const, workdir: `/tmp/wt/${slug}` };
     },
     defaultBranch: () => "main",
+    repoKey: () => "local:test:000000000000",
   };
 }
 
@@ -1035,7 +1036,7 @@ describe("session initiation", () => {
     await wait(50);
     const snap = seen.find((m) => m.type === "project");
     expect(snap).toBeTruthy();
-    expect(snap.repo).toEqual({ defaultBranch: "main" });
+    expect(snap.repo).toEqual({ defaultBranch: "main", key: "local:test:000000000000" });
     expect(snap.sessions).toEqual([]);
     const joiner = await connect(server.port);
     joiner.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
@@ -1133,6 +1134,7 @@ describe("session initiation", () => {
     const workspace = {
       provision: () => ({ ok: false as const, error: "unknown base ref: dev" }),
       defaultBranch: () => "main",
+      repoKey: () => "local:test:000000000000",
     };
     const server = await startServer({ port: 0, runQuery: echoRun, workspace });
     close = server.close;
@@ -1184,6 +1186,7 @@ describe("session initiation", () => {
     const workspace = {
       provision: () => ({ ok: false as const, error: "session name taken (branch mpai/adhoc exists)" }),
       defaultBranch: () => "main",
+      repoKey: () => "local:test:000000000000",
     };
     const server = await startServer({ port: 0, runQuery: echoRun, workspace });
     close = server.close;
@@ -1945,6 +1948,242 @@ describe("auth gate on the pre-join message types", () => {
     expect(seen.some((m) => m.type === "error")).toBe(false);
     expect(seen.some((m) => m.type === "session_created")).toBe(true);
     expect(workspace.calls.map((c) => c.slug)).toEqual(["dev-flow"]);
+    ws.close();
+  });
+});
+
+describe("repo identity on the project snapshot", () => {
+  const lastProject = (seen: any[]) => [...seen].reverse().find((m) => m.type === "project");
+
+  it("stamps every session with the repo key", async () => {
+    const server = await startServer({
+      port: 0,
+      runQuery: echoRun,
+      workspace: { ...fakeWorkspace(), repoKey: () => "github.com/acme/api" },
+    });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    await wait(200);
+
+    const snap = lastProject(seen);
+    expect(snap.repo).toEqual({ defaultBranch: "main", key: "github.com/acme/api" });
+    expect(snap.sessions.find((s: any) => s.id === "ana").repoKey).toBe("github.com/acme/api");
+
+    ws.close();
+  });
+
+  it("reports a null repo key when the server has no workspace", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    await wait(200);
+
+    const snap = lastProject(seen);
+    expect(snap.repo).toBeNull();
+    expect(snap.sessions.find((s: any) => s.id === "ana").repoKey).toBeNull();
+
+    ws.close();
+  });
+});
+
+describe("session lifecycle", () => {
+  const lastProject = (seen: any[]) => [...seen].reverse().find((m) => m.type === "project");
+
+  it("reports open by default and closed after close_session", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    await wait(200);
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "ana").lifecycle).toBe("open");
+
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "ana").lifecycle).toBe("closed");
+
+    ws.close();
+  });
+
+  it("attributes the close on the wire so history says who did it", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+
+    const closed = seen.filter((m: any) => m.type === "event" && m.event.type === "session_closed");
+    expect(closed).toHaveLength(1);
+    expect(closed[0].event.userId).toBe("u1");
+
+    ws.close();
+  });
+
+  it("lets any participant close, not only the driver", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    collect(wsAna, []);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    await wait(100);
+
+    // Ben joins second, so Ana holds the wheel and Ben is a passenger.
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(100);
+    wsBen.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+
+    expect(lastProject(seenBen).sessions.find((s: any) => s.id === "s").lifecycle).toBe("closed");
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("refuses a prompt to a closed session", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+    ws.send(JSON.stringify({ type: "prompt", text: "keep going" }));
+    await wait(200);
+
+    const errors = seen.filter((m: any) => m.type === "error");
+    expect(errors.some((e: any) => /closed/i.test(e.message))).toBe(true);
+
+    ws.close();
+  });
+
+  it("refuses a second close rather than appending a duplicate event", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "close_session" }));
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+
+    expect(
+      seen.filter((m: any) => m.type === "event" && m.event.type === "session_closed"),
+    ).toHaveLength(1);
+
+    ws.close();
+  });
+
+  it("refuses a skill suggestion on a closed session — it would start a new agent run", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+    ws.send(JSON.stringify({ type: "suggest_skill", skill: "tools:alpha", args: "" }));
+    await wait(200);
+
+    const errors = seen.filter((m: any) => m.type === "error");
+    expect(errors.some((e: any) => /closed/i.test(e.message))).toBe(true);
+    expect(seen.some((m: any) => m.event?.type === "skill_suggest")).toBe(false);
+
+    ws.close();
+  });
+
+  it("refuses a skill decision on a closed session — approving would start a new agent run", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+    ws.send(JSON.stringify({ type: "decide_skill", suggestId: "whatever", decision: "run" }));
+    await wait(200);
+
+    const errors = seen.filter((m: any) => m.type === "error");
+    expect(errors.some((e: any) => /closed/i.test(e.message))).toBe(true);
+    expect(seen.some((m: any) => m.event?.type === "skill_decision")).toBe(false);
+
+    ws.close();
+  });
+
+  it("still lets the driver resolve an in-flight permission request after the session is closed", async () => {
+    // Deliberate exemption: `permission` resolves a request already in flight
+    // (the agent is paused waiting for a decision). Guarding it would strand
+    // that agent forever on a promise nobody can resolve, which is worse than
+    // the problem closing is meant to solve. Do not "tidy" this into a guard.
+    const bashAskRun: RunQuery = async function* (prompts, hooks) {
+      for await (const prompt of prompts) {
+        const decision = await hooks.onPermissionRequest("Bash", { command: "npm run build" });
+        yield { type: "assistant", content: [{ type: "text", text: `bash: ${decision}` }] };
+      }
+    };
+    const server = await startServer({ port: 0, runQuery: bashAskRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "prompt", text: "build it" }));
+    await wait(200);
+
+    const req = seen.map((m) => m.event).find((e) => e?.type === "permission_request");
+    expect(req).toBeTruthy();
+
+    ws.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+
+    ws.send(JSON.stringify({ type: "permission", requestId: req.requestId, decision: "allow" }));
+    await wait(200);
+
+    const decision = seen.find((m) => m.event?.type === "permission_decision")?.event;
+    expect(decision).toMatchObject({ requestId: req.requestId, decision: "allow" });
+    expect(seen.some((m: any) => m.type === "error" && /closed/i.test(m.message))).toBe(false);
+
+    ws.close();
+  });
+
+  it("reports presence online on a standalone server, which owns every session", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    await wait(200);
+
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "ana").presence).toBe("online");
+
     ws.close();
   });
 });

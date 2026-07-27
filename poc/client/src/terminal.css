@@ -374,10 +374,17 @@ code, pre { font-family: var(--fm); }
 }
 .member:hover { border-color: var(--accent); }
 .member.you { border-color: var(--green); background: var(--green-wash); gap: var(--sp-1); }
-/* an ended session is encoded structurally (dashed frame), not by fading it
-   until it fails contrast */
-.member.ended { opacity: 0.75; border-style: dashed; }
-.member.ended:hover { opacity: 1; }
+/* Three orthogonal degraded states (spec §3.4) — deliberately distinguishable:
+   `ended` is a dead agent on a reachable machine, `offline` is a machine we
+   cannot see, `closed` is a human ending it on purpose. */
+.member.ended,
+.member.offline,
+.member.closed { opacity: 0.75; border-style: dashed; }
+.member.ended:hover,
+.member.offline:hover,
+.member.closed:hover { opacity: 1; }
+.member.offline { border-style: dotted; }
+.member.closed { opacity: 0.55; }
 .member-head { font-weight: 600; }
 .member-head .role { color: var(--green); font-weight: 400; }
 .member-head .here { color: var(--dim); font-weight: 400; }
@@ -720,6 +727,8 @@ code, pre { font-family: var(--fm); }
 .spstate { margin-left: var(--sp-2); }
 .spstate.live { color: var(--green); }
 .spstate.ended { color: var(--red); }
+.spstate.closed { color: var(--red); }
+.spstate.offline { color: var(--dim); }
 .spintent { margin-top: 2px; overflow-wrap: anywhere; }
 .spwho { color: var(--accent); margin-top: 2px; }
 .spform { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }

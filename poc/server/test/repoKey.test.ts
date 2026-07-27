@@ -1,0 +1,128 @@
+import { describe, expect, test } from "vitest";
+import { normalizeRemote, localRepoKey, repoKeyFor } from "../src/repoKey.js";
+
+describe("normalizeRemote", () => {
+  test("collapses the three forms of the same GitHub repo to one key", () => {
+    expect(normalizeRemote("git@github.com:acme/api.git")).toBe("github.com/acme/api");
+    expect(normalizeRemote("https://github.com/acme/api")).toBe("github.com/acme/api");
+    expect(normalizeRemote("https://github.com/acme/api.git")).toBe("github.com/acme/api");
+  });
+
+  test("strips embedded credentials so a token never reaches the key", () => {
+    expect(normalizeRemote("https://user:ghp_secret@github.com/acme/api.git")).toBe(
+      "github.com/acme/api",
+    );
+  });
+
+  test("lowercases the host but preserves path case", () => {
+    // GitHub paths are case-insensitive in practice but not canonicalised by
+    // git; lowercasing them would merge genuinely distinct repos on
+    // case-sensitive hosts.
+    expect(normalizeRemote("https://GitHub.COM/Acme/API.git")).toBe("github.com/Acme/API");
+  });
+
+  test("strips ports, ssh:// scheme, and trailing slashes", () => {
+    expect(normalizeRemote("ssh://git@git.example.com:2222/acme/api.git")).toBe(
+      "git.example.com/acme/api",
+    );
+    expect(normalizeRemote("https://github.com/acme/api/")).toBe("github.com/acme/api");
+  });
+
+  test("returns null for things that are not remote URLs", () => {
+    expect(normalizeRemote("")).toBeNull();
+    expect(normalizeRemote("   ")).toBeNull();
+    expect(normalizeRemote("file:///Users/me/code/api")).toBeNull();
+    expect(normalizeRemote("/Users/me/code/api")).toBeNull();
+    expect(normalizeRemote("https://github.com")).toBeNull();
+  });
+
+  test("rejects a Windows drive-letter path rather than emitting a false key", () => {
+    // A single-character host ("C") is a drive letter, not a hostname.
+    expect(normalizeRemote("C:/Users/alice/code/api")).toBeNull();
+  });
+
+  test("rejects any backslash path rather than emitting a false key", () => {
+    // Backslashes never appear in a legitimate remote URL, so this is
+    // treated as a local path (e.g. a UNC share) regardless of shape.
+    expect(normalizeRemote("\\\\server\\share\\repo")).toBeNull();
+  });
+
+  test("rejects file:// URLs with a Windows drive-letter host", () => {
+    expect(normalizeRemote("file://C:/Users/me/api")).toBeNull();
+  });
+
+  test("keeps a bare single-word hostname remote intact — no dot required", () => {
+    // git@myserver:api.git and git@localhost:api.git are legitimate LAN
+    // remotes; requiring a dot in the host would wrongly reject them.
+    expect(normalizeRemote("git@myserver:api.git")).toBe("myserver/api");
+  });
+
+  test("an '@' in the path does not fabricate a host/path pair", () => {
+    // Regression for a lastIndexOf("@") that scanned the whole remainder
+    // instead of just the authority: it used to read the LAST "@" — the one
+    // inside the path — and split there, producing host "b" path "c" for a
+    // remote that has no userinfo at all.
+    expect(normalizeRemote("https://github.com/acme/a@b/c.git")).toBe("github.com/acme/a@b/c");
+  });
+
+  test("a password containing '@' is still stripped", () => {
+    // The bounded scan must still find a real userinfo separator — there is
+    // never a "/" inside userinfo, so the authority-bounded lastIndexOf
+    // still lands on the right "@" even when the password itself has one.
+    expect(normalizeRemote("https://user:pa@ss@github.com/acme/api.git")).toBe(
+      "github.com/acme/api",
+    );
+  });
+
+  test("collapses internal duplicate slashes so the same repo keys identically", () => {
+    expect(normalizeRemote("https://github.com//acme//api.git")).toBe("github.com/acme/api");
+  });
+});
+
+describe("localRepoKey", () => {
+  test("is stable for one path and different for another", () => {
+    const a = localRepoKey("laptop", "/Users/me/code/api");
+    expect(a).toBe(localRepoKey("laptop", "/Users/me/code/api"));
+    expect(a).not.toBe(localRepoKey("laptop", "/Users/me/code/web"));
+  });
+
+  test("differs across machines so two laptops never falsely match", () => {
+    expect(localRepoKey("laptop-a", "/src/api")).not.toBe(localRepoKey("laptop-b", "/src/api"));
+  });
+
+  test("is prefixed local: so the wire never confuses it with a real remote", () => {
+    expect(localRepoKey("laptop", "/src/api").startsWith("local:")).toBe(true);
+  });
+
+  test("does not leak the absolute path", () => {
+    expect(localRepoKey("laptop", "/Users/secret-name/code/api")).not.toContain("secret-name");
+  });
+});
+
+describe("repoKeyFor", () => {
+  const ctx = { hostname: "laptop", repoRoot: "/src/api" };
+
+  test("prefers the normalized remote when there is one", () => {
+    expect(repoKeyFor("git@github.com:acme/api.git", ctx)).toBe("github.com/acme/api");
+  });
+
+  test("falls back to a machine-local key when there is no remote", () => {
+    expect(repoKeyFor(null, ctx)).toBe(localRepoKey("laptop", "/src/api"));
+  });
+
+  test("falls back when the remote is unrecognisable rather than guessing", () => {
+    expect(repoKeyFor("not-a-url", ctx)).toBe(localRepoKey("laptop", "/src/api"));
+  });
+
+  test("falls back to the local key for a Windows drive-letter path", () => {
+    expect(repoKeyFor("C:/Users/alice/code/api", ctx)).toBe(localRepoKey("laptop", "/src/api"));
+  });
+
+  test("falls back to the local key for a backslash path", () => {
+    expect(repoKeyFor("\\\\server\\share\\repo", ctx)).toBe(localRepoKey("laptop", "/src/api"));
+  });
+
+  test("falls back to the local key for file:// with a drive-letter host", () => {
+    expect(repoKeyFor("file://C:/Users/me/api", ctx)).toBe(localRepoKey("laptop", "/src/api"));
+  });
+});
