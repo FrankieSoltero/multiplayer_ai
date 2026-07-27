@@ -92,12 +92,19 @@ export type AuthConfig = {
 };
 
 /** Only same-origin absolute paths survive. Anything that could send the
- *  browser to another host after login is replaced with "/". */
+ *  browser to another host after login is replaced with "/".
+ *
+ *  Validated positively rather than by prefix-blacklist: control characters
+ *  (e.g. a literal TAB, which the WHATWG URL parser strips before browsers
+ *  see it — turning "/\t/evil.example" into a protocol-relative
+ *  "//evil.example") are rejected outright, and the remainder must
+ *  round-trip through the URL parser to exactly the same pathname+search —
+ *  which rules out backslash tricks and anything else the parser would
+ *  reinterpret as leaving this origin. */
 export function safeNext(raw: string | null): string {
-  if (!raw) return "/";
-  if (!raw.startsWith("/")) return "/";
-  if (raw.startsWith("//") || raw.startsWith("/\\")) return "/";
-  return raw;
+  if (!raw || !raw.startsWith("/") || /[\x00-\x20\x7f]/.test(raw)) return "/";
+  const u = new URL(raw, "http://x");
+  return u.pathname + u.search === raw ? raw : "/";
 }
 
 function cookie(name: string, value: string, maxAgeSec: number, secure: boolean): string {
@@ -235,33 +242,47 @@ export function authRoutes(
       }
       const code = url.searchParams.get("code") ?? "";
       const next = safeNext(url.searchParams.get("next"));
-      void exchange(code, cfg).then(
-        (result) => {
-          if ("error" in result) {
-            res.writeHead(401, { "content-type": "text/plain; charset=utf-8" });
-            res.end(`sign-in failed: ${result.error}`);
-            return;
+      void exchange(code, cfg)
+        .then(
+          (result) => {
+            if ("error" in result) {
+              res.writeHead(401, { "content-type": "text/plain; charset=utf-8" });
+              res.end(`sign-in failed: ${result.error}`);
+              return;
+            }
+            const secure = isSecure(req);
+            res.writeHead(302, {
+              location: next,
+              "set-cookie": [
+                cookie(
+                  SESSION_COOKIE,
+                  signSession(result.login, cfg.sessionSecret),
+                  Math.floor(SESSION_MAX_AGE_MS / 1000),
+                  secure,
+                ),
+                cookie(STATE_COOKIE, "", 0, secure),
+              ],
+            });
+            res.end();
+          },
+          () => {
+            res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+            res.end("sign-in failed: could not reach GitHub");
+          },
+        )
+        // A throw inside the fulfilled handler above (e.g. res.writeHead
+        // rejecting a malformed header value) would otherwise escape as an
+        // unhandled rejection and crash the process, leaving the request
+        // hanging with no response. Guard it the same way a rejected
+        // exchange is guarded.
+        .catch(() => {
+          if (!res.headersSent) {
+            res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+            res.end("sign-in failed: internal error");
+          } else {
+            res.end();
           }
-          const secure = isSecure(req);
-          res.writeHead(302, {
-            location: next,
-            "set-cookie": [
-              cookie(
-                SESSION_COOKIE,
-                signSession(result.login, cfg.sessionSecret),
-                Math.floor(SESSION_MAX_AGE_MS / 1000),
-                secure,
-              ),
-              cookie(STATE_COOKIE, "", 0, secure),
-            ],
-          });
-          res.end();
-        },
-        () => {
-          res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
-          res.end("sign-in failed: could not reach GitHub");
-        },
-      );
+        });
       return true;
     }
 

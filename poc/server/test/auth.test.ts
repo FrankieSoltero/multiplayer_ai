@@ -7,7 +7,7 @@ import {
   SESSION_MAX_AGE_MS,
 } from "../src/auth.js";
 import { authRoutes, safeNext, type AuthConfig } from "../src/auth.js";
-import { createServer } from "node:http";
+import { createServer, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
 const SECRET = "test-secret-do-not-use";
@@ -149,6 +149,25 @@ describe("safeNext", () => {
     expect(safeNext(null)).toBe("/");
     expect(safeNext("relative")).toBe("/");
   });
+
+  // A literal control character in "next" is legal in an HTTP header value
+  // to Node's writer, but the WHATWG URL parser every browser uses strips
+  // TAB/LF/CR before parsing — turning "/\t/evil.example" into
+  // "//evil.example" client-side. These attack the control, not the
+  // implementation's prefix list.
+  it("rejects a next containing a raw or percent-decoded control character", () => {
+    expect(safeNext("/\t/evil.example")).toBe("/");
+    expect(safeNext("/\r/evil.example")).toBe("/");
+    expect(safeNext("/\n/evil.example")).toBe("/");
+    expect(safeNext(decodeURIComponent("%2F%09%2Fevil.example"))).toBe("/");
+    expect(safeNext(decodeURIComponent("%2F%0D%2Fevil.example"))).toBe("/");
+    expect(safeNext(decodeURIComponent("%2F%0A%2Fevil.example"))).toBe("/");
+  });
+
+  it("rejects a backslash-based path that the URL parser would treat as a new authority", () => {
+    expect(safeNext("/\\evil.example")).toBe("/");
+    expect(safeNext("/\\/evil.example")).toBe("/");
+  });
 });
 
 describe("authRoutes", () => {
@@ -181,13 +200,36 @@ describe("authRoutes", () => {
   });
 
   it("/auth/callback rejects a mismatched state", async () => {
-    await withRoutes(testConfig(), async (base) => {
+    let exchangeCalls = 0;
+    const cfg = testConfig({
+      exchangeCode: async () => {
+        exchangeCalls++;
+        return { login: "ana" };
+      },
+    });
+    await withRoutes(cfg, async (base) => {
       const res = await fetch(`${base}/auth/callback?code=x&state=wrong`, {
         headers: { cookie: "mpai_oauth_state=right" },
         redirect: "manual",
       });
       expect(res.status).toBe(400);
       expect(await res.text()).toContain("state");
+      // Proves the state check gates the exchange rather than merely
+      // discarding its result — a refactor that fires exchange concurrently
+      // with the state check would still 400 here but would fail this
+      // assertion.
+      expect(exchangeCalls).toBe(0);
+    });
+  });
+
+  it("/auth/callback rejects a next carrying a control character end-to-end", async () => {
+    await withRoutes(testConfig(), async (base) => {
+      const res = await fetch(
+        `${base}/auth/callback?code=x&state=s1&next=%2F%09%2Fevil.example`,
+        { headers: { cookie: "mpai_oauth_state=s1" }, redirect: "manual" },
+      );
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/");
     });
   });
 
@@ -225,6 +267,37 @@ describe("authRoutes", () => {
       });
       expect(res.status).toBe(401);
     });
+  });
+
+  it("/auth/callback returns 5xx instead of a dead socket when the success handler throws", async () => {
+    // Forces the redirect branch's res.writeHead to throw, independent of
+    // any particular bad "next" value, to prove the route's failure
+    // handling covers a throw inside the success path generally — not just
+    // the specific safeNext bypass this suite also regression-tests.
+    const originalWriteHead = ServerResponse.prototype.writeHead;
+    let forced = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ServerResponse.prototype as any).writeHead = function (...args: unknown[]) {
+      if (!forced && args[0] === 302) {
+        forced = true;
+        throw new Error("simulated failure writing the redirect response");
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (originalWriteHead as any).apply(this, args);
+    };
+    try {
+      await withRoutes(testConfig(), async (base) => {
+        const res = await fetch(`${base}/auth/callback?code=x&state=s1`, {
+          headers: { cookie: "mpai_oauth_state=s1" },
+          redirect: "manual",
+        });
+        expect(res.status).toBeGreaterThanOrEqual(500);
+        expect(res.status).toBeLessThan(600);
+      });
+    } finally {
+      ServerResponse.prototype.writeHead = originalWriteHead;
+    }
+    expect(forced).toBe(true);
   });
 
   it("/auth/me is 401 signed out and 200 signed in", async () => {
