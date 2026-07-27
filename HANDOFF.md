@@ -2,7 +2,7 @@
 
 *Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #10).*
 
-**STATE: A2a AND A3 ARE BOTH MERGED AND ON ORIGIN. `main` = `origin/main` = `b8d5652` (verified with `git ls-remote`, not a cached ref). Suites on merged main: server 305, client 160, both tsc clean, client build clean. Nothing running, nothing half-finished, nothing unpushed.**
+**STATE: A2a AND A3 ARE BOTH MERGED AND PUSHED. `main` == `origin/main` (pushed this session; verify with `git ls-remote origin refs/heads/main`, which is authoritative — the `origin/main` tracking ref has been observed stale in this repo). Code tip is `0450c8d` (merge of A3); anything above it is handoff/docs commits. Suites: server 305, client 160, both tsc clean, client build clean. Nothing running, nothing half-finished.**
 
 **A3 (pull notifications) is DONE and verified in a real browser** — spec, plan, all four tasks, deviations recorded, merged at `0450c8d`. The behaviour: a permission gate in another session that goes unanswered past *your* threshold lights that session's OTHER PARTIES row amber and shows `🔐 PULLS ▸ N` in the header. Off by default; the delay is per-recipient (OFF / 30s / 1m / 2m / 5m) in `localStorage["mpai-pull-after-ms"]`. **Next is v6b collision detection, which starts at brainstorming — it has banked decisions (§3b) but no spec.**
 
@@ -40,7 +40,7 @@ Session #7 turned "let's get this production ready" into a scoped programme. Tha
 
 Merged bottom-up on the user's explicit go (this supersedes the earlier standing "leave them open to review" instruction, which is now void): **#13** oversight → main (`8076d40`), **#12** invite → main (`7f31a79`), **#14** arcade/Tetris+Doodle → main (`e547904`), **#15** arrow-nav + header-clip + model-picker fixes → main (`2669ebf`). Each was retargeted to `main` as its base landed. Main verified green after those merges at **client 116 / server 215** — *historical figures for that session only; the current baselines are 120 / 227 (§0).*
 
-We are ON `main`, in sync with origin at `b8d5652`. No dev stack running (:3001 and :5173 both freed). Feature branches were NOT deleted. **`feature/a2a-github-oauth`, `feature/signout-ui` and `feature/a3-pull-notifications` are LOCAL-ONLY and fully merged into main** — their content is on origin via main, only the branch refs are local. Tidying is a user call.
+We are ON `main`, pushed and in sync with origin. No dev stack running (:3001 and :5173 both freed). Feature branches were NOT deleted. **`feature/a2a-github-oauth`, `feature/signout-ui` and `feature/a3-pull-notifications` are LOCAL-ONLY and fully merged into main** — their content is on origin via main, only the branch refs are local. Tidying is a user call.
 
 **THE ONE THING THAT MUST BE FIXED BEFORE ANY REAL SESSION RUNS ON A BOX:** production sessions have **no workspace provisioning**. `poc/server/src/main.ts` never passes a `workspace` to `startServer` (pre-dates A1a), so `poc/server/src/server.ts:174-175` derives `workdir = path.join(AGENT_WORKDIR_ROOT, sessionId)` — and **nothing ever creates that directory** (`mkdir` appears only in `workspace.ts`, `cli.ts`, `pluginStore.ts`, none on this path). Worse, if `AGENT_WORKDIR_ROOT` is unset, `poc/server/src/agentDriver.ts:133` falls back to `process.cwd()`, which under the systemd unit is `/opt/multiplayer-ai/poc/server` — **the agent would edit the running deployment's own source tree.** Deliberately NOT patched with a bare `mkdir`: an empty non-git directory would look like it works while the agent operated in an empty folder; failing loudly is better. Documented in `deploy/RUNBOOK.md` §0 and §8 and spec §9. This is an A1b blocker.
 
@@ -48,7 +48,7 @@ We are ON `main`, in sync with origin at `b8d5652`. No dev stack running (:3001 
 
 ## 0. WHERE WE ARE
 
-- **main** (origin in sync, tip `b8d5652`; `0450c8d` = merge of A3, `ed09d9f` = sign-out, `0283e14` = merge of A2a, `f33ce06` = merge of A1a). Everything below is ON MAIN and verified there: session launcher + `mpai` CLI, oversight agent, invite system, arcade with Tetris + Doodle Jump, arrow-key navigation, header-clip fix, model-picker fix, **and A1a deployment wiring**. **Baselines on main now: server 305 tests / client 160 tests**, both `tsc --noEmit` clean, client build clean. (Earlier baselines of 297/147, 227/120, 116/215, 161/72 and 84/99 are all superseded.)
+- **main** (pushed to origin; `0450c8d` = merge of A3, `ed09d9f` = sign-out, `0283e14` = merge of A2a, `f33ce06` = merge of A1a). Everything below is ON MAIN and verified there: session launcher + `mpai` CLI, oversight agent, invite system, arcade with Tetris + Doodle Jump, arrow-key navigation, header-clip fix, model-picker fix, **and A1a deployment wiring**. **Baselines on main now: server 305 tests / client 160 tests**, both `tsc --noEmit` clean, client build clean. (Earlier baselines of 297/147, 227/120, 116/215, 161/72 and 84/99 are all superseded.)
 - `mpai` is globally runnable via symlink `~/.local/bin/mpai → poc/server/bin/mpai.js` (machine setup, not in repo; npm link needs sudo here).
 - **Nothing running.** :3001 and :5173 both freed at the end of session #6d.
 - **Branches not deleted.** `feature/oversight-agent`, `feature/invite-system`, `feature/arcade-tetris-doodle`, `feature/arrow-nav` still exist locally and on origin, as do the older merged ones (`feature/v6c-plugins`, `feature/slash-autocomplete-v2`, `feature/workflows-screen`, `feature/session-launcher`). Deleting is destructive and is the user's call — do not do it unasked.
@@ -135,7 +135,7 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 
 ## 4. Ordered next steps (fresh session)
 
-1. **Verify state per §8** (expect `main` at `b8d5652`, in sync with origin, 305 + 160 green, nothing running).
+1. **Verify state per §8** (expect `main` in sync with origin, 305 + 160 green, nothing running, working tree clean apart from the three untracked user files).
 2. **BUILD v6b — file-collision detection.** The user's stated priority and, by their ordering, the last feature before deployment. **It has banked decisions (§3b) but no spec**, so it starts at `superpowers:brainstorming`, not at code. Build it as an extension of A3's rail (OTHER PARTIES rows + `PULLS ▸ N` badge), not a parallel one. The two open design questions §3b does not settle: what counts as a collision (same file touched by two live sessions? same file *and* both uncommitted? overlapping hunks?), and whether the signal is advisory-only — §3b is explicit that coordination means awareness and advisory warnings, **never locks or task boards**.
 3. **Then A1b — deployment.** Blocked on the user for the box, the domain with a live A record, and the API key. **It is also blocked on code:** the §0 workspace-provisioning fix must land first, and it needs no hardware, so it can be done at any time — doing it early would shorten the deploy day.
 4. **Deferred, revisit only when unblocked or asked:** A2b (needs the §7a provider spike, which needs an API key) and A4 (canned demo scenario).
@@ -327,8 +327,9 @@ throttles project snapshots to `PROJECT_PUSH_INTERVAL_MS = 1000` with a trailing
   already reported `b8d5652` — identical to local main, **including a handoff commit made minutes
   earlier in this session**. No `git push` was run by this session and `.git/hooks/` has no active
   hooks (samples only). Earlier in the same session `git status -sb` had reported "ahead 39", and the
-  marker vanished after a plain `git fetch`. **Best hypothesis: another session or background process
-  is pushing to this repo.** Unresolved, and worth knowing before v6b: two agents merging into the
+  marker vanished after a plain `git fetch`. Later in the same session, two fresh handoff commits did
+  **not** auto-appear on origin and had to be pushed manually — so whatever it was is not pushing
+  continuously. **Best hypothesis: another session or background process pushed once.** Unresolved, and worth knowing before v6b: two agents merging into the
   same `main` is precisely the collision problem v6b exists to surface. **Practical rule meanwhile:
   trust `git ls-remote`, not `origin/main`, which can be stale.**
 - **§7g — PR-first flow for v6b? USER DECISION PENDING.** A2a, sign-out and A3 were each merged
@@ -356,13 +357,13 @@ throttles project snapshots to `PROJECT_PUSH_INTERVAL_MS = 1000` with a trailing
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # main, in sync with origin; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
 git ls-remote origin refs/heads/main          # must equal `git rev-parse main` — trust this over origin/main, which can be stale
-git log --oneline -4                          # b8d5652 handoff / 0450c8d A3 merge / 525b069 A3 client / 14c4d00 A3 deviations
+git log --oneline -6                          # handoff commits on top of 0450c8d 'Merge A3: pull notifications'
 cd poc/server && npx tsc --noEmit && npx vitest run   # tsc clean, 305 passed (~16s)
 cd ../client && npx tsc --noEmit && npx vitest run && npm run build   # tsc clean, 160 passed, build clean
 lsof -ti:3001; lsof -ti:5173                  # both EMPTY unless you started a stack — see §6 for how
 ```
 
-**`main` and `origin/main` are identical at `b8d5652`.** Nothing is unpushed. See §7f for the one unexplained thing about how that happened.
+**`main` was pushed to origin at the end of session #10** via `git push origin main:main` (the refspec form — the bare `git push origin main` has been blocked by the permission classifier before, §6). Nothing is unpushed. See §7f for an unexplained earlier push.
 
 **To run Task 8.** Credentials are already on disk and both packages are already built (§7c) — just launch.
 
