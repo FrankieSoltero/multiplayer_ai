@@ -5,6 +5,7 @@
   "bin": { "mpai": "bin/mpai.js" },
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
+    "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
