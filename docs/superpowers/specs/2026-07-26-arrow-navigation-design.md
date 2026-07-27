@@ -62,8 +62,11 @@ Checked in this order on every keydown. Any match returns immediately and lets t
 1. `metaKey`, `ctrlKey` or `altKey` held → let the browser and OS have it.
 2. The key is not one of the four arrows → ignore.
 3. **A live arcade run has the keyboard** (`arcadeCapturing`) → the game owns arrows. Passed into the hook as its `enabled` flag, so the listener is not even attached during a run.
-4. Focus is in a `TEXTAREA` or `SELECT` → native arrow behavior wins. This deliberately leaves the AGENT model `<select>` behaving normally.
-5. Focus is in an `INPUT` **whose value is non-empty** → the text caret wins. This is what makes typing always win, and it also covers the slash menu, which can only be open when the input begins with `/`.
+4. Focus is in a `TEXTAREA` → native arrow behavior wins on both axes.
+5. Focus is in a `SELECT` → native behavior wins on the **vertical axis only**. ↑/↓ change the value natively; ←/→ do nothing on a closed select, so they stay available as the way out.
+6. Focus is in an `INPUT` **whose value is non-empty** → the text caret wins. This is what makes typing always win, and it also covers the slash menu, which can only be open when the input begins with `/`.
+
+**Amended after driving the real UI.** This originally yielded *both* axes to a `<select>`, dismissing the consequence as "Tab out of it". That was wrong: the AGENT model picker is the **first focusable element on the page**, so the first arrow press landed on it and then every subsequent arrow was skipped — focus was stranded permanently and the whole feature was dead on arrival. The pure tests could not see it; only driving the browser could. Splitting the rule by axis keeps the native value-change and guarantees an escape route.
 
 ## 6. Relationship to the header clipping fix
 
@@ -86,6 +89,6 @@ The geometry and index arithmetic is extracted into pure functions and unit test
 - `rows()` — groups rects into visual rows; overlapping items share a row, stacked items do not; a wrapped header yields two rows; side-by-side panes yield one.
 - `moveH()` — steps within a row and wraps at both ends.
 - `moveV()` — moves to the adjacent row, picks the nearest item by horizontal centre, and clamps at the top and bottom.
-- `isTypingTarget()` — the §5 guard: true for a non-empty input, a textarea and a select; false for an empty input and for a button.
+- `yieldsArrows()` — the §5 guard, per axis: true for a non-empty input and a textarea on both axes, true for a select on the vertical axis only, false for an empty input and for a button.
 
 The hook itself is a thin DOM binding over these and is verified by driving the real UI, which is also required because `ThinkingStrip` and the header have no component tests.
