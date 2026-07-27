@@ -19,14 +19,7 @@ import { slugify, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
 import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
 import { InviteStore } from "./invites.js";
-import {
-  authRoutes,
-  parseCookies,
-  verifySession,
-  isAllowlisted,
-  SESSION_COOKIE,
-  type AuthConfig,
-} from "./auth.js";
+import { authRoutes, requireAuth, type AuthConfig } from "./auth.js";
 
 const MAX_PROMPT_LENGTH = 4000;
 const MAX_URL_LENGTH = 2048;
@@ -310,6 +303,26 @@ export async function startServer(opts: {
         return sendError("invalid JSON");
       }
 
+      // Guard for the message types that are reachable BEFORE `ctx` exists
+      // and therefore sit above the "join a session first" choke point.
+      // Without it, one cookie-less frame from anyone on the internet could
+      // provision a git worktree and spawn an agent subprocess
+      // (create_session), read the roster of real GitHub logins and the
+      // oversight summary of the team's work (peek / watch_project), or
+      // mutate project state (set_oversight).
+      //
+      // `peek_invite` is deliberately NOT guarded (spec §4.3): the invite
+      // sign-in screen calls it while signed out, and it is already gated by
+      // an unguessable token that it never spends.
+      //
+      // With auth off requireAuth admits everything, so this is a no-op.
+      const denyUnauthed = (): boolean => {
+        const check = requireAuth(cookieHeader, opts.auth);
+        if (check.ok) return false;
+        sendError(check.error);
+        return true;
+      };
+
       if (msg.type === "join") {
         if (ctx) {
           return sendError("already joined");
@@ -337,17 +350,11 @@ export async function startServer(opts: {
         // client-chosen would relocate the impersonation rather than remove
         // it. Enforced here, not in the client Lobby — a hand-rolled
         // WebSocket client bypasses any browser UI.
-        if (opts.auth) {
-          const user = verifySession(
-            parseCookies(cookieHeader)[SESSION_COOKIE],
-            opts.auth.sessionSecret,
-          );
-          if (!user) return sendError("authentication required");
-          if (!isAllowlisted(user.login, opts.auth.allowlist)) {
-            return sendError("not on the allowlist");
-          }
-          msg.userId = user.login;
-          msg.name = user.login;
+        const joinAuth = requireAuth(cookieHeader, opts.auth);
+        if (!joinAuth.ok) return sendError(joinAuth.error);
+        if (joinAuth.login !== null) {
+          msg.userId = joinAuth.login;
+          msg.name = joinAuth.login;
         }
         // Invite gate (spec §4). Sits before getOrCreateProject/Session so a
         // rejected join never provisions a git worktree.
@@ -412,6 +419,7 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "peek") {
+        if (denyUnauthed()) return;
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
         if (!SLUG.test(projectId)) {
           return sendError("peek requires a valid projectId");
@@ -447,6 +455,7 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "watch_project") {
+        if (denyUnauthed()) return;
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
         if (!SLUG.test(projectId)) {
           return sendError("watch_project requires a valid projectId");
@@ -460,6 +469,7 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "set_oversight") {
+        if (denyUnauthed()) return;
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
         if (!SLUG.test(projectId)) {
           return sendError("set_oversight requires a valid projectId");
@@ -476,6 +486,7 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "create_session") {
+        if (denyUnauthed()) return;
         const projectId =
           typeof msg.projectId === "string" ? msg.projectId : "default";
         if (!SLUG.test(projectId)) {
