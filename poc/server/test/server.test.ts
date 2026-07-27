@@ -2186,4 +2186,175 @@ describe("session lifecycle", () => {
 
     ws.close();
   });
+
+  it("removes the sender from the roster on leave_session", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsAna, seen);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    const wsBen = await connect(server.port);
+    collect(wsBen, []);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    const row = lastProject(seen).sessions.find((s: any) => s.id === "s");
+    expect(row.participants).toEqual(["Ana"]);
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("does NOT close the session when someone leaves and others remain", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsAna, seen);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    const wsBen = await connect(server.port);
+    collect(wsBen, []);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "s").lifecycle).toBe("open");
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("closes the session when the LAST participant leaves deliberately", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsWatch = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsWatch, seen);
+    wsWatch.send(JSON.stringify({ type: "watch_project", projectId: "demo" }));
+
+    const wsAna = await connect(server.port);
+    collect(wsAna, []);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    await wait(200);
+
+    wsAna.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "s").lifecycle).toBe("closed");
+
+    wsWatch.close();
+    wsAna.close();
+  });
+
+  it("attributes the auto-close to the participant who left last", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsAna, seen);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    wsAna.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    const closed = seen.filter((m: any) => m.type === "event" && m.event.type === "session_closed");
+    expect(closed).toHaveLength(1);
+    expect(closed[0].event.userId).toBe("u1");
+
+    wsAna.close();
+  });
+
+  it("a socket close does NOT close the session, even for the last participant", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsWatch = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsWatch, seen);
+    wsWatch.send(JSON.stringify({ type: "watch_project", projectId: "demo" }));
+
+    const wsAna = await connect(server.port);
+    collect(wsAna, []);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    await wait(200);
+
+    wsAna.close();
+    await wait(300);
+
+    // The whole point of leave_session existing: a dropped connection is not
+    // a statement of intent, and v7a made closing one-way.
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "s").lifecycle).toBe("open");
+
+    wsWatch.close();
+  });
+
+  it("writes exactly one presence_leave when leave_session is followed by the socket closing", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsWatch = await connect(server.port);
+    collect(wsWatch, []);
+    wsWatch.send(JSON.stringify({ type: "watch_project", projectId: "demo" }));
+
+    const wsAna = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsAna, seen);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    await wait(200);
+    wsAna.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+    wsAna.close();
+    await wait(300);
+
+    const rejoin = await connect(server.port);
+    const replay: any[] = [];
+    collect(rejoin, replay);
+    rejoin.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(300);
+
+    const leaves = replay.filter(
+      (m: any) => m.type === "event" && m.event.type === "presence_leave" && m.event.userId === "u1",
+    );
+    expect(leaves).toHaveLength(1);
+
+    rejoin.close();
+    wsWatch.close();
+  });
+
+  it("still lets someone leave an already-closed session, without closing it twice", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsAna, seen);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    const wsBen = await connect(server.port);
+    collect(wsBen, []);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    wsBen.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    const closed = seen.filter((m: any) => m.type === "event" && m.event.type === "session_closed");
+    expect(closed).toHaveLength(1);
+    const row = lastProject(seen).sessions.find((s: any) => s.id === "s");
+    expect(row.participants).toEqual(["Ana"]);
+    expect(row.lifecycle).toBe("closed");
+
+    wsAna.close();
+    wsBen.close();
+  });
 });

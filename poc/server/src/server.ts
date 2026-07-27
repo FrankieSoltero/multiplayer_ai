@@ -591,6 +591,26 @@ export async function startServer(opts: {
         return;
       }
 
+      if (msg.type === "leave_session") {
+        // Deliberate departure. Deliberately NOT lifecycle-guarded: someone
+        // sitting in an already-closed session still needs a way out.
+        ctx.entry.session.leave(ctx.userId);
+        // Auto-close only on a DELIBERATE last departure. A socket close runs
+        // `session.leave` too (see the "close" handler) but never reaches
+        // here — that asymmetry IS the feature: v7a made closing one-way, so
+        // a dropped connection must not be able to end a session forever
+        // (spec §2, §3.1).
+        if (ctx.entry.session.participantList.length === 0 && !isClosed(ctx.entry)) {
+          ctx.entry.session.append({ type: "session_closed", userId: ctx.userId });
+        }
+        // Deliberate user action, not a hot stream — immediate push. Same
+        // rationale as close_session: `presence_leave` and `session_closed`
+        // are not in the INTERESTING set, so without this watchers never see
+        // the roster empty or the lifecycle flip.
+        pushProject(ctx.project);
+        return;
+      }
+
       if (msg.type === "permission") {
         if (
           typeof msg.requestId !== "string" ||
