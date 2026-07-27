@@ -1,12 +1,16 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-26 (bg session #6c): **FOUR STACKED PRs OPEN, NONE MERGED — #13 → main, #12 → #13, #14 → #12, #15 → #14. A DEV STACK IS STILL RUNNING at the user's request (`npx tsx src/main.ts` on :3001 and vite on :5173, both backgrounded from this session, branch `feature/arrow-nav`). Kill them with `kill $(lsof -ti:3001) $(lsof -ti:5173)` before switching branches — never switch while attached. User demoed live at `http://localhost:5173/?session=demo&name=frankie`, said arrow-nav "works great", then reported the AGENT model picker did nothing on click; root-caused to a pre-existing `<label>` wrapping the `<select>` (a wrapping label forwards a second synthesized click, so the dropdown opened and instantly closed) and fixed on #15 along with Enter/Space→`showPicker()` for the focus ring. Client 116 tests, server 215, all builds clean. NOT yet confirmed by the user in a real browser — the native dropdown cannot be observed headlessly, only the DOM structure and the click count.** Prior context follows.*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-26 (bg session #6d).*
 
-*(bg session #6b): **FOUR STACKED PRs OPEN, NONE MERGED. #13 oversight → main, #12 invite → oversight, #14 arcade → invite, #15 arrow-nav → arcade. #15 answers "why is the invitation button hidden" (`.term-header` was nowrap + overflow:hidden and silently clipped INVITE/ONLINE entirely; measured scrollWidth 1422 vs clientWidth 1114) and adds arrow-key navigation over the whole terminal via real DOM focus. Client 99 → 116 tests, server 215 unchanged, all builds clean, live-driven in the browser. The claude-code/codex piggyback question was RESEARCHED and answered in conversation but NOT written up — see §7 for the findings so they aren't lost.** Prior context follows.*
+**STATE: ALL FOUR STACKED PRs ARE MERGED TO MAIN. Nothing is open. The stack is gone.**
 
-*(bg session #6): **THREE STACKED PRs OPEN, NONE MERGED. #13 oversight → main, #12 invite → oversight, #14 arcade (Tetris + Doodle Jump) → invite. The arcade work was built this session via spec → plan → inline TDD, and its live UI gate PASSED (all four cartridges swap, both new games play, score round-trips through the new server allowlist). Client 84 → 99 tests, server 215 unchanged, both builds clean. User also asked a NEW open question at the end of the session — see §7 "claude-code / codex piggyback" — which is NOT yet researched or answered.** Prior context follows.*
+Merged bottom-up on the user's explicit go (this supersedes the earlier standing "leave them open to review" instruction, which is now void): **#13** oversight → main (`8076d40`), **#12** invite → main (`7f31a79`), **#14** arcade/Tetris+Doodle → main (`e547904`), **#15** arrow-nav + header-clip + model-picker fixes → main (`2669ebf`). Each was retargeted to `main` as its base landed. Main verified green after the merges: **client 116 tests + tsc + build clean, server 215 tests + tsc clean**.
 
-*(bg session #5): **TWO STACKED PRs OPEN, NEITHER MERGED (user explicitly said leave them open to review). PR #13 = `feature/oversight-agent` → main. PR #12 = `feature/invite-system` → `feature/oversight-agent` (stacked). Invite system built this session via a 6-task SDD run; the FINAL whole-branch review found 2 Criticals (cross-project token leak bypassing requireInvite; ~20k list_invites frames/sec render loop) — both FIXED in `4f9ea92`, re-reviewed clean, and re-verified live. Server 215 tests + tsc clean, client 84 + build clean. A correction comment is posted on PR #12.** Resume per §1.*
+We are ON `main`, in sync with origin. No dev stack running (:3001 and :5173 both freed). Feature branches were NOT deleted — `feature/oversight-agent`, `feature/invite-system`, `feature/arcade-tetris-doodle`, `feature/arrow-nav` all still exist locally and on origin, plus the older merged ones listed in §4. Tidying them is a user call.
+
+**One thing still unconfirmed by a human:** the AGENT model-picker fix (`10189f0`, in #15). A `<label>` wrapped the `<select>` with no htmlFor/id pairing, so the label forwarded a second synthesized click and the native dropdown opened then instantly closed — it looked dead. Now a `<span>` + `aria-label`, plus Enter/Space→`showPicker()` so the arrow-nav focus ring can open it. Verified structurally only (parent is `<span>`, one click event per dispatch, accessible name preserved); a native dropdown cannot be observed in headless Playwright. **Ask the user whether it works in their browser.** If not, next suspects are `.term-header select` CSS (`appearance`, custom border) and whether the click lands on the `▾` chrome.
+
+*Earlier session headers removed — they described a stack that no longer exists. Per-feature detail remains in §0 and §4 onward.*
 
 ## 0. WHERE WE ARE
 
@@ -67,11 +71,10 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 
 ## 4. Ordered next steps (fresh session)
 
-0. **A DEV STACK IS RUNNING** (:3001 server, :5173 vite, branch `feature/arrow-nav`) — see the header note. Either keep using it at `http://localhost:5173/?session=demo&name=frankie`, or kill it before doing anything that switches branches.
-1. **Ask the user whether the model-picker fix actually works in their browser.** It was verified structurally (parent is now `<span>`, one click event per dispatch, `aria-label` preserved) but a native `<select>` dropdown cannot be observed in headless Playwright. If it still looks dead, the next suspects are the `.term-header select` CSS (`appearance`, custom border) and whether the click is landing on the `▾` chrome.
-2. Verify state per §8. We are ON `feature/arrow-nav` (PR #15, stack tip).
-2. **START HERE: the `PreToolUse` gate spike (§7).** It is the one unknown that decides whether the whole claude-code piggyback strategy is viable, it is roughly a day, and everything else in that plan is downstream of the answer.
-3. **WAIT for the user's PR review.** Do not merge #13, #12, #14 or #15 — explicit instruction. If they approve, merge bottom-up: #13 (oversight → main), then retarget #12, then #14, then #15.
+0. **Confirm the model-picker fix with the user** (see header) — the only thing merged but not human-verified.
+1. Verify state per §8. We are ON `main`, in sync with origin, nothing running on :3001/:5173.
+2. **START HERE for new work: the `PreToolUse` gate spike (§7).** It is the one unknown that decides whether the whole claude-code piggyback strategy is viable, it is roughly a day, and everything else in that plan is downstream of the answer.
+3. All four PRs are MERGED — there is nothing to review or merge. Optional tidy: delete the merged remote branches (now including `feature/oversight-agent`, `feature/invite-system`, `feature/arcade-tetris-doodle`, `feature/arrow-nav`) — user's call, historically permission-blocked for the agent.
 3. The oversight feature has still never been demoed live (the user skipped that checkpoint by asking for the PR). The combined demo script covers both features — `docs/demos/2026-07-26-invite-and-oversight.md` beats 9-11 are the oversight half. Worth running when they're back.
 4. Then next roadmap item: v6b (interrupt rail / fleet, banked §3b) or deployment week-1 build items (§3d) — user's call.
 5. Optional tidy: delete merged remote branches (`feature/v6c-plugins`, `feature/slash-autocomplete-v2`, `feature/workflows-screen`, `feature/session-launcher`) — permission-blocked for agent, user can; deferred minors in §7.
@@ -146,14 +149,14 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 ## 8. Resume & verify
 
 ```bash
-cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # feature/invite-system; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
-git log --oneline -3                          # 3715147 demo docs, 669162c T5 INVITE screen, 62dc7d4 T4 landing
-gh pr list --state open                       # #13 oversight→main, #12 invite→oversight — BOTH MUST STAY OPEN
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # main, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
+git log --oneline -5                          # 2669ebf merge #15, e547904 merge #14, 7f31a79 merge #12, 8076d40 merge #13
+gh pr list --state open                       # EMPTY — all four merged 2026-07-26
 cd poc/server && npx tsc --noEmit && npx vitest run   # clean, 215 passed
-cd ../client && npm test && npm run build             # 84 passed, clean build
+cd ../client && npm test && npm run build             # 116 passed, clean build
 lsof -ti:3001                                 # expect EMPTY unless a demo stack is up — see §6
 ```
 
 To re-run the invite demo: build the client (`cd poc/client && npm run build`), then `cd poc/server && REQUIRE_INVITE=1 npx tsx src/main.ts` — **as of `4f9ea92` the env var is the supported route**; `main.ts` has no `staticDir`, so for the single-port UI demo use a `.mts` harness calling `startServer({port:3001, staticDir:<repo>/poc/client/dist, requireInvite:true})`. Full recipe in `docs/demos/2026-07-26-invite-and-oversight.md` (that doc predates the env var and still shows only the harness route — worth updating). **A harness must be `.mts` or live inside `poc/server/`**; a stray `.ts` outside the package is transformed as CJS and top-level `await` fails.
 
-Resume at §1: all three branches are done and review-clean, all three PRs are open (#13 → main, #12 → #13, #14 → #12). WAIT for the user's review — do not merge. Then answer the claude-code / codex piggyback question, which needs both repos actually read first.
+Resume at §4: everything is merged to main and main is verified green. Nothing to review, nothing to merge. Confirm the model-picker fix with the user, then the `PreToolUse` gate spike (§7) is the next real piece of work.
