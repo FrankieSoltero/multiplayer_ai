@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { sessionStateLabel, sessionStateClass } from "./sessionState";
+import { sessionStateLabel, sessionStateClass, type SessionStateFacts } from "./sessionState";
 
 const base = { presence: "online" as const, lifecycle: "open" as const, ended: false };
 
@@ -38,5 +38,63 @@ describe("sessionStateClass", () => {
     expect(sessionStateClass({ ...base, ended: true })).toBe("ended");
     expect(sessionStateClass({ ...base, presence: "offline" })).toBe("offline");
     expect(sessionStateClass({ ...base, lifecycle: "closed" })).toBe("closed");
+  });
+});
+
+/** `sessionStateLabel` and `sessionStateClass` share one internal precedence
+ *  (see `sessionState.ts`'s `degradedState`), but nothing else enforces that
+ *  they stay in agreement — a future edit to one without the other would only
+ *  be caught here. One shared fixture table drives both functions so a label
+ *  and a class are always asserted together, from the same expected state. */
+describe("sessionStateLabel and sessionStateClass agree", () => {
+  const cases: { desc: string; facts: SessionStateFacts; label: string | null; cls: string }[] = [
+    { desc: "healthy live session", facts: base, label: null, cls: "" },
+    {
+      desc: "dead agent, reachable machine",
+      facts: { ...base, ended: true },
+      label: "agent stopped",
+      cls: "ended",
+    },
+    {
+      desc: "unreachable machine, agent last seen alive",
+      facts: { ...base, presence: "offline", ended: false },
+      label: "offline",
+      cls: "offline",
+    },
+    {
+      desc: "unreachable machine, agent last seen dead",
+      facts: { ...base, presence: "offline", ended: true },
+      label: "offline",
+      cls: "offline",
+    },
+    {
+      desc: "deliberately closed, everything else degraded too",
+      facts: { presence: "offline", lifecycle: "closed", ended: true },
+      label: "closed",
+      cls: "closed",
+    },
+    {
+      desc: "older server, no presence/lifecycle, agent alive",
+      facts: { ended: false },
+      label: null,
+      cls: "",
+    },
+    {
+      desc: "older server, no presence/lifecycle, agent dead",
+      facts: { ended: true },
+      label: "agent stopped",
+      cls: "ended",
+    },
+  ];
+
+  test.each(cases)("$desc", ({ facts, label, cls }) => {
+    expect(sessionStateLabel(facts)).toBe(label);
+    expect(sessionStateClass(facts)).toBe(cls);
+  });
+
+  test("a non-null label always accompanies a non-empty class, and vice versa", () => {
+    for (const { facts } of cases) {
+      expect(sessionStateLabel(facts) !== null).toBe(sessionStateClass(facts) !== "");
+    }
   });
 });
