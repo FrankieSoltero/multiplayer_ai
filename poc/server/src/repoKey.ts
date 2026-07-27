@@ -15,6 +15,14 @@ export function normalizeRemote(raw: string): string | null {
   const url = raw.trim();
   if (url.length === 0) return null;
 
+  // Windows-style paths use backslashes; no legitimate scp-like or scheme
+  // remote URL ever contains one. A bare backslash anywhere is therefore a
+  // reliable signal that this is a local filesystem path (e.g. a UNC share
+  // "\\server\share\repo" or "C:\repos\api"), not a remote — reject rather
+  // than let the scp-like pattern below misparse it into a false key that
+  // also leaks the path unhashed.
+  if (url.includes("\\")) return null;
+
   let host: string;
   let rest: string;
   const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.exec(url);
@@ -34,9 +42,22 @@ export function normalizeRemote(raw: string): string | null {
     if (!scp) return null;
     host = scp[1];
     rest = scp[2];
+    // A single-character host is a Windows drive letter (e.g. "C:/Users/...")
+    // rather than a hostname. We deliberately do NOT require a dot in the
+    // host to reject this — "git@myserver:api.git" and "git@localhost:api.git"
+    // are legitimate bare-hostname remotes on a LAN, and a dot requirement
+    // would silently degrade those real users to a local-only key. A
+    // single-letter host has no such legitimate case, so it is safe to reject.
+    if (host.length === 1) return null;
   }
 
   host = host.replace(/:\d+$/, "").toLowerCase(); // drop port; hosts are case-insensitive
+  // A colon surviving the port-strip means the text before the path
+  // separator was never a valid "host[:port]" pair to begin with — e.g.
+  // "file://C:/Users/..." parses to host "C:" here, and no digits follow the
+  // colon so the port regex above doesn't touch it. Reject rather than emit
+  // a key built from a drive letter.
+  if (host.includes(":")) return null;
   // Paths are NOT lowercased: on a case-sensitive host, acme/API and acme/api
   // are genuinely different repos and merging them would be a false match.
   rest = rest

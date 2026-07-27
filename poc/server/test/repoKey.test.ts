@@ -35,6 +35,27 @@ describe("normalizeRemote", () => {
     expect(normalizeRemote("/Users/me/code/api")).toBeNull();
     expect(normalizeRemote("https://github.com")).toBeNull();
   });
+
+  test("rejects a Windows drive-letter path rather than emitting a false key", () => {
+    // A single-character host ("C") is a drive letter, not a hostname.
+    expect(normalizeRemote("C:/Users/alice/code/api")).toBeNull();
+  });
+
+  test("rejects any backslash path rather than emitting a false key", () => {
+    // Backslashes never appear in a legitimate remote URL, so this is
+    // treated as a local path (e.g. a UNC share) regardless of shape.
+    expect(normalizeRemote("\\\\server\\share\\repo")).toBeNull();
+  });
+
+  test("rejects file:// URLs with a Windows drive-letter host", () => {
+    expect(normalizeRemote("file://C:/Users/me/api")).toBeNull();
+  });
+
+  test("keeps a bare single-word hostname remote intact — no dot required", () => {
+    // git@myserver:api.git and git@localhost:api.git are legitimate LAN
+    // remotes; requiring a dot in the host would wrongly reject them.
+    expect(normalizeRemote("git@myserver:api.git")).toBe("myserver/api");
+  });
 });
 
 describe("localRepoKey", () => {
@@ -70,5 +91,17 @@ describe("repoKeyFor", () => {
 
   test("falls back when the remote is unrecognisable rather than guessing", () => {
     expect(repoKeyFor("not-a-url", ctx)).toBe(localRepoKey("laptop", "/src/api"));
+  });
+
+  test("falls back to the local key for a Windows drive-letter path", () => {
+    expect(repoKeyFor("C:/Users/alice/code/api", ctx)).toBe(localRepoKey("laptop", "/src/api"));
+  });
+
+  test("falls back to the local key for a backslash path", () => {
+    expect(repoKeyFor("\\\\server\\share\\repo", ctx)).toBe(localRepoKey("laptop", "/src/api"));
+  });
+
+  test("falls back to the local key for file:// with a drive-letter host", () => {
+    expect(repoKeyFor("file://C:/Users/me/api", ctx)).toBe(localRepoKey("laptop", "/src/api"));
   });
 });
