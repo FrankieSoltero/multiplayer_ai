@@ -1621,3 +1621,53 @@ All of the below were ruled under the project's standing precedence rule: **the 
 - **CRITICAL — `create_session` provisioned a worktree and spawned an agent for an unauthenticated stranger.** It sits above the `if (!ctx)` choke point, reaches a real `git worktree add` plus branch, and constructs an `AgentDriver` whose constructor eagerly spawns the SDK subprocess bound to the box API key. One WebSocket frame, no cookie, from anyone on the internet — repeatable in a loop. `peek`/`watch_project` additionally disclosed the roster of real GitHub logins and the LLM-generated oversight prose. **Spec §4.3's rationale for join-level-only gating is stale** against the client this branch shipped: `Landing.tsx` opens no socket and `InviteSignIn.tsx` sends only `peek_invite`, so `peek_invite` is the only type that must stay open. `create_session`, `peek`, `watch_project` and `set_oversight` are now gated by a shared `requireAuth`, active only when `opts.auth` is set.
 - **`next` was silently dropped when `OAUTH_CALLBACK_URL` was unset**, so spec §3.2's "the invite token survives the OAuth round trip" was quietly false for any operator who left the optional-looking variable unset. `next` now rides its own short-lived cookie, re-validated through `safeNext` on read-back.
 - **`API_BASE` deleted rather than folded into `loginUrl`.** `loginUrl` is a browser navigation that must set and read the OAuth `state` cookie on one origin, so prefixing an API origin would guarantee a mismatch; with `/auth/me` also needing same-origin (a vite `/auth` proxy was added), the constant had no valid remaining use. Keeping a must-never-use constant is the worse trap.
+
+### Task 8 — live browser results (session #10, 2026-07-27)
+
+Steps 1, 2 and 6 were already complete before this session: the OAuth app is registered, both
+packages were built, and the ops docs landed in `251abbc`. Task 8 ran against **vite dev on :5173
+with the server on :3001 behind the `/auth` proxy**, not the single-port build — the registered
+callback is `http://localhost:5173/auth/callback`, and the `state` cookie must be set and read on
+one origin. The plan's Step 1/2 text naming :3001 predates that proxy.
+
+**Confirmed by the user in a real browser, signed in with a real GitHub account:**
+
+- **Path 1 — sign-in round trip.** Landing screen at `/` while signed out, `SIGN IN WITH GITHUB`
+  → GitHub → returned signed in. `SameSite` across the redirect — spec §10's named most-likely
+  failure point — **works**. The `/auth/login` 302 sets `mpai_oauth_state` and `mpai_oauth_next`,
+  both `HttpOnly; SameSite=Lax; Max-Age=600`.
+- **Path 4 — denied screen.** With the allowlist overridden to two other logins and the user's
+  cookie still valid, reloading landed on the denied screen naming **their own login**. Denial is
+  identity-aware, not a generic signed-out bounce. (The override was passed in the shell rather than
+  edited into `.env`: Node's `--env-file` yields to an already-set variable, which makes this test
+  non-destructive and one restart to undo.)
+- **Authenticated `create_session` provisions for real** — the session created during the walk
+  produced `.mpai/worktrees/hi` on branch `mpai/hi`, off `a358a9c`.
+
+**Confirmed by driving the browser against a throwaway auth config** (server run with
+`SESSION_SECRET=testsecret GITHUB_ALLOWLIST=testuser` and a cookie minted via `signSession`, so the
+real secret and the user's GitHub login were never handled). This exercises everything downstream of
+the GitHub token exchange:
+
+- **Path 2 — the lobby name is locked.** NAME renders as static text (accessible name "verified
+  GitHub identity"), not an editable field; SPRITE and COLOR remain selectable.
+- **Path 3 — driver controls are live, and whole-branch Critical 1 is closed.** Roster reads
+  `PARTY · 1 / ■ testuser 🛞 DRIVING · you`; the prompt input is enabled with placeholder
+  "you're driving — prompt the agent, or /skill…"; `/[0-9a-f]{8}-[0-9a-f]{4}/` matches nowhere on
+  the page, so no sessionStorage UUID leaks onto the wire. This is the exact regression that
+  reverting `userId={selfId}` would reintroduce with the client suite green.
+- **Path 5 — auth off is unchanged.** With the GitHub vars unset, `?session=check&name=alice` goes
+  straight into the session, no landing screen, alice driving, prompt bar live. Demo recipes intact.
+
+**Partially verified — the one gap, recorded honestly:**
+
+- **The invite return path (Step 4).** The *mechanism* is confirmed: `/auth/login?next=…` stores the
+  full destination in its own cookie — `mpai_oauth_next=%2F%3Fsession%3Dteam%26invite%3Dabc123`,
+  `HttpOnly; SameSite=Lax; Max-Age=600` — which is exactly what whole-branch finding I4 fixed, and
+  `safeNext` re-validates it on read-back. **Not walked end to end**: minting an invite from a
+  signed-in session and completing the GitHub round trip in a private window was not performed. The
+  cookie carry is the part that was broken and is now demonstrably correct; what remains unproven is
+  only the full user journey around it.
+
+**Green at merge:** server 297/297 (15 files), client 144/144 (19 files), both `tsc --noEmit` clean,
+client build clean.
