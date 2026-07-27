@@ -3,6 +3,7 @@ import { summarizeSession } from "./digest.js";
 import type { Session } from "./session.js";
 import type { SkillInfo } from "./events.js";
 import type { PluginInfo } from "./pluginStore.js";
+import type { OversightSummary } from "./overseer.js";
 
 export const SLUG = /^[a-z0-9-]{1,40}$/;
 
@@ -11,6 +12,9 @@ export interface ProjectSessionEntry {
   driver: AgentDriver;
   skills: SkillInfo[];
   pendingSuggests: Map<string, { skill: string; args: string }>;
+  /** One-shot flag: the driver pulled the team summary; inject <oversight>
+   *  into the next prompt only (spec §5). */
+  pendingOversight: boolean;
 }
 
 /** Minimal structural type so tests don't need real sockets. */
@@ -91,12 +95,14 @@ export interface ProjectMessage {
   plugins: PluginInfo[];
   pluginsEnabled: boolean;
   repo: { defaultBranch: string } | null;
+  oversight: { enabled: boolean; latest: OversightSummary | null };
 }
 
 export function projectSnapshot(
   project: Project,
   pluginState?: { plugins: PluginInfo[]; enabled: boolean },
   repo?: { defaultBranch: string } | null,
+  oversight?: { enabled: boolean; latest: OversightSummary | null },
 ): ProjectMessage {
   const sessions = [...project.sessions.entries()].map(([id, entry]) => {
     const events = entry.session.eventsFrom(0);
@@ -121,5 +127,6 @@ export function projectSnapshot(
     plugins: pluginState?.plugins ?? [],
     pluginsEnabled: pluginState?.enabled ?? false,
     repo: repo ?? null,
+    oversight: oversight ?? { enabled: false, latest: null },
   };
 }

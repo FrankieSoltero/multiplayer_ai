@@ -1065,6 +1065,17 @@ describe("plugin plumbing and live roster", () => {
     await wait(50);
     expect(session.eventsFrom(0).some((e) => e.type === "skill_roster")).toBe(false);
   });
+
+  it("passes getOversight through to the run hooks", async () => {
+    let captured: import("../src/agentDriver.js").DriverHooks | undefined;
+    const capturingRun: RunQuery = (prompts, hooks) => {
+      captured = hooks;
+      return (async function* () {})() as ReturnType<RunQuery>;
+    };
+    const session = new Session("s1");
+    new AgentDriver(session, capturingRun, undefined, [], undefined, undefined, () => "the summary");
+    expect(captured?.getOversight?.()).toBe("the summary");
+  });
 });
 
 describe("task events (workflows)", () => {

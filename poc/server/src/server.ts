@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { AgentDriver, runAgentQuery, type RunQuery } from "./agentDriver.js";
-import { buildTeammateDigest, summarizeSession } from "./digest.js";
+import { buildTeammateDigest, oversightSessionDigest, summarizeSession } from "./digest.js";
 import { isModelKey } from "./models.js";
 import {
   Project,
@@ -16,6 +16,7 @@ import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
 import { slugify, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
+import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
 
 const MAX_PROMPT_LENGTH = 4000;
 const MAX_URL_LENGTH = 2048;
@@ -49,12 +50,21 @@ const INTERESTING = new Set([
   "plugin_change",
 ]);
 
+const OVERSEER_EVENTS = new Set([
+  "user_message",
+  "permission_request",
+  "agent_error",
+  "intent_update",
+]);
+
 export async function startServer(opts: {
   port: number;
   runQuery?: RunQuery;
   plugins?: PluginStore;
   workspace?: WorkspaceLike;
   staticDir?: string;
+  summarize?: Summarize;
+  oversightDebounceMs?: number;
 }) {
   const runQuery = opts.runQuery ?? runAgentQuery;
   const pluginStore = opts.plugins ?? new PluginStore(process.env.AGENT_PLUGINS_ROOT);
@@ -67,11 +77,36 @@ export async function startServer(opts: {
   const lastPush = new Map<Project, number>();
   const pushTimers = new Map<Project, NodeJS.Timeout>();
 
+  const overseer = new Overseer(
+    opts.summarize ?? runOversightSummarize,
+    (projectId) => {
+      const project = projects.get(projectId);
+      if (!project) return [];
+      return [...project.sessions.entries()].map(([id, entry]) => {
+        const participants = entry.session.participantList;
+        const driverId = entry.session.driverId;
+        return oversightSessionDigest(
+          id,
+          entry.session.eventsFrom(0),
+          entry.driver.isDead,
+          participants.find((p) => p.userId === driverId)?.name ?? null,
+          participants.map((p) => p.name),
+        );
+      });
+    },
+    (projectId) => {
+      const project = projects.get(projectId);
+      if (project) pushProject(project); // deliberate action / fresh summary — immediate push
+    },
+    opts.oversightDebounceMs,
+  );
+
   function snapshotFor(project: Project) {
     return projectSnapshot(
       project,
       { plugins: pluginStore.list(project.id), enabled: pluginStore.enabled },
       repo && { defaultBranch: repo.defaultBranch },
+      { enabled: overseer.isEnabled(project.id), latest: overseer.latest(project.id) },
     );
   }
 
@@ -149,15 +184,20 @@ export async function startServer(opts: {
             newEntry.skills = liveSkills;
             schedulePush(project);
           },
+          undefined,
+          () => oversightToolText(overseer.isEnabled(project.id), overseer.latest(project.id)),
         ),
         skills,
         pendingSuggests: new Map(),
+        pendingOversight: false,
       };
       entry = newEntry;
       project.sessions.set(sessionId, entry);
       session.subscribe((event) => {
         if (INTERESTING.has(event.type)) schedulePush(project);
+        if (OVERSEER_EVENTS.has(event.type)) overseer.notify(project.id);
       });
+      overseer.notify(project.id); // session created (spec §3 lifecycle)
     }
     return entry;
   }
@@ -258,7 +298,7 @@ export async function startServer(opts: {
           JSON.stringify(
             project
               ? snapshotFor(project)
-              : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: repo && { defaultBranch: repo.defaultBranch } },
+              : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: repo && { defaultBranch: repo.defaultBranch }, oversight: { enabled: false, latest: null } },
           ),
         );
         return;
@@ -274,6 +314,22 @@ export async function startServer(opts: {
         project.watchers.add(ws);
         watching = project;
         ws.send(JSON.stringify(snapshotFor(project)));
+        return;
+      }
+
+      if (msg.type === "set_oversight") {
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) {
+          return sendError("set_oversight requires a valid projectId");
+        }
+        if (typeof msg.enabled !== "boolean") {
+          return sendError("set_oversight requires enabled: true|false");
+        }
+        if (!projects.has(projectId)) {
+          return sendError(`unknown project: ${projectId}`);
+        }
+        // Anyone may toggle (spec §2) — team infrastructure, not a driver capability.
+        overseer.setEnabled(projectId, msg.enabled);
         return;
       }
 
@@ -323,11 +379,18 @@ export async function startServer(opts: {
           return sendError("you are not driving — take the wheel first");
         }
         const digest = digestFor(ctx.project, ctx.entry.session.id);
-        ctx.entry.driver.sendPrompt(
-          ctx.userId,
-          msg.text,
-          digest || undefined,
-        );
+        let contextBlock = digest || undefined;
+        if (ctx.entry.pendingOversight) {
+          // One-shot (spec §5): consumed by this prompt whether or not a
+          // summary still exists.
+          ctx.entry.pendingOversight = false;
+          const latest = overseer.latest(ctx.project.id);
+          if (latest) {
+            const block = `<oversight>\n${latest.text}\n</oversight>`;
+            contextBlock = contextBlock ? `${contextBlock}\n\n${block}` : block;
+          }
+        }
+        ctx.entry.driver.sendPrompt(ctx.userId, msg.text, contextBlock);
         return;
       }
 
@@ -448,6 +511,24 @@ export async function startServer(opts: {
         }
         const result = ctx.entry.driver.stopTask(msg.taskId, ctx.userId);
         if (!result.ok) return sendError(result.error);
+        return;
+      }
+
+      if (msg.type === "pull_oversight") {
+        if (!ctx.entry.session.canPrompt(ctx.userId)) {
+          return sendError("only the current driver can pull team updates — take the wheel first");
+        }
+        if (!overseer.isEnabled(ctx.project.id)) {
+          return sendError("team oversight is disabled");
+        }
+        const latest = overseer.latest(ctx.project.id);
+        if (!latest) return sendError("no team summary yet");
+        ctx.entry.pendingOversight = true;
+        ctx.entry.session.append({
+          type: "oversight_pull",
+          userId: ctx.userId,
+          summarySeq: latest.seq,
+        });
         return;
       }
 
@@ -573,6 +654,7 @@ export async function startServer(opts: {
     port,
     close: () =>
       new Promise<void>((resolve, reject) => {
+        overseer.dispose();
         for (const timer of pushTimers.values()) clearTimeout(timer);
         pushTimers.clear();
         for (const client of wss.clients) client.terminate();

@@ -40,6 +40,7 @@ export type LoggedEvent = {
   toolUses?: number;
   durationMs?: number;
   lastTool?: string;
+  summarySeq?: number;
 };
 
 export type ProjectSessionInfo = {
@@ -76,3 +77,8 @@ export const SERVER_URL = import.meta.env.DEV
   : `ws://${window.location.host}`;
 
 export type RepoInfo = { defaultBranch: string };
+
+export type OversightState = {
+  enabled: boolean;
+  latest: { text: string; ts: string; seq: number } | null;
+};

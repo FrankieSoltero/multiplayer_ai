@@ -1116,3 +1116,175 @@ describe("session initiation", () => {
     ws.close();
   });
 });
+
+describe("oversight wire", () => {
+  const instantSummarize = async () => "team is busy";
+
+  it("snapshots carry oversight, defaulting to disabled", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, summarize: instantSummarize, oversightDebounceMs: 10 });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(50);
+    const snap = seen.find((m) => m.type === "project");
+    expect(snap.oversight).toEqual({ enabled: false, latest: null });
+    // peek fallback for an unknown project also carries the field
+    ws.send(JSON.stringify({ type: "peek", projectId: "nosuch" }));
+    await wait(50);
+    const peeked = seen.filter((m) => m.type === "project").at(-1);
+    expect(peeked.oversight).toEqual({ enabled: false, latest: null });
+    ws.close();
+  });
+
+  it("validates set_oversight and rejects unknown projects", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, summarize: instantSummarize, oversightDebounceMs: 10 });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "set_oversight", projectId: "BAD SLUG", enabled: true }));
+    ws.send(JSON.stringify({ type: "set_oversight", projectId: "default", enabled: "yes" }));
+    ws.send(JSON.stringify({ type: "set_oversight", projectId: "ghost", enabled: true }));
+    await wait(50);
+    const errors = seen.filter((m) => m.type === "error").map((m) => m.message);
+    expect(errors).toContain("set_oversight requires a valid projectId");
+    expect(errors).toContain("set_oversight requires enabled: true|false");
+    expect(errors).toContain("unknown project: ghost");
+    ws.close();
+  });
+
+  it("enabling pushes the toggle and then the first summary to watchers", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, summarize: instantSummarize, oversightDebounceMs: 10 });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(30);
+    ws.send(JSON.stringify({ type: "set_oversight", projectId: "default", enabled: true }));
+    await wait(80);
+    const snaps = seen.filter((m) => m.type === "project");
+    expect(snaps.at(-1).oversight.enabled).toBe(true);
+    expect(snaps.at(-1).oversight.latest).toMatchObject({ text: "team is busy", seq: 1 });
+    ws.close();
+  });
+
+  it("session activity triggers a debounced refresh", async () => {
+    let calls = 0;
+    const counting = async () => `summary ${++calls}`;
+    const server = await startServer({ port: 0, runQuery: echoRun, summarize: counting, oversightDebounceMs: 30 });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
+    await wait(30);
+    ws.send(JSON.stringify({ type: "set_oversight", projectId: "default", enabled: true }));
+    await wait(50); // initial refresh (call 1)
+    ws.send(JSON.stringify({ type: "prompt", text: "do the thing" }));
+    await wait(150); // debounce 30ms then refresh (call 2)
+    expect(calls).toBeGreaterThanOrEqual(2);
+    const snaps = seen.filter((m) => m.type === "project");
+    expect(snaps.at(-1).oversight.latest.seq).toBeGreaterThanOrEqual(2);
+    ws.close();
+  });
+
+  it("pull_oversight is driver-only", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, summarize: instantSummarize, oversightDebounceMs: 10 });
+    close = server.close;
+    const ws1 = await connect(server.port);
+    collect(ws1, []);
+    ws1.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
+    await wait(30);
+    const ws2 = await connect(server.port);
+    const seen2: any[] = [];
+    collect(ws2, seen2);
+    ws2.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u2", name: "Ben" }));
+    await wait(30);
+    ws2.send(JSON.stringify({ type: "pull_oversight" }));
+    await wait(50);
+    expect(seen2.map((m) => m.message)).toContain(
+      "only the current driver can pull team updates — take the wheel first",
+    );
+    ws1.close();
+    ws2.close();
+  });
+
+  it("pull_oversight errors while disabled and before the first summary", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const held = async () => {
+      await gate;
+      return "late summary";
+    };
+    const server = await startServer({ port: 0, runQuery: echoRun, summarize: held, oversightDebounceMs: 10 });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
+    await wait(30);
+    ws.send(JSON.stringify({ type: "pull_oversight" }));
+    await wait(30);
+    expect(seen.map((m) => m.message)).toContain("team oversight is disabled");
+    ws.send(JSON.stringify({ type: "set_oversight", projectId: "default", enabled: true }));
+    await wait(20); // refresh started but held open — no summary yet
+    ws.send(JSON.stringify({ type: "pull_oversight" }));
+    await wait(30);
+    expect(seen.map((m) => m.message)).toContain("no team summary yet");
+    release();
+    ws.close();
+  });
+
+  it("a pull appends the attributed event and injects <oversight> into exactly the next prompt", async () => {
+    const promptTexts: string[] = [];
+    const recordingRun: RunQuery = async function* (prompts) {
+      for await (const p of prompts) {
+        promptTexts.push(p.message.content[0].text);
+        yield { type: "assistant", content: [{ type: "text", text: "ok" }] };
+      }
+    };
+    const server = await startServer({ port: 0, runQuery: recordingRun, summarize: instantSummarize, oversightDebounceMs: 10 });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
+    await wait(30);
+    ws.send(JSON.stringify({ type: "set_oversight", projectId: "default", enabled: true }));
+    await wait(60);
+    ws.send(JSON.stringify({ type: "pull_oversight" }));
+    await wait(50);
+    const pull = seen.find((m) => m.event?.type === "oversight_pull")?.event;
+    expect(pull).toMatchObject({ userId: "u1", summarySeq: 1 });
+    ws.send(JSON.stringify({ type: "prompt", text: "first after pull" }));
+    await wait(100);
+    ws.send(JSON.stringify({ type: "prompt", text: "second prompt" }));
+    await wait(100);
+    expect(promptTexts[0]).toContain("<oversight>\nteam is busy\n</oversight>");
+    expect(promptTexts[0]).toContain("first after pull");
+    expect(promptTexts[1]).not.toContain("<oversight>");
+    ws.close();
+  });
+
+  it("disabling clears the summary display state but keeps history honest", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, summarize: instantSummarize, oversightDebounceMs: 10 });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(30);
+    ws.send(JSON.stringify({ type: "set_oversight", projectId: "default", enabled: true }));
+    await wait(60);
+    ws.send(JSON.stringify({ type: "set_oversight", projectId: "default", enabled: false }));
+    await wait(50);
+    const last = seen.filter((m) => m.type === "project").at(-1);
+    expect(last.oversight.enabled).toBe(false);
+    // latest retained (stale-by-timestamp per spec §2), not wiped
+    expect(last.oversight.latest).toMatchObject({ text: "team is busy" });
+    ws.close();
+  });
+});

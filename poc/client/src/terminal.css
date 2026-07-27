@@ -724,3 +724,10 @@ code, pre { font-family: var(--fm); }
   border: 1px solid var(--frame); padding: 6px 8px;
   font: inherit; min-width: 0; flex: 1;
 }
+
+/* ================================================================ oversight
+   Team summary screen. Same idiom as the workflows screen. */
+.ovstate.on { color: var(--green); }
+.ovhead { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.ovhead .spacer { flex: 1; }
+.ovtext { margin-top: var(--sp-2); white-space: pre-wrap; overflow-wrap: anywhere; }

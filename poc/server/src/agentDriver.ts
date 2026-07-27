@@ -74,6 +74,9 @@ export interface DriverHooks {
   workdir?: string;
   /** Absolute paths of the project's registered plugin clones (v6c). */
   pluginPaths?: string[];
+  /** Latest team oversight summary text, or the spec §6 fallback strings.
+   *  Absent on drivers constructed without oversight wiring. */
+  getOversight?: () => string;
 }
 
 export type RunQueryResult = AsyncIterable<SdkMessage> & {
@@ -114,6 +117,15 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
               ],
             };
           }
+        },
+      ),
+      tool(
+        "team_update",
+        "Get the latest team oversight summary: what other sessions in this project are working on right now. Only call this when the driver asks you to bring in team context.",
+        {},
+        async () => {
+          const text = hooks.getOversight?.() ?? "team oversight is disabled";
+          return { content: [{ type: "text", text }] };
         },
       ),
     ],
@@ -222,6 +234,7 @@ export class AgentDriver {
     pluginPaths: string[] = [],
     private onRoster?: (skills: SkillInfo[]) => void,
     private progressThrottleMs = 2000,
+    private getOversight?: () => string,
   ) {
     this.stream = run(this.prompts, {
       onIntent: (text) =>
@@ -314,6 +327,7 @@ export class AgentDriver {
       },
       workdir,
       pluginPaths,
+      getOversight: this.getOversight,
     });
     void this.consume(this.stream);
     void this.refreshRoster();

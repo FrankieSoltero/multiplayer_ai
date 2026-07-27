@@ -39,6 +39,7 @@ export type SessionEvent =
       description?: string; subagentType?: string; workflowName?: string;
       status?: string; summary?: string; error?: string;
       tokens?: number; toolUses?: number; durationMs?: number; lastTool?: string }
-  | { type: "task_stop"; taskId: string; userId: string };
+  | { type: "task_stop"; taskId: string; userId: string }
+  | { type: "oversight_pull"; userId: string; summarySeq: number };
 
 export type LoggedEvent = SessionEvent & { seq: number; ts: string };
