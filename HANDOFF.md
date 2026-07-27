@@ -1,20 +1,37 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-26 (bg session #6d).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #7).*
 
-**STATE: ALL FOUR STACKED PRs ARE MERGED TO MAIN. Nothing is open. The stack is gone.**
+**STATE: A1a (deployment wiring) IS MERGED TO MAIN AND PUSHED. Zero open PRs. The production-readiness track has begun; A2 (GitHub OAuth) is next and needs no box, no domain, and no API key.**
 
-Merged bottom-up on the user's explicit go (this supersedes the earlier standing "leave them open to review" instruction, which is now void): **#13** oversight → main (`8076d40`), **#12** invite → main (`7f31a79`), **#14** arcade/Tetris+Doodle → main (`e547904`), **#15** arrow-nav + header-clip + model-picker fixes → main (`2669ebf`). Each was retargeted to `main` as its base landed. Main verified green after the merges: **client 116 tests + tsc + build clean, server 215 tests + tsc clean**.
+Session #7 turned "let's get this production ready" into a scoped programme. That request spans 8–10 independent subsystems, so it was split into two readings and the user chose the first:
 
-We are ON `main`, in sync with origin. No dev stack running (:3001 and :5173 both freed). Feature branches were NOT deleted — `feature/oversight-agent`, `feature/invite-system`, `feature/arcade-tetris-doodle`, `feature/arrow-nav` all still exist locally and on origin, plus the older merged ones listed in §4. Tidying them is a user call.
+- **Reading A (chosen, in progress):** ready to run in front of real users on a real box — deploy, TLS, auth. This is `docs/superpowers/specs/2026-07-25-deployment-strategy-design.md` §2/§4.
+- **Reading B (after A):** real teams unattended — persistence, reconnect, multi-tenancy, sandboxing, audit, rate limiting. That spec's §6 roadmap, unchanged.
 
-**One thing still unconfirmed by a human:** the AGENT model-picker fix (`10189f0`, in #15). A `<label>` wrapped the `<select>` with no htmlFor/id pairing, so the label forwarded a second synthesized click and the native dropdown opened then instantly closed — it looked dead. Now a `<span>` + `aria-label`, plus Enter/Space→`showPicker()` so the arrow-nav focus ring can open it. Verified structurally only (parent is `<span>`, one click event per dispatch, accessible name preserved); a native dropdown cannot be observed in headless Playwright. **Ask the user whether it works in their browser.** If not, next suspects are `.term-header select` CSS (`appearance`, custom border) and whether the click lands on the `▾` chrome.
+Reading A decomposes into five sub-projects, **built in this order: A1a → A2 → A3 → A4 → A1b.**
 
-*Earlier session headers removed — they described a stack that no longer exists. Per-feature detail remains in §0 and §4 onward.*
+| ID | Scope | Status |
+|---|---|---|
+| **A1a** | Deployment wiring, in-repo only | **DONE — merged `f33ce06`** |
+| A2 | GitHub OAuth + allowlist; per-session BYO Anthropic key | **NEXT** |
+| A3 | Pull notification ("🔐 Ana's session needs an approval — drop in") | not started |
+| A4 | Canned demo scenario reaching a permission gate | not started |
+| A1b | Deployment execution: provision, DNS, Caddy, systemd, live verify | last, blocked on hardware |
+
+**Deployment is deliberately LAST.** The original strategy put it first, reasoning that an OAuth callback needs a public HTTPS URL. That was wrong: GitHub OAuth apps accept `http://localhost` callbacks for development, so A2 needs the public URL only for *final verification*. Deploying last also means there is never a window where a public URL exists without authentication.
+
+Merged bottom-up on the user's explicit go (this supersedes the earlier standing "leave them open to review" instruction, which is now void): **#13** oversight → main (`8076d40`), **#12** invite → main (`7f31a79`), **#14** arcade/Tetris+Doodle → main (`e547904`), **#15** arrow-nav + header-clip + model-picker fixes → main (`2669ebf`). Each was retargeted to `main` as its base landed. Main verified green after those merges at **client 116 / server 215** — *historical figures for that session only; the current baselines are 120 / 227 (§0).*
+
+We are ON `main`, in sync with origin (tip `f33ce06`). No dev stack running (:3001 and :5173 both freed). Feature branches were NOT deleted — `feature/a1a-deployment-wiring` plus the older merged ones. Tidying them is a user call.
+
+**THE ONE THING THAT MUST BE FIXED BEFORE ANY REAL SESSION RUNS ON A BOX:** production sessions have **no workspace provisioning**. `poc/server/src/main.ts` never passes a `workspace` to `startServer` (pre-dates A1a), so `poc/server/src/server.ts:174-175` derives `workdir = path.join(AGENT_WORKDIR_ROOT, sessionId)` — and **nothing ever creates that directory** (`mkdir` appears only in `workspace.ts`, `cli.ts`, `pluginStore.ts`, none on this path). Worse, if `AGENT_WORKDIR_ROOT` is unset, `poc/server/src/agentDriver.ts:133` falls back to `process.cwd()`, which under the systemd unit is `/opt/multiplayer-ai/poc/server` — **the agent would edit the running deployment's own source tree.** Deliberately NOT patched with a bare `mkdir`: an empty non-git directory would look like it works while the agent operated in an empty folder; failing loudly is better. Documented in `deploy/RUNBOOK.md` §0 and §8 and spec §9. This is an A1b blocker.
+
+**Still unconfirmed by a human (carried from #6d, never answered):** the AGENT model-picker fix (`10189f0`). A `<label>` wrapped the `<select>` with no htmlFor/id pairing, so the label forwarded a second synthesized click and the native dropdown opened then instantly closed. Now a `<span>` + `aria-label`, plus Enter/Space→`showPicker()`. Verified structurally only; a native dropdown cannot be observed in headless Playwright. **Ask the user whether it works in their browser.** If not, next suspects are `.term-header select` CSS (`appearance`, custom border) and whether the click lands on the `▾` chrome.
 
 ## 0. WHERE WE ARE
 
-- **main** (origin in sync, tip `6ae2650`; feature merges `8076d40` #13 → `7f31a79` #12 → `e547904` #14 → `2669ebf` #15). Everything below is ON MAIN and verified there: session launcher + `mpai` CLI, oversight agent, invite system, arcade with Tetris + Doodle Jump, arrow-key navigation, header-clip fix, model-picker fix. **Baselines on main now: client 116 tests / server 215 tests**, both `tsc --noEmit` clean, client build clean. (Older baselines of 161/72 and 84/99 in earlier notes are superseded.)
+- **main** (origin in sync, tip `f33ce06` = merge of A1a; below it `8076d40` #13 → `7f31a79` #12 → `e547904` #14 → `2669ebf` #15). Everything below is ON MAIN and verified there: session launcher + `mpai` CLI, oversight agent, invite system, arcade with Tetris + Doodle Jump, arrow-key navigation, header-clip fix, model-picker fix, **and A1a deployment wiring**. **Baselines on main now: client 120 tests / server 227 tests**, both `tsc --noEmit` clean, client build clean. (Earlier baselines of 116/215, 161/72 and 84/99 are superseded.)
 - `mpai` is globally runnable via symlink `~/.local/bin/mpai → poc/server/bin/mpai.js` (machine setup, not in repo; npm link needs sudo here).
 - **Nothing running.** :3001 and :5173 both freed at the end of session #6d.
 - **Branches not deleted.** `feature/oversight-agent`, `feature/invite-system`, `feature/arcade-tetris-doodle`, `feature/arrow-nav` still exist locally and on origin, as do the older merged ones (`feature/v6c-plugins`, `feature/slash-autocomplete-v2`, `feature/workflows-screen`, `feature/session-launcher`). Deleting is destructive and is the user's call — do not do it unasked.
@@ -26,13 +43,15 @@ We are ON `main`, in sync with origin. No dev stack running (:3001 and :5173 bot
 
 Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 
-**STATUS: no task is in flight.** Session #6d ended at a clean boundary — all four stacked PRs merged, main verified green, working tree clean apart from the three permanently-untracked user files. Nothing was left half-done.
+**STATUS: no task is in flight.** Session #7 ended at a clean boundary — A1a merged to main and pushed, main verified green (227/120) BEFORE the push, working tree clean apart from the three permanently-untracked user files. Nothing was left half-done.
 
-**The one loose end:** the AGENT model-picker fix is merged but **not confirmed by a human** (see the header block). It is the first thing to raise with the user.
+**Next real work: A2 — GitHub OAuth + allowlist, plus per-session BYO Anthropic key.** Needs no box, no domain, no API key. Start by brainstorming it (the process skill chain is brainstorming → writing-plans → subagent-driven-development; that is what produced A1a and it worked well).
 
-**Next real work: the `PreToolUse` gate spike** (§7 has the full findings). It decides whether the claude-code piggyback strategy is viable, and every other part of that plan is downstream of the answer. Roughly a day.
+**A2 carries one unresolved design collision — see §7.** The deployment strategy spec says OAuth "replaces both the week-1 secret-URL idea and the week-2 invite-token idea", but that was written *before* the invite system was built and merged (#12). Invites now exist with project-scoped tokens, TTL and revocation. Put the question to the user before designing A2.
 
-**Do NOT re-litigate these — they are decided and shipped:** the arcade design questions (§4c), the arrow-navigation contract (§4d), and the piggyback research conclusions (§7). All were put to the user and answered.
+**Do NOT re-litigate these — they are decided:** the arcade design questions (§4c), the arrow-navigation contract (§4d), the piggyback research conclusions (§7), and everything in §3e below (the Reading A decomposition, the identity-vs-billing split, and the hosting choice).
+
+**The `PreToolUse` gate spike (§7) is now deprioritised, not cancelled.** It decides whether the claude-code piggyback strategy is viable. The user chose production-readiness over it in session #7; it remains the right next research item once Reading A lands.
 
 **PROCESS NOTES (standing):** context hook ≈40% = HARD STOP (refresh this file, tell the user to /clear, end the turn). Don't pair AskUserQuestion with long content — the dialog hides the text being approved. Subagent commits MUST use explicit `git add <paths>` (§6). SDD workspace scripts live under `~/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/`.
 
@@ -68,13 +87,26 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 
 `docs/superpowers/specs/2026-07-25-deployment-strategy-design.md` is the authority. Two-week blitz (friends beta → public launch ~Aug 6 + YC app). Identity-clean per-action approval handoff = the wedge (nobody ships it — supersedes market-research.md's outdated claim). Week-1 build items need writing-plans; pull-notification overlaps §3b, build once.
 
+## 3e. PRODUCTION-READINESS DECISIONS (session #7 — user-approved, do not re-litigate)
+
+- **Two readings, Reading A first.** "Production ready" spans 8–10 subsystems (verified against the code: zero auth, no TLS, no persistence, no CI, no deploy artifacts, no rate limiting, no reconnect, no agent isolation, one shared API key). Reading A = deploy/TLS/auth now; Reading B = persistence/multi-tenancy/sandboxing after. User chose A then B. Rationale for not doing B first: nobody has used the product yet, so hardening for unattended multi-tenant use would be building for users not yet met.
+- **Build order A1a → A2 → A3 → A4 → A1b (deploy LAST).** Localhost OAuth callbacks make deploy-first unnecessary, and deploy-last means no window where a public URL exists without auth.
+- **Identity and billing are DECOUPLED — this is load-bearing.** Identity comes from GitHub OAuth; compute is billed **per session**, not per person. Why per-session: one session runs ONE agent process, so one key. If a passenger's approval had to bill to them, the agent would need a restart with a different environment — killing the context and breaking the headline claim "the agent never stopped."
+- **Credentials as identity was proposed and REJECTED.** An API key is an opaque bearer with no name, so it cannot support "every decision on the wire carries the name of the human who made it" — the wedge. It also reproduces the villain of our own positioning (Cursor's credential confusion), collapses shared-team-key users into one identity, orphans history on rotation, and storing N users' keys on an assume-breach box makes it the highest-value target there. **But the instinct behind it was right and is satisfied:** there is no user database and none is being built (spec: "Sign in with GitHub, not an account system").
+- **BYO key is mechanically available — verified, not assumed.** SDK `Options.env` (`sdk.d.ts:1416-1432`) sets the agent subprocess environment per query, but **REPLACES the environment entirely**, so it needs `{...process.env, ANTHROPIC_API_KEY: sessionKey}`. `agentDriver.ts` currently passes no `env` at all, so the subprocess inherits the box key. This resolves the unknown the deployment spec flagged. A2 work item.
+- **Node serves the client; Caddy is a pure TLS reverse proxy** (not Caddy-serves-static). Why: the WS server is attached with no path restriction (`server.ts:225`), so Caddy would have to route on the `Upgrade` header — subtle and fails confusingly; `staticFiles.ts` is already written, path-contained and tested; and it preserves dev/prod parity with the single-port path the CLI already assumes.
+- **Hosting: a dedicated disposable Hetzner CX22-class box** (2 vCPU / 4 GB / 40 GB, ~€4/mo). **4 GB is the floor** — the Claude Code subprocess is itself a Node process. User is buying domain + box fresh. **Self-hosting on the user's Windows 10 PC was considered and rejected for the public surface** (agent with a known Bash two-hop escape would sit on the home LAN; residential IP exposure; CGNAT/port-blocking/dynamic-IP breaking ACME; uptime coupled to a daily-driver machine). The PC remains available as an INFORMAL rehearsal VM — explicitly not part of any spec.
+- **SSH: the user pastes commands.** No agent access to the box. Runbook is written as copy-paste blocks with expected output per step.
+- **The API key must never be pasted into chat.** It goes directly into `/etc/multiplayer-ai/env` on the box (0600, `mpai:mpai`), and must be a **capped Anthropic Console workspace key** — that cap is the spend control and kill switch. User confirmed they have no key yet and will supply one at A1b.
+
 ## 4. Ordered next steps (fresh session)
 
-1. **Verify state per §8** (one paste; expect `main` in sync, zero open PRs, 116 + 215 green).
-2. **Ask the user whether the AGENT model picker now opens** in their browser. It is merged (`10189f0`) but was only verified structurally — a native `<select>` dropdown is invisible to headless Playwright. If it still looks dead, the next suspects are `.term-header select` styling (`terminal.css:263-267` — custom border/background may be defeating the native control) and whether the click is landing on the `▾` chrome rather than the control box.
-3. **Then the `PreToolUse` gate spike (§7)** — the next real piece of work. Concretely: prove (or disprove) that per-action approval can ride a `PreToolUse` hook inside a Claude Code process we do NOT host, with the same fidelity `canUseTool` gives us today in `poc/server/src/permissions.ts`. The live `[CLAUDE_SDK_CAN_USE_TOOL_SHADOWED]` warning in §7 is the evidence this is a real gap, not a hypothetical.
-4. Optional, user's call only: run the oversight demo (never done live — §0), delete the merged branches (§0), decide on `tour-skill-suggest.png` (§7).
-5. Roadmap after that: v6b (interrupt rail / fleet, banked §3b) or deployment week-1 build items (§3d) — user picks.
+1. **Verify state per §8** (one paste; expect `main` in sync at `f33ce06`, zero open PRs, 227 + 120 green).
+2. **Put the invite-vs-OAuth collision to the user** (§7, first bullet) — it shapes A2's design and must be answered before brainstorming it.
+3. **Brainstorm and build A2: GitHub OAuth + allowlist + per-session BYO key.** Use the chain that produced A1a: `superpowers:brainstorming` → `superpowers:writing-plans` → `superpowers:subagent-driven-development`. Scope from `docs/superpowers/specs/2026-07-25-deployment-strategy-design.md` §4: authorization-code flow (`/auth/login`, `/auth/callback`, signed session cookie), WS join validates the cookie, `userId` on the wire becomes the verified GitHub login, allowlist = flat list of usernames. Out of scope there: email/password, user database, roles, org management. Plus the BYO-key item from §3e. Register a GitHub OAuth app with an `http://localhost:3001/auth/callback` callback — no public URL needed.
+4. Then A3 (pull notification — note it overlaps the v6b interrupt rail §3b and the spec says build it once), then A4 (canned demo scenario).
+5. **A1b last, and it is blocked on the user**: needs the box, the domain with a live A record, and the API key. **A1b cannot be declared done until the §0 workspace-provisioning blocker is fixed** — that is a code change, not a deploy step.
+6. Optional, user's call only: run the oversight demo (never done live — §0), confirm the model picker (§0), delete merged branches (§0), decide on `tour-skill-suggest.png` (§7).
 
 ## 4b. Invite system — files with line refs (MERGED to main via #12)
 
@@ -123,6 +155,20 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 - **Tests:** `poc/client/src/arrowNav.test.ts` (17 — row grouping, wrap/clamp arithmetic, per-axis guard). The hook itself is a thin DOM binding with no component-test infra, so it was verified by driving the browser.
 - **Spec:** `docs/superpowers/specs/2026-07-26-arrow-navigation-design.md` (§5 records the select amendment rather than quietly rewriting it).
 
+## 4e. A1a DEPLOYMENT WIRING — files with line refs (MERGED to main via `f33ce06`)
+
+Spec `docs/superpowers/specs/2026-07-27-a1a-deployment-wiring-design.md`, plan `docs/superpowers/plans/2026-07-27-a1a-deployment-wiring.md`. Branch `feature/a1a-deployment-wiring` (8 commits, not deleted).
+
+- **Client scheme derivation** — `poc/client/src/socketUrl.ts:10` (`socketUrlFor(protocol, host)`; `protocol` carries its trailing colon, `host` includes the port); wired at `poc/client/src/types.ts:1` (import) and `:90-92` (`SERVER_URL` delegates; the `import.meta.env.DEV` short-circuit stays, and is what keeps `window` untouched under vitest). **Why derived, not hardcoded to `wss:`** — hardcoding would break the plain-HTTP single-port path the demo recipes and `mpai` CLI use. Tests `poc/client/src/socketUrl.test.ts` (4).
+- **`/healthz` + composed request handler** — `poc/server/src/server.ts:223` (`serveStatic` may be null), `:231` (`decodeURIComponent` inside the existing try/catch, mirroring `staticFiles.ts:31-38`), `:243` (matches `/healthz` and `/healthz/`), `:257` (404 now carries `text/plain; charset=utf-8`). **Ordering is load-bearing:** `staticHandler`'s SPA fallback (`staticFiles.ts:51-53`) serves `index.html` for ANY extensionless path, so a health route wired after it returns HTML with a 200 — a probe that passes forever while the app is broken. The guarding test asserts the BODY, not the status. Composing also fixed a latent bug: with no `staticDir`, `createServer` previously got `undefined`, so plain HTTP requests hung until socket timeout; now they 404.
+- **Bind host** — `poc/server/src/server.ts:63` (`host?: string`, optional so the pre-existing tests are untouched) and `:793` (`listen(opts.port, opts.host)`). Loopback binding is what makes the app port unreachable except through Caddy.
+- **Fail-fast production config** — `poc/server/src/config.ts:12` (`validateProductionConfig(env, hasIndexHtml)`; the fs probe is INJECTED so the function is pure and testable without `process.exit`), `:16` (production mode is signalled by `CLIENT_DIST` and nothing else), `:22` and `:28` (the two fatal messages). Wired at `poc/server/src/main.ts:6-11` (exit 1), `:16` (dev keeps the old advisory warning), `:35` (`HOST` defaults `127.0.0.1`), `:44` (`staticDir`), `:50-51` (honest startup log). Tests `poc/server/test/config.test.ts` (5).
+- **Build** — `poc/server/tsconfig.build.json` + `build` script in `poc/server/package.json`. **`rootDir: "src"` is REQUIRED** — without it tsc 7.0.2 fails TS5011 and, when forced, emits to `dist/src/main.js`, breaking both `node dist/main.js` and the systemd `ExecStart`. (The plan and spec originally omitted it; both were corrected.) `bin/mpai.js` still uses `tsx` — that is the local CLI, out of scope.
+- **Ops artifacts, all marked NOT YET VERIFIED** — `deploy/Caddyfile` (`X-Frame-Options DENY` is not boilerplate: the core interaction is a human clicking "approve" on a privileged action, so the UI is clickjackable without it), `deploy/multiplayer-ai.service` (**deliberately omits `ProtectSystem=strict` and `ProtectHome=yes`** — they break the agent, which writes worktrees, clones plugins and needs `~/.claude`; the file says plainly that the remaining hardening is close to theatre), `deploy/env.example`, `deploy/RUNBOOK.md`.
+- **Tests** — `poc/server/test/httpSurface.test.ts` (7: healthz body-not-HTML with a staticDir configured, no-staticDir, 405, 404, `/healthz/`, percent-encoded, host binding).
+
+**Verified live in a real browser** (not just unit tests): the built bundle loaded through the production single-port path, joined over `ws://`, and two participants appeared in one session (`PARTY · 2`, alice driving, ben with TAKE THE WHEEL). Loopback bind confirmed `127.0.0.1:3001`, not `*:3001`. Fail-fast confirmed unprompted — the first launch attempt exited with `config error: ANTHROPIC_API_KEY is required when CLIENT_DIST is set`.
+
 ## 5. Oversight — files with line refs (MERGED to main via #13; never demoed live)
 
 - **Server:** `poc/server/src/digest.ts:49-100` (oversightSessionDigest — structured digest, no transcript prose); `poc/server/src/overseer.ts` (whole file: Overseer class w/ disposed flag + schedule-once debounce + in-flight coalesce, oversightToolText w/ exact fallback strings :25-26, runOversightSummarize haiku one-shot :159-165); `poc/server/src/events.ts:43` (oversight_pull w/ summarySeq); `poc/server/src/project.ts:17` (pendingOversight), `:98,130` (ProjectMessage.oversight); `poc/server/src/server.ts:97-102` (onUpdate → immediate pushProject), `:320-333` (set_oversight, anyone), `:517-533` (pull_oversight, driver-gated), `:383-392` (one-shot `<oversight>` injection — flag consumed before latest check); `poc/server/src/agentDriver.ts:117-130` (team_update tool, NOT in allowedTools :140-145 → driver gate).
@@ -139,6 +185,8 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 - Demo relaunch details (worktree FIRST or misleading "native binary failed to launch"; session id must match a demo-worktree dir; existing worktrees incl. v6c-accept-1/2): unchanged from before. Client URLs `http://localhost:5173/?session=v6c-accept-1|2`. Plugin clone persists at `poc/demo-plugins/default/soltero-skills` (26 skills).
 - Server tests live in `poc/server/test/*.test.ts` (NOT src/); client tests co-located in `poc/client/src/`. PromptBar submits via input keydown Enter (no form); no component-test infra — pure-function extraction is the pattern; ThinkingStrip guard: blur inputs in synthetic tests.
 - Known accepted quirks: double-M duplicate mode events (idempotent); plan-approve exits AUTO; S from `?screen=status` jumps to skills. `docs/` lowercase. `.superpowers/` git-excluded. Subagent sandbox can't launch the SDK binary.
+- **Production mode is signalled by `CLIENT_DIST` alone.** Running `node dist/main.js` with `CLIENT_DIST` set but no `ANTHROPIC_API_KEY` exits 1 with `config error: …`. That is CORRECT behaviour, not a bug — do not "fix" it. **There is no API key on this machine** (no `poc/server/.env`, no shell var, no `~/.claude/.credentials.json`), so anything requiring a live agent turn cannot be verified locally until the user supplies one.
+- **A gitignore pattern with a trailing slash is directory-only, so `git check-ignore` reports NO MATCH for a path that does not exist yet.** This bit an implementer in session #7: they ran `git check-ignore poc/server/dist` *before* building, got nothing, concluded the root `dist/` pattern "doesn't match nested paths," and edited the shared root `.gitignore`. It does match — once the directory exists. **Always build first, then check-ignore.** The stray edit was caught in review and reverted.
 - **A `<label>` must never wrap a form control here.** It forwards a second synthesized click, which for a `<select>` opens and instantly closes the dropdown — the control looks dead with no error anywhere. Cost real debugging time on the AGENT picker. Use a `<span>` + `aria-label`.
 - **Playwright `browser_evaluate` gotchas, both of which produced wrong conclusions this session:** (1) React has not re-rendered inside a single synchronous evaluate, so dispatch-then-read-the-DOM in one turn reads STALE markup — use an `async` function and `await` a timeout between the dispatch and the read; (2) the MCP tab silently drifts to `about:blank` between calls, so re-navigate and confirm `Page URL` before trusting any measurement.
 - **Screenshots from `browser_take_screenshot` land in the REPO ROOT**, not `.playwright-mcp/`, despite what the tool result path implies. `rm` them before committing or they show up as untracked junk.
@@ -154,6 +202,9 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 
 ## 7. Open questions / USER DECISIONS (carried)
 
+- **A2 BLOCKER — invites vs OAuth. Ask the user before designing A2.** `docs/superpowers/specs/2026-07-25-deployment-strategy-design.md` §4 says GitHub OAuth "replaces both the week-1 secret-URL idea and the week-2 invite-token idea." That was written **before** the invite system was built and merged (#12), which now ships project-scoped tokens, TTL, revocation, an admitted-set and a `REQUIRE_INVITE` operator switch. So: do invites remain the in-session seat mechanic with OAuth as the door to the server, or does OAuth subsume them entirely? Both are defensible; the spec predates the code and cannot decide it.
+- **A1b unverified surface — the risk lives in the Caddyfile, not the client.** The `wss://` client fix is covered by unit tests AND was exercised for real in a browser (the built bundle ran `socketUrlFor` with `import.meta.env.DEV` false; only the `http:` branch was hit, and the `https:` branch differs solely in which of two string literals a ternary returns). What remains genuinely unproven: WebSocket **upgrade passthrough through Caddy**, `encode gzip` interaction with the WS handshake, and proxy timeouts on a long-lived socket. Spec §6.2 formally reassigns the `tls internal` rehearsal and the real-permission-gate run to A1b rather than leaving them as unmet A1a criteria.
+- **A1b hard blocker — workspace provisioning (see §0).** Not a deploy step; a code change. Must land before any real session runs on a box.
 - **claude-code / codex piggyback — RESEARCHED 2026-07-26, answered in conversation, never written to a doc. Findings, so they are not re-derived:** `anthropics/claude-code` LICENSE.md is *"© Anthropic PBC. All rights reserved. Use is subject to Anthropic's Commercial Terms of Service"* — proprietary, **not forkable** — and the CLI source is not in that repo anyway (it is plugins/examples/docs/issues; the binary ships via installers). `openai/codex` is **Apache-2.0 with full Rust source** (`codex-rs`, plus an `sdk/`), so forking it is legal with notice/attribution/trademark conditions. Conclusion reached: forking Codex buys a single-player terminal UI, which is the wrong half — our differentiator is the relay server (shared sessions, driver/passenger, per-action gating, awareness), so **the server is the product and clients are distribution**. The sanctioned Claude Code piggyback is its extension surface (plugins/skills/MCP/hooks/subagents + the Agent SDK), which `poc/server` already uses. **The blocking unknown, and the recommended next spike:** per-action approval is our stated wedge but relies on `canUseTool`, which we only own because we host the SDK process — inside someone else's Claude Code it would have to ride a `PreToolUse` hook instead. Live evidence this is real: the server logged `[CLAUDE_SDK_CAN_USE_TOOL_SHADOWED]` warning that `canUseTool` is not invoked for `Read`/`Glob`/`Grep`/`mcp__awareness__set_intent` because bare `allowedTools` entries auto-approve first, explicitly recommending a PreToolUse hook. Do that spike before committing to the strategy. Caveat: the full Anthropic Commercial ToS was not read, only LICENSE.md.
 - **Model-picker fix unconfirmed by a human** — merged (`10189f0`) but only structurally verified. Top of §4 next steps. This is the single most likely thing to still be broken.
 - **Arrow-navigation deferred items (none block anything):** `↑` in an empty prompt moves focus instead of recalling the last prompt — if shell-style prompt history is ever wanted it needs its own precedence rule (recall first, navigate once history is exhausted), recorded in the arrow-nav spec §7; type-to-focus was rejected for v1 because the single-letter screen hotkeys (S/W/O/I/A/M/G) would collide; the transcript body is not focusable so arrows cannot scroll it, only its permission buttons participate; `useArrowNav` recomputes every rect on each keypress (~30 elements, sub-ms, but it is O(n) per press); `showPicker()` is feature-detected and simply does nothing on browsers without it.
@@ -169,13 +220,26 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # main, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
-git log --oneline -6                          # HEAD is a docs commit; below it: 2669ebf merge #15, e547904 #14, 7f31a79 #12, 8076d40 #13
-gh pr list --state open                       # EMPTY — all four merged 2026-07-26
-cd poc/server && npx tsc --noEmit && npx vitest run   # tsc clean, 215 passed (~14s)
-cd ../client && npx tsc --noEmit && npm test && npm run build   # tsc clean, 116 passed, build clean
+git log --oneline -3                          # f33ce06 Merge A1a: deployment wiring
+gh pr list --state open                       # EMPTY — zero open PRs
+cd poc/server && npx tsc --noEmit && npx vitest run   # tsc clean, 227 passed (~14s)
+cd ../client && npx tsc --noEmit && npm test && npm run build   # tsc clean, 120 passed, build clean
 lsof -ti:3001; lsof -ti:5173                  # both EMPTY unless you started a stack — see §6 for how
+```
+
+**To exercise the A1a production path locally** (proves the single-port build, `/healthz` ordering and the loopback bind without a box). The placeholder key gets past the fail-fast gate; it is fine for the HTTP surface but **the agent will not run** — a real key is needed for any agent turn:
+
+```bash
+cd poc/client && npm run build && cd ../server && npm run build
+CLIENT_DIST=$(cd ../client/dist && pwd) HOST=127.0.0.1 PORT=3001 \
+  ANTHROPIC_API_KEY=placeholder-not-a-real-key node dist/main.js &
+curl -sS http://127.0.0.1:3001/healthz        # {"status":"ok"}  <- MUST be JSON, not the HTML page
+curl -sS -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:3001/healthz   # 405
+lsof -nP -iTCP:3001 -sTCP:LISTEN              # must show 127.0.0.1:3001, NOT *:3001
+# browser: http://127.0.0.1:3001/?session=check&name=alice   (second tab &name=ben -> PARTY · 2)
+kill $(lsof -ti:3001)
 ```
 
 To re-run the invite demo: build the client (`cd poc/client && npm run build`), then `cd poc/server && REQUIRE_INVITE=1 npx tsx src/main.ts` — **as of `4f9ea92` the env var is the supported route**; `main.ts` has no `staticDir`, so for the single-port UI demo use a `.mts` harness calling `startServer({port:3001, staticDir:<repo>/poc/client/dist, requireInvite:true})`. Full recipe in `docs/demos/2026-07-26-invite-and-oversight.md` (that doc predates the env var and still shows only the harness route — worth updating). **A harness must be `.mts` or live inside `poc/server/`**; a stray `.ts` outside the package is transformed as CJS and top-level `await` fails.
 
-Resume at §4: everything is merged to main and main is verified green. Nothing to review, nothing to merge. Confirm the model-picker fix with the user, then the `PreToolUse` gate spike (§7) is the next real piece of work.
+Resume at §4: A1a is merged to main and main is verified green (227 server / 120 client). Nothing to review, nothing to merge. **Next: put the invite-vs-OAuth question (§7) to the user, then brainstorm and build A2.** A2 needs no box, no domain and no API key, so it can start immediately.
