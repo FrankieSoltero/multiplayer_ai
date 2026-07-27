@@ -88,8 +88,9 @@ export function PartyPane(props: {
       {others.map((s) => {
         const id = hashIdentity(s.id);
         const pull = pullBySession.get(s.id);
-        const stateClass = sessionStateClass(s);
-        const stateLabel = sessionStateLabel(s);
+        const facts = { ...s, participantCount: s.participants.length };
+        const stateClass = sessionStateClass(facts);
+        const stateLabel = sessionStateLabel(facts);
         return (
           <a
             key={s.id}
