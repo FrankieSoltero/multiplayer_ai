@@ -230,6 +230,20 @@ export async function startServer(opts: {
     return buildTeammateDigest(others);
   }
 
+  // Single seam for the closed-session guard shared by prompt / suggest_skill
+  // / decide_skill / close_session. `permission` and `decide_plan` deliberately
+  // do NOT call this — they resolve requests already in flight, and guarding
+  // them would strand a live agent on a promise nobody can resolve.
+  //
+  // Performance note (not fixed here): `eventsFrom(0)` is `this.log.slice(0)`,
+  // so every call still copies the full event log before scanning it — same
+  // cost as before extraction, just paid in one place instead of four. This
+  // is the seam to change if that cost is ever worth removing (e.g. caching
+  // lifecycle state on the entry when `session_closed` is appended).
+  function isClosed(entry: ProjectSessionEntry): boolean {
+    return lifecycleOf(entry.session.eventsFrom(0)) === "closed";
+  }
+
   // Registered unconditionally so /auth/me can report {enabled:false} rather
   // than falling through to the SPA fallback (spec §4.2).
   const handleAuth = authRoutes(opts.auth);
@@ -529,7 +543,7 @@ export async function startServer(opts: {
       if (!ctx) return sendError("join a session first");
 
       if (msg.type === "prompt") {
-        if (lifecycleOf(ctx.entry.session.eventsFrom(0)) === "closed") {
+        if (isClosed(ctx.entry)) {
           return sendError("this session has been closed");
         }
         if (typeof msg.text !== "string" || msg.text.length === 0) {
@@ -567,7 +581,7 @@ export async function startServer(opts: {
         // matching the standing no-owner-role precedent and the task_stop /
         // oversight_pull posture of attributing rather than restricting
         // (spec §3.4). Hub-wide close by the host is v7b.
-        if (lifecycleOf(ctx.entry.session.eventsFrom(0)) === "closed") {
+        if (isClosed(ctx.entry)) {
           return sendError("session already closed");
         }
         ctx.entry.session.append({ type: "session_closed", userId: ctx.userId });
@@ -608,7 +622,7 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "suggest_skill") {
-        if (lifecycleOf(ctx.entry.session.eventsFrom(0)) === "closed") {
+        if (isClosed(ctx.entry)) {
           return sendError("this session has been closed");
         }
         if (typeof msg.skill !== "string") {
@@ -643,7 +657,7 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "decide_skill") {
-        if (lifecycleOf(ctx.entry.session.eventsFrom(0)) === "closed") {
+        if (isClosed(ctx.entry)) {
           return sendError("this session has been closed");
         }
         if (

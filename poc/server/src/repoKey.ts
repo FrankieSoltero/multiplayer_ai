@@ -29,13 +29,22 @@ export function normalizeRemote(raw: string): string | null {
   if (scheme) {
     // Scheme form: https://, ssh://, git://. Must be checked BEFORE the
     // scp-like branch, whose pattern would otherwise read "https" as a host.
-    let after = url.slice(scheme[0].length);
-    const at = after.lastIndexOf("@"); // strip user:password@
-    if (at !== -1) after = after.slice(at + 1);
+    const after = url.slice(scheme[0].length);
     const slash = after.indexOf("/");
     if (slash === -1) return null; // a host with no path is not a repo
-    host = after.slice(0, slash);
+    // Userinfo stripping is bounded to the authority (everything before the
+    // first "/"), NOT the whole remainder. A `lastIndexOf("@")` over the full
+    // string would read past the authority into the path — e.g.
+    // "https://github.com/acme/a@b/c.git" has no userinfo at all, but an
+    // unbounded scan reads its LAST "@" from inside the path and fabricates
+    // host "b", path "c" (a wrong match, not a fail-safe null). Bounding to
+    // the authority still finds a real "user:password@" prefix (there is
+    // never a "/" inside one), so credential stripping is unaffected.
+    let authority = after.slice(0, slash);
     rest = after.slice(slash + 1);
+    const at = authority.lastIndexOf("@"); // strip user:password@
+    if (at !== -1) authority = authority.slice(at + 1);
+    host = authority;
   } else {
     // scp-like form: [user@]host:path — git's default for SSH remotes.
     const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(url);
@@ -61,6 +70,11 @@ export function normalizeRemote(raw: string): string | null {
   // Paths are NOT lowercased: on a case-sensitive host, acme/API and acme/api
   // are genuinely different repos and merging them would be a false match.
   rest = rest
+    // Collapse internal duplicate slashes first: git clones
+    // "github.com//acme//api.git" fine, but left uncollapsed it would key
+    // differently from the same repo cloned with a normal single-slash
+    // remote, silently failing the "same repo, one key" property.
+    .replace(/\/{2,}/g, "/")
     .replace(/^\/+/, "")
     .replace(/\/+$/, "")
     .replace(/\.git$/i, "");

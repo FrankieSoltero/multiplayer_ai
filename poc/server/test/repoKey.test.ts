@@ -56,6 +56,27 @@ describe("normalizeRemote", () => {
     // remotes; requiring a dot in the host would wrongly reject them.
     expect(normalizeRemote("git@myserver:api.git")).toBe("myserver/api");
   });
+
+  test("an '@' in the path does not fabricate a host/path pair", () => {
+    // Regression for a lastIndexOf("@") that scanned the whole remainder
+    // instead of just the authority: it used to read the LAST "@" — the one
+    // inside the path — and split there, producing host "b" path "c" for a
+    // remote that has no userinfo at all.
+    expect(normalizeRemote("https://github.com/acme/a@b/c.git")).toBe("github.com/acme/a@b/c");
+  });
+
+  test("a password containing '@' is still stripped", () => {
+    // The bounded scan must still find a real userinfo separator — there is
+    // never a "/" inside userinfo, so the authority-bounded lastIndexOf
+    // still lands on the right "@" even when the password itself has one.
+    expect(normalizeRemote("https://user:pa@ss@github.com/acme/api.git")).toBe(
+      "github.com/acme/api",
+    );
+  });
+
+  test("collapses internal duplicate slashes so the same repo keys identically", () => {
+    expect(normalizeRemote("https://github.com//acme//api.git")).toBe("github.com/acme/api");
+  });
 });
 
 describe("localRepoKey", () => {
