@@ -65,6 +65,10 @@ export type ProjectSessionInfo = {
   intent: string | null;
   lastActivityTs: string | null;
   ended: boolean;
+  /** The oldest permission request nobody has answered, or null. Mirrors the
+   *  server's ProjectMessage. Optional so a snapshot from an older server does
+   *  not break the client. */
+  pendingGate?: { toolName: string; sinceTs: string } | null;
   skills?: { name: string; description: string }[];
 };
 
