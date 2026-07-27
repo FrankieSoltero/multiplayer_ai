@@ -91,6 +91,10 @@ export const SERVER_URL = import.meta.env.DEV
   ? "ws://localhost:3001"
   : socketUrlFor(window.location.protocol, window.location.host);
 
+/** HTTP origin for /auth/* calls. Mirrors SERVER_URL: in vite dev the server
+ *  is separate; in a built bundle the page is served BY the server. */
+export const API_BASE = import.meta.env.DEV ? "http://localhost:3001" : "";
+
 export type RepoInfo = { defaultBranch: string };
 
 export type OversightState = {
