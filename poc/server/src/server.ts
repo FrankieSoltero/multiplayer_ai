@@ -18,6 +18,7 @@ import { slugify, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
 import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
 import { InviteStore } from "./invites.js";
+import { authRoutes, type AuthConfig } from "./auth.js";
 
 const MAX_PROMPT_LENGTH = 4000;
 const MAX_URL_LENGTH = 2048;
@@ -70,6 +71,7 @@ export async function startServer(opts: {
   requireInvite?: boolean;
   inviteTtlMs?: number;
   inviteMaxUses?: number;
+  auth?: AuthConfig;
 }) {
   const runQuery = opts.runQuery ?? runAgentQuery;
   const pluginStore = opts.plugins ?? new PluginStore(process.env.AGENT_PLUGINS_ROOT);
@@ -220,6 +222,9 @@ export async function startServer(opts: {
     return buildTeammateDigest(others);
   }
 
+  // Registered unconditionally so /auth/me can report {enabled:false} rather
+  // than falling through to the SPA fallback (spec §4.2).
+  const handleAuth = authRoutes(opts.auth);
   const serveStatic = opts.staticDir ? staticHandler(opts.staticDir) : null;
   const httpServer = createServer((req, res) => {
     let pathname: string;
@@ -250,6 +255,9 @@ export async function startServer(opts: {
       res.end(req.method === "HEAD" ? undefined : JSON.stringify({ status: "ok" }));
       return;
     }
+    // Between healthz and static, for the same ordering reason: the SPA
+    // fallback would otherwise swallow every /auth/* path.
+    if (handleAuth(req, res)) return;
     if (serveStatic) {
       serveStatic(req, res);
       return;

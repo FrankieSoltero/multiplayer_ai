@@ -96,3 +96,44 @@ describe("host binding", () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe("/auth routes", () => {
+  it("/auth/me returns JSON, not the SPA fallback HTML", async () => {
+    // staticDir IS configured — the exact case the ordering bug hides in.
+    const srv = await startServer({ port: 0, staticDir: fakeDist() });
+    stop = srv.close;
+
+    const res = await fetch(`http://127.0.0.1:${srv.port}/auth/me`);
+
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ enabled: false });
+  });
+
+  it("reports enabled and 401 when auth is configured but signed out", async () => {
+    const srv = await startServer({
+      port: 0,
+      staticDir: fakeDist(),
+      auth: {
+        clientId: "cid",
+        clientSecret: "csecret",
+        sessionSecret: "s",
+        allowlist: "ana",
+      },
+    });
+    stop = srv.close;
+
+    const res = await fetch(`http://127.0.0.1:${srv.port}/auth/me`);
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ enabled: true });
+  });
+
+  it("still serves the SPA for non-auth paths", async () => {
+    const srv = await startServer({ port: 0, staticDir: fakeDist() });
+    stop = srv.close;
+
+    const res = await fetch(`http://127.0.0.1:${srv.port}/some/app/route`);
+
+    expect(await res.text()).toContain("SPA FALLBACK");
+  });
+});
