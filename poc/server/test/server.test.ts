@@ -349,6 +349,78 @@ describe("project awareness", () => {
   });
 });
 
+describe("pending gate on the project snapshot", () => {
+  // Asks for permission and then waits: the request stays unanswered unless a
+  // test explicitly decides it.
+  const bashAskRun: RunQuery = async function* (prompts, hooks) {
+    for await (const prompt of prompts) {
+      const decision = await hooks.onPermissionRequest("Bash", { command: "npm run build" });
+      yield { type: "assistant", content: [{ type: "text", text: `bash: ${decision}` }] };
+    }
+  };
+
+  /** The most recent project snapshot this socket has been pushed. */
+  const lastProject = (seen: any[]) =>
+    [...seen].reverse().find((m) => m.type === "project");
+
+  it("reports a gate that nobody has answered", async () => {
+    const server = await startServer({ port: 0, runQuery: bashAskRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    wsAna.send(JSON.stringify({ type: "prompt", text: "build it" }));
+    await wait(200);
+
+    // Ben watches the project from a different session in it.
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ben", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    const entry = lastProject(seenBen)?.sessions.find((s: any) => s.id === "ana");
+    expect(entry.pendingGate).toEqual({ toolName: "Bash", sinceTs: expect.any(String) });
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("clears the gate once the driver decides", async () => {
+    const server = await startServer({ port: 0, runQuery: bashAskRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ana", userId: "u1", name: "Ana" }));
+    wsAna.send(JSON.stringify({ type: "prompt", text: "build it" }));
+    await wait(200);
+
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "ben", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    const req = seenAna.map((m) => m.event).find((e) => e?.type === "permission_request");
+    wsAna.send(JSON.stringify({ type: "permission", requestId: req.requestId, decision: "allow" }));
+    // permission_decision is in INTERESTING, but schedulePush throttles project
+    // snapshots to PROJECT_PUSH_INTERVAL_MS (1000ms) with a trailing push — so
+    // the cleared gate arrives on the next push, not immediately. A shorter wait
+    // reads the pre-decision snapshot and fails misleadingly.
+    await wait(1400);
+
+    const entry = lastProject(seenBen)?.sessions.find((s: any) => s.id === "ana");
+    expect(entry.pendingGate).toBeNull();
+
+    wsAna.close();
+    wsBen.close();
+  });
+});
+
 describe("driver approval gate over the wire", () => {
   const bashAskRun: RunQuery = async function* (prompts, hooks) {
     for await (const prompt of prompts) {

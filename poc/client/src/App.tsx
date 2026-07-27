@@ -28,6 +28,7 @@ import { Landing } from "./components/Landing";
 import { InviteSignIn } from "./components/InviteSignIn";
 import { Denied } from "./components/Denied";
 import { authStateFrom, type AuthState } from "./authState";
+import { pullsFrom, thresholdFromStorage, PULL_STORAGE_KEY } from "./pulls";
 import { screenFor, selfIdFor } from "./authRoute";
 
 const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
@@ -182,6 +183,40 @@ function SessionView(props: {
   });
 
   const derived = useMemo(() => deriveState(events), [events]);
+
+  const [pullThresholdMs, setPullThresholdMs] = useState<number | null>(() =>
+    thresholdFromStorage(localStorage.getItem(PULL_STORAGE_KEY)),
+  );
+
+  // Crossing the threshold is an event only this clock can see: while a gate
+  // sits pending no events fire, so no fresh snapshot arrives and nothing
+  // re-renders. Without this tick a pull would surface only by coincidence,
+  // when unrelated activity happened to push a new snapshot.
+  const [pullTick, setPullTick] = useState(0);
+  useEffect(() => {
+    if (pullThresholdMs === null) return;
+    const id = setInterval(() => setPullTick((t) => t + 1), 10_000);
+    return () => clearInterval(id);
+  }, [pullThresholdMs]);
+
+  const pulls = useMemo(
+    () =>
+      pullsFrom(projectSessions, {
+        thresholdMs: pullThresholdMs,
+        currentSessionId: sessionId,
+        now: Date.now(),
+      }),
+    // pullTick is a deliberate dependency: it is the only thing that changes
+    // when time passes and nothing else does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projectSessions, pullThresholdMs, sessionId, pullTick],
+  );
+
+  const setPullThreshold = (ms: number | null) => {
+    setPullThresholdMs(ms);
+    if (ms === null) localStorage.removeItem(PULL_STORAGE_KEY);
+    else localStorage.setItem(PULL_STORAGE_KEY, String(ms));
+  };
 
   // HUD numbers that need no server change: counted off the event log (spec §1).
   const hud = useMemo(
@@ -429,6 +464,7 @@ function SessionView(props: {
     <div className="term">
       <Header
         signedInAs={props.signedInAs}
+        pulls={pulls.length}
         projectId={projectId}
         sessionId={sessionId}
         model={derived.model}
@@ -470,6 +506,9 @@ function SessionView(props: {
           participants={derived.participants}
           driverId={derived.driverId}
           selfId={userId}
+          pulls={pulls}
+          pullThresholdMs={pullThresholdMs}
+          onPullThresholdChange={setPullThreshold}
         />
         <TodoPanel todos={derived.todos} />
       </div>

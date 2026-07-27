@@ -33,6 +33,10 @@ export function Header(props: {
    *  means no sign-out control renders at all — there is nothing to sign out
    *  of, and a dead button would be worse than none. */
   signedInAs?: string | null;
+  /** How many other sessions are waiting on an approval past this viewer's
+   *  threshold. 0 renders nothing — an always-present PULLS ▸ 0 would train
+   *  people to ignore the one place this feature speaks. */
+  pulls?: number;
   hud?: HudData;
 }) {
   const hud = props.hud ?? {};
@@ -136,6 +140,11 @@ export function Header(props: {
         <span className={props.connected ? "conn" : "conn off"}>
           {props.connected ? "● ONLINE" : "○ OFFLINE"}
         </span>
+        {(props.pulls ?? 0) > 0 && (
+          <span className="conn pull-badge" title="sessions waiting on an approval">
+            🔐 PULLS ▸ {props.pulls}
+          </span>
+        )}
         {props.signedInAs && (
           <button
             className="planmode"

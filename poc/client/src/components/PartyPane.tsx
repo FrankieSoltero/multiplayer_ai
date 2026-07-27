@@ -2,6 +2,7 @@ import { useState } from "react";
 import { hashIdentity } from "../identity";
 import type { ProjectSessionInfo } from "../types";
 import type { Participant } from "../derive";
+import { THRESHOLD_OPTIONS, waitedLabel, type Pull } from "../pulls";
 
 const ago = (ts: string | null) => {
   if (!ts) return "";
@@ -16,10 +17,14 @@ export function PartyPane(props: {
   participants: Map<string, Participant>;
   driverId: string | null;
   selfId: string;
+  pulls?: Pull[];
+  pullThresholdMs?: number | null;
+  onPullThresholdChange?: (ms: number | null) => void;
 }) {
   const [open, setOpen] = useState(false);
   const here = [...props.participants.entries()];
   const others = props.sessions.filter((s) => s.id !== props.sessionId);
+  const pullBySession = new Map((props.pulls ?? []).map((p) => [p.sessionId, p]));
 
   return (
     <aside className={"party panel" + (open ? " open" : "")}>
@@ -52,20 +57,52 @@ export function PartyPane(props: {
 
       <div className="party-title pix" style={{ marginTop: 6 }}>
         <span>OTHER PARTIES</span>
+        {props.onPullThresholdChange && (
+          // A <label> must never wrap this <select>: a wrapping label forwards a
+          // second synthesized click, so the native dropdown opens and instantly
+          // closes and the control looks dead with no error anywhere.
+          <span className="pull-setting">
+            <span id="pull-after-label">PULL AFTER</span>
+            <select
+              aria-labelledby="pull-after-label"
+              value={
+                props.pullThresholdMs === null || props.pullThresholdMs === undefined
+                  ? ""
+                  : String(props.pullThresholdMs)
+              }
+              onChange={(e) =>
+                props.onPullThresholdChange!(e.target.value === "" ? null : Number(e.target.value))
+              }
+            >
+              {THRESHOLD_OPTIONS.map((o) => (
+                <option key={o.label} value={o.ms === null ? "" : String(o.ms)}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </span>
+        )}
       </div>
 
       {others.map((s) => {
         const id = hashIdentity(s.id);
+        const pull = pullBySession.get(s.id);
         return (
           <a
             key={s.id}
-            className={s.ended ? "member ended" : "member"}
+            className={(s.ended ? "member ended" : "member") + (pull ? " pull" : "")}
             href={`?project=${props.projectId}&session=${s.id}`}
           >
             <div className="member-head">
               <span style={{ color: id.color }}>{id.glyph}</span> {s.id}
               {s.ended && <span className="here"> · ended</span>}
             </div>
+            {pull && (
+              <div className="member-pull">
+                🔐 waiting {waitedLabel(Date.parse(pull.sinceTs), Date.now())} — approval to run{" "}
+                {pull.toolName}
+              </div>
+            )}
             <div className={s.intent ? "member-quest" : "member-quest none"}>
               ✦ {s.intent ?? "no quest declared"}
             </div>
