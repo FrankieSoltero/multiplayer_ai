@@ -58,6 +58,32 @@ describe("/healthz", () => {
 
     expect(res.status).toBe(404);
   });
+
+  it("treats a single trailing slash as the same route", async () => {
+    // staticDir IS configured — without the trailing-slash match this falls
+    // through to the SPA fallback and returns HTML with a 200.
+    const srv = await startServer({ port: 0, staticDir: fakeDist() });
+    stop = srv.close;
+
+    const res = await fetch(`http://127.0.0.1:${srv.port}/healthz/`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ status: "ok" });
+  });
+
+  it("matches a percent-encoded spelling of the path", async () => {
+    // /%68ealthz decodes to /healthz. Without decoding, this falls through
+    // to the SPA fallback and returns HTML with a 200.
+    const srv = await startServer({ port: 0, staticDir: fakeDist() });
+    stop = srv.close;
+
+    const res = await fetch(`http://127.0.0.1:${srv.port}/%68ealthz`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ status: "ok" });
+  });
 });
 
 describe("host binding", () => {

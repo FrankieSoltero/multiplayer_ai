@@ -224,7 +224,11 @@ export async function startServer(opts: {
   const httpServer = createServer((req, res) => {
     let pathname: string;
     try {
-      pathname = new URL(req.url ?? "/", "http://x").pathname;
+      // Decoded (and guarded) the same way staticFiles.ts:31-38 does, so a
+      // percent-encoded or trailing-slash spelling of /healthz still matches
+      // the equality check below instead of falling through to the SPA
+      // fallback, which would return index.html with a 200.
+      pathname = decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname);
     } catch {
       res.writeHead(400);
       res.end();
@@ -235,7 +239,8 @@ export async function startServer(opts: {
     // extensionless path, so wiring /healthz after it would return HTML with a
     // 200 — a probe that passes forever while the app is broken (spec §3.4).
     // Body carries no internal state: it is publicly reachable via the domain.
-    if (pathname === "/healthz") {
+    // A single optional trailing slash is treated as the same route.
+    if (pathname === "/healthz" || pathname === "/healthz/") {
       if (req.method !== "GET" && req.method !== "HEAD") {
         res.writeHead(405);
         res.end();
@@ -249,7 +254,7 @@ export async function startServer(opts: {
       serveStatic(req, res);
       return;
     }
-    res.writeHead(404);
+    res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     res.end("not found");
   });
   const wss = new WebSocketServer({ server: httpServer });

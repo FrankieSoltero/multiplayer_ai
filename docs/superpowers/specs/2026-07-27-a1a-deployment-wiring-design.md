@@ -165,11 +165,17 @@ response *body* (§6.1).
 
 Production should not run `tsx`: it is a development dependency performing on-the-fly
 transformation at every start. Add `tsconfig.build.json` extending the existing config with
-`noEmit: false`, `outDir: "dist"`, `include: ["src"]`, plus a `build` script, so the service runs
-`node dist/main.js`.
+`noEmit: false`, `outDir: "dist"`, `rootDir: "src"`, `include: ["src"]`, plus a `build` script, so
+the service runs `node dist/main.js`.
 
-This needs no source changes: the project is already `module: NodeNext` and its imports already
-carry `.js` extensions (`from "./server.js"`), so emitted ESM resolves correctly.
+**`rootDir: "src"` is required, not optional.** Without it, TypeScript 7.0.2 refuses to emit
+(TS5011 — it cannot infer a single root when `include` is narrower than the tsconfig's own
+directory) and, if forced anyway, emits to `dist/src/main.js` instead of `dist/main.js` — breaking
+both `node dist/main.js` and the systemd unit's `ExecStart=/usr/bin/node dist/main.js`. Anyone
+re-deriving this config from this section alone must include `rootDir` to get a working build.
+
+This needs no other source changes: the project is already `module: NodeNext` and its imports
+already carry `.js` extensions (`from "./server.js"`), so emitted ESM resolves correctly.
 
 `bin/mpai.js` continues to use `tsx` at runtime — that is the local CLI and is out of scope.
 
@@ -299,16 +305,27 @@ Added to the existing 116 client / 215 server baseline:
 1. Build client and server; run with `CLIENT_DIST` set and `HOST=127.0.0.1`.
 2. `curl /healthz` → confirm JSON, **not** the HTML page.
 3. Load in a browser over plain HTTP → page renders, WebSocket connects as `ws://`.
-4. **Two tabs, two participants, driver and passenger, reach a real permission gate and approve
-   it.** This proves the product works through the single-port path, not merely that a server
-   responds.
+4. ~~Two tabs, two participants, driver and passenger, reach a real permission gate and approve
+   it.~~ **Reassigned to A1b.** Blocked on this machine: no `ANTHROPIC_API_KEY` is configured here,
+   so the agent cannot authenticate and no real permission gate can be reached to approve. This is
+   not a code gap in A1a — it is an environment gap in the machine this spec was verified on — but
+   it means the claim "the product works through the single-port path" is unproven until A1b, where
+   a real key is available.
 5. `ss -tlnp` / `lsof` → 3001 bound to `127.0.0.1` only.
-6. **Local TLS rehearsal:** run the real `deploy/Caddyfile` against `localhost` using Caddy's
-   `tls internal`, trust the local CA, and confirm an established `wss://` connection in DevTools.
+6. ~~Local TLS rehearsal: run the real `deploy/Caddyfile` against `localhost` using Caddy's
+   `tls internal`, trust the local CA, and confirm an established `wss://` connection in
+   DevTools.~~ **Reassigned to A1b.** Blocked on this machine: it requires an interactive `caddy`
+   install plus `sudo` to trust a local CA, neither of which is available in this environment. The
+   `socketUrlFor` unit tests (§6.1) cover the scheme-derivation logic, but an actual established
+   `wss://` connection remains unobserved until this rehearsal — or the real A1b deployment — runs.
 
-Step 6 matters more than its size suggests. Without it the `wss://` fix would ship on the strength
-of a unit test and a strong argument — precisely the class of change that surprises you on deploy
-day. It also rehearses the Caddyfile before it touches a server. Cost: `brew install caddy`.
+All other steps in this list passed as originally specified.
+
+Steps 4 and 6 matter more than their size suggests — step 6 in particular, because without it the
+`wss://` fix would ship on the strength of a unit test and a strong argument alone. Deferring both
+to A1b is a statement about this machine's environment, not a downgrade of their importance;
+neither should be treated as met until they are actually run. Cost of step 6 when it does run:
+`brew install caddy` (or the platform equivalent).
 
 ### 6.3 What remains unprovable until A1b
 
@@ -350,6 +367,19 @@ day. It also rehearses the Caddyfile before it touches a server. Cost: `brew ins
 ---
 
 ## 9. A1b — what remains (follow-on spec)
+
+- **Hard blocker: session workspace provisioning does not exist.**
+  `poc/server/src/main.ts` never passes a `workspace` to `startServer`, so at
+  `server.ts:174-175` a session's workdir is computed as
+  `path.join(AGENT_WORKDIR_ROOT, sessionId)` and **nothing on that path ever
+  creates the directory** — `mkdir` appears only in `workspace.ts`, `cli.ts`,
+  and `pluginStore.ts`. If `AGENT_WORKDIR_ROOT` is unset, `agentDriver.ts:133`
+  falls back to `process.cwd()`, which under the systemd unit is
+  `/opt/multiplayer-ai/poc/server` — the agent would then edit the running
+  deployment's own source tree. This must be resolved (real per-session
+  workspace provisioning, not a bare `mkdir` of an empty non-git directory,
+  which would only make the failure silent instead of loud) before any real
+  session runs in production.
 
 Provision the Hetzner box (CX22 class: 2 vCPU / 4 GB / 40 GB; 4 GB is the floor because the Claude
 Code subprocess is itself a Node process); buy the domain and point an A record at the box **before

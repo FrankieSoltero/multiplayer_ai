@@ -17,6 +17,26 @@ The operator runs these over SSH by hand.
   comfort margin: the Claude Code subprocess is itself a Node process.
 - A capped Anthropic Console workspace key.
 
+**BLOCKER — no session workspace provisioning exists yet (must be fixed in A1b
+before any real session runs).** `poc/server/src/main.ts` never passes a
+`workspace` to `startServer`. Without one, `server.ts:174-175` computes each
+session's workdir as `path.join(AGENT_WORKDIR_ROOT, sessionId)` but **nothing
+in the codebase ever creates that directory** — `mkdir` only appears in
+`workspace.ts`, `cli.ts`, and `pluginStore.ts`, none of which run on this
+path. Two failure modes follow:
+  - If `AGENT_WORKDIR_ROOT` is set (as `deploy/env.example` instructs), the
+    agent is pointed at a directory that does not exist and was never
+    provisioned as a git worktree.
+  - If `AGENT_WORKDIR_ROOT` is left unset, `agentDriver.ts:133` falls back to
+    `process.cwd()`, which under `deploy/multiplayer-ai.service` is
+    `/opt/multiplayer-ai/poc/server` — **the agent would edit the running
+    deployment's own source tree.**
+  Do not work around this by pre-creating an empty `AGENT_WORKDIR_ROOT`
+  directory: an empty non-git folder makes the failure silent instead of
+  loud, and the agent would still be operating somewhere it shouldn't be. A
+  real fix (provisioning a workspace per session before `startServer` is
+  called) is A1b scope, not something to patch here.
+
 ## 1. Base packages
 
     sudo apt update && sudo apt install -y git curl
@@ -34,9 +54,27 @@ The user needs a real home directory: the agent subprocess uses `~/.claude`.
 
 ## 3. Checkout and build
 
-    sudo -u mpai git clone https://github.com/FrankieSoltero/multiplayer_ai.git /opt/multiplayer-ai
+`https://github.com/FrankieSoltero/multiplayer_ai.git` is currently a
+**private** repository. `mpai` has a `nologin` shell, no TTY, and no
+credential helper configured, so an unauthenticated HTTPS clone as shown
+above will simply fail with a prompt it cannot answer. Either make the repo
+public before this step (the launch plan intends to do this anyway, and it
+removes this whole step), or authenticate first with a read-only deploy key:
+
+    sudo -u mpai ssh-keygen -t ed25519 -C "mpai@$(hostname)-deploy" -f /home/mpai/.ssh/id_ed25519 -N ""
+    sudo -u mpai cat /home/mpai/.ssh/id_ed25519.pub
+
+Add the printed public key as a **deploy key** on the GitHub repo (Settings →
+Deploy keys → Add deploy key). Leave "Allow write access" unchecked — this
+key only needs to read.
+
+    sudo -u mpai ssh-keyscan github.com >> /home/mpai/.ssh/known_hosts
+    sudo -u mpai git clone git@github.com:FrankieSoltero/multiplayer_ai.git /opt/multiplayer-ai
     cd /opt/multiplayer-ai/poc/server && sudo -u mpai npm ci && sudo -u mpai npm run build
     cd /opt/multiplayer-ai/poc/client && sudo -u mpai npm ci && sudo -u mpai npm run build
+
+If the repo has already been made public by this point, the original HTTPS
+clone works and the deploy-key steps above can be skipped.
 
 ## 4. Secrets
 
@@ -57,6 +95,14 @@ If `/healthz` returns HTML, the handler ordering regressed — see spec §3.4.
 
 ## 6. Caddy
 
+`caddy` is not in Ubuntu's default repositories (it ships in Debian bookworm
+main, but section 0 above recommends Ubuntu). Add Caddy's official apt
+repository first, per Caddy's documented Debian/Ubuntu install instructions:
+
+    sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+    sudo apt update
     sudo apt install -y caddy
     sudo cp /opt/multiplayer-ai/deploy/Caddyfile /etc/caddy/Caddyfile
     sudo sed -i 's/<hostname>/YOUR.DOMAIN.HERE/' /etc/caddy/Caddyfile
@@ -74,6 +120,13 @@ depth, not the primary control.
 
 ## 8. Verification — A1b is not done until every line passes
 
+- [ ] **Session workspace provisioning is implemented and verified** —
+      `startServer` is called with a real `workspace`, or an equivalent fix
+      exists, so `AGENT_WORKDIR_ROOT/<sessionId>` is actually created before a
+      session starts. Until this box is checked, leaving `AGENT_WORKDIR_ROOT`
+      unset makes the agent run in the deployment's own source tree (see the
+      blocker in section 0). **This MUST be resolved before any real session
+      runs.**
 - [ ] `https://<domain>` loads the client with a valid certificate
 - [ ] `https://<domain>/healthz` returns JSON, not HTML
 - [ ] DevTools → Network → WS shows an established **wss://** connection
