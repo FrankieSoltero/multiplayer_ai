@@ -6,7 +6,7 @@ import {
   isAllowlisted,
   SESSION_MAX_AGE_MS,
 } from "../src/auth.js";
-import { authRoutes, safeNext, type AuthConfig } from "../src/auth.js";
+import { authRoutes, requireAuth, safeNext, type AuthConfig } from "../src/auth.js";
 import { createServer, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -335,6 +335,189 @@ describe("authRoutes", () => {
       const res = await fetch(`${base}/auth/logout`, { method: "POST" });
       expect(res.status).toBe(204);
       expect(res.headers.get("set-cookie")).toContain("Max-Age=0");
+    });
+  });
+
+  // M1: a GET would let any third-party <img src=".../auth/logout"> sign the
+  // user out.
+  it("/auth/logout refuses GET and clears nothing", async () => {
+    await withRoutes(testConfig(), async (base) => {
+      const res = await fetch(`${base}/auth/logout`);
+      expect(res.status).toBe(405);
+      expect(res.headers.get("allow")).toBe("POST");
+      expect(res.headers.getSetCookie()).toEqual([]);
+    });
+  });
+
+  // M3: /auth/me is a per-cookie response; a shared cache without these
+  // headers could serve one user's login to the next visitor.
+  it("/auth/me is marked uncacheable and varies on Cookie", async () => {
+    await withRoutes(testConfig(), async (base) => {
+      const out = await fetch(`${base}/auth/me`);
+      expect(out.status).toBe(401);
+      expect(out.headers.get("cache-control")).toBe("no-store");
+      expect(out.headers.get("vary")).toBe("Cookie");
+
+      const inRes = await fetch(`${base}/auth/me`, {
+        headers: { cookie: `mpai_session=${signSession("ana", SECRET)}` },
+      });
+      expect(inRes.status).toBe(200);
+      expect(inRes.headers.get("cache-control")).toBe("no-store");
+      expect(inRes.headers.get("vary")).toBe("Cookie");
+    });
+  });
+});
+
+/** I2: `Secure` used to hang solely on x-forwarded-proto, so any proxy that
+ *  did not set it — or a direct hit on the Node port — shipped the session
+ *  cookie in the clear. The deployment's own https callback URL is now
+ *  authoritative. Both requests below are plain http on a plain socket with
+ *  no forwarding header, so the only variable is the config. */
+describe("Secure cookie flag", () => {
+  it("marks cookies Secure when the deployment's callback URL is https", async () => {
+    const cfg = testConfig({ callbackUrl: "https://mpai.example/auth/callback" });
+    await withRoutes(cfg, async (base) => {
+      const login = await fetch(`${base}/auth/login`, { redirect: "manual" });
+      expect(login.headers.getSetCookie().every((c) => c.includes("Secure"))).toBe(true);
+
+      const out = await fetch(`${base}/auth/logout`, { method: "POST" });
+      expect(out.headers.get("set-cookie")).toContain("Secure");
+    });
+  });
+
+  it("omits Secure for a plain-http development deployment", async () => {
+    await withRoutes(testConfig(), async (base) => {
+      const login = await fetch(`${base}/auth/login`, { redirect: "manual" });
+      expect(login.headers.getSetCookie().some((c) => c.includes("Secure"))).toBe(false);
+    });
+  });
+
+  it("still honours an x-forwarded-proto: https hop", async () => {
+    await withRoutes(testConfig(), async (base) => {
+      const login = await fetch(`${base}/auth/login`, {
+        redirect: "manual",
+        headers: { "x-forwarded-proto": "https" },
+      });
+      expect(login.headers.getSetCookie().every((c) => c.includes("Secure"))).toBe(true);
+    });
+  });
+});
+
+/** Pulls the `name=value` pairs out of Set-Cookie so a test can replay them
+ *  as a Cookie header, the way a browser would. */
+function jarFrom(res: Response): string {
+  return res.headers
+    .getSetCookie()
+    .map((c) => c.split(";")[0])
+    .filter((c) => !/=$/.test(c)) // skip the cleared ones
+    .join("; ");
+}
+
+/** I4: spec §3.2 promises the invite token survives the OAuth round trip, and
+ *  spec §4.5 calls OAUTH_CALLBACK_URL optional. `next` used to ride only on
+ *  redirect_uri, so with the variable unset — the documented default — every
+ *  invitee landed on "/" with their token silently gone. */
+describe("next survives the OAuth round trip without OAUTH_CALLBACK_URL", () => {
+  it("carries next from /auth/login to /auth/callback via a cookie", async () => {
+    await withRoutes(testConfig(), async (base) => {
+      const login = await fetch(`${base}/auth/login?next=%2F%3Finvite%3Dabc`, {
+        redirect: "manual",
+      });
+      // No redirect_uri at all — this is precisely the configuration that
+      // used to drop `next`.
+      expect(login.headers.get("location")).not.toContain("redirect_uri");
+      const jar = jarFrom(login);
+      const state = /mpai_oauth_state=([^;]*)/.exec(jar)?.[1];
+      expect(state).toBeTruthy();
+
+      const cb = await fetch(`${base}/auth/callback?code=x&state=${state}`, {
+        headers: { cookie: jar },
+        redirect: "manual",
+      });
+      expect(cb.status).toBe(302);
+      expect(cb.headers.get("location")).toBe("/?invite=abc");
+    });
+  });
+
+  it("rejects a hostile next planted in the cookie", async () => {
+    await withRoutes(testConfig(), async (base) => {
+      const cb = await fetch(`${base}/auth/callback?code=x&state=s1`, {
+        headers: {
+          cookie: `mpai_oauth_state=s1; mpai_oauth_next=${encodeURIComponent("//evil.example")}`,
+        },
+        redirect: "manual",
+      });
+      expect(cb.headers.get("location")).toBe("/");
+    });
+  });
+
+  it("prefers an explicit next query param over the cookie", async () => {
+    await withRoutes(testConfig(), async (base) => {
+      const cb = await fetch(`${base}/auth/callback?code=x&state=s1&next=%2Fq`, {
+        headers: {
+          cookie: `mpai_oauth_state=s1; mpai_oauth_next=${encodeURIComponent("/cookie")}`,
+        },
+        redirect: "manual",
+      });
+      expect(cb.headers.get("location")).toBe("/q");
+    });
+  });
+
+  // M2: a failed attempt used to leave the state cookie replayable for its
+  // full 600s.
+  it("clears the one-shot cookies on a state mismatch and on a failed exchange", async () => {
+    await withRoutes(testConfig(), async (base) => {
+      const bad = await fetch(`${base}/auth/callback?code=x&state=wrong`, {
+        headers: { cookie: "mpai_oauth_state=right" },
+        redirect: "manual",
+      });
+      expect(bad.status).toBe(400);
+      const cleared = bad.headers.getSetCookie().join("|");
+      expect(cleared).toContain("mpai_oauth_state=; ");
+      expect(cleared).toContain("mpai_oauth_next=; ");
+      expect(cleared.match(/Max-Age=0/g)?.length).toBe(2);
+    });
+
+    await withRoutes(testConfig({ exchangeCode: async () => ({ error: "nope" }) }), async (base) => {
+      const failed = await fetch(`${base}/auth/callback?code=x&state=s1`, {
+        headers: { cookie: "mpai_oauth_state=s1" },
+        redirect: "manual",
+      });
+      expect(failed.status).toBe(401);
+      expect(failed.headers.getSetCookie().join("|")).toContain("mpai_oauth_state=; ");
+    });
+  });
+});
+
+/** C2's shared helper. The gate must admit everything when auth is off, so
+ *  every non-auth deployment keeps behaving exactly as before. */
+describe("requireAuth", () => {
+  it("admits everything with no auth config, reporting no login", () => {
+    expect(requireAuth(undefined, undefined)).toEqual({ ok: true, login: null });
+    expect(requireAuth("anything=1", undefined)).toEqual({ ok: true, login: null });
+  });
+
+  it("rejects a missing or unverifiable cookie", () => {
+    const cfg = testConfig();
+    expect(requireAuth(undefined, cfg)).toEqual({ ok: false, error: "authentication required" });
+    expect(requireAuth("mpai_session=forged.sig", cfg)).toEqual({
+      ok: false,
+      error: "authentication required",
+    });
+  });
+
+  it("rejects a verified login that is not allowlisted", () => {
+    const cfg = testConfig({ allowlist: "ben" });
+    expect(requireAuth(`mpai_session=${signSession("ana", SECRET)}`, cfg)).toEqual({
+      ok: false,
+      error: "not on the allowlist",
+    });
+  });
+
+  it("returns the verified login for an allowlisted user", () => {
+    expect(requireAuth(`mpai_session=${signSession("ana", SECRET)}`, testConfig())).toEqual({
+      ok: true,
+      login: "ana",
     });
   });
 });

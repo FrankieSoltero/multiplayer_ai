@@ -47,13 +47,17 @@ export function validateProductionConfig(
     }
   }
 
+  // Trimmed on assignment, not just in the check above: `SECRET=$(cat file)`
+  // in an env file leaves a trailing newline, which passed validation and
+  // then failed opaquely at GitHub as an invalid client_secret. Same for the
+  // callback URL, where stray whitespace produces an unparseable redirect_uri.
   const auth: AuthConfig | undefined = authIntended || staticDir
     ? {
-        clientId: env.GITHUB_CLIENT_ID!,
-        clientSecret: env.GITHUB_CLIENT_SECRET!,
-        sessionSecret: env.SESSION_SECRET!,
-        allowlist: env.GITHUB_ALLOWLIST!,
-        callbackUrl: env.OAUTH_CALLBACK_URL,
+        clientId: env.GITHUB_CLIENT_ID!.trim(),
+        clientSecret: env.GITHUB_CLIENT_SECRET!.trim(),
+        sessionSecret: env.SESSION_SECRET!.trim(),
+        allowlist: env.GITHUB_ALLOWLIST!.trim(),
+        callbackUrl: env.OAUTH_CALLBACK_URL?.trim() || undefined,
       }
     : undefined;
 

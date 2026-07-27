@@ -3,6 +3,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 export const SESSION_COOKIE = "mpai_session";
 export const STATE_COOKIE = "mpai_oauth_state";
+/** Carries the post-login destination across the OAuth round trip.
+ *
+ *  The `next` value used to ride on `redirect_uri`, which only exists when
+ *  OAUTH_CALLBACK_URL is configured — so with it unset (spec §4.5 calls the
+ *  variable optional) every invitee landed on "/" with their invite token
+ *  silently dropped. A cookie makes the round trip work either way. */
+export const NEXT_COOKIE = "mpai_oauth_next";
 
 /** Seven days. Long enough that a friends-beta session never expires
  *  mid-demo, short enough that a leaked cookie is not permanent. There is
@@ -107,6 +114,18 @@ export function safeNext(raw: string | null): string {
   return u.pathname + u.search === raw ? raw : "/";
 }
 
+/** Undoes the encodeURIComponent applied when the next cookie was written.
+ *  A malformed escape sequence throws in decodeURIComponent, so it degrades
+ *  to null and safeNext turns that into "/". */
+function decodeNext(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
 function cookie(name: string, value: string, maxAgeSec: number, secure: boolean): string {
   const bits = [
     `${name}=${value}`,
@@ -119,9 +138,44 @@ function cookie(name: string, value: string, maxAgeSec: number, secure: boolean)
   return bits.join("; ");
 }
 
-/** Behind Caddy the socket is plain HTTP, so trust the proxy's header. */
-function isSecure(req: IncomingMessage): boolean {
+/** Whether the cookies this response sets must carry `Secure`.
+ *
+ *  Header-only detection fails open: a proxy that does not set
+ *  `x-forwarded-proto`, or a direct hit on the Node port, would ship the
+ *  session cookie in the clear. So the deployment's own configuration is
+ *  authoritative — an https `callbackUrl` means this is a TLS deployment
+ *  regardless of what the hop in front of us chose to advertise. Behind
+ *  Caddy the socket itself is plain HTTP, hence the header as a third
+ *  signal rather than the only one. */
+function isSecure(req: IncomingMessage, cfg: AuthConfig): boolean {
+  if ((req.socket as { encrypted?: boolean }).encrypted) return true;
+  if (cfg.callbackUrl?.startsWith("https://")) return true;
   return String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim() === "https";
+}
+
+export type AuthCheck =
+  | { ok: true; login: string | null }
+  | { ok: false; error: string };
+
+/** The one place a WebSocket message is checked against the session cookie.
+ *
+ *  With `cfg` undefined (auth off) every request is admitted and `login` is
+ *  null, so callers keep the client-asserted identity exactly as before.
+ *  With auth on, only a verified AND allowlisted login gets through — the
+ *  same two rejections, in the same order, the join gate has always used
+ *  (spec §4.3). Shared so that every privileged message type enforces one
+ *  policy rather than each re-deriving it. */
+export function requireAuth(
+  cookieHeader: string | undefined,
+  cfg: AuthConfig | undefined,
+): AuthCheck {
+  if (!cfg) return { ok: true, login: null };
+  const user = verifySession(parseCookies(cookieHeader)[SESSION_COOKIE], cfg.sessionSecret);
+  if (!user) return { ok: false, error: "authentication required" };
+  if (!isAllowlisted(user.login, cfg.allowlist)) {
+    return { ok: false, error: "not on the allowlist" };
+  }
+  return { ok: true, login: user.login };
 }
 
 const githubExchange: ExchangeCode = async (code, cfg) => {
@@ -190,12 +244,23 @@ export function authRoutes(
     const cookies = parseCookies(req.headers.cookie);
 
     if (path === "/auth/me") {
+      // This response is per-cookie and must never be reused for another
+      // visitor — a shared cache without these headers could hand one user's
+      // login to the next.
+      const privateJson = (status: number, body: unknown) => {
+        res.writeHead(status, {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+          vary: "Cookie",
+        });
+        res.end(JSON.stringify(body));
+      };
       const user = verifySession(cookies[SESSION_COOKIE], cfg.sessionSecret);
       if (!user) {
-        json(401, { enabled: true });
+        privateJson(401, { enabled: true });
         return true;
       }
-      json(200, {
+      privateJson(200, {
         enabled: true,
         login: user.login,
         allowlisted: isAllowlisted(user.login, cfg.allowlist),
@@ -204,8 +269,15 @@ export function authRoutes(
     }
 
     if (path === "/auth/logout") {
+      // POST only: a GET would let any third-party <img src="/auth/logout">
+      // sign the user out.
+      if (req.method !== "POST") {
+        res.writeHead(405, { allow: "POST", "content-type": "text/plain; charset=utf-8" });
+        res.end("use POST to sign out");
+        return true;
+      }
       res.writeHead(204, {
-        "set-cookie": cookie(SESSION_COOKIE, "", 0, isSecure(req)),
+        "set-cookie": cookie(SESSION_COOKIE, "", 0, isSecure(req, cfg)),
       });
       res.end();
       return true;
@@ -223,34 +295,54 @@ export function authRoutes(
         cb.searchParams.set("next", next);
         authorize.searchParams.set("redirect_uri", cb.toString());
       }
+      const secure = isSecure(req, cfg);
       res.writeHead(302, {
         location: authorize.toString(),
         // 10 minutes: long enough to sign in, short enough not to linger.
-        "set-cookie": cookie(STATE_COOKIE, state, 600, isSecure(req)),
+        "set-cookie": [
+          cookie(STATE_COOKIE, state, 600, secure),
+          // Percent-encoded so a ";" or "," in the path can never split the
+          // cookie header. Read back through safeNext regardless.
+          cookie(NEXT_COOKIE, encodeURIComponent(next), 600, secure),
+        ],
       });
       res.end();
       return true;
     }
 
     if (path === "/auth/callback") {
+      const secure = isSecure(req, cfg);
+      // Every exit from this route is terminal for this attempt, so the
+      // one-shot cookies are cleared on the failure branches too — otherwise
+      // a mismatched state or a failed exchange left a replayable state
+      // cookie alive for its full 600s.
+      const clearOneShot = [cookie(STATE_COOKIE, "", 0, secure), cookie(NEXT_COOKIE, "", 0, secure)];
       const state = url.searchParams.get("state") ?? "";
       const expected = cookies[STATE_COOKIE] ?? "";
       if (!state || !expected || state !== expected) {
-        res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+        res.writeHead(400, {
+          "content-type": "text/plain; charset=utf-8",
+          "set-cookie": clearOneShot,
+        });
         res.end("oauth state mismatch — start again from /auth/login");
         return true;
       }
       const code = url.searchParams.get("code") ?? "";
-      const next = safeNext(url.searchParams.get("next"));
+      // Query param first (it is what redirect_uri carries when
+      // OAUTH_CALLBACK_URL is configured), cookie otherwise. Both are
+      // attacker-reachable, so both go through safeNext.
+      const next = safeNext(url.searchParams.get("next") ?? decodeNext(cookies[NEXT_COOKIE]));
       void exchange(code, cfg)
         .then(
           (result) => {
             if ("error" in result) {
-              res.writeHead(401, { "content-type": "text/plain; charset=utf-8" });
+              res.writeHead(401, {
+                "content-type": "text/plain; charset=utf-8",
+                "set-cookie": clearOneShot,
+              });
               res.end(`sign-in failed: ${result.error}`);
               return;
             }
-            const secure = isSecure(req);
             res.writeHead(302, {
               location: next,
               "set-cookie": [
@@ -260,13 +352,16 @@ export function authRoutes(
                   Math.floor(SESSION_MAX_AGE_MS / 1000),
                   secure,
                 ),
-                cookie(STATE_COOKIE, "", 0, secure),
+                ...clearOneShot,
               ],
             });
             res.end();
           },
           () => {
-            res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+            res.writeHead(502, {
+              "content-type": "text/plain; charset=utf-8",
+              "set-cookie": clearOneShot,
+            });
             res.end("sign-in failed: could not reach GitHub");
           },
         )
