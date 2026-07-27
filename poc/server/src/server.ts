@@ -594,19 +594,24 @@ export async function startServer(opts: {
       if (msg.type === "leave_session") {
         // Deliberate departure. Deliberately NOT lifecycle-guarded: someone
         // sitting in an already-closed session still needs a way out.
-        ctx.entry.session.leave(ctx.userId);
+        const departed = ctx.entry.session.leave(ctx.userId);
         // Auto-close only on a DELIBERATE last departure. A socket close runs
         // `session.leave` too (see the "close" handler) but never reaches
         // here — that asymmetry IS the feature: v7a made closing one-way, so
         // a dropped connection must not be able to end a session forever
-        // (spec §2, §3.1).
-        if (ctx.entry.session.participantList.length === 0 && !isClosed(ctx.entry)) {
+        // (spec §2, §3.1). `leave()` is idempotent, so a repeat leave_session
+        // from someone who already left (e.g. after their socket already
+        // dropped) must not auto-close on their behalf — `departed` guards
+        // against blaming a stale call for a departure it didn't cause.
+        if (departed && ctx.entry.session.participantList.length === 0 && !isClosed(ctx.entry)) {
           ctx.entry.session.append({ type: "session_closed", userId: ctx.userId });
         }
-        // Deliberate user action, not a hot stream — immediate push. Same
-        // rationale as close_session: `presence_leave` and `session_closed`
-        // are not in the INTERESTING set, so without this watchers never see
-        // the roster empty or the lifecycle flip.
+        // Deliberate user action, not a hot stream — immediate push.
+        // `presence_leave` IS in the INTERESTING set, so it would reach
+        // watchers on its own via `schedulePush`, but only after up to
+        // PROJECT_PUSH_INTERVAL_MS of throttling; `session_closed` is not
+        // INTERESTING at all, so without this push watchers could see a
+        // stale roster for up to a second, or never see the lifecycle flip.
         pushProject(ctx.project);
         return;
       }

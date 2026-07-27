@@ -2203,6 +2203,16 @@ describe("session lifecycle", () => {
     wsBen.send(JSON.stringify({ type: "leave_session" }));
     await wait(200);
 
+    // Assert on the event stream, not a `project` snapshot: a second
+    // participant's `presence_join` does not force an immediate push, so a
+    // snapshot-only assertion here would pass even with no leave_session
+    // handler at all — Ben would simply never have appeared in a snapshot
+    // to begin with.
+    const leaves = seen.filter(
+      (m: any) => m.type === "event" && m.event.type === "presence_leave" && m.event.userId === "u2",
+    );
+    expect(leaves).toHaveLength(1);
+
     const row = lastProject(seen).sessions.find((s: any) => s.id === "s");
     expect(row.participants).toEqual(["Ana"]);
 
@@ -2225,6 +2235,13 @@ describe("session lifecycle", () => {
 
     wsBen.send(JSON.stringify({ type: "leave_session" }));
     await wait(200);
+
+    // Assert on the event stream: reading "open" off a `project` snapshot
+    // can pass merely because no fresh snapshot happened to arrive, which
+    // would be true even with a broken handler. Absence of a session_closed
+    // event is the real claim.
+    const closed = seen.filter((m: any) => m.type === "event" && m.event.type === "session_closed");
+    expect(closed).toHaveLength(0);
 
     expect(lastProject(seen).sessions.find((s: any) => s.id === "s").lifecycle).toBe("open");
 
@@ -2326,6 +2343,17 @@ describe("session lifecycle", () => {
     );
     expect(leaves).toHaveLength(1);
 
+    // Pin this task, not just Task 1's idempotency guard: leave_session was
+    // the sole participant's deliberate exit, so it must have auto-closed —
+    // attributed to u1 — before the socket ever dropped. Without this
+    // assertion, deleting the leave_session handler outright would not fail
+    // this test (the socket-close leave alone still produces exactly one
+    // presence_leave).
+    const closed = replay.filter(
+      (m: any) => m.type === "event" && m.event.type === "session_closed" && m.event.userId === "u1",
+    );
+    expect(closed).toHaveLength(1);
+
     rejoin.close();
     wsWatch.close();
   });
@@ -2355,6 +2383,44 @@ describe("session lifecycle", () => {
     expect(row.lifecycle).toBe("closed");
 
     wsAna.close();
+    wsBen.close();
+  });
+
+  it("does NOT auto-close on a stale leave_session that didn't actually empty the room", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    // Ben leaves deliberately. Ana remains — session stays open.
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    // Ana's connection drops (not a deliberate exit) — session stays open,
+    // per the whole point of this feature.
+    wsAna.close();
+    await wait(200);
+
+    // Ben, still connected, sends leave_session AGAIN. He already left, so
+    // `Session.leave` is a no-op — but the room is now empty because of
+    // Ana's disconnect, not because of this call. This must NOT auto-close:
+    // a stale repeat leave_session must not get credit (or blame) for a
+    // departure it did not cause.
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    const closed = seenBen.filter((m: any) => m.type === "event" && m.event.type === "session_closed");
+    expect(closed).toHaveLength(0);
+    expect(lastProject(seenBen).sessions.find((s: any) => s.id === "s").lifecycle).toBe("open");
+
     wsBen.close();
   });
 });

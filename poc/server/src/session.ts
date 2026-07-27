@@ -83,9 +83,15 @@ export class Session {
    *  callers and any future one.
    *
    *  Keyed on current membership, not on history: a user who leaves, rejoins
-   *  and leaves again has genuinely departed twice. */
-  leave(userId: string): void {
-    if (!this.participants.has(userId)) return;
+   *  and leaves again has genuinely departed twice.
+   *
+   *  Returns whether this call actually removed a participant (spec §3.2):
+   *  callers that decide something on emptiness — e.g. the last-leaver
+   *  auto-close — must be able to tell a real departure from a no-op on an
+   *  already-departed user, or a stale repeat call can take an action that
+   *  is not attributable to anyone who actually just left. */
+  leave(userId: string): boolean {
+    if (!this.participants.has(userId)) return false;
     this.participants.delete(userId);
     this.append({ type: "presence_leave", userId });
     if (this.currentDriverId === userId) {
@@ -96,6 +102,7 @@ export class Session {
         this.currentDriverId = null;
       }
     }
+    return true;
   }
 
   takeWheel(userId: string): void {
