@@ -24,6 +24,11 @@ import { AgentStatus } from "./components/AgentStatus";
 import { oversightFresh } from "./oversightView";
 import { InviteLanding } from "./components/InviteLanding";
 import { inviteTokenFrom } from "./inviteLink";
+import { Landing } from "./components/Landing";
+import { InviteSignIn } from "./components/InviteSignIn";
+import { Denied } from "./components/Denied";
+import { authStateFrom, type AuthState } from "./authState";
+import { API_BASE } from "./types";
 
 const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
 
@@ -43,6 +48,18 @@ export default function App() {
   const inviteToken = useMemo(() => inviteTokenFrom(window.location.search), []);
   const [inviteTarget, setInviteTarget] = useState<{ projectId: string; sessionId: string } | null>(null);
 
+  // null = probe in flight. Anything unexpected degrades to anonymous, so a
+  // failed probe never locks the app out (authState.ts).
+  const [auth, setAuth] = useState<AuthState | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetch(`${API_BASE}/auth/me`, { credentials: "include" })
+      .then(async (res) => authStateFrom(res.status, await res.json().catch(() => null)))
+      .catch(() => ({ status: "anonymous" }) as AuthState)
+      .then((state) => { if (live) setAuth(state); });
+    return () => { live = false; };
+  }, []);
+
   // Profile precedence: `?name=` URL param auto-derives a profile (glyph/color
   // hashed from userId) and skips the lobby entirely — demo scripts depend on
   // this. Otherwise fall back to a previously saved profile. If neither is
@@ -56,13 +73,25 @@ export default function App() {
     return loadProfile();
   });
 
+  // A verified login always wins over a previously saved profile name.
+  useEffect(() => {
+    if (auth?.status !== "signed-in") return;
+    setProfile((p) => (p && p.name !== auth.login ? { ...p, name: auth.login } : p));
+  }, [auth]);
+
   const activeSessionId = inviteTarget?.sessionId ?? sessionId;
   const activeProjectId = inviteTarget?.projectId ?? projectId;
 
   return (
     <Cabinet legend={LEGEND}>
       <Crt>
-        {inviteToken && !inviteTarget ? (
+        {auth === null ? (
+          <div className="authscreen"><div className="authsub">CHECKING SESSION…</div></div>
+        ) : auth.status === "signed-out" ? (
+          inviteToken ? <InviteSignIn token={inviteToken} /> : <Landing />
+        ) : auth.status === "denied" ? (
+          <Denied login={auth.login} />
+        ) : inviteToken && !inviteTarget ? (
           <InviteLanding token={inviteToken} onAccept={setInviteTarget} />
         ) : activeSessionId === null ? (
           <SessionPicker projectId={activeProjectId} />
@@ -70,7 +99,8 @@ export default function App() {
           <Lobby
             projectId={activeProjectId}
             sessionId={activeSessionId}
-            defaultName={`user-${userId.slice(0, 4)}`}
+            defaultName={auth.status === "signed-in" ? auth.login : `user-${userId.slice(0, 4)}`}
+            lockedName={auth.status === "signed-in" ? auth.login : undefined}
             onEnter={(p) => {
               saveProfile(p);
               setProfile(p);

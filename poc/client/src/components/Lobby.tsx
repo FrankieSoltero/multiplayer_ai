@@ -14,10 +14,14 @@ export interface PlayerStats {
 
 export function Lobby(props: {
   projectId: string; sessionId: string; defaultName: string;
+  /** Verified GitHub login — shown instead of the name input when auth is on.
+   *  Cosmetic reinforcement only: the server overwrites the joining name with
+   *  the verified login regardless of what the client sends. */
+  lockedName?: string;
   onEnter: (p: Profile) => void;
   stats?: PlayerStats;
 }) {
-  const [name, setName] = useState(props.defaultName);
+  const [name, setName] = useState(props.lockedName ?? props.defaultName);
   const [glyph, setGlyph] = useState<string>(GLYPHS[0]);
   const [color, setColor] = useState<string>(IDENTITY_COLORS[0]);
   const [party, setParty] = useState<ProjectSessionInfo[]>([]);
@@ -35,7 +39,7 @@ export function Lobby(props: {
   }, [props.projectId]);
 
   const enter = () => {
-    const n = name.trim().slice(0, 40);
+    const n = (props.lockedName ?? name).trim().slice(0, 40);
     if (n) props.onEnter({ name: n, glyph, color });
   };
 
@@ -52,17 +56,26 @@ export function Lobby(props: {
 
       <div className="lobby-cols">
         <div className="lobby-card panel">
-          <label className="lobby-row">
+          {/* Not a <label>: wrapping a control forwards a second synthesized
+              click, which broke the model picker once already (Header.tsx). */}
+          <div className="lobby-row">
             <span className="lbl">NAME</span>
             <span className="caret">▸</span>
-            <input
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && enter()}
-              maxLength={40}
-            />
-          </label>
+            {props.lockedName ? (
+              <span className="lobby-locked" title="verified GitHub identity">
+                {props.lockedName}
+              </span>
+            ) : (
+              <input
+                autoFocus
+                aria-label="name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && enter()}
+                maxLength={40}
+              />
+            )}
+          </div>
 
           <div className="lobby-row">
             <span className="lbl">SPRITE</span>
