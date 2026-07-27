@@ -8,7 +8,7 @@ export interface TodoItem {
   status: "pending" | "in_progress" | "completed";
 }
 
-export const ARCADE_GAMES = ["dino", "snake", "typerace"] as const;
+export const ARCADE_GAMES = ["dino", "snake", "tetris", "doodlejump"] as const;
 export type ArcadeGame = (typeof ARCADE_GAMES)[number];
 
 export type SessionEvent =

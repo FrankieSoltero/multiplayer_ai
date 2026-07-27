@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { settleRun, type GameEngine, type RunLedger } from "../game/engine";
 import { dinoEngine } from "../game/dino";
 import { snakeEngine } from "../game/snake";
-import { typeRaceEngine } from "../game/typerace";
+import { tetrisEngine } from "../game/tetris";
+import { doodleEngine } from "../game/doodle";
 
 const LEAVE_MS = 600;
 const bestKey = (game: string) => `mpai-${game}-high`;
@@ -17,8 +18,8 @@ const seed = () => (Date.now() % 100000) | 1;
 const ROSTER: { key: string; label: string; engine?: GameEngine<any> }[] = [
   { key: "dino", label: "DINO RUN", engine: dinoEngine },
   { key: "snake", label: "SNAKE", engine: snakeEngine },
-  { key: "breakout", label: "BREAKOUT" },
-  { key: "typerace", label: "TYPE RACE", engine: typeRaceEngine },
+  { key: "tetris", label: "TETRIS", engine: tetrisEngine },
+  { key: "doodlejump", label: "DOODLE JUMP", engine: doodleEngine },
 ];
 
 export interface PartyBest {

@@ -713,7 +713,7 @@ export async function startServer(opts: {
           typeof msg.game !== "string" ||
           !(ARCADE_GAMES as readonly string[]).includes(msg.game)
         ) {
-          return sendError("game_score requires game: dino|snake|typerace");
+          return sendError(`game_score requires game: ${ARCADE_GAMES.join("|")}`);
         }
         if (!Number.isInteger(msg.score) || msg.score <= 0 || msg.score > MAX_GAME_SCORE) {
           return sendError(`game_score requires an integer score 1-${MAX_GAME_SCORE}`);
