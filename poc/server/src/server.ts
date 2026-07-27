@@ -60,6 +60,7 @@ const OVERSEER_EVENTS = new Set([
 
 export async function startServer(opts: {
   port: number;
+  host?: string;
   runQuery?: RunQuery;
   plugins?: PluginStore;
   workspace?: WorkspaceLike;
@@ -784,7 +785,7 @@ export async function startServer(opts: {
       wss.removeListener("error", onError);
       resolve();
     });
-    httpServer.listen(opts.port);
+    httpServer.listen(opts.port, opts.host);
   });
   const address = httpServer.address();
   const port = typeof address === "object" && address ? address.port : opts.port;

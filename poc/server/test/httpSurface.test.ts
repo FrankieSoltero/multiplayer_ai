@@ -59,3 +59,14 @@ describe("/healthz", () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe("host binding", () => {
+  it("serves on the host it was given", async () => {
+    const srv = await startServer({ port: 0, host: "127.0.0.1" });
+    stop = srv.close;
+
+    const res = await fetch(`http://127.0.0.1:${srv.port}/healthz`);
+
+    expect(res.status).toBe(200);
+  });
+});
