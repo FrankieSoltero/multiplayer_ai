@@ -145,6 +145,7 @@ export default function App() {
             screen={screen}
             onScreenChange={setScreen}
             invite={inviteToken ?? undefined}
+            signedInAs={auth?.status === "signed-in" ? auth.login : null}
           />
         );
     }
@@ -165,6 +166,10 @@ function SessionView(props: {
   screen: string | null;
   onScreenChange: (screen: string | null) => void;
   invite?: string;
+  /** Verified GitHub login, or null when auth is off. Passed explicitly rather
+   *  than derived from `userId`: with auth off `userId` is the anonymous
+   *  per-tab UUID, which must never be offered as something to sign out of. */
+  signedInAs: string | null;
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
@@ -423,6 +428,7 @@ function SessionView(props: {
   return (
     <div className="term">
       <Header
+        signedInAs={props.signedInAs}
         projectId={projectId}
         sessionId={sessionId}
         model={derived.model}
