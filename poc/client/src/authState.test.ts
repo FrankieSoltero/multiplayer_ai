@@ -29,6 +29,22 @@ describe("authStateFrom", () => {
     expect(authStateFrom(200, "<html>")).toEqual({ status: "anonymous" });
     expect(authStateFrom(500, {})).toEqual({ status: "anonymous" });
   });
+
+  it("falls back to anonymous when login has the wrong type", () => {
+    expect(
+      authStateFrom(200, { enabled: true, login: 123, allowlisted: true }),
+    ).toEqual({ status: "anonymous" });
+  });
+
+  it("treats a non-boolean allowlisted as not allowlisted", () => {
+    expect(
+      authStateFrom(200, { enabled: true, login: "ana", allowlisted: "true" }),
+    ).toEqual({ status: "denied", login: "ana" });
+  });
+
+  it("falls back to anonymous for an array body", () => {
+    expect(authStateFrom(200, [])).toEqual({ status: "anonymous" });
+  });
 });
 
 describe("loginUrl", () => {
