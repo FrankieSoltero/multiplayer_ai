@@ -1,8 +1,14 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #9).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #10).*
 
-**STATE: A2a Tasks 1-7 are BUILT, reviewed, and green on branch `feature/a2a-github-oauth` (18 commits, NOT merged, NOT pushed). Suites: server 297 (was 227), client 144 (was 120), both tsc clean, client build clean. The whole-branch review says "ready to merge." Task 8 — the live browser pass — is the only thing left and it is BLOCKED ON THE USER: it needs a GitHub OAuth app (2 minutes, callback `http://localhost:5173/auth/callback`, see §7c). Do not merge before Task 8: `SameSite` behaviour across the OAuth redirect is invisible to unit tests and is the spec's own named most-likely failure point.**
+**STATE: A2a IS MERGED. Task 8 walked, sign-out shipped, A3 spec + plan written. We are on `main`, tip `9b3b5e7`, ahead of origin by 29 unpushed commits. Suites on merged main: server 297, client 147, both tsc clean, client build clean. Nothing running, nothing half-finished.**
+
+**What session #10 did, in order:** ran Task 8 (results in the A2a plan's Deviations) → merged `feature/a2a-github-oauth` into main (`0283e14`, no-ff, verified green after the merge) → built the sign-out control (`ed09d9f`) → deleted the user's test session → wrote and committed the A3 spec (`0fe0cc9`) and plan (`9b3b5e7`).
+
+**Task 8 outcome — the branch's riskiest question is answered.** `SameSite` across the OAuth redirect **works**: the user signed in with a real GitHub account and came back signed in. The denied screen is identity-aware (shows your own login). Driver controls with auth ON are confirmed live — roster reads `■ testuser 🛞 DRIVING · you`, prompt bar enabled, no UUID anywhere on the page — so whole-branch Critical 1 is definitively closed. **One gap, recorded honestly:** the invite return path was verified at the *mechanism* level (the `next` cookie carries `/?session=…&invite=…` through the round trip, `HttpOnly; SameSite=Lax`) but never walked end-to-end in a private window. That is the one A2a claim resting on inference rather than observation.
+
+**Technique worth reusing: you can exercise the entire auth-ON client path without GitHub and without touching the real secret.** Run the server with `GITHUB_CLIENT_ID=dummy-id GITHUB_CLIENT_SECRET=dummy-secret SESSION_SECRET=testsecret GITHUB_ALLOWLIST=testuser`, mint a cookie with `node -e 'import("./dist/auth.js").then(m=>console.log(m.signSession("testuser","testsecret")))'`, and set it via `document.cookie` in Playwright (HttpOnly blocks JS *reads*, not writes). Everything downstream of the token exchange is then testable. Also: Node's `--env-file` **yields to an already-set shell variable**, which makes allowlist/denial testing non-destructive and one restart to undo — never edit `poc/server/.env` to test.
 
 **Two Criticals were found by the whole-branch review that all seven task reviews missed — both fixed, both worth knowing about (§4g). The sharper one: the client never learned its own verified identity, so with auth ON `isDriver` was always false for everyone and the approve/deny controls were hidden entirely — the permission gate, the product's whole wedge, was unanswerable from the UI.**
 
@@ -21,9 +27,9 @@ Reading A now decomposes into six sub-projects, **built in this order: A1a → A
 | ID | Scope | Status |
 |---|---|---|
 | **A1a** | Deployment wiring, in-repo only | **DONE — merged `f33ce06`** |
-| **A2a** | GitHub OAuth + allowlist + verified `userId` | **BUILT (Tasks 1-7) on `feature/a2a-github-oauth`, unmerged. Task 8 blocked on user.** |
+| **A2a** | GitHub OAuth + allowlist + verified `userId` | **DONE — merged `0283e14`.** Sign-out control followed in `ed09d9f`. |
 | A2b | Provider-scoped models + one API key per session | designed at decision level (§3f); blocked on the §7a spike |
-| A3 | Pull notification ("🔐 Ana's session needs an approval — drop in") | not started |
+| A3 | Pull notification ("🔐 Ana's session needs an approval — drop in") | **SPEC + PLAN WRITTEN, user-approved, nothing built.** Spec `2026-07-27-a3-pull-notifications-design.md`, plan `2026-07-27-a3-pull-notifications.md` (4 tasks). **This is the next build.** |
 | A4 | Canned demo scenario reaching a permission gate | not started |
 | A1b | Deployment execution: provision, DNS, Caddy, systemd, live verify | last, blocked on hardware |
 
@@ -51,9 +57,9 @@ We are ON `main`, in sync with origin (tip `f33ce06`). No dev stack running (:30
 
 Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 
-**STATUS: A2a Tasks 1-7 built and reviewed on `feature/a2a-github-oauth`. No code task is in flight.** Working tree clean apart from the three permanently-untracked user files. The SDD workspace `.superpowers/sdd/2026-07-27-a2a-github-oauth/` is INTACT (ledger + per-task reports + the final fix report) — **do not delete it until Task 8 is done**; it is the surviving record of every ruling.
+**STATUS: A2a is merged and closed. No code task is in flight.** Working tree clean apart from the three permanently-untracked user files. The SDD workspace `.superpowers/sdd/2026-07-27-a2a-github-oauth/` was NOT deleted — A2a is done, so it can go whenever (`rm -rf`), but everything it recorded already survives in the plan's Deviations section, which is committed.
 
-**Next real work: TASK 8 — the live browser pass. It needs the user (§7c).** Everything else in the plan is done.
+**Next real work: BUILD A3.** Spec and plan are written, committed and user-approved — the design phase is closed, do not re-run brainstorming or writing-plans on it.
 
 - Every deviation from the plan is recorded in the plan's **Deviations** section (committed). Ten divergences plus the two whole-branch Criticals. Read that section before touching A2a code — it explains why the shipped code differs from the plan's listings in ten places, and re-litigating any of them would reintroduce a security hole.
 - `docs/superpowers/specs/2026-07-27-a2a-github-oauth-design.md` remains the authority. **One part of it is now known stale:** §4.3's rationale for join-level-only gating claims the landing and invite screens depend on unauthenticated `peek`. They do not — `Landing.tsx` opens no socket and `InviteSignIn.tsx` sends only `peek_invite`. That staleness hid Critical 2.
@@ -126,14 +132,13 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 
 ## 4. Ordered next steps (fresh session)
 
-1. **Verify state per §8** (expect branch `feature/a2a-github-oauth` at `1f9e0b1`-ish, 297 + 144 green, nothing running, `main` still ahead 3 unpushed docs commits).
-2. **Ask the user for the GitHub OAuth app** if they have not already supplied it (§7c). Two minutes on their side. Nothing else in A2a can proceed without it.
-3. **Run Task 8** from the plan: single-port build with auth on, walk the four paths in a real browser, verify the invite return path, confirm auth-off still works, then record results in the plan's Deviations section. **Not skippable** — `SameSite` across the OAuth redirect is invisible to unit tests and is the spec's own named most-likely failure point (§10).
-4. **Then merge** via `superpowers:finishing-a-development-branch`, and delete `.superpowers/sdd/2026-07-27-a2a-github-oauth/`.
-5. **Then the provider spike (§7a)** once the user supplies an API key, which gates A2b.
-6. Then A3 (pull notification — overlaps the v6b interrupt rail §3b; the spec says build it once), then A4 (canned demo scenario).
-7. **A1b last, and it is blocked on the user**: needs the box, the domain with a live A record, and the API key. **A1b cannot be declared done until the §0 workspace-provisioning blocker is fixed** — that is a code change, not a deploy step.
-8. Optional, user's call only: run the oversight demo (never done live — §0), confirm the model picker (§0), delete merged branches (§0), decide on `tour-skill-suggest.png` (§7).
+1. **Verify state per §8** (expect `main` at `9b3b5e7`, 297 + 147 green, nothing running, ahead of origin by 29).
+2. **BUILD A3.** The spec and plan are written, committed, and user-approved — do not re-brainstorm or re-plan. Execute `docs/superpowers/plans/2026-07-27-a3-pull-notifications.md` (4 tasks) via `superpowers:subagent-driven-development`. **Create a branch first.** The plan's Task 4 Step 6 is a real browser pass with two sessions; the failure it is built to catch is the pull appearing only when you click something, which means the 10s tick is not wired.
+3. **Then A4** (canned demo scenario). Note the coupling recorded in the A3 spec §6: A3 is off by default, so **the A4 demo script needs an explicit "set PULL AFTER to 30s" step** or the pull will not fire while anyone is watching.
+4. **Then decide whether v6b (file-collision detection) jumps the queue ahead of A2b.** The user named collision — two engineers editing the same file — as the thing they care about most, and it is not in the A list at all. A2b and A1b are both blocked on an API key the user does not have; v6b is blocked on nothing. §3b holds its banked decisions. It needs its own spec.
+5. **The provider spike (§7a)** once the user supplies an API key, which gates A2b.
+6. **A1b last, and it is blocked on the user**: needs the box, the domain with a live A record, and the API key. **A1b cannot be declared done until the §0 workspace-provisioning blocker is fixed** — that is a code change, not a deploy step, and it can be done now without any hardware.
+7. Optional, user's call only: walk the invite return path end-to-end in a private window (the one Task 8 gap), push the 29 commits to origin, run the oversight demo (never done live — §0), confirm the model picker (§0), delete merged branches including `feature/a2a-github-oauth` and `feature/signout-ui` (§0), decide on `tour-skill-suggest.png` (§7).
 
 ## 4b. Invite system — files with line refs (MERGED to main via #12)
 
@@ -286,12 +291,10 @@ Suites: **server 297, client 144**, both tsc clean, client build clean. Branch b
 ## 8. Resume & verify
 
 ```bash
-cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # feature/a2a-github-oauth; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
-git log --oneline -3                          # tip = the deviations docs commit, above 251abbc docs(deploy) / bdb5826 fix(client)
-git log --oneline $(git merge-base main HEAD)..HEAD | wc -l   # 18 commits on the branch
-gh pr list --state open                       # EMPTY — no PR opened yet
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # main, ahead 29; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
+git log --oneline -4                          # 9b3b5e7 A3 plan / ed09d9f sign-out merge / 0283e14 A2a merge
 cd poc/server && npx tsc --noEmit && npx vitest run   # tsc clean, 297 passed (~16s)
-cd ../client && npx tsc --noEmit && npx vitest run && npm run build   # tsc clean, 144 passed, build clean
+cd ../client && npx tsc --noEmit && npx vitest run && npm run build   # tsc clean, 147 passed, build clean
 lsof -ti:3001; lsof -ti:5173                  # both EMPTY unless you started a stack — see §6 for how
 ```
 
@@ -334,12 +337,14 @@ kill $(lsof -ti:3001)
 
 To re-run the invite demo: build the client (`cd poc/client && npm run build`), then `cd poc/server && REQUIRE_INVITE=1 npx tsx src/main.ts` — **as of `4f9ea92` the env var is the supported route**; `main.ts` has no `staticDir`, so for the single-port UI demo use a `.mts` harness calling `startServer({port:3001, staticDir:<repo>/poc/client/dist, requireInvite:true})`. Full recipe in `docs/demos/2026-07-26-invite-and-oversight.md` (that doc predates the env var and still shows only the harness route — worth updating). **A harness must be `.mts` or live inside `poc/server/`**; a stray `.ts` outside the package is transformed as CJS and top-level `await` fails.
 
-**Resume at §4.** The branch is green (297 server / 144 client), fully reviewed, and nothing is half-finished. Tasks 1-7 are complete; only Task 8 remains.
+**Resume at §4.** Main is green (297 server / 147 client) and nothing is half-finished.
 
-**Next action, concretely: RUN TASK 8.** Nothing is blocked any more — the OAuth app is registered, `poc/server/.env` is on disk with all five keys, and both packages are built (§7c). Launch per §8 (mind the `--env-file` gotcha and the :5173-vs-:3001 origin rule), walk the five checks, record results in the plan's Deviations section. After Task 8 passes, merge via `superpowers:finishing-a-development-branch` and `rm -rf .superpowers/sdd/2026-07-27-a2a-github-oauth/`.
+**Next action, concretely: BUILD A3.** Branch first, then execute `docs/superpowers/plans/2026-07-27-a3-pull-notifications.md` via `superpowers:subagent-driven-development`. Four tasks: derive the pending gate (pure, server) → publish it on the project snapshot → derive pulls against a personal threshold (pure, client) → render and verify in a real browser with two sessions.
 
-**Do not ask the user to re-supply credentials — they are already on disk.** Never print the contents of `poc/server/.env`; inspect it with `cut -d= -f1` (keys only) if you need to confirm it is intact.
+**The one thing most likely to go wrong in A3, so it is not rediscovered:** while a gate sits pending, *no events fire*, so no fresh snapshot arrives and nothing re-renders. Crossing the threshold is an event only the client's own clock can observe — hence the 10-second tick in Task 4 Step 1. If the pull appears only when you click something, that tick is not wired.
 
-**Do NOT merge before Task 8.** Cookie behaviour across the OAuth redirect (`SameSite`) is the classic failure point, is invisible to unit tests, and is the spec's own §10 named risk. Everything else about this branch is verified; that one thing is not.
+**Do not ask the user to re-supply credentials — they are already on disk.** Never print the contents of `poc/server/.env`; inspect it with `cut -d= -f1` (keys only) if you need to confirm it is intact. To test auth behaviour, use a throwaway config in the shell rather than editing `.env` (see the STATE block at the top for the exact recipe).
+
+**Correcting a premise the user held, in case it comes up again:** a session cannot span two repositories, and neither can a server. `startServer` takes one `workspace` (`server.ts:68`) and every session provisions its worktree from that one repo, so "eng 1 on multiplayer_ai, eng 2 on last-call" means **two server processes**. Six engineers on one repo is the *designed* case: one server, six sessions, six isolated worktrees on their own branches. Also: there is **no owner/host role** — the first joiner becomes driver only because `currentDriverId` was null (`session.ts:72`), and `leave()` already hands the wheel to the next participant (`session.ts:76-86`), so "the host left" is already a non-event.
 
 Design phases are closed for A2a: do not re-run brainstorming or writing-plans on it. Do not re-litigate anything in the plan's **Deviations** section — several entries are security fixes, and reverting to the plan's literal code would reintroduce an open redirect, an unauthenticated worktree/agent spawn, or an unanswerable permission gate.
