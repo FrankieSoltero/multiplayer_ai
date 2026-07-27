@@ -2,7 +2,7 @@
 
 *Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #10).*
 
-**STATE: A2a AND A3 ARE BOTH MERGED. We are on `main`, tip `0450c8d`, ahead of origin by 39 unpushed commits. Suites on merged main: server 305, client 160, both tsc clean, client build clean. Nothing running, nothing half-finished.**
+**STATE: A2a AND A3 ARE BOTH MERGED AND ON ORIGIN. `main` = `origin/main` = `b8d5652` (verified with `git ls-remote`, not a cached ref). Suites on merged main: server 305, client 160, both tsc clean, client build clean. Nothing running, nothing half-finished, nothing unpushed.**
 
 **A3 (pull notifications) is DONE and verified in a real browser** — spec, plan, all four tasks, deviations recorded, merged at `0450c8d`. The behaviour: a permission gate in another session that goes unanswered past *your* threshold lights that session's OTHER PARTIES row amber and shows `🔐 PULLS ▸ N` in the header. Off by default; the delay is per-recipient (OFF / 30s / 1m / 2m / 5m) in `localStorage["mpai-pull-after-ms"]`. **Next is v6b collision detection, which starts at brainstorming — it has banked decisions (§3b) but no spec.**
 
@@ -40,7 +40,7 @@ Session #7 turned "let's get this production ready" into a scoped programme. Tha
 
 Merged bottom-up on the user's explicit go (this supersedes the earlier standing "leave them open to review" instruction, which is now void): **#13** oversight → main (`8076d40`), **#12** invite → main (`7f31a79`), **#14** arcade/Tetris+Doodle → main (`e547904`), **#15** arrow-nav + header-clip + model-picker fixes → main (`2669ebf`). Each was retargeted to `main` as its base landed. Main verified green after those merges at **client 116 / server 215** — *historical figures for that session only; the current baselines are 120 / 227 (§0).*
 
-We are ON `main`, in sync with origin (tip `f33ce06`). No dev stack running (:3001 and :5173 both freed). Feature branches were NOT deleted — `feature/a1a-deployment-wiring` plus the older merged ones. Tidying them is a user call.
+We are ON `main`, in sync with origin at `b8d5652`. No dev stack running (:3001 and :5173 both freed). Feature branches were NOT deleted. **`feature/a2a-github-oauth`, `feature/signout-ui` and `feature/a3-pull-notifications` are LOCAL-ONLY and fully merged into main** — their content is on origin via main, only the branch refs are local. Tidying is a user call.
 
 **THE ONE THING THAT MUST BE FIXED BEFORE ANY REAL SESSION RUNS ON A BOX:** production sessions have **no workspace provisioning**. `poc/server/src/main.ts` never passes a `workspace` to `startServer` (pre-dates A1a), so `poc/server/src/server.ts:174-175` derives `workdir = path.join(AGENT_WORKDIR_ROOT, sessionId)` — and **nothing ever creates that directory** (`mkdir` appears only in `workspace.ts`, `cli.ts`, `pluginStore.ts`, none on this path). Worse, if `AGENT_WORKDIR_ROOT` is unset, `poc/server/src/agentDriver.ts:133` falls back to `process.cwd()`, which under the systemd unit is `/opt/multiplayer-ai/poc/server` — **the agent would edit the running deployment's own source tree.** Deliberately NOT patched with a bare `mkdir`: an empty non-git directory would look like it works while the agent operated in an empty folder; failing loudly is better. Documented in `deploy/RUNBOOK.md` §0 and §8 and spec §9. This is an A1b blocker.
 
@@ -48,7 +48,7 @@ We are ON `main`, in sync with origin (tip `f33ce06`). No dev stack running (:30
 
 ## 0. WHERE WE ARE
 
-- **main** (origin in sync, tip `f33ce06` = merge of A1a; below it `8076d40` #13 → `7f31a79` #12 → `e547904` #14 → `2669ebf` #15). Everything below is ON MAIN and verified there: session launcher + `mpai` CLI, oversight agent, invite system, arcade with Tetris + Doodle Jump, arrow-key navigation, header-clip fix, model-picker fix, **and A1a deployment wiring**. **Baselines on main now: client 120 tests / server 227 tests**, both `tsc --noEmit` clean, client build clean. (Earlier baselines of 116/215, 161/72 and 84/99 are superseded.)
+- **main** (origin in sync, tip `b8d5652`; `0450c8d` = merge of A3, `ed09d9f` = sign-out, `0283e14` = merge of A2a, `f33ce06` = merge of A1a). Everything below is ON MAIN and verified there: session launcher + `mpai` CLI, oversight agent, invite system, arcade with Tetris + Doodle Jump, arrow-key navigation, header-clip fix, model-picker fix, **and A1a deployment wiring**. **Baselines on main now: server 305 tests / client 160 tests**, both `tsc --noEmit` clean, client build clean. (Earlier baselines of 297/147, 227/120, 116/215, 161/72 and 84/99 are all superseded.)
 - `mpai` is globally runnable via symlink `~/.local/bin/mpai → poc/server/bin/mpai.js` (machine setup, not in repo; npm link needs sudo here).
 - **Nothing running.** :3001 and :5173 both freed at the end of session #6d.
 - **Branches not deleted.** `feature/oversight-agent`, `feature/invite-system`, `feature/arcade-tetris-doodle`, `feature/arrow-nav` still exist locally and on origin, as do the older merged ones (`feature/v6c-plugins`, `feature/slash-autocomplete-v2`, `feature/workflows-screen`, `feature/session-launcher`). Deleting is destructive and is the user's call — do not do it unasked.
@@ -135,11 +135,11 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 
 ## 4. Ordered next steps (fresh session)
 
-1. **Verify state per §8** (expect `main` at `9b3b5e7`, 297 + 147 green, nothing running, ahead of origin by 29).
+1. **Verify state per §8** (expect `main` at `b8d5652`, in sync with origin, 305 + 160 green, nothing running).
 2. **BUILD v6b — file-collision detection.** The user's stated priority and, by their ordering, the last feature before deployment. **It has banked decisions (§3b) but no spec**, so it starts at `superpowers:brainstorming`, not at code. Build it as an extension of A3's rail (OTHER PARTIES rows + `PULLS ▸ N` badge), not a parallel one. The two open design questions §3b does not settle: what counts as a collision (same file touched by two live sessions? same file *and* both uncommitted? overlapping hunks?), and whether the signal is advisory-only — §3b is explicit that coordination means awareness and advisory warnings, **never locks or task boards**.
 3. **Then A1b — deployment.** Blocked on the user for the box, the domain with a live A record, and the API key. **It is also blocked on code:** the §0 workspace-provisioning fix must land first, and it needs no hardware, so it can be done at any time — doing it early would shorten the deploy day.
 4. **Deferred, revisit only when unblocked or asked:** A2b (needs the §7a provider spike, which needs an API key) and A4 (canned demo scenario).
-5. Optional, user's call only: walk the invite return path end-to-end in a private window (the one Task 8 gap), push the unpushed commits to origin, run the oversight demo (never done live — §0), confirm the model picker (§0), delete merged branches including `feature/a2a-github-oauth` and `feature/signout-ui` (§0), decide on `tour-skill-suggest.png` (§7).
+5. Optional, user's call only: walk the invite return path end-to-end in a private window (the one Task 8 gap), run the oversight demo (never done live — §0), confirm the model picker (§0), delete merged branches including `feature/a2a-github-oauth` and `feature/signout-ui` (§0), decide on `tour-skill-suggest.png` (§7).
 
 ## 4b. Invite system — files with line refs (MERGED to main via #12)
 
@@ -237,6 +237,53 @@ Suites: **server 297, client 144**, both tsc clean, client build clean. Branch b
 1. **The client never learned its verified identity.** `App.tsx` still held the sessionStorage UUID while `derived.driverId` became the GitHub login, so with auth ON `isDriver` was false for everyone, permanently — prompts degraded to suggestions and `Transcript.tsx:152,194,225` hid the approve/deny controls entirely. **The permission gate, the entire wedge, was unanswerable from the UI.** Fixed via `selfIdFor`. **Carry-forward risk: the wiring is not pinned** — reverting the single line `userId={selfId}` in `App.tsx` reintroduces the bug with all 144 client tests green. First thing to test if component/hook test infra ever lands.
 2. **`create_session` provisioned a worktree AND spawned an agent for an unauthenticated stranger** — `repo.workspace.provision()` (a real `git worktree add` + branch) then an `AgentDriver` whose constructor eagerly starts the SDK subprocess on the box API key. One socket, one frame, no cookie, from anyone on the internet, repeatable in a loop. `peek`/`watch_project` also disclosed the roster of real GitHub logins and the oversight prose.
 
+## 4h. A3 PULL NOTIFICATIONS — AS BUILT (MERGED to main via `0450c8d`)
+
+Spec `docs/superpowers/specs/2026-07-27-a3-pull-notifications-design.md`, plan
+`docs/superpowers/plans/2026-07-27-a3-pull-notifications.md` (4 tasks, Deviations filled in).
+Branch `feature/a3-pull-notifications` (5 commits, local-only, merged). Suites: server 305, client 160.
+
+**What it does.** A permission gate in another session that goes unanswered past *your* threshold
+lights that session's OTHER PARTIES row amber (`🔐 waiting 2m — approval to run Bash`) and shows
+`🔐 PULLS ▸ N` in the header. Clicking the row navigates to that session. Off by default.
+
+- **Server derivation** — `poc/server/src/pendingGate.ts` (whole file, 30 lines): `pendingGateOf(events)`
+  returns the oldest `permission_request` with no matching `permission_decision`, as
+  `{ toolName, sinceTs }`. No state, no timers. An `auto: true` decision resolves the request like
+  any other, so **AUTO mode generates no pulls without a special case**.
+- **Wire** — `poc/server/src/project.ts:125` (`pendingGate: pendingGateOf(events)`) plus the field on
+  the `ProjectMessage` interface. **One optional field on a snapshot that already broadcasts** — no
+  new message type, no new socket traffic, late joiners get it free.
+- **The server never decides a pull is due.** It publishes only *when* the gate started waiting;
+  every deadline lives with the recipient. That is what makes per-person thresholds cost nothing
+  server-side — no timers, no per-user state, no fan-out.
+- **Client derivation** — `poc/client/src/pulls.ts` (whole file, 70 lines): `Pull`, `pullsFrom`,
+  `THRESHOLD_OPTIONS`, `thresholdFromStorage`, `waitedLabel`, `PULL_STORAGE_KEY`.
+- **The 10s tick is load-bearing** — `poc/client/src/App.tsx:195-212`. While a gate sits pending
+  **no events fire**, so no fresh snapshot arrives and nothing re-renders; crossing the threshold is
+  an event only the client's own clock can see. `pullTick` is a deliberate `useMemo` dependency.
+  **If a pull ever appears only when you click something, this tick is broken.**
+- **UI** — `poc/client/src/components/PartyPane.tsx:64` (the `PULL AFTER` select — a `<span>`+
+  `aria-labelledby`, **never a wrapping `<label>`**), `:101` (the pull row), `:93` (`.pull` class);
+  `poc/client/src/components/Header.tsx:144` (the badge); `terminal.css` tail (`.member.pull`,
+  `.member-pull`, `.pull-badge`, `.pull-setting`, all `var(--amber)` — `terminal.css:37`, the token
+  this project already designates for the permission gate).
+- **Setting** — `localStorage["mpai-pull-after-ms"]`; absent = OFF. `thresholdFromStorage` accepts
+  only values in `THRESHOLD_OPTIONS`, so a hand-edited value can never produce a surprise interval.
+- **Tests** — `poc/server/test/pendingGate.test.ts` (6), 2 wire tests in `server.test.ts` under
+  `describe("pending gate on the project snapshot")`, `poc/client/src/pulls.test.ts` (13).
+
+**Two things the browser pass caught that tests structurally could not** (both in the plan's Deviations):
+1. The row read `waiting 2m ago` — the party pane's `ago()` appends "ago". Both fragments were
+   individually correct, so no unit test would flag it. Fixed with a tested `waitedLabel`.
+2. **Clicking a pull lands on the LOBBY, not inside the session**, because the OTHER PARTIES href is
+   `?project=…&session=…` with no `&name=`. **Pre-existing and shared with every other-party row**,
+   so it was left alone rather than widened into A3's scope. "Drop in" is one click short of literal.
+
+**Known bound, not a bug:** a pull clears within ~1s of the decision, not instantly — `schedulePush`
+throttles project snapshots to `PROJECT_PUSH_INTERVAL_MS = 1000` with a trailing push
+(`poc/server/src/server.ts:138-151`). This also cost a red test at 300ms during execution.
+
 ## 5. Oversight — files with line refs (MERGED to main via #13; never demoed live)
 
 - **Server:** `poc/server/src/digest.ts:49-100` (oversightSessionDigest — structured digest, no transcript prose); `poc/server/src/overseer.ts` (whole file: Overseer class w/ disposed flag + schedule-once debounce + in-flight coalesce, oversightToolText w/ exact fallback strings :25-26, runOversightSummarize haiku one-shot :159-165); `poc/server/src/events.ts:43` (oversight_pull w/ summarySeq); `poc/server/src/project.ts:17` (pendingOversight), `:98,130` (ProjectMessage.oversight); `poc/server/src/server.ts:97-102` (onUpdate → immediate pushProject), `:320-333` (set_oversight, anyone), `:517-533` (pull_oversight, driver-gated), `:383-392` (one-shot `<oversight>` injection — flag consumed before latest check); `poc/server/src/agentDriver.ts:117-130` (team_update tool, NOT in allowedTools :140-145 → driver gate).
@@ -275,6 +322,21 @@ Suites: **server 297, client 144**, both tsc clean, client build clean. Branch b
 - **§7b — PER-USER API KEYS: analysed, deferred by the user, research after A2b.** Architecturally possible — `sdk.d.ts:1784` documents `resume?: string`, loading history from `~/.claude/projects/`, so a turn *can* start a fresh agent process under a different key and continue the same conversation. **This invalidates the original §3e reasoning** ("re-keying would kill the context"), but the conclusion was kept anyway on cost grounds: (1) per-turn process startup — `sdk.d.ts:1590` references a resume-materialisation timeout, and cost scales with conversation length; (2) **prompt-cache invalidation, the expensive one** — caches are per key, so strict alternation between drivers yields zero cache hits and can cost several times a single shared key, meaning naive per-user keys make the total *larger* for everyone; (3) cross-provider replay — handing off Claude-shaped history to another model family drops thinking blocks and mismatches tool-result formats. **If it is ever built, the shape is:** billing follows the wheel (whoever starts a turn pays; approvals never re-key), re-key on *handoff* not per turn (bounding costs 1 and 2 to handoff boundaries), provider pinned per session with only the key varying (eliminating cost 3). Still unresolved: custody of N live keys in memory (§3e's assume-breach ruling warned against exactly this), and the failure UX when one participant's key is rate-limited.
 - **§7c — RESOLVED 2026-07-27 (session #9). The OAuth app is registered and the credentials are ON DISK.** `poc/server/.env` exists (mode 0600, gitignored — confirmed via `git check-ignore`), holding `GITHUB_CLIENT_ID` (20 chars), `GITHUB_CLIENT_SECRET` (40), `SESSION_SECRET` (64 hex, generated), `GITHUB_ALLOWLIST` (the user's GitHub **username**, not email — the allowlist matches `user.login` from `api.github.com/user`, case-insensitively, `auth.ts:72`), and `ANTHROPIC_API_KEY` = the literal `placeholder-not-a-real-key` (the user deliberately skipped a real key; the UI and the whole OAuth round trip work without it, but **the agent will not run a turn**). Both packages are BUILT (`poc/client/dist`, `poc/server/dist/main.js`). **Nothing is running.** Original registration instructions, kept for reference: `https://github.com/settings/developers` → New OAuth App. Homepage `http://localhost:5173`, **callback `http://localhost:5173/auth/callback`** — note this is the **vite** port, not 3001: the branch added an `/auth` proxy to `vite.config.ts`, and the OAuth `state` cookie must be set and read on one origin. (The plan's original text said 3001; that predates the proxy.) Two minutes, no public URL, no cost. The user then supplies the client ID and secret. GitHub accepting localhost callbacks is exactly why deploy could be moved last.
 - **§7d — SURFACED SCOPE ITEM, now largely resolved but worth a user glance.** The unauthenticated pre-join surface was escalated mid-run as a possible scope widening. The whole-branch review then showed spec §4.3's rationale for leaving it open was factually stale, so it was fixed inside A2a rather than deferred (§4g Critical 2). **Consequence to be aware of: `peek` now requires auth.** If a public "browse sessions" preview screen is ever wanted, it needs a new, deliberately-unauthenticated message type rather than reusing `peek`.
+- **§7f — UNEXPLAINED: commits reached `origin/main` without this session pushing them.** At the end of
+  session #10 the user asked to push/PR. Before doing anything, `git ls-remote origin refs/heads/main`
+  already reported `b8d5652` — identical to local main, **including a handoff commit made minutes
+  earlier in this session**. No `git push` was run by this session and `.git/hooks/` has no active
+  hooks (samples only). Earlier in the same session `git status -sb` had reported "ahead 39", and the
+  marker vanished after a plain `git fetch`. **Best hypothesis: another session or background process
+  is pushing to this repo.** Unresolved, and worth knowing before v6b: two agents merging into the
+  same `main` is precisely the collision problem v6b exists to surface. **Practical rule meanwhile:
+  trust `git ls-remote`, not `origin/main`, which can be stale.**
+- **§7g — PR-first flow for v6b? USER DECISION PENDING.** A2a, sign-out and A3 were each merged
+  locally on the user's instruction, so by the time they asked to "PR this stuff" there was nothing
+  to PR — every commit was already in `main`. If the intent was *review on GitHub before landing*,
+  v6b should instead be: branch → push → open PR → **leave merging to the user**. Not yet chosen.
+  Also unanswered: whether to push the three local-only merged branches for archival (recommended
+  against — the repo already carries 8+ stale branches and their content is in main).
 - **§7e — accepted, not fixed on this branch** (all triaged "can ship" by the whole-branch review): no `Origin` check on the WS upgrade — cross-site WebSocket hijacking is blocked today solely by `SameSite=Lax`, and now that the cookie confers identity an explicit origin check is worth having as defence in depth; identity is now **per-human, not per-tab**, so closing one of two tabs signed in as the same login removes that human from the roster and reassigns the wheel (recoverable by refresh, belongs in the spec's honest-bounds list); `/healthz` decodes the pathname while `authRoutes` matches raw (no security consequence, but the two guards should agree); the Lobby locked-name branch has no accessible name (`title=` is invisible to keyboard and touch).
 - **A1b unverified surface — the risk lives in the Caddyfile, not the client.** The `wss://` client fix is covered by unit tests AND was exercised for real in a browser (the built bundle ran `socketUrlFor` with `import.meta.env.DEV` false; only the `http:` branch was hit, and the `https:` branch differs solely in which of two string literals a ternary returns). What remains genuinely unproven: WebSocket **upgrade passthrough through Caddy**, `encode gzip` interaction with the WS handshake, and proxy timeouts on a long-lived socket. Spec §6.2 formally reassigns the `tls internal` rehearsal and the real-permission-gate run to A1b rather than leaving them as unmet A1a criteria.
 - **A1b hard blocker — workspace provisioning (see §0).** Not a deploy step; a code change. Must land before any real session runs on a box.
@@ -292,14 +354,15 @@ Suites: **server 297, client 144**, both tsc clean, client build clean. Branch b
 ## 8. Resume & verify
 
 ```bash
-cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # main, ahead 29; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
-git log --oneline -4                          # 9b3b5e7 A3 plan / ed09d9f sign-out merge / 0283e14 A2a merge
-cd poc/server && npx tsc --noEmit && npx vitest run   # tsc clean, 297 passed (~16s)
-cd ../client && npx tsc --noEmit && npx vitest run && npm run build   # tsc clean, 147 passed, build clean
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai && git status -sb   # main, in sync with origin; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
+git ls-remote origin refs/heads/main          # must equal `git rev-parse main` — trust this over origin/main, which can be stale
+git log --oneline -4                          # b8d5652 handoff / 0450c8d A3 merge / 525b069 A3 client / 14c4d00 A3 deviations
+cd poc/server && npx tsc --noEmit && npx vitest run   # tsc clean, 305 passed (~16s)
+cd ../client && npx tsc --noEmit && npx vitest run && npm run build   # tsc clean, 160 passed, build clean
 lsof -ti:3001; lsof -ti:5173                  # both EMPTY unless you started a stack — see §6 for how
 ```
 
-**`main` is ahead 3 of origin** — the three session-#8 docs commits (`5116fe8`, `fc89bdf`, `a358a9c`) were never pushed. Not a problem, but push them when convenient so origin matches.
+**`main` and `origin/main` are identical at `b8d5652`.** Nothing is unpushed. See §7f for the one unexplained thing about how that happened.
 
 **To run Task 8.** Credentials are already on disk and both packages are already built (§7c) — just launch.
 
