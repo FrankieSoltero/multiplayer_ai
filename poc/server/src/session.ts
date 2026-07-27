@@ -6,6 +6,11 @@ export class Session {
   private subscribers = new Set<(e: LoggedEvent) => void>();
   private currentDriverId: string | null = null;
   private participants = new Map<string, string>();
+  // Survives disconnects for the life of the process (spec §4): a founder or
+  // participant who reconnects without a token must not be re-gated by
+  // requireInvite just because presence_leave already removed them from
+  // `participants`. Only grows through a join that was already authorized.
+  private admitted = new Set<string>();
 
   constructor(id: string) {
     this.id = id;
@@ -42,12 +47,21 @@ export class Session {
     }));
   }
 
+  nameOf(userId: string): string | undefined {
+    return this.participants.get(userId);
+  }
+
+  hasBeenAdmitted(userId: string): boolean {
+    return this.admitted.has(userId);
+  }
+
   join(
     userId: string,
     name: string,
     identity?: { glyph?: string; color?: string },
   ): void {
     this.participants.set(userId, name);
+    this.admitted.add(userId);
     this.append({
       type: "presence_join",
       userId,

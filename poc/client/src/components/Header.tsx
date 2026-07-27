@@ -26,6 +26,7 @@ export function Header(props: {
   onOpenSkills: () => void;
   onOpenWorkflows: () => void; runningTasks: number;
   onOpenOversight: () => void; oversightFresh: boolean;
+  onOpenInvite: () => void;
   hud?: HudData;
 }) {
   const hud = props.hud ?? {};
@@ -113,6 +114,13 @@ export function Header(props: {
           title="team oversight (O)"
         >
           {props.oversightFresh ? "▸ OVERSIGHT ●" : "▢ OVERSIGHT"}
+        </button>
+        <button
+          className="planmode"
+          onClick={props.onOpenInvite}
+          title="invite a teammate (I)"
+        >
+          ▢ INVITE
         </button>
         <span className={props.connected ? "conn" : "conn off"}>
           {props.connected ? "● ONLINE" : "○ OFFLINE"}

@@ -18,8 +18,11 @@ import { Cabinet, Crt } from "./components/Crt";
 import { SkillsPanel } from "./components/SkillsPanel";
 import { WorkflowsPanel } from "./components/WorkflowsPanel";
 import { OversightPanel } from "./components/OversightPanel";
+import { InvitePanel } from "./components/InvitePanel";
 import { AgentStatus } from "./components/AgentStatus";
 import { oversightFresh } from "./oversightView";
+import { InviteLanding } from "./components/InviteLanding";
+import { inviteTokenFrom } from "./inviteLink";
 
 const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
 
@@ -34,6 +37,11 @@ export default function App() {
   // URL-only design surface (no nav points at it).
   const [screen, setScreen] = useState<string | null>(() => params.get("screen"));
 
+  // An invite link carries only the token; the landing screen resolves it to a
+  // project/session and hands them back here (spec §5).
+  const inviteToken = useMemo(() => inviteTokenFrom(window.location.search), []);
+  const [inviteTarget, setInviteTarget] = useState<{ projectId: string; sessionId: string } | null>(null);
+
   // Profile precedence: `?name=` URL param auto-derives a profile (glyph/color
   // hashed from userId) and skips the lobby entirely — demo scripts depend on
   // this. Otherwise fall back to a previously saved profile. If neither is
@@ -47,15 +55,20 @@ export default function App() {
     return loadProfile();
   });
 
+  const activeSessionId = inviteTarget?.sessionId ?? sessionId;
+  const activeProjectId = inviteTarget?.projectId ?? projectId;
+
   return (
     <Cabinet legend={LEGEND}>
       <Crt>
-        {sessionId === null ? (
-          <SessionPicker projectId={projectId} />
+        {inviteToken && !inviteTarget ? (
+          <InviteLanding token={inviteToken} onAccept={setInviteTarget} />
+        ) : activeSessionId === null ? (
+          <SessionPicker projectId={activeProjectId} />
         ) : profile === null ? (
           <Lobby
-            projectId={projectId}
-            sessionId={sessionId}
+            projectId={activeProjectId}
+            sessionId={activeSessionId}
             defaultName={`user-${userId.slice(0, 4)}`}
             onEnter={(p) => {
               saveProfile(p);
@@ -63,7 +76,15 @@ export default function App() {
             }}
           />
         ) : (
-          <SessionView userId={userId} sessionId={sessionId} projectId={projectId} profile={profile} screen={screen} onScreenChange={setScreen} />
+          <SessionView
+            userId={userId}
+            sessionId={activeSessionId}
+            projectId={activeProjectId}
+            profile={profile}
+            screen={screen}
+            onScreenChange={setScreen}
+            invite={inviteToken ?? undefined}
+          />
         )}
       </Crt>
     </Cabinet>
@@ -77,14 +98,16 @@ function SessionView(props: {
   profile: Profile;
   screen: string | null;
   onScreenChange: (screen: string | null) => void;
+  invite?: string;
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
-  const { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, oversight, send } = useSessionSocket({
+  const { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, oversight, invites, send } = useSessionSocket({
     sessionId,
     projectId,
     userId,
     profile,
+    invite: props.invite,
   });
 
   const derived = useMemo(() => deriveState(events), [events]);
@@ -175,7 +198,8 @@ function SessionView(props: {
     return () => window.removeEventListener("keydown", onKey);
   }, [isDriver, arcadeCapturing, permissionMode, send, props.screen]);
 
-  // "S" toggles the skills screen; "W" toggles the workflows screen; "O" toggles the oversight screen; Esc always returns to the session.
+  // "S" toggles the skills screen; "W" toggles the workflows screen; "O" toggles the oversight screen;
+  // "I" toggles the invite screen; Esc always returns to the session.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
@@ -193,13 +217,25 @@ function SessionView(props: {
         e.preventDefault();
         props.onScreenChange(props.screen === "oversight" ? null : "oversight");
       }
-      if (e.key === "Escape" && (props.screen === "skills" || props.screen === "workflows" || props.screen === "oversight")) {
+      if ((e.key === "i" || e.key === "I") && !arcadeCapturing) {
+        e.preventDefault();
+        props.onScreenChange(props.screen === "invite" ? null : "invite");
+      }
+      if (
+        e.key === "Escape" &&
+        (props.screen === "skills" || props.screen === "workflows" || props.screen === "oversight" || props.screen === "invite")
+      ) {
         props.onScreenChange(null);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [props.screen, props.onScreenChange, arcadeCapturing]);
+
+  // the invite panel needs a fresh list as soon as it opens.
+  useEffect(() => {
+    if (props.screen === "invite") send({ type: "list_invites" });
+  }, [props.screen, send]);
 
   // per-game party records; glyph/color fall back to hashIdentity like derive.ts
   const partyBests = useMemo(() => {
@@ -300,6 +336,16 @@ function SessionView(props: {
       />
     );
   }
+  if (props.screen === "invite") {
+    return (
+      <InvitePanel
+        invites={invites}
+        onCreate={() => send({ type: "create_invite" })}
+        onRevoke={(id) => send({ type: "revoke_invite", inviteId: id })}
+        onBack={() => props.onScreenChange(null)}
+      />
+    );
+  }
   if (props.screen === "status") {
     return <AgentStatus model={derived.model} canSetModel={canSetModel} onSetModel={onSetModel} rosterCount={derived.skills.length} />;
   }
@@ -324,6 +370,7 @@ function SessionView(props: {
         onOpenWorkflows={() => props.onScreenChange("workflows")}
         onOpenOversight={() => props.onScreenChange("oversight")}
         oversightFresh={oversightFresh(oversight, seenOversightSeq)}
+        onOpenInvite={() => props.onScreenChange("invite")}
         runningTasks={runningTasks}
         hud={hud}
       />

@@ -262,6 +262,24 @@ export function Transcript(props: {
             ✦ {nameOf(ev.userId)} pulled team update #{ev.summarySeq} into the session
           </div>
         );
+      case "invite_created":
+        return (
+          <div key={ev.seq} className="line gold">
+            ✦ {nameOf(ev.userId)} created invite {ev.inviteId}
+          </div>
+        );
+      case "invite_revoked":
+        return (
+          <div key={ev.seq} className="line gold">
+            ✦ {nameOf(ev.userId)} revoked invite {ev.inviteId}
+          </div>
+        );
+      case "invite_redeemed":
+        return (
+          <div key={ev.seq} className="line gold">
+            ✦ {nameOf(ev.userId)} joined via invite {ev.inviteId}
+          </div>
+        );
       default:
         return null; // presence_join/leave, turn_end: no transcript line
     }

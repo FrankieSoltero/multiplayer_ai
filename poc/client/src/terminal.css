@@ -731,3 +731,14 @@ code, pre { font-family: var(--fm); }
 .ovhead { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 .ovhead .spacer { flex: 1; }
 .ovtext { margin-top: var(--sp-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ================================================================ invite landing
+   Landing screen shown when opening a ?invite= link (spec §5). */
+.invland { align-items: center; justify-content: center; display: flex; }
+.invland .panel { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; max-width: 520px; }
+.invhero { color: var(--gold); }
+
+/* ================================================================ invite panel
+   In-session invite screen (spec §5). Same idiom as oversight/workflows. */
+.invrow { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--frame); }
+.invlink { width: 100%; background: #000; color: var(--fg); border: 1px solid var(--frame); font: inherit; padding: 4px 6px; }
