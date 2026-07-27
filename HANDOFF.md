@@ -17,7 +17,9 @@
 
 Project goal: YC Fall 2026 "Multiplayer AI" RFS exploration.
 
-**CURRENT TASK: BLOCKED ON USER REVIEW of PRs #13 and #12. Do not merge either — the user said "leave them open for me to review later today."** When they come back: they review, then merge #13 (oversight → main) FIRST, then #12 rebases/merges onto the new main. If they ask for changes, fix on the relevant branch with normal review discipline.
+**NEXT TASK (requested 2026-07-26, NOT started — needs a fresh session): swap the arcade's Type Race for TETRIS, and add DOODLE JUMP as a fourth game.** User's words: "start setting up Tetris as the final game instead of word type and maybe doodle jump as the fourth as well." Start with superpowers:brainstorming — the "maybe" and the row-height problem below are real open questions, do NOT resolve them silently. Full arcade map + the four blocking design questions are in §4c.
+
+**ALSO STILL OPEN: PRs #13 and #12 await user review. Do not merge either** — the user said "leave them open for me to review later today." When they review: merge #13 (oversight → main) FIRST, then #12 retargets/merges onto the new main. If they ask for changes, fix on the relevant branch with normal review discipline. The arcade work should start on a NEW branch off whatever base the user settles (likely main after #13 merges) — do not pile it onto the invite branch.
 
 **Invite system (PR #12, built + verified this session):** shareable `/?invite=<token>` links, session-scoped, revocable. `InviteStore` (mint/peek/redeem/list/revoke, injected clock, lazy pruning, NO timers — deliberate, so there's no teardown to get wrong); wire = pre-join `peek_invite`→`invite_info`, post-join `create_invite`/`list_invites`/`revoke_invite`→`invite_list`, optional `invite` on `join`, events `invite_created`/`invite_revoked`/`invite_redeemed`; client = `inviteLink.ts` pure helpers, `InviteLanding` before the Lobby, INVITE screen on hotkey I, header button, transcript lines. **Verified live** with `requireInvite: true`: 13/13 wire beats + a browser pass (landing → lobby → session → panel). Demo script: `docs/demos/2026-07-26-invite-and-oversight.md`.
 
@@ -56,8 +58,9 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 
 ## 4. Ordered next steps (fresh session)
 
-1. Verify state per §8. We are ON `feature/invite-system` (tip `3715147`). No stacks running; if one was restarted, `lsof -ti:3001` first and never kill/switch-branch while attached.
-2. **WAIT for the user's PR review.** Do not merge #13 or #12 — explicit instruction. If they approve: merge #13 first (oversight → main), then retarget/merge #12.
+1. Verify state per §8. We are ON `feature/invite-system` (tip `e746959`). No stacks running; if one was restarted, `lsof -ti:3001` first and never kill/switch-branch while attached.
+2. **START HERE: the arcade work (§4c) — Tetris replacing Type Race, Doodle Jump as the fourth.** Invoke superpowers:brainstorming and put §4c's four design questions to the user, question by question. The row-height one (#1) is the fork everything else hangs off. Then spec → plan → SDD, on a NEW branch off the base the user picks.
+3. **WAIT for the user's PR review.** Do not merge #13 or #12 — explicit instruction. If they approve: merge #13 first (oversight → main), then retarget/merge #12.
 3. The oversight feature has still never been demoed live (the user skipped that checkpoint by asking for the PR). The combined demo script covers both features — `docs/demos/2026-07-26-invite-and-oversight.md` beats 9-11 are the oversight half. Worth running when they're back.
 4. Then next roadmap item: v6b (interrupt rail / fleet, banked §3b) or deployment week-1 build items (§3d) — user's call.
 5. Optional tidy: delete merged remote branches (`feature/v6c-plugins`, `feature/slash-autocomplete-v2`, `feature/workflows-screen`, `feature/session-launcher`) — permission-blocked for agent, user can; deferred minors in §7.
@@ -68,6 +71,30 @@ Live session-scoped view of SDK subagent/task lifecycle: relay forwards `task_st
 - **Client:** `inviteLink.ts` (pure: `inviteLinkFor`, `inviteTokenFrom`, `seatsLeftLabel` single-source-of-truth :439-443, `seatsLabel` built on it, `expiryLabel`); `types.ts:115-117,120-128`; `useSessionSocket.ts:53` (token into join payload), `:196-197` (`invite_list` → state); `components/InviteLanding.tsx` (throwaway socket `peek_invite`, error/loading states); `components/InvitePanel.tsx` (no driver gate :21-58, link input :46); `App.tsx:42` (`inviteTokenFrom`), `:64-67` (landing branch FIRST), `:99-106` (hotkey I inside the S/W/O effect so it inherits the input-focus guard; Esc), `:114-117` (list refresh on open), `:140-149` (screen branch); `components/Header.tsx:118-124`; `components/Transcript.tsx:265-282`; `terminal.css` (`.invland`, `.invhero`, `.invrow`, `.invlink`).
 - **Tests:** `poc/server/test/invites.test.ts` (16), invite wire tests in `server.test.ts` (9), `poc/client/src/inviteLink.test.ts` (8).
 - **Docs:** spec `docs/superpowers/specs/2026-07-26-invite-system-design.md` (§7 = the honest security bound; §9 = every decision + why), plan `docs/superpowers/plans/2026-07-26-invite-system.md` (Deviations records both spec amendments), demo `docs/demos/2026-07-26-invite-and-oversight.md`.
+
+## 4c. ARCADE — map for the Tetris / Doodle Jump work (mapped 2026-07-26, nothing built yet)
+
+**What exists.** All games in `poc/client/src/game/`, all pure text engines — **no canvas, no React, no DOM**. `dino.ts` (85 ln), `snake.ts` (118), `typerace.ts` (78 — this IS "word type": key `"typerace"`, label `"TYPE RACE"`, export `typeRaceEngine`), plus `engine.ts` (44) holding the shared contract. **There is already a 4th roster slot with no engine: `"breakout"`** — it renders "cartridge not inserted" (`ThinkingStrip.tsx:20`, fallback `:231-235`). So the user's "fourth" likely means filling that slot rather than adding a fifth; `.carts` CSS even hardcodes `repeat(4, 1fr)` (`terminal.css:434-443`, currently unused).
+
+**The contract** (`poc/client/src/game/engine.ts:7-25`) — a new game implements: `key`, `label`, `rows`, optional `capturesText`, `init(seed)`, `tick(s, dt)`, `input(s, key)`, `render(s) → string[]`, `score(s)`, `over(s)`, `hint(s, playing)`. Host `ThinkingStrip.tsx` drives everything: RAF loop with `dt` clamped to 0.05s (`:125-137`), SPACE starts (`:155-160,179-183`), polls `over()` (`:140-153`), forwards raw `e.key` (`:186`), sends the synthetic `"click"` on lane click (`:226`). Engines must be **deterministic from the seed** (`lcg` at `engine.ts:5`; every game test asserts it). `render` must return exactly `rows` strings each exactly **`LANE_WIDTH = 40`** chars (`engine.ts:3`).
+
+**Two registries, both hand-edited, NOT derived from each other:**
+1. Client roster literal — `ThinkingStrip.tsx:17-22` (`engine?` optional = "not implemented yet").
+2. Server allowlist — `poc/server/src/events.ts:11-12` (`ARCADE_GAMES`, `ArcadeGame`). Also `events.ts:35` (`game_score` arm), `server.ts:714` (validation), **`server.ts:716` has the game list HARDCODED in the error string** (`"game_score requires game: dino|snake|typerace"`) — it does not read `ARCADE_GAMES`, so it will silently go stale. Also `ThinkingStrip.tsx:48,52,69,70` hardcode `"dino"` as the default/initial game.
+
+**Scores.** `App.tsx:408` sends `game_score` → `server.ts:711-729` (validates game ∈ allowlist, integer 1..`MAX_GAME_SCORE` 99999, stamps `userId` from the connection so it can't be spoofed, no driver gate — passengers may score) → `arcadeRecords()` (`project.ts:51-79`) aggregates **best-per-game keyed by the game id string** → snapshot `arcade` field → `ThinkingStrip.tsx:195,212-218` renders `partyBests[game]`. Personal best in localStorage `mpai-${game}-high` (`ThinkingStrip.tsx:8`). `settleRun` (`engine.ts:34-44`) gates one submission per run, only on a personal best.
+
+**Hotkey capture is automatic** — any engine-bearing slot sets `capturing` while playing (`ThinkingStrip.tsx:94-99`) → `App.tsx:153 arcadeCapturing` → suppresses S/W/O/I/M and transcript a/d. A new game needs **no** wiring for this. Only set `capturesText: true` if it consumes printable letters (Type Race does; Tetris and Doodle Jump on arrows/space do not). **Shift+Tab must never be captured** (v6a accessibility ruling, `docs/superpowers/specs/2026-07-25-v6a-modes-skills-design.md:12`).
+
+**Styling.** One `<pre className="lane">` (`ThinkingStrip.tsx:222-230`); CSS at `terminal.css:405-453`. Palette tokens `terminal.css:19-42`. Rule (`terminal.css:5-17`): pixel face `.pix` for chrome ONLY, mono for all lane content. No blur anywhere.
+
+**Tests.** Pure-function extraction + vitest, per game: `dino.test.ts`, `snake.test.ts`, `typerace.test.ts`, `engine.test.ts`. Every one asserts seed determinism, row count === `rows`, and each row length === `LANE_WIDTH`. **`ThinkingStrip.tsx` itself is entirely untested** (roster, swap, keyboard, capture flag, RAF, localStorage) — and that is exactly the gap that caused the swap crash in `docs/mistakes-and-fixes.md:9-14`, whose recorded lesson is that pure tests + a clean build cannot catch it: **drive the real UI once before calling it done.**
+
+**FOUR BLOCKING DESIGN QUESTIONS — brainstorm these with the user first, do not decide alone:**
+1. **Row height is the hard one.** Existing games use 2-5 rows (`dino` 2, `snake` 5, `typerace` 3) in a 40-col lane. Real Tetris is ~20 rows × 10 cols and Doodle Jump is tall-vertical. A 20-row lane changes the thinking-strip's whole footprint — it currently sits as a slim strip under the transcript. Options to put to the user: squat/rotated playfield, a much taller lane just for these games, or a different presentation surface. This decides whether the existing `rows` contract survives unchanged.
+2. **Does Type Race get deleted or just unlisted?** Scores are keyed by game id string, so dropping `"typerace"` from `ARCADE_GAMES` orphans existing `game_score` history and any `arcadeRecords` entry for it. Decide: remove entirely (and accept orphaned records), or keep the id valid on the wire while removing it from the client roster.
+3. **Does Doodle Jump take the empty `"breakout"` slot** (keeping the roster at 4, matching the `repeat(4, 1fr)` CSS) **or become a 5th** (and does `breakout` then get dropped)?
+4. **Determinism vs. real gameplay.** Every existing engine is a pure `tick(s, dt)` seeded by an LCG, and the tests enforce it. Tetris piece sequences and Doodle Jump platform generation must come from the seeded PRNG, not `Math.random()` — confirm that's acceptable for feel before building.
 
 ## 5. Oversight — files with line refs (oversight branch tip `8fbd7cf`, all SHIPPED)
 
