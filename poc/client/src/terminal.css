@@ -252,10 +252,14 @@ code, pre { font-family: var(--fm); }
 
 /* ------------------------------------------------------------------ header */
 
+/* wrap, don't clip: `white-space: nowrap` stops the buttons shrinking below
+ * their label, so a nowrap row silently amputated whatever ran past the frame
+ * — INVITE and ONLINE were fully clipped and OVERSIGHT nearly so once the
+ * button set grew. Same wrapping idiom as .statusline / .roster / .thinking-head. */
 .term-header {
   display: flex; align-items: center; gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
-  color: var(--dim); white-space: nowrap; overflow: hidden;
+  color: var(--dim); white-space: nowrap; overflow: hidden; flex-wrap: wrap;
 }
 .term-header .crumb b { color: var(--fg); font-weight: 600; }
 .term-header .crumb .sep { color: var(--frame); }
