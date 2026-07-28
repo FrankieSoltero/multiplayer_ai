@@ -1,5 +1,5 @@
-import { describe, expect, test } from "vitest";
-import { pickerUrlFrom } from "./pickerUrl";
+import { describe, expect, it, test } from "vitest";
+import { entranceUrl, pickerUrlFrom } from "./pickerUrl";
 
 describe("pickerUrlFrom", () => {
   test("drops the session so the app routes to the picker", () => {
@@ -28,5 +28,11 @@ describe("pickerUrlFrom", () => {
 
   test("tolerates an empty query string", () => {
     expect(pickerUrlFrom("")).toBe("");
+  });
+});
+
+describe("entranceUrl", () => {
+  it("drops every parameter — the entrance is the hub root", () => {
+    expect(entranceUrl()).toBe("");
   });
 });

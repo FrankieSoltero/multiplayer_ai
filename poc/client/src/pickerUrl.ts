@@ -14,3 +14,11 @@ export function pickerUrlFrom(search: string): string {
   if (project !== null && project !== "default") next.set("project", project);
   return next.toString();
 }
+
+/** The entrance is the hub root: no session, no project, no invite. Returning
+ *  the empty string rather than building from `search` is deliberate — the
+ *  entrance must never inherit a stale `project` or `invite` param, which
+ *  would bounce the user straight back into what they just left. */
+export function entranceUrl(): string {
+  return "";
+}
