@@ -65,10 +65,15 @@ cannot answer `create_session` itself — provisioning a worktree requires the r
 machine has. It cannot use the existing `tunnel()` either, which presupposes a joined session
 (`hub.ts:285`).
 
-**P6 — Session identity is scoped by machine.** *Why:* today two people naming a session `auth` in
-one project means the second is refused outright (`hubStore.ts:100-108`). With the hub minting
-sessions it can disambiguate instead of refusing. The refusal itself stays — it is the correct
-answer to a genuine ownership conflict — but it stops being reachable through ordinary use.
+**P6 — The client disambiguates a colliding session name before sending; the hub validates and the
+store's refusal stays.** *Why:* today two people naming a session `auth` in one project means the
+second is refused outright (`hubStore.ts:100-108`). The obvious fix — have the hub rename it — was
+**rejected during planning because it breaks §5.3**: the hub would have to rewrite the payload it
+is contractually required to forward untouched, and a router that edits semantics is not a router.
+Instead the browser, which already holds the full session list, picks a free name before sending
+(`auth` → `auth-2`), so the message the hub forwards is already correct. The hub still validates
+and refuses a genuine conflict — that guard is right — but the refusal stops being reachable
+through ordinary use.
 
 **P7 — The full-bleed relayout ships first, inside this section.** *Why:* PRD §5.1 — at 1296px the
 project screen has room for one column, which is why today's picker is a flat list. Building these
@@ -200,10 +205,16 @@ idempotence is what makes a retried create safe.
 
 ### 5.4 Session identity scoping (P6)
 
-`setFacts`'s ownership refusal (`hubStore.ts:100-108`) is correct and stays. What changes is that
-the hub, minting the session, disambiguates a name already taken by *another* machine in the same
-project rather than letting the collision reach the store. Same machine, same name still acks
-idempotently.
+`setFacts`'s ownership refusal (`hubStore.ts:100-108`) is correct and stays untouched.
+
+Disambiguation happens **in the browser, before the message is sent** — it already has every
+session in the project and their owning machines, so it can pick the first free name (`auth` →
+`auth-2`). This keeps §5.3's byte-identical forwarding intact. The hub then validates that the
+requested name is free for a *different* machine and refuses if not; same machine, same name still
+acks idempotently through the laptop's existing handler (`server.ts:612-616`).
+
+Naming is therefore a pure function of the session list and a desired name, which makes it a
+logic-module test rather than a UI one — see §8.
 
 ---
 
@@ -244,8 +255,14 @@ and bundling them makes one large change out of two clean ones.
   anywhere that runs a real `relay.ts` against a real `hub.ts`, and the regression net for this
   seam. Creating a session through the hub and landing in it is exactly the kind of cross-component
   path that the per-component tests missed once before.
-- **Client:** entrance list rendering and sort; project screen grouping with one repo and with
-  several; spectator view has no action controls (absent, not disabled); create → land-in-session.
+- **Client:** entrance list sort and summary; project screen grouping with one repo and with
+  several; the spectator predicate; free-name selection (P6); create → land-in-session.
+
+  **Client tests are pure-logic modules, never component renders.** This repo has no
+  testing-library and no DOM environment — all 207 client tests are `.test.ts` over extracted
+  modules (`sessionState.ts`, `sessionRow.ts`, `pickerUrl.ts`), a pattern `sessionRow.ts:3-4`
+  states outright. Every decision in this section must therefore live in a module a test can call,
+  with the `.tsx` left thin.
 - **Layout:** the page itself never scrolls at narrow and wide widths.
 
 **A standing countermeasure, because this plan has now had three tests that could not fail for the
