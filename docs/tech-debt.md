@@ -106,6 +106,37 @@ a bare `mkdir`: failing loudly beats an agent silently working in an empty direc
 Blocks A1b. Dissolved for the hub (which provisions nothing) but still live for standalone
 `mpai`.
 
+### 2.3 A hub-attached laptop cannot reclaim its own sessions after a restart
+
+`poc/server/src/cli.ts` passes no `uplinkId`, so `poc/server/src/server.ts`'s relay construction
+mints a fresh `randomUUID()` on **every** launch. The hub keys session ownership on `uplinkId`
+(`poc/hub/src/hubStore.ts` — `HubSession.uplinkId`, `ownerOf`, and `snapshot`'s
+`presence` lookup), so after `mpai --hub` is restarted:
+
+- every session the previous run owned stays bound to the now-`online:false` uplink and reads
+  `offline` forever, with no machine able to adopt it; and
+- if the restarted laptop re-creates a session with the same id, `setFacts` returns
+  `session "<id>" ... is already owned by another machine` and `hub.ts`'s `facts` handler closes
+  the uplink with 1008 — a same-machine restart is indistinguishable from the two-laptop
+  collision that error was written for.
+
+Observed live during v7b1 Task 8's two-process walk (2026-07-28); the hub logged the refusal
+once per project push and the laptop reconnected into it each time. Fixing it needs a stable
+per-repo uplink identity (persisted beside `.mpai/`, or derived from `repoKey` + machine id) and
+an ownership takeover rule for a reconnecting owner — a protocol decision, deliberately not
+invented inside Task 8. Also the reason spec §3.2's "runId trap" could not be exercised at all:
+the laptop never re-adopts the session, so a second run is never appended.
+
+### 2.4 The hub refuses a `join` to an offline session, so its stored history is unreachable
+
+`poc/hub/src/hub.ts`'s browser `join` handler answers
+`no machine is running session "<id>" right now` and returns **before** the replay from
+`store.eventsFor`. The hub holds the whole transcript (that is the stated payoff of keeping
+sessions after `detach`), but no browser can read it once the owning laptop is offline: the
+picker row renders `OFFLINE`, JOIN still navigates, and the session view opens empty with
+`PARTY · 0`. Observed live during Task 8's walk (item 6). The fix is to replay and snapshot
+first and only refuse the *drive/approve* paths, which `tunnel()` already does on its own.
+
 ---
 
 ## 3. Test coverage gaps
@@ -135,6 +166,17 @@ truth per item:
 - Arrow-navigation deferred items — HANDOFF §7.
 - Carried v3–v6c items (worktree-containment approvals, Bash-allowlist two-hop risk,
   frontend-design polish, meta-tools bypass) — HANDOFF §7 tail.
+- **v7 scrub candidates: `poc/server/src/auth.ts` and `poc/server/src/staticFiles.ts` go dead
+  for hub-attached `mpai` once v7b2 lands.** The hub serves the client and (from v7b2) owns
+  sign-in, so a laptop launched with `--hub` needs neither. Both stay live for standalone
+  `mpai`, so this is a scrub-pass question ("is standalone still a supported mode?"), not a
+  deletion — noted per the v7b1 plan's closing checklist.
+- **The client never reconnects its session WebSocket** (`poc/client/src/useSessionSocket.ts` —
+  `ws.onclose = () => setConnected(false)`, no retry). Pre-existing and equally true standalone,
+  but the hub makes it load-bearing: a hub restart strands every browser on a dead socket showing
+  a stale roster and live-looking APPROVE buttons that silently do nothing (the click logs
+  `WebSocket is already in CLOSING or CLOSED state`). Only a manual reload recovers. Observed
+  during v7b1 Task 8's walk, item 4.
 
 ---
 
