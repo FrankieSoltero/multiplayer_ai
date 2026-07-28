@@ -10,28 +10,31 @@ The `v7a → v7b1 → … → v7e` chain is **dead**; PRD §8 has ten named sect
 brainstorm → spec → plan. Session #16 wrote the PRD. **Session #17 executed all 13 tasks of the
 first section**, `docs/superpowers/plans/2026-07-28-projects.md`, via subagent-driven-development.
 
-### ⛔ THE ONE THING BLOCKING THE PR — read this before anything else
+### ✅ SOLO-MODE DECISION MADE (user, session #17): **option 1+, and the entrance STAYS**
 
-**Solo mode's landing page dead-ends, and the fix is a product choice only you should make.**
+The problem it resolves: `cli.ts:142,153` auto-opens `http://localhost:PORT/` (no `?project=`) for
+every non-hub launch; that URL routes to `ProjectPicker`, which sends `identify` /
+`list_projects` / `create_project` — and `poc/server/src/server.ts` implements none of them, so all
+three hit its `unknown message type` catch-all at `server.ts:986`. The **project screen has the same
+problem**: `SessionPicker.tsx:31,33` sends `identify`/`list_projects` unconditionally too, so
+routing alone could never have fixed this — **the standalone server had to tolerate these messages
+either way.** That is what collapsed the choice.
 
-`cli.ts:142,153` auto-opens `http://localhost:PORT/` (no `?project=`) for every non-hub launch.
-That URL now routes to the new `ProjectPicker`, which sends `identify` / `list_projects` /
-`create_project` — and `poc/server/src/server.ts` implements **none** of them, so all three hit its
-`unknown message type` catch-all at `server.ts:986`. A solo user gets an error banner and an empty
-list with no in-app way back to their sessions.
+**The ruling — "1+":**
+1. `cli.ts` opens `?project=default` for non-hub launches, so the normal solo path never depends on
+   the entrance.
+2. The standalone server **tolerates and answers** the entrance messages rather than erroring:
+   `identify` sets identity exactly as the hub does (keeps the two servers' protocols from diverging
+   further), and `list_projects` answers with its single project.
+3. **The entrance stays reachable and functional in solo** — a bare `localhost:PORT/` lands on a
+   one-item entrance, not a dead end. This was the user's explicit call.
+4. Clean up the two solo cosmetics in the same pass: the head reading `0 MACHINES` and the repo
+   `<select>` rendering zero options, both because `machines` is hub-only.
 
-**The final review found a second half to this:** `SessionPicker` (the project screen) *also* sends
-`identify` / `list_projects` unconditionally (`SessionPicker.tsx:31,33`). So whichever option you
-pick must cover the **project screen too**, not just the entrance. Option 1 alone does not.
-
-| Option | What it costs | What it leaves broken |
-|---|---|---|
-| **1. CLI opens `?project=default`** *(recommended)* | one line in `cli.ts` | a hand-typed/bookmarked bare `localhost:PORT/`; and the project screen's own `identify`/`list_projects` still error |
-| **2. Standalone server answers the entrance messages** (`list_projects` → its one project, `identify` no-op) | more code, touches `server.ts`, outside both briefs | nothing — but puts a one-item list in front of solo users with nothing to choose |
-| **3. Client detects standalone** | fragile — the client cannot know until a message has already failed | — |
-
-Recommendation stands at **1** for minimal reversible change, **2** if you want every URL live.
-Nothing else is blocked by this. **Once you rule, the remaining work is Task 13 only** (below).
+⚠️ **Open sub-question for whoever implements it:** what `create_project` does on a standalone
+server. If `server.ts` already keys sessions by `projectId` (the `--project` flag suggests it does),
+creating one is nearly free and the entrance is genuinely functional. If it does not, **refuse it
+with a legible message** — never ship a NEW PROJECT button that silently does nothing.
 
 ### What is done — 25 commits, pushed, `feature/projects` = `origin/feature/projects` = `c302dce`
 
