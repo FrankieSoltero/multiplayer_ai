@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseClientCommand } from "./clientCommands";
+import { parseClientCommand, shouldSubmitOverMenu } from "./clientCommands";
 
 describe("parseClientCommand", () => {
   test("recognises /exit", () => {
@@ -41,5 +41,24 @@ describe("parseClientCommand", () => {
   test("returns null for empty input", () => {
     expect(parseClientCommand("")).toBeNull();
     expect(parseClientCommand("   ")).toBeNull();
+  });
+});
+
+describe("shouldSubmitOverMenu", () => {
+  test("/exit submits rather than accepting the highlighted skill", () => {
+    expect(shouldSubmitOverMenu("/exit")).toBe(true);
+  });
+
+  test("/exits and /exit-plan still accept from the menu normally", () => {
+    expect(shouldSubmitOverMenu("/exits")).toBe(false);
+    expect(shouldSubmitOverMenu("/exit-plan")).toBe(false);
+  });
+
+  test("a non-command like /ski still accepts from the menu", () => {
+    expect(shouldSubmitOverMenu("/ski")).toBe(false);
+  });
+
+  test("agrees with parseClientCommand for whitespace and case", () => {
+    expect(shouldSubmitOverMenu("  /EXIT  ")).toBe(true);
   });
 });

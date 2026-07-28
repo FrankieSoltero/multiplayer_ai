@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { matchSkills, moveHighlight } from "../slashMatch";
-import { parseClientCommand, type ClientCommand } from "../clientCommands";
+import { parseClientCommand, shouldSubmitOverMenu, type ClientCommand } from "../clientCommands";
 
 export function PromptBar(props: {
   isDriver: boolean; agentBusy: boolean; watcherNames: string[];
@@ -73,7 +73,11 @@ export function PromptBar(props: {
       if (e.key === "ArrowDown") { e.preventDefault(); setHighlight((h) => moveHighlight(h, 1, matches.length)); return; }
       if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => moveHighlight(h, -1, matches.length)); return; }
       if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); accept(sel.name); return; } // Shift+Tab stays reverse focus traversal (accessibility floor, v6a ruling)
-      if (e.key === "Enter") { accept(sel.name); return; }
+      // A reserved client command (currently just /exit) wins over the menu
+      // even when it's open and highlighting a skill — falls through to the
+      // plain Enter branch below, which reaches submit(). See
+      // shouldSubmitOverMenu / clientCommands.ts.
+      if (e.key === "Enter" && !shouldSubmitOverMenu(text)) { accept(sel.name); return; }
       if (e.key === "Escape") { setDismissed(true); return; }
     }
     if (e.key === "Enter") submit();

@@ -2423,4 +2423,44 @@ describe("session lifecycle", () => {
 
     wsBen.close();
   });
+
+  it("refuses take_wheel from someone who has left but is still connected", async () => {
+    // leave_session deliberately does not null ctx (that would skip
+    // ctx.unsubscribe() / ctx.project.watchers.delete(ws) and leak both), so
+    // a departed-but-connected socket is reachable — e.g. a second tab of the
+    // same signed-in user, since auth replaces userId with the verified
+    // login. Without this guard that socket could take the wheel while
+    // absent from the roster, and every other surface would show a turn
+    // running with no driver named.
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    // Ben leaves deliberately but keeps his socket open.
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    seenBen.length = 0;
+    wsBen.send(JSON.stringify({ type: "take_wheel" }));
+    await wait(200);
+
+    expect(seenBen.some((m: any) => m.type === "error")).toBe(true);
+    expect(seenBen.some((m: any) => m.event?.type === "control_change" && m.event.userId === "u2")).toBe(false);
+
+    // Ana, the sole remaining participant, is still the driver.
+    const row = lastProject(seenAna).sessions.find((s: any) => s.id === "s");
+    expect(row.driverName).toBe("Ana");
+
+    wsAna.close();
+    wsBen.close();
+  });
 });

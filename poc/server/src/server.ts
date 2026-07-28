@@ -572,6 +572,15 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "take_wheel") {
+        // leave_session deliberately leaves ctx live (nulling it would skip
+        // ctx.unsubscribe() / ctx.project.watchers.delete(ws) and leak both),
+        // so a departed user can still be connected here — e.g. a second tab
+        // of the same signed-in user, since auth replaces userId with the
+        // verified login. Without this guard they could drive while absent
+        // from the roster, with every surface showing no driver named.
+        if (!ctx.entry.session.nameOf(ctx.userId)) {
+          return sendError("you have left this session");
+        }
         ctx.entry.session.takeWheel(ctx.userId);
         return;
       }

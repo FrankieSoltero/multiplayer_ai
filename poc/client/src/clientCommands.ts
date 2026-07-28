@@ -18,3 +18,15 @@ export function parseClientCommand(text: string): ClientCommand | null {
   if (text.trim().toLowerCase() === "/exit") return { type: "exit" };
   return null;
 }
+
+/** Whether Enter should bypass the slash-autocomplete menu and reach
+ *  `submit()` even while the menu is open with a highlighted match. True only
+ *  for an exact reserved command (see `parseClientCommand`) — a real skill
+ *  name, or a longer name that merely starts with a reserved word (e.g.
+ *  `/exit-plan-mode`), must still accept from the menu as normal. Pulled out
+ *  as a pure predicate so `PromptBar`'s `onKeyDown` has something testable to
+ *  consult: this repo has no component-test infrastructure, so logic left
+ *  inline in the keydown handler would ship untested. */
+export function shouldSubmitOverMenu(text: string): boolean {
+  return parseClientCommand(text) !== null;
+}
