@@ -767,3 +767,115 @@ describe("hub project registry", () => {
     ws.close();
   });
 });
+
+describe("hub routed create_session", () => {
+  async function member(port: number, projectId: string, userId = "ana") {
+    const ws = await connect(`ws://127.0.0.1:${port}`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId, name: userId }));
+    ws.send(JSON.stringify({ type: "join_project", projectId }));
+    await wait(40);
+    seen.length = 0;
+    return { ws, seen };
+  }
+
+  it("forwards the create to the machine offering that repo, byte-identical", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const { ws } = await member(hub.port, "default");
+    upSeen.length = 0;
+    // "Billing Service" slugifies to "billing-service" — deliberately
+    // different from the raw `name`, so this test can only pass if the
+    // forwarded payload is the untouched original, not a rewritten one.
+    const create = { type: "create_session", projectId: "default", name: "Billing Service", repoKey: "k" };
+    ws.send(JSON.stringify(create));
+    await wait(50);
+    const tunnelled = upSeen.find((f) => f.t === "tunnel");
+    expect(tunnelled).toBeTruthy();
+    expect(tunnelled.payload).toEqual(create);
+    expect(tunnelled.identity).toEqual({ userId: "ana", name: "ana" });
+    up.close();
+    ws.close();
+  });
+
+  it("errors when no online machine offers that repo", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const { ws, seen } = await member(hub.port, "default");
+    ws.send(JSON.stringify({
+      type: "create_session", projectId: "default", name: "billing", repoKey: "not-here",
+    }));
+    await wait(40);
+    expect(seen[0].type).toBe("error");
+    expect(seen[0].message).toContain("not-here");
+    up.close();
+    ws.close();
+  });
+
+  it("errors rather than forwarding when the owning machine has gone offline", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const { ws, seen } = await member(hub.port, "default");
+    up.close();
+    await wait(60);
+    ws.send(JSON.stringify({
+      type: "create_session", projectId: "default", name: "billing", repoKey: "k",
+    }));
+    await wait(40);
+    // Message text, not just type: an unjoined connection's unrecognized-type
+    // fallthrough (`tunnel()` -> "join a session first") also produces
+    // `{ type: "error" }`, so a type-only assertion would pass even with
+    // create_session unimplemented. This message is specific to the "no
+    // online machine offers this repo" branch, the same one "not-here" hits.
+    expect(seen[0].message).toBe('no machine is offering repo "k" right now');
+    ws.close();
+  });
+
+  it("refuses a non-member — participation is membership-scoped", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const ws = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId: "bo", name: "bo" }));
+    await wait(30);
+    seen.length = 0;
+    ws.send(JSON.stringify({
+      type: "create_session", projectId: "default", name: "billing", repoKey: "k",
+    }));
+    await wait(40);
+    // Message text, not just type: bo is identified but has joined no
+    // session, so the fallthrough to tunnel()'s "join a session first" also
+    // produces `{ type: "error" }` and would pass a type-only check even
+    // without an isMember guard on create_session.
+    expect(seen[0].message).toBe("join this project before creating a session");
+    up.close();
+    ws.close();
+  });
+
+  it("refuses a session name already owned by a different machine", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port, "auth", "lap-1");
+    const second = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    second.send(JSON.stringify({
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-2", projectId: "default", repoKey: "k2",
+    }));
+    await wait(40);
+    const { ws, seen } = await member(hub.port, "default");
+    ws.send(JSON.stringify({
+      type: "create_session", projectId: "default", name: "auth", repoKey: "k2",
+    }));
+    await wait(40);
+    expect(seen[0].type).toBe("error");
+    expect(seen[0].message).toContain("auth");
+    up.close();
+    second.close();
+    ws.close();
+  });
+});

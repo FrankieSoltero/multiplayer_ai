@@ -442,6 +442,47 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         return;
       }
 
+      /** Routed to a machine, not answered here: provisioning a worktree needs
+       *  the repo, which only a machine has. It cannot use `tunnel()` either —
+       *  that presupposes a joined session (spec P5).
+       *
+       *  The payload is forwarded UNTOUCHED (`DownFrame`'s contract). The
+       *  browser has already picked a free name (spec P6); this only refuses a
+       *  name a different machine owns. The `session_created` reply needs no
+       *  handling here: the laptop answers over `reply` (relay.ts:252) and the
+       *  uplink plane already narrowcasts it back to this channel. */
+      if (msg?.type === "create_session") {
+        if (!channel.identity) return error("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) return error("create_session requires a valid projectId");
+        if (!store.isMember(projectId, channel.identity.userId)) {
+          return error("join this project before creating a session");
+        }
+        if (store.lifecycleOf(projectId) !== "active") {
+          return error(`project "${projectId}" is not open`);
+        }
+        if (typeof msg.name !== "string" || msg.name.length === 0) {
+          return error("create_session requires name");
+        }
+        const repoKey = typeof msg.repoKey === "string" ? msg.repoKey : "";
+        if (!repoKey) return error("create_session requires repoKey");
+        const target = store
+          .machinesIn(projectId)
+          .find((m) => m.online && m.repoKey === repoKey);
+        const uplink = target ? uplinks.get(target.machineId) : undefined;
+        if (!target || !uplink) {
+          return error(`no machine is offering repo "${repoKey}" right now`);
+        }
+        const desired = slugify(msg.name.slice(0, 200));
+        if (!desired) return error("create_session requires a usable name");
+        const owner = store.ownerOf(projectId, desired);
+        if (owner !== null && owner !== target.machineId) {
+          return error(`session "${desired}" is already used by another machine in this project`);
+        }
+        down(uplink, { t: "tunnel", channelId, identity: channel.identity, payload: msg });
+        return;
+      }
+
       if (HUB_HANDLED.has(msg?.type)) {
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
         if (!SLUG.test(projectId)) return error(`${msg.type} requires a valid projectId`);
