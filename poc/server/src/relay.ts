@@ -54,13 +54,27 @@ interface Tracked {
 
 export class Relay {
   private socket: RelaySocket | null = null;
-  private open = false;
+  /** True only between `welcome` and the socket's death — NOT from `open`.
+   *
+   *  The distinction is the whole of the reconnect correctness argument. A
+   *  socket is `open` one full round trip before `welcome` lands, and the hub
+   *  keys accepted events on a per-session HIGH-WATER MARK
+   *  (`hubStore.publish`'s `seq <= session.lastSeq` skip), not on the set of
+   *  (runId, seq) pairs it has seen. Those two are equivalent only for frames
+   *  that arrive in seq order. An event written inside the open→welcome window
+   *  arrives BEFORE the gap replay that the already-in-flight `welcome`
+   *  authorises — it advances the hub's mark past the whole outage backlog,
+   *  and every replayed frame is then discarded as "already seen". The laptop
+   *  believes it synced; the hub, and every browser it serves, has a permanent
+   *  hole. Gating `emit` on `ready` instead buffers those frames, and the
+   *  welcome branch's replay (which reads the live log) carries them in order. */
+  private ready = false;
   private stopped = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private tracked = new Map<string, Tracked>();
   private channels = new Map<string, { handleMessage: (msg: any) => void; close: () => void }>();
-  /** Frames produced before the socket was ready, each with the JSON size it
-   *  was measured at. Bounded by MAX_FRAME_BYTES worth of accumulated JSON so
+  /** Frames produced before the socket was ready, each with the JSON size in
+   *  BYTES it was measured at. Bounded by MAX_FRAME_BYTES worth of JSON so
    *  a hub that never comes up cannot grow the laptop's memory without limit;
    *  the size rides along so eviction never has to re-stringify. */
   private pending: { frame: UpFrame; size: number }[] = [];
@@ -92,7 +106,7 @@ export class Relay {
     this.channels.clear();
     this.socket?.close();
     this.socket = null;
-    this.open = false;
+    this.ready = false;
     // Frames buffered in this life must not surface in the next one: after a
     // stop()/start() pair the next `welcome` would otherwise flush facts and
     // replies belonging to a session state that has since moved on.
@@ -131,6 +145,10 @@ export class Relay {
   }
 
   private connect(): void {
+    // Belt and braces: every path into `connect()` already cleared this, but a
+    // new socket is unambiguously not handshaken and nothing may be written
+    // live until its `welcome` lands.
+    this.ready = false;
     const connect = this.opts.connect ?? defaultConnect;
     const socket = connect(this.opts.hubUrl);
     this.socket = socket;
@@ -139,11 +157,13 @@ export class Relay {
     // stop()/start() pair delivers the OLD socket's close after the new one is
     // already assigned. Unguarded, that stale handler nulls `this.socket`,
     // tears down the new socket's channels, and leaves `write` sending into
-    // the void for the rest of the process's life — with `open` still true.
+    // the void for the rest of the process's life — with `ready` still true.
     const isCurrent = () => socket === this.socket;
     socket.on("open", () => {
       if (!isCurrent()) return;
-      this.open = true;
+      // Deliberately does NOT set `ready`. `hello` is written directly because
+      // it is the one frame that must precede the handshake; everything else
+      // waits for `welcome`. See the `ready` field's note.
       this.write({
         t: "hello",
         v: RELAY_PROTOCOL_VERSION,
@@ -157,7 +177,7 @@ export class Relay {
     });
     socket.on("close", () => {
       if (!isCurrent()) return;
-      this.open = false;
+      this.ready = false;
       this.socket = null;
       // Every channel's browser is now unreachable from here. Dropping them
       // fires the same leave path a closed direct socket does, so the roster
@@ -205,6 +225,10 @@ export class Relay {
           this.write(out);
         }
       }
+      // Only now may `emit` write live. Set BEFORE flush() so the buffered
+      // frames go out on the same path everything after them takes, and AFTER
+      // the replay so the hub's high-water mark advances in seq order.
+      this.ready = true;
       this.flush();
       return;
     }
@@ -236,17 +260,18 @@ export class Relay {
   }
 
   private emit(frame: UpFrame): void {
-    if (this.open) {
-      // Between `open` and `welcome` this writes immediately AND the replay
-      // re-sends the same events moments later. Benign: the hub keys on
-      // (runId, seq) and discards the repeat. The `pending` filter in the
-      // welcome branch deliberately handles only the buffered half of that
-      // same duplicate — suppressing the live half would mean modelling
-      // "handshake in flight" for no gain the keying does not already give.
+    if (this.ready) {
       this.write(frame);
       return;
     }
-    const size = JSON.stringify(frame).length;
+    // Not handshaken: buffer. This covers the socket being down AND the
+    // open→welcome window, which is the case that matters — see `ready`.
+    // A buffered `publish` is always dropped by the welcome branch and
+    // re-derived from the live log, so buffering one is free; a buffered
+    // `facts` is latest-wins and lands after the replay, which is the order
+    // it needs. `reply` frames never come through here (they go straight to
+    // `write` from the tunnel handler), so no command response is delayed.
+    const size = Buffer.byteLength(JSON.stringify(frame));
     this.pending.push({ frame, size });
     this.pendingBytes += size;
     // Evict the OLDEST, not the newest. `facts` are latest-wins, so a full
@@ -289,13 +314,19 @@ export class Relay {
 function publishFrames(sessionId: string, runId: string, events: LoggedEvent[]): UpFrame[] {
   if (events.length === 0) return [];
   // What the envelope itself costs, so a full chunk plus its wrapper still fits.
+  // Measured in BYTES, not UTF-16 code units: `maxPayload` on the far end
+  // counts bytes, and `String.length` under-counts every non-Latin-1 character
+  // (3 bytes per unit for CJK, 4 for an emoji). Agent output full of either
+  // would otherwise build a chunk that looks under budget here and trips a
+  // 1009 close there — reopening the replay livelock chunking exists to close.
   const budget =
-    MAX_FRAME_BYTES - JSON.stringify({ t: "publish", sessionId, runId, events: [] }).length;
+    MAX_FRAME_BYTES -
+    Buffer.byteLength(JSON.stringify({ t: "publish", sessionId, runId, events: [] }));
   const frames: UpFrame[] = [];
   let chunk: LoggedEvent[] = [];
   let bytes = 0;
   for (const event of events) {
-    const size = JSON.stringify(event).length + 1; // +1 for the joining comma
+    const size = Buffer.byteLength(JSON.stringify(event)) + 1; // +1 for the joining comma
     if (chunk.length > 0 && bytes + size > budget) {
       frames.push({ t: "publish", sessionId, runId, events: chunk });
       chunk = [];

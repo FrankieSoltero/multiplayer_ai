@@ -183,6 +183,45 @@ describe("Relay publish plane", () => {
     expect(published.map((e: any) => e.text)).toEqual(["early"]);
   });
 
+  it("writes nothing but hello between open and welcome, so a reconnect cannot outrun its own replay", () => {
+    // THE reconnect trap. A socket is `open` one full round trip before
+    // `welcome` lands, and the hub keys accepted events on a per-session
+    // HIGH-WATER MARK, not on the set of (runId, seq) pairs it has seen. An
+    // event written inside that window therefore arrives BEFORE the gap replay
+    // the in-flight `welcome` authorises, advances the hub's mark past the
+    // whole backlog, and every replayed frame is then discarded as "already
+    // seen" — silently, permanently, for every browser. Nothing but `hello`
+    // may go out until the handshake completes.
+    // The end-to-end proof against a real HubStore is
+    // `poc/hub/test/relayIntegration.test.ts`.
+    const fake = fakeSocket();
+    const relay = relayWith(fake);
+    const session = new Session("auth");
+    session.append({ type: "intent_update", text: "before" }); // seq 0
+    session.append({ type: "intent_update", text: "the drop" }); // seq 1
+    relay.trackSession("auth", session);
+    relay.start();
+    fake.open();
+    expect(fake.sent.map((f) => f.t)).toEqual(["hello"]);
+    fake.sent.length = 0;
+
+    // In the window: the socket is open, the welcome has not landed.
+    relay.publishEvent("auth", session.append({ type: "intent_update", text: "in the window" }));
+    expect(fake.sent).toHaveLength(0);
+
+    fake.deliver({
+      t: "welcome",
+      v: RELAY_PROTOCOL_VERSION,
+      have: { auth: { runId: "run-1", lastSeq: 1 } },
+    });
+    // Exactly once, and after the replay's starting point — not before it.
+    const seqs = fake.sent
+      .filter((f) => f.t === "publish")
+      .flatMap((f: any) => f.events)
+      .map((e: any) => e.seq);
+    expect(seqs).toEqual([2]);
+  });
+
   it("publishes a session's backlog when it is created while the uplink is already up", () => {
     // The gap this closes: a session created after the handshake gets no
     // second `welcome`, so the skill_roster appended at creation — before any
@@ -436,6 +475,34 @@ describe("Relay bounds", () => {
     // Chunking must not lose, duplicate or reorder anything.
     expect(publishes.flatMap((f: any) => f.events).map((e: any) => e.seq)).toEqual([
       ...Array(15).keys(),
+    ]);
+  });
+
+  it("chunks by BYTES, so multi-byte agent output cannot exceed the hub's maxPayload", () => {
+    // `JSON.stringify(x).length` counts UTF-16 code units; `maxPayload` counts
+    // bytes. An emoji is 2 units and 4 bytes, CJK is 1 unit and 3 bytes — so a
+    // chunk of such output measures well under budget here and lands well over
+    // it there, drawing a 1009 close and reopening the exact replay livelock
+    // chunking exists to close.
+    const fake = fakeSocket();
+    const relay = relayWith(fake);
+    const session = new Session("auth");
+    const emoji = "🙂".repeat(30_000); // 60_000 UTF-16 units, 120_000 bytes
+    for (let i = 0; i < 10; i++) session.append({ type: "intent_update", text: emoji });
+    relay.trackSession("auth", session);
+    relay.start();
+    fake.open();
+    fake.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+
+    const publishes = fake.sent.filter((f) => f.t === "publish");
+    // Under 1M UTF-16 units in total, so counting units packs all ten into one
+    // 1.2MB frame — over the limit, and this expectation is what catches it.
+    expect(publishes.length).toBeGreaterThan(1);
+    for (const frame of publishes) {
+      expect(Buffer.byteLength(JSON.stringify(frame))).toBeLessThanOrEqual(MAX_FRAME_BYTES);
+    }
+    expect(publishes.flatMap((f: any) => f.events).map((e: any) => e.seq)).toEqual([
+      ...Array(10).keys(),
     ]);
   });
 
