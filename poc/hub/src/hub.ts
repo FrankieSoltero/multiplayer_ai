@@ -474,7 +474,11 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
           return error(`no machine is offering repo "${repoKey}" right now`);
         }
         const desired = slugify(msg.name.slice(0, 200));
-        if (!desired) return error("create_session requires a usable name");
+        // SLUG.test(), not a truthiness check: every id reaching HubStore is
+        // shape-validated at the point of use (Task 5), not by inheriting a
+        // guarantee from slugify's current internals. Mirrors create_project
+        // (hub.ts:339-340), which validates the same way after the same call.
+        if (!SLUG.test(desired)) return error("create_session requires a usable name");
         const owner = store.ownerOf(projectId, desired);
         if (owner !== null && owner !== target.machineId) {
           return error(`session "${desired}" is already used by another machine in this project`);
