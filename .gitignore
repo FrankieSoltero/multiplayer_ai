@@ -5,3 +5,6 @@ dist/
 poc/demo-project/
 poc/demo-worktrees/
 .playwright-mcp/
+
+# demo stack runtime (pids, logs) — see poc/demo-hub-relay.sh
+poc/.demo-run/
