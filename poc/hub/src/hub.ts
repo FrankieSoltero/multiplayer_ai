@@ -162,6 +162,15 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         return;
       }
       if (frame.t === "hello") {
+        // One identity per socket, the mirror of "hello first" below. A second
+        // hello would register a second id in `uplinks` that the close handler
+        // (which only knows the last one) can never reclaim — leaving a dead
+        // socket registered and its sessions reading `online` forever, while
+        // every command tunnelled to it is silently dropped.
+        if (uplinkId) {
+          socket.close(1008, "already identified");
+          return;
+        }
         uplinkId = frame.uplinkId;
         projectId = frame.projectId;
         uplinks.set(frame.uplinkId, socket);
@@ -201,7 +210,16 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       }
       // frame.t === "reply" — narrowcast back to the browser that asked.
       const channel = channels.get(frame.channelId);
-      if (channel) send(channel.socket, frame.payload);
+      if (!channel || !channel.projectId || !channel.sessionId) return;
+      // A laptop may answer only on a channel joined to a session it owns.
+      // `channels` is hub-wide, so without this one comparison a laptop that
+      // learns another's channel id could inject any message into that
+      // browser's socket. Cheap now, load-bearing once the trust inversion
+      // lands (spec §3.5).
+      if (store.ownerOf(channel.projectId, channel.sessionId) !== uplinkId) return;
+      // `parseUpFrame` admits a reply with no payload, and `JSON.stringify`
+      // turns that into a zero-length frame the browser's JSON.parse throws on.
+      if (frame.payload !== undefined) send(channel.socket, frame.payload);
     });
 
     socket.on("close", () => {
@@ -256,18 +274,41 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       }
 
       if (msg?.type === "join") {
+        // The browser-facing protocol is the standalone server's, byte for
+        // byte, so a second join is refused exactly as server.ts's join
+        // handler refuses one. Without this the hub would rebind the channel
+        // to a new session BEFORE tunnelling — and if that session lives on a
+        // different laptop, the first laptop never receives a `detach` (the
+        // close handler only notifies the current owner) and its roster keeps
+        // a ghost participant for the life of the process.
+        if (channel.sessionId) return error("already joined");
+        // The same typeof triple, in the same order, as server.ts's join
+        // handler — which runs it BEFORE the relay identity stamp overwrites
+        // userId/name. A join the hub accepts and the laptop rejects is a
+        // divergence between the two, so the hub must reject exactly what the
+        // laptop rejects. The payload is still forwarded untouched, which is
+        // `DownFrame`'s contract.
+        if (
+          typeof msg.sessionId !== "string" ||
+          typeof msg.userId !== "string" ||
+          typeof msg.name !== "string"
+        ) {
+          return error("join requires sessionId, userId, name");
+        }
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "default";
-        const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
-        if (!SLUG.test(projectId) || !SLUG.test(sessionId)) {
+        if (!SLUG.test(projectId) || !SLUG.test(msg.sessionId)) {
           return error("projectId and sessionId must be 1-40 chars of a-z, 0-9, -");
         }
+        const sessionId: string = msg.sessionId;
         // v7b1 runs with auth OFF and takes the browser's word, exactly as a
-        // standalone server does with auth off. v7b2 replaces these three
-        // lines with the hub's cookie-verified GitHub login, which is what
-        // makes the trust inversion (spec §3.5 rule 1) real. Until then this
-        // hub must not be exposed to the internet.
-        const userId = String(msg.userId ?? "").slice(0, 64);
-        const name = String(msg.name ?? userId).slice(0, 40);
+        // standalone server does with auth off. v7b2 replaces these two lines
+        // with the hub's cookie-verified GitHub login, which is what makes the
+        // trust inversion (spec §3.5 rule 1) real. Until then this hub must
+        // not be exposed to the internet.
+        const userId = msg.userId.slice(0, 64);
+        const name = msg.name.slice(0, 40);
+        // An empty userId would produce a `tunnel` frame the laptop's
+        // parseDownFrame drops on the floor — a join that fails in silence.
         if (!userId) return error("join requires userId");
 
         const owner = store.ownerOf(projectId, sessionId);
@@ -295,7 +336,11 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       if (HUB_HANDLED.has(msg?.type)) {
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
         if (!SLUG.test(projectId)) return error(`${msg.type} requires a valid projectId`);
-        if (msg.type === "watch_project") channel.projectId = projectId;
+        // Never re-home a channel that has joined a session: `fanOut` keys on
+        // projectId AND sessionId, so re-homing would silently cut the joined
+        // session's event stream. Such a socket still gets the snapshot it
+        // asked for; it just keeps receiving pushes for its session's project.
+        if (msg.type === "watch_project" && !channel.sessionId) channel.projectId = projectId;
         send(socket, store.snapshot(projectId));
         return;
       }
@@ -335,6 +380,10 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         for (const timer of pushTimers.values()) clearTimeout(timer);
         pushTimers.clear();
         for (const client of wss.clients) client.terminate();
+        // Detaches the `upgrade` listener from the http server. The http
+        // server owns the socket, so this is not what stops the listening —
+        // it just leaves nothing attached to reason about.
+        wss.close();
         httpServer.close((err) => (err ? reject(err) : resolve()));
       }),
   };

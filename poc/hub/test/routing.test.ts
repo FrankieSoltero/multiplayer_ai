@@ -31,15 +31,18 @@ const facts = (id: string, over: Record<string, unknown> = {}) => ({
 
 /** An attached laptop with one declared session — the precondition of most
  *  tests below. */
-async function attachedUplink(port: number, sessionId = "auth") {
+async function attachedUplink(port: number, sessionId = "auth", uplinkId = "lap-1") {
   const up = await connect(`ws://127.0.0.1:${port}/uplink`);
   const seen: any[] = [];
   collect(up, seen);
-  up.send(JSON.stringify({ t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-1", projectId: "default", repoKey: "k" }));
+  up.send(JSON.stringify({ t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId, projectId: "default", repoKey: "k" }));
   up.send(JSON.stringify({ t: "facts", sessionId, runId: "run-a", facts: facts(sessionId) }));
   await wait(40);
   return { up, seen };
 }
+
+const join = (over: Record<string, unknown> = {}) =>
+  JSON.stringify({ type: "join", sessionId: "auth", projectId: "default", userId: "ana", name: "ana", ...over });
 
 describe("hub uplink handshake", () => {
   it("welcomes a laptop with the offsets it already holds", async () => {
@@ -122,7 +125,10 @@ describe("hub fan-out", () => {
     // is the entire reason the publish plane is separate from the tunnel.
     expect(seenA.filter((m) => m.type === "event" && m.event.text === "one")).toHaveLength(1);
     expect(seenB.filter((m) => m.type === "event" && m.event.text === "one")).toHaveLength(1);
-    expect(upSeen.filter((f) => f.t === "publish")).toHaveLength(0);
+    // Not "no publish frames" — the hub has no publish frame to send, so that
+    // assertion could never fail. NOTHING went down the uplink: no per-watcher
+    // tunnel, no echo, no ack. That is the assertion with teeth.
+    expect(upSeen).toEqual([]);
 
     a.close(); b.close(); up.close();
   });
@@ -216,7 +222,279 @@ describe("hub command routing", () => {
   });
 });
 
+describe("hub protocol faults", () => {
+  it("closes an uplink that sends a frame before hello", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const up = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    const closed = new Promise<number>((r) => up.on("close", (code) => r(code)));
+    up.send(JSON.stringify({ t: "publish", sessionId: "auth", runId: "run-a", events: [] }));
+    expect(await closed).toBe(1008);
+  });
+
+  it("closes an uplink that says hello twice", async () => {
+    // One identity per socket. A second hello registers an id the close
+    // handler can never reclaim, so a dead socket stays registered and the
+    // sessions it owns read `online` forever while every tunnelled command is
+    // dropped in silence.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const up = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    const closed = new Promise<number>((r) => up.on("close", (code) => r(code)));
+    const hello = JSON.stringify({ t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-1", projectId: "default", repoKey: "k" });
+    up.send(hello);
+    up.send(hello);
+    expect(await closed).toBe(1008);
+  });
+
+  it("closes an uplink that sends bytes that are not JSON", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const up = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    const closed = new Promise<number>((r) => up.on("close", (code) => r(code)));
+    up.send("{not json");
+    expect(await closed).toBe(1008);
+  });
+
+  it("answers a browser's bad JSON with an error instead of closing", async () => {
+    // Asymmetric on purpose: a laptop speaking nonsense is a protocol fault,
+    // a browser speaking nonsense is a bug in one tab.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send("{not json");
+    await wait(40);
+    expect(seen).toEqual([{ type: "error", message: "invalid JSON" }]);
+    expect(browser.readyState).toBe(WebSocket.OPEN);
+    browser.close();
+  });
+
+  it("survives a browser sending the literal JSON null", async () => {
+    // Regression for a process-killing bug: `null` is valid JSON, and reading
+    // `.type` off it throws inside a ws message listener — an uncaught
+    // exception that takes the whole hub down, every browser with it.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send("null");
+    await wait(40);
+    browser.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(40);
+    expect(seen.some((m) => m.type === "project")).toBe(true);
+    browser.close();
+  });
+
+  it("tells a browser to join before it sends a command", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "prompt", text: "hello" }));
+    await wait(40);
+    expect(seen).toEqual([{ type: "error", message: "join a session first" }]);
+    browser.close();
+  });
+
+  it("drops a reply naming a channel that does not exist", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    up.send(JSON.stringify({ t: "reply", channelId: "no-such-channel", payload: { type: "error", message: "x" } }));
+    await wait(40);
+    // Still serving: the unknown channel was ignored, not fatal.
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(40);
+    expect(seen.some((m) => m.type === "project")).toBe(true);
+    browser.close();
+    up.close();
+  });
+});
+
+describe("hub join validation", () => {
+  it("refuses a join with no name, exactly as the laptop would", async () => {
+    // The laptop's join handler runs its typeof triple BEFORE the relay stamp
+    // overwrites userId/name, so a name-less join dies there. A hub that
+    // accepts what the laptop rejects binds the channel, replays history and
+    // sends a snapshot for a session the laptop never joined the browser to.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "join", sessionId: "auth", projectId: "default", userId: "ana" }));
+    await wait(50);
+    expect(seen).toEqual([{ type: "error", message: "join requires sessionId, userId, name" }]);
+    expect(upSeen.filter((f) => f.t === "tunnel")).toEqual([]);
+    browser.close(); up.close();
+  });
+
+  it("refuses a join whose userId or sessionId is not a string", async () => {
+    // `String({})` is "[object Object]", which is non-empty and would sail
+    // through an emptiness check as an identity.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(join({ userId: {} }));
+    browser.send(join({ sessionId: 123 }));
+    await wait(50);
+    expect(seen).toEqual([
+      { type: "error", message: "join requires sessionId, userId, name" },
+      { type: "error", message: "join requires sessionId, userId, name" },
+    ]);
+    expect(upSeen.filter((f) => f.t === "tunnel")).toEqual([]);
+    browser.close(); up.close();
+  });
+
+  it("refuses a second join on one socket and keeps the first binding", async () => {
+    // server.ts refuses a second join on a socket; the hub's browser-facing
+    // protocol is that protocol byte for byte. Rebinding would also strand the
+    // first laptop with a channel it is never told to detach.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    up.send(JSON.stringify({ t: "facts", sessionId: "billing", runId: "run-a", facts: facts("billing") }));
+    await wait(40);
+
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(join());
+    await wait(40);
+    browser.send(join({ sessionId: "billing" }));
+    await wait(50);
+
+    expect(seen.filter((m) => m.type === "error")).toEqual([
+      { type: "error", message: "already joined" },
+    ]);
+    expect(upSeen.filter((f) => f.t === "tunnel").map((f) => f.payload.sessionId)).toEqual(["auth"]);
+    browser.close(); up.close();
+  });
+
+  it("refuses a join to a session whose laptop is known but offline", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    up.close();
+    await wait(60);
+
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(join());
+    await wait(50);
+    expect(seen).toEqual([
+      { type: "error", message: 'no machine is running session "auth" right now' },
+    ]);
+    browser.close();
+  });
+});
+
+describe("hub reply hardening", () => {
+  it("refuses a reply from a laptop that does not own the channel's session", async () => {
+    // `channels` is hub-wide. Without an ownership check a laptop holding
+    // another's channel id could inject any message into that browser.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const { up: other } = await attachedUplink(hub.port, "billing", "lap-2");
+
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(join());
+    await wait(50);
+    const channelId = upSeen.find((f) => f.t === "tunnel").channelId;
+    seen.length = 0;
+
+    other.send(JSON.stringify({ t: "reply", channelId, payload: { type: "error", message: "not yours" } }));
+    await wait(50);
+    expect(seen).toEqual([]);
+    // The owner still gets through on the very same channel.
+    up.send(JSON.stringify({ t: "reply", channelId, payload: { type: "error", message: "mine" } }));
+    await wait(50);
+    expect(seen).toEqual([{ type: "error", message: "mine" }]);
+
+    browser.close(); up.close(); other.close();
+  });
+
+  it("sends nothing rather than an empty frame for a reply with no payload", async () => {
+    // JSON.stringify(undefined) is undefined, which ws sends as a zero-length
+    // frame — and JSON.parse("") throws in the browser.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const raw: string[] = [];
+    browser.on("message", (m) => raw.push(m.toString()));
+    browser.send(join());
+    await wait(50);
+    const channelId = upSeen.find((f) => f.t === "tunnel").channelId;
+    raw.length = 0;
+
+    up.send(JSON.stringify({ t: "reply", channelId }));
+    await wait(50);
+    expect(raw).toEqual([]);
+    browser.close(); up.close();
+  });
+});
+
 describe("hub presence", () => {
+  it("keeps a laptop online when a superseded socket for the same uplink closes", async () => {
+    // A laptop that reconnects before the hub notices the old socket died has
+    // two sockets under one uplinkId for a moment. The late close of the
+    // superseded one must not unregister or mark offline the live one.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up: first } = await attachedUplink(hub.port);
+    const { up: second } = await attachedUplink(hub.port);
+    first.close();
+    await wait(60);
+
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(40);
+    expect(seen.at(-1).sessions[0].presence).toBe("online");
+    browser.close(); second.close();
+  });
+
+  it("keeps feeding a joined session's events after the browser watches another project", async () => {
+    // fanOut keys on projectId AND sessionId, so re-homing a joined channel
+    // would silently cut its event stream.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(join());
+    await wait(40);
+    browser.send(JSON.stringify({ type: "watch_project", projectId: "elsewhere" }));
+    await wait(40);
+
+    up.send(JSON.stringify({
+      t: "publish", sessionId: "auth", runId: "run-a",
+      events: [{ type: "intent_update", text: "still mine", seq: 0, ts: "2026-07-27T00:00:00.000Z" }],
+    }));
+    await wait(50);
+    expect(seen.filter((m) => m.type === "event").map((m) => m.event.text)).toEqual(["still mine"]);
+    browser.close(); up.close();
+  });
+
+
   it("flips a session offline when its laptop drops, and keeps the session listed", async () => {
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;

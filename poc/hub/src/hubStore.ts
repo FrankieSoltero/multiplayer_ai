@@ -52,6 +52,8 @@ export class HubStore {
     if (uplink) uplink.online = false;
   }
 
+  /** Creating. Only a write path (`setFacts`, `publish`) may call this: an
+   *  uplink is a semi-trusted, bounded peer. */
   private sessionsOf(projectId: string): Map<string, HubSession> {
     let sessions = this.projects.get(projectId);
     if (!sessions) {
@@ -61,13 +63,24 @@ export class HubStore {
     return sessions;
   }
 
+  /** Non-creating, for every READ path. A browser can name an arbitrary
+   *  projectId (`peek`, `watch_project`, `join`), and a creating read would let
+   *  unauthenticated input grow `projects` without bound — permanently, since
+   *  nothing reclaims a project when its socket closes. It also keeps `peek`
+   *  parity with the standalone server, which reads with `projects.get` and
+   *  answers an unknown project with a synthetic empty snapshot rather than
+   *  creating one (server.ts's `peek` handler). */
+  private readSessionsOf(projectId: string): Map<string, HubSession> | undefined {
+    return this.projects.get(projectId);
+  }
+
   /** What the hub already holds for this laptop's sessions, so the laptop can
    *  replay only the gap (spec §3.2 — "reconnect is nearly free"). */
   resumeOffsets(uplinkId: string): Record<string, { runId: string; lastSeq: number }> {
     const uplink = this.uplinks.get(uplinkId);
     if (!uplink) return {};
     const out: Record<string, { runId: string; lastSeq: number }> = {};
-    for (const [sessionId, session] of this.sessionsOf(uplink.projectId)) {
+    for (const [sessionId, session] of this.readSessionsOf(uplink.projectId) ?? []) {
       if (session.uplinkId !== uplinkId || session.lastRunId === null) continue;
       out[sessionId] = { runId: session.lastRunId, lastSeq: session.lastSeq };
     }
@@ -152,7 +165,7 @@ export class HubStore {
   }
 
   ownerOf(projectId: string, sessionId: string): string | null {
-    return this.sessionsOf(projectId).get(sessionId)?.uplinkId ?? null;
+    return this.readSessionsOf(projectId)?.get(sessionId)?.uplinkId ?? null;
   }
 
   /** Returns the store's own `StoredEvent` instances — read-only for the
@@ -161,7 +174,7 @@ export class HubStore {
    *  multiplies, so it stays allocation-free beyond the new `.filter()`
    *  array shell. */
   eventsFor(projectId: string, sessionId: string, fromId: number): StoredEvent[] {
-    const session = this.sessionsOf(projectId).get(sessionId);
+    const session = this.readSessionsOf(projectId)?.get(sessionId);
     if (!session) return [];
     return session.events.filter((e) => e.id > fromId);
   }
@@ -177,7 +190,7 @@ export class HubStore {
    *  the caller (Task 7) is expected to normalize it further before
    *  serializing — so nothing it mutates may reach back into stored state. */
   snapshot(projectId: string): ProjectMessage {
-    const sessions = [...this.sessionsOf(projectId).values()];
+    const sessions = [...(this.readSessionsOf(projectId)?.values() ?? [])];
     return {
       type: "project",
       sessions: sessions.map((session) => ({
