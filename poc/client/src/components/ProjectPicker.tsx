@@ -64,7 +64,10 @@ export function ProjectPicker(props: { userId: string; name: string }) {
                     <span className="spstate pix sm">SPECTATING</span>
                   )}
                 </div>
-                <div className="spwho pix sm">{projectSummaryLine(p)}</div>
+                <div className="spwho pix sm">
+                  {p.members.length} {p.members.length === 1 ? "member" : "members"} ·{" "}
+                  {projectSummaryLine(p)}
+                </div>
               </div>
               <button className="btn" onClick={() => enterProject(p.id)}>
                 ENTER ▸
