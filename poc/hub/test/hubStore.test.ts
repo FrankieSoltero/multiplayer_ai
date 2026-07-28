@@ -382,7 +382,7 @@ describe("HubStore snapshot machines", () => {
     const store = new HubStore();
     store.attach("lap-1", "acme", "github.com/acme/api", T);
     store.setFacts("lap-1", "auth", "run-a", facts({ id: "auth" }));
-    const snap = store.snapshot("acme") as any;
+    const snap = store.snapshot("acme");
     expect(snap.machines).toEqual([
       { machineId: "lap-1", repoKey: "github.com/acme/api", online: true },
     ]);

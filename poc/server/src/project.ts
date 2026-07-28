@@ -150,6 +150,10 @@ export interface ProjectMessage {
      *  v7b derives it from the hub uplink and it becomes a real signal — the
      *  field exists now so the client learns the shape before the hub does. */
     presence: "online" | "offline";
+    /** Which machine owns this session. Only a hub can answer this — a
+     *  standalone server has exactly one machine and omits the field, just
+     *  like `machines` above. */
+    machineId?: string;
   }[];
   arcade: ArcadeRecord[];
   plugins: PluginInfo[];
