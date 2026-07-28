@@ -29,6 +29,13 @@ into `JSON.parse` (`server.ts:301`), amplifying into a much larger object graph.
 this is generous), applied on browser-facing *and* uplink-facing sockets, enforced before
 authentication. Test: oversized frame is rejected without allocating.
 
+**v7b1 note — the two halves now diverge.** `poc/hub/src/hub.ts:135` *does* set
+`maxPayload: MAX_FRAME_BYTES` (1 MB) on both hub planes; `server.ts` still does not. So the
+same >1 MB paste into the prompt box is accepted by a standalone laptop and answered with a
+1009 close by the hub. The hub's cap is correct and stays. What makes it user-visible is §4's
+missing client reconnect: a 1009 leaves the tab on a dead socket until a manual reload.
+Fixing `server.ts` here removes the divergence; fixing the client reconnect removes the sting.
+
 ### 1.2 Invite token travels in query parameters and persists in the address bar
 
 `poc/client/src/components/InviteSignIn.tsx:29` passes `location.pathname + location.search` —
@@ -69,6 +76,32 @@ control. Recorded in v7 spec §10.6.
 Acceptable for a localhost POC, not for a public hub. Affects `/auth/*`, the WebSocket upgrade,
 and — once v7 lands — device-pairing code submission, which is brute-forceable by construction
 (v7 spec §10.5).
+
+### 1.5b `HubStore.uplinks` grows without bound — and the frame validation under it is shallow
+
+Two v7b2 inputs that until now lived only in the v7b1 plan's Deviations (§D.9 and §B.3). They
+are recorded here because this is the file a v7b2 planner opens.
+
+**Unbounded `uplinks`.** `poc/hub/src/hubStore.ts` — `attach()` inserts a permanent `Uplink`
+per distinct `uplinkId` and `detach()` only flips `online = false`. Nothing ever deletes.
+**Same class as the `HubStore.projects` leak that was fixed during v7b1, surviving on the other
+plane.** The uplink plane is unauthenticated, so a connect/`hello`/disconnect loop with fresh
+ids leaks an entry per cycle, plus a session-map entry per `facts`/`publish`. Bounded in
+practice only by the "must not be exposed until v7b2" caveat, which is exactly the caveat v7b2
+removes. **Fixed looks like:** reclaim on close once no session references the uplink, or a
+TTL — noting that sessions surviving their laptop is the hub's whole point, so the uplink
+record cannot simply be dropped with its socket.
+
+**Shallow frame validation (v7b1 ruling B.3, a named input for v7b2's validation task — do not
+lose it).** `poc/server/src/relayProtocol.ts`: `parseUpFrame` checks `Array.isArray(f.events)`
+and then casts, so a malformed *element* reaches the hub inside a structurally "valid" frame;
+`isFacts` does the same for `participants`/`skills` and checks `pendingGate` is
+`object | null` with no deeper shape check. `repoKey`, `identity.userId` and `identity.name`
+are length-bounded but not charset-checked, which is weaker than v7 spec §10.3. Ruled
+deliberate for v7b1 (trusted-network target; the laptop is the only publisher; the hub never
+interprets events, it fans them out). **Anyone touching `hubStore`: do not assume a fully
+shaped `PendingGate`.** One element-level hole — an out-of-range `seq` that froze a session's
+history permanently — was closed by the whole-branch review; the rest stands.
 
 ### 1.6 UNEXAMINED: the plugin clone path
 
@@ -159,6 +192,29 @@ sessions after `detach`), but no browser can read it once the owning laptop is o
 picker row renders `OFFLINE`, JOIN still navigates, and the session view opens empty with
 `PARTY · 0`. Observed live during Task 8's walk (item 6). The fix is to replay and snapshot
 first and only refuse the *drive/approve* paths, which `tunnel()` already does on its own.
+
+### 2.5 The invite flow is dead through the hub — needs design, not a patch
+
+`peek_invite` is sent by `poc/client/src/components/InviteLanding.tsx:24` and
+`InviteSignIn.tsx:17`. The hub's `HUB_HANDLED` set (`poc/hub/src/hub.ts:18`) covers only
+`watch_project` and `peek`, so `peek_invite` falls through to `tunnel()` and — on a socket that
+has not joined a session, which is every invite landing by definition — is answered
+`"join a session first"`. The landing page renders `INVITE UNAVAILABLE`. **Every invite link is
+broken against a hub.** Found by the v7b1 whole-branch review; not a regression, the flow was
+never wired.
+
+**Why it is not a two-line fix.** The hub cannot *answer* it: invites live on the laptop, in
+`poc/server/src/invites.ts`, keyed by a token the laptop minted. It cannot *route* it either:
+the token encodes a project and session that only the laptop can decode, so the hub has nothing
+to select an uplink by — and it has no identity plane of its own until v7b2.
+
+**Fixed looks like** one of: (a) a hub-side invite store, which means the hub mints and
+redeems, which means it needs v7b2's identity first; (b) an unauthenticated
+`peek_invite`-by-broadcast to every uplink in every project, first non-error wins — cheap, but
+it hands an unauthenticated caller a probe across every laptop, so it needs the §10 floor too;
+or (c) putting the projectId in the invite URL so the hub can pick the project, then
+broadcasting only within it. All three are v7b2-or-later. Sits next to the `create_session`
+bound in the v7b1 plan's "Known bounds" list.
 
 ---
 

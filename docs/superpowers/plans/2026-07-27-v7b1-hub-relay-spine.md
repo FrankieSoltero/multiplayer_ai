@@ -3076,11 +3076,13 @@ cd ../server && npm run build && ls dist/main.js        # top level, NOT dist/sr
 
 - **The hub has no authentication.** v7b1 stamps the identity the browser claims. It is a development target for a trusted network and **must not be exposed to the internet**. v7b2 is the plan that changes this.
 - **The hub's log is in memory** (spec §2.11). A hub restart loses history. That is v7c's job and must not be presented to users as durable before then (spec §8).
-- **Two laptops cannot both own a session id in one project.** The second is refused with a plain error rather than silently merged. Hub-scoped session ids are v7c/v7e — the same shape of problem as spec §9's shared-worktree bug.
+- **Two laptops cannot both own a session id in one project.** The second laptop's `facts` frame for that session is **dropped and logged**, and an `{type:"error"}` is narrowcast to any browser channel joined to it; the rest of that laptop's uplink, including sessions it genuinely owns, is unaffected. It is *not* merged, and it is *not* — as an earlier draft of this line claimed — a refusal that closes anything. Closing the uplink was the shipped behaviour until the whole-branch review: a collision is a permanent, per-session condition, `server.ts` republishes facts for every session about once a second, and the relay reconnects every 2 s, so the close re-fired on a loop and the laptop flapped ONLINE/OFFLINE in every browser forever. Note that a same-machine restart under a fresh `uplinkId` (D.1) presents exactly as a collision. Hub-scoped session ids are v7c/v7e — the same shape of problem as spec §9's shared-worktree bug.
 - **Plugins and oversight read empty when hub-attached.** Plugins are laptop-local files (spec §4); oversight is host-configured (spec §3.7). Both are surfaced in v7b3.
 - **`repo` is null on a hub snapshot.** A hub spans repos, so there is no single one to report; the per-session `repoKey` is the honest answer and the client already reads it (v7a).
 - **Approvals gain roughly 100ms** (browser → hub → laptop). Irrelevant for a human clicking a button (spec §8).
 - **`create_session` is tunnelled but has no owner before a laptop attaches**, so creating a session from the browser only works for a project that already has an uplink. Creating the *first* session on a machine is still `mpai new`. Making the hub route a create to a chosen laptop is v7b3.
+- **The invite flow is dead through the hub.** `peek_invite` (`InviteLanding.tsx:24`, `InviteSignIn.tsx:17`) is not in `HUB_HANDLED`, so it falls through to `tunnel()` and is answered `"join a session first"` — the landing page renders `INVITE UNAVAILABLE`. The hub cannot answer it (invites live on the laptop, in `invites.ts`) and cannot route it either (the token encodes a project/session only the laptop can decode, so the hub has nothing to pick an uplink by). This genuinely needs design — a hub-side invite store, or a broadcast-and-first-answer route — and is deliberately **not** fixed in v7b1. Sits next to the `create_session` bound above and is recorded in `docs/tech-debt.md` §2.5.
+- **`maxPayload` is asymmetric between the hub and a standalone laptop.** `hub.ts:135` caps every browser frame at `MAX_FRAME_BYTES` (1 MB, correct per spec §10.2); `server.ts:367` sets no cap at all, so a standalone laptop inherits `ws`'s 100 MB default (`docs/tech-debt.md` §1.1). A >1 MB paste into the prompt box is therefore accepted standalone and answered with a 1009 close against the hub — and because the client never reconnects its session WebSocket (D.2), that close leaves the tab dead until a manual reload. The cap is right and stays; what is open is the missing cap on `server.ts` and the missing client reconnect, and it is their *interaction* that turns a rejected frame into a dead tab.
 
 ## Deviations
 
@@ -3513,12 +3515,14 @@ re-join on its existing socket.** The fix therefore cannot be browser-side. It m
 surviving channel (re-issuing a join after the new uplink's `welcome`), or something must reset
 `channel.sessionId`.
 
-**D.7 — The chunk budget counts UTF-16 code units, not bytes.** `relay.ts:293`, `:298` use
-`JSON.stringify(...).length`. This was ruled out of scope while it was only a buffer heuristic, but the
-same counting now bounds `publishFrames`' chunk budget — i.e. the fix for C/Task 6 divergence 2.
-CJK- or emoji-heavy agent output can produce a chunk that is under budget by this measure and over
-`maxPayload` in bytes, **which reopens the livelock for that content**. One-line fix
-(`Buffer.byteLength`). This is a real bound, not polish.
+**D.7 — FIXED in the whole-branch fix wave. The chunk budget counted UTF-16 code units, not bytes.**
+`relay.ts` used `JSON.stringify(...).length` at both `publishFrames` sites and in the pending buffer's
+budget. All three now use `Buffer.byteLength`. Covered twice over: a relay unit test that asserts an
+emoji log splits into frames each under `MAX_FRAME_BYTES` *in bytes* (`relay.test.ts`, "chunks by
+BYTES"), and the integration test's chunked-replay scenario, which is judged by the hub's real
+`maxPayload` rather than by a re-implementation of it. Both were verified to fail against the unfixed
+source; the integration one fails by holding **zero** events, because the oversized frame livelocks the
+uplink exactly as predicted.
 
 **D.8 — A single event larger than `MAX_FRAME_BYTES` still ships alone and still livelocks**
 (`relay.ts:304-307`). Chunking fixes the aggregate case only. This was escalated rather than silently
@@ -3549,30 +3553,96 @@ during Task 8's fix round returned `1 failed | 408 passed`, and **which test fai
 (the run was piped through `tail -6`). Evidence since: 12 green full runs and 10 green `relay.test.ts`
 runs by the implementer, plus 8 more green full runs (409/409) by the controller — 20+ consecutive
 green, not reproducible on demand. The fix diff could not have caused it (a docs edit plus one `it()`
-name string; the assertion body is a byte-identical, pure-sync `parseArgs` call). **Most plausible homes,
-in order:** `poc/hub/test/routing.test.ts` first — it opens *real* WebSocket connections against a real
-http server, so close ordering, cross-socket message arrival and port binding are all genuine races that
-reproduce under load but not in isolated re-runs; then `poc/server/test/relay.test.ts`, with its
-timer-driven reconnect backoff and manually-sequenced fake-socket delivery. A rare flake in the suite
-that gates every future task is worth naming before it wastes a session.
+name string; the assertion body is a byte-identical, pure-sync `parseArgs` call).
 
-**D.12 — Minor gaps recorded so they are not rediscovered.** Out-of-order events *within* one run are
-dropped, not reordered (`hubStore.ts:133`, `seq <= lastSeq` skip) — accepted for v7b1 (a single WS gives
-TCP ordering and the resume protocol extends monotonically), untested either way.
+**The ranking this entry first gave was impossible, and the whole-branch review caught it.** The
+captured line read `1 failed | 408 passed` — 409 tests in one run. The **server** suite alone reported
+409 passed across 20 files; the **hub** suite is a different package under a different command and
+reported 43 across 3 files. So `poc/hub/test/routing.test.ts` **cannot have been in that run at all**,
+and naming it first sent the reader to the wrong package. `poc/server/test/relay.test.ts` is also
+implausible: it is fully synchronous apart from two `vi.useFakeTimers()` tests driven by
+`advanceTimersByTime`, so it has no wall-clock race to lose.
+
+**The plausible homes are pre-existing wall-clock sleeps**, all of which predate this branch:
+`overseer.test.ts:61` (a 60 ms wait around a ~30 ms debounce, asserting an exact call count — the
+classic shape), `agentDriver.test.ts:1153-1160`, and `server.test.ts`'s many `wait(50)` calls. **Do not
+rewrite those tests on this evidence.** The failing test was never identified, and re-timing a suite
+that gates every future task on a guess is worse than carrying the flake. Carry it. If it recurs,
+capture the FULL output — never `tail` — and name the test before touching anything.
+
+**D.12 — Minor gaps recorded so they are not rediscovered.**
+
+**Out-of-order events within one run — the premise of the original entry was FALSE, and it was hiding a
+Critical.** It read: "dropped, not reordered (`hubStore.ts`, `seq <= lastSeq` skip) — accepted for v7b1
+(a single WS gives TCP ordering and the resume protocol extends monotonically), untested either way."
+TCP ordering is real but irrelevant, and the resume protocol does **not** extend monotonically: the
+`welcome` branch deliberately **rewinds** to `have.lastSeq + 1`, and `have` is computed at hello time —
+one full round trip before the laptop acts on it. The relay used to write live frames the moment the
+socket was `open`, so a single event appended in that window travelled *ahead* of the replay it was
+rewinding to. Out-of-order arrival was therefore not a hypothetical the transport ruled out; it was
+manufactured by the handshake, on every reconnect, and the `seq <= lastSeq` skip then silently discarded
+the entire outage backlog. Laptop 36 events, hub 6, no error anywhere, a permanent hole in every
+browser's transcript and in the hub's stored history for every future joiner.
+
+**Fixed** in the whole-branch fix wave: `relay.ts` gates `emit()` on a new `ready` flag set in the
+`welcome` branch — after the replay and immediately before `flush()` — instead of on `open`. Frames
+produced in the window buffer, and the replay (which reads the live log) carries them in order. `hello`
+still goes out from the `open` handler, and `reply` frames never pass through `emit()`, so nothing on
+the command plane is delayed. No protocol change. The store's `seq <= lastSeq` skip is unchanged and is
+now *correct as stated*, because nothing arrives out of order any more. Covered by
+`relay.test.ts`'s "writes nothing but hello between open and welcome" and, end to end, by
+`poc/hub/test/relayIntegration.test.ts` — both verified to fail against the unfixed source.
+
+The general lesson this cost: the relay's in-code comment asserted the hub "keys on (runId, seq)", while
+the hub keys on a per-session **high-water mark**. Two modules, two packages, one false shared premise,
+and no test that ran them together. That is what `relayIntegration.test.ts` now exists for.
+
+Remaining minor gaps:
 `resumeOffsets`' `lastRunId === null` exclusion of facts-only sessions has no test.
 `setFacts` returns `{ ok: false, error }` while `publish`/`attach` silently no-op on unknown-uplink or
 wrong-owner, so a caller cannot distinguish "nothing new" from "rejected".
 The client's `lastSeq` is ignored on join — the hub always replays from 0, which is harmless only
 because the client always sends 0, but the field is silently non-functional against a hub while it is
 honoured against a standalone server.
-`poc/hub/package.json` has no `pretypecheck` hook (unlike `pretest`/`prebuild`), so a standalone
-`npm run typecheck` on a clean checkout fails on missing `dist/*.d.ts` — matters if CI ever runs
-typecheck alone.
-`poc/hub/test/httpSurface.test.ts:39-42` ("binds the host it was given") only asserts `port > 0`.
+~~`poc/hub/package.json` has no `pretypecheck` hook~~ — FIXED in the whole-branch fix wave; it now
+mirrors `pretest`/`prebuild`, so `npm run typecheck` alone on a clean checkout builds the server's
+`dist/*.d.ts` first.
+~~`poc/hub/test/httpSurface.test.ts:39-42` ("binds the host it was given") only asserts `port > 0`~~ —
+FIXED: renamed to what it checks and given a real reachability assertion plus a negative probe at the
+IPv6 loopback, the latter carrying its own comment that it can pass vacuously on a host without IPv6.
 `createConnection` returns an anonymous handle type and `msg` is `any` on what is now a package
 surface; exporting a `ConnectionHandle` interface would cost two lines.
 `test/workspace.test.ts:80` emits a stderr `HEAD is now at … init` from `git checkout --detach` during
 full-suite runs and not focused ones — pre-existing, harmless, and *not* introduced by v7b1.
+
+**D.13 — What the whole-branch review changed, in one place.** After the eight tasks closed, the branch
+was reviewed as a whole and fixed in a single wave. One Critical and four Importants, all of which had
+survived every per-task review:
+
+- **C1** — the reconnect event-loss bug. See the rewritten D.12 above; it is the reason that entry's
+  original premise was false.
+- **I5** — no test anywhere ran a real `relay.ts` against a real `hub.ts`. Each side was only ever
+  tested against a fake counterpart written by its own author, which is precisely why C1 survived eight
+  reviews and two fix rounds. `poc/hub/test/relayIntegration.test.ts` now runs both, over a real
+  `startHub({ port: 0 })` on loopback: reconnect-with-a-gap, chunked replay, browser join.
+- **I1** — a session-name collision closed the losing laptop's whole uplink on a 2-second loop. Now the
+  frame is dropped and logged and browsers joined to that session get an error. See the corrected
+  "Known bounds" entry.
+- **I2** — one out-of-range `seq` froze a session's hub history permanently, and the resume protocol
+  confirmed the corruption rather than repairing it. `hubStore.publish` now requires
+  `Number.isSafeInteger(seq) && seq >= 0`.
+- **I4** — see D.7, now fixed.
+- **I3** (invite flow dead through the hub) was **documented, not fixed** — it needs design. Recorded in
+  "Known bounds" above and `docs/tech-debt.md` §2.5.
+- Minors: `--project` is now validated against `SLUG` at parse time (an invalid one used to produce an
+  invisible infinite reconnect loop *after* "attached to hub" was printed); `server.ts`'s `peek` and
+  `watch_project` handlers now name the cross-package `HUB_HANDLED` coupling in a comment; the hub's
+  `pretypecheck` hook and the over-promising `httpSurface` test name are fixed above.
+
+Every fix ships with a test that was **verified to fail against the unfixed source** — the revert sweep
+is written up in `.superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/whole-branch-fix-report.md`. B.2's
+lesson (two tests that passed against the very bug they were named for) is why that is now the standard,
+not an option.
 
 ### E. Which boxes above are ticked, and which are not
 
