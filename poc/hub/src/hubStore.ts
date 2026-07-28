@@ -112,7 +112,13 @@ export class HubStore {
     return { ok: true };
   }
 
-  /** A laptop may publish only for sessions it owns (spec §3.5 rule 2). */
+  /** A laptop may publish only for sessions it owns (spec §3.5 rule 2).
+   *  Returns the same `StoredEvent` instances now held in `session.events` —
+   *  read-only for the caller. Mutating a returned event (or its nested
+   *  `.event` payload) corrupts stored history for every future reader,
+   *  including browsers replaying from an earlier id. Deliberately NOT
+   *  copied: this is the fan-out path that watcher count multiplies, and it
+   *  stays allocation-free beyond the new `accepted` array shell. */
   publish(uplinkId: string, sessionId: string, runId: string, events: LoggedEvent[]): StoredEvent[] {
     const uplink = this.uplinks.get(uplinkId);
     if (!uplink) return [];
@@ -126,6 +132,13 @@ export class HubStore {
 
     const accepted: StoredEvent[] = [];
     for (const event of events) {
+      // parseUpFrame validates `events` is an array but not each element's
+      // shape (Task 1 ruling) — a frame can legally carry `null`, a string,
+      // or a number here. Guard the element itself before reading `.seq` so
+      // a malformed element degrades to "skipped", not a crash that kills
+      // the hub process. This is a crash guard, not validation: a
+      // malformed element is simply never stored.
+      if (typeof event !== "object" || event === null) continue;
       const seq = typeof event.seq === "number" ? event.seq : -1;
       // Same run, already-seen seq → a resume overshoot, not new history.
       if (runId === session.lastRunId && seq <= session.lastSeq) continue;
@@ -142,6 +155,11 @@ export class HubStore {
     return this.sessionsOf(projectId).get(sessionId)?.uplinkId ?? null;
   }
 
+  /** Returns the store's own `StoredEvent` instances — read-only for the
+   *  caller; mutating them corrupts stored history for every future reader.
+   *  See `publish`'s note: this is the fan-out path watcher count
+   *  multiplies, so it stays allocation-free beyond the new `.filter()`
+   *  array shell. */
   eventsFor(projectId: string, sessionId: string, fromId: number): StoredEvent[] {
     const session = this.sessionsOf(projectId).get(sessionId);
     if (!session) return [];
@@ -151,13 +169,22 @@ export class HubStore {
   /** The team view. Only the hub sees every laptop, so only the hub can build
    *  it (spec §3.2). `presence` comes from the uplink and nothing else; every
    *  other field is exactly what the owning laptop declared, so a hub-attached
-   *  session renders identically to a standalone one. */
+   *  session renders identically to a standalone one.
+   *
+   *  Unlike `publish`/`eventsFor`, this result IS deep-copied (the nested
+   *  `participants`, `skills` and `pendingGate`) rather than documented
+   *  read-only: this is the value that leaves the hub toward browsers, and
+   *  the caller (Task 7) is expected to normalize it further before
+   *  serializing — so nothing it mutates may reach back into stored state. */
   snapshot(projectId: string): ProjectMessage {
     const sessions = [...this.sessionsOf(projectId).values()];
     return {
       type: "project",
       sessions: sessions.map((session) => ({
         ...session.facts,
+        participants: [...session.facts.participants],
+        skills: session.facts.skills.map((skill) => ({ ...skill })),
+        pendingGate: session.facts.pendingGate ? { ...session.facts.pendingGate } : null,
         presence: this.uplinks.get(session.uplinkId)?.online ? ("online" as const) : ("offline" as const),
       })),
       arcade: arcadeRecordsFrom(sessions.map((s) => s.events.map((e) => e.event))),

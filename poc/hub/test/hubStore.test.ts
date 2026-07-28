@@ -58,6 +58,26 @@ describe("HubStore event keying", () => {
     store.publish("lap-1", "auth", "run-a", [ev(0), ev(1), ev(2)]);
     expect(store.eventsFor("default", "auth", 2).map((e) => e.id)).toEqual([3]);
   });
+
+  it("survives malformed event elements in a publish batch instead of crashing", () => {
+    // parseUpFrame validates `events` is an array but not each element's
+    // shape (Task 1 ruling), so a frame can legally carry null/string/number
+    // elements. publish() must degrade them to "skipped", not throw.
+    const store = new HubStore();
+    store.attach("lap-1", "default", "k");
+    let accepted: unknown;
+    expect(() => {
+      accepted = store.publish("lap-1", "auth", "run-a", [
+        ev(0),
+        null as any,
+        "not an event" as any,
+        42 as any,
+        ev(1),
+      ]);
+    }).not.toThrow();
+    expect((accepted as { event: { seq: number } }[]).map((e) => e.event.seq)).toEqual([0, 1]);
+    expect(store.eventsFor("default", "auth", 0).map((e) => e.event.seq)).toEqual([0, 1]);
+  });
 });
 
 describe("HubStore presence and ownership", () => {
@@ -158,6 +178,34 @@ describe("HubStore snapshot assembly", () => {
       pluginsEnabled: false,
       repo: null,
       oversight: { enabled: false, latest: null },
+    });
+  });
+
+  it("deep-copies session facts so mutating a returned snapshot cannot reach stored state", () => {
+    const store = new HubStore();
+    store.attach("lap-1", "default", "k");
+    store.setFacts(
+      "lap-1",
+      "auth",
+      "run-a",
+      facts({
+        participants: ["ana"],
+        skills: [{ name: "deploy", description: "ship it" }],
+        pendingGate: { toolName: "bash", sinceTs: "2026-07-27T00:00:00.000Z" },
+      }),
+    );
+
+    const snap = store.snapshot("default");
+    snap.sessions[0].participants.push("mallory");
+    snap.sessions[0].skills[0].name = "tampered";
+    (snap.sessions[0].pendingGate as { toolName: string }).toolName = "tampered";
+
+    const again = store.snapshot("default");
+    expect(again.sessions[0].participants).toEqual(["ana"]);
+    expect(again.sessions[0].skills).toEqual([{ name: "deploy", description: "ship it" }]);
+    expect(again.sessions[0].pendingGate).toEqual({
+      toolName: "bash",
+      sinceTs: "2026-07-27T00:00:00.000Z",
     });
   });
 });
