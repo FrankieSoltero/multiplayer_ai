@@ -62,7 +62,8 @@ describe("HubStore event keying", () => {
   it("survives malformed event elements in a publish batch instead of crashing", () => {
     // parseUpFrame validates `events` is an array but not each element's
     // shape (Task 1 ruling), so a frame can legally carry null/string/number
-    // elements. publish() must degrade them to "skipped", not throw.
+    // elements — or an object whose `seq` is out of range. publish() must
+    // degrade them all to "skipped", not throw and not store them.
     const store = new HubStore();
     store.attach("lap-1", "default", "k");
     let accepted: unknown;
@@ -72,11 +73,31 @@ describe("HubStore event keying", () => {
         null as any,
         "not an event" as any,
         42 as any,
+        { ...ev(0), seq: 9e99 } as any, // legal JSON; Number.isInteger(9e99) is true
+        { ...ev(0), seq: -3 } as any,
+        { ...ev(0), seq: 1.5 } as any,
+        { ...ev(0), seq: "7" } as any,
         ev(1),
       ]);
     }).not.toThrow();
     expect((accepted as { event: { seq: number } }[]).map((e) => e.event.seq)).toEqual([0, 1]);
     expect(store.eventsFor("default", "auth", 0).map((e) => e.event.seq)).toEqual([0, 1]);
+  });
+
+  it("does not let one out-of-range seq freeze a session's history for the life of the hub", () => {
+    // `seq` becomes `session.lastSeq`, the high-water mark every later event is
+    // compared against AND the offset `resumeOffsets` hands back in `welcome`.
+    // Accept `9e99` once and every subsequent event fails `seq <= lastSeq`
+    // forever, while the resume protocol confirms the corruption rather than
+    // repairing it: the laptop replays from 9e99, which is an empty slice.
+    // Only a hub restart clears it.
+    const store = new HubStore();
+    store.attach("lap-1", "default", "k");
+    store.publish("lap-1", "auth", "run-a", [ev(0), { ...ev(1), seq: 9e99 } as any]);
+    store.publish("lap-1", "auth", "run-a", [ev(1), ev(2)]);
+
+    expect(store.eventsFor("default", "auth", 0).map((e) => e.event.seq)).toEqual([0, 1, 2]);
+    expect(store.resumeOffsets("lap-1")).toEqual({ auth: { runId: "run-a", lastSeq: 2 } });
   });
 });
 
@@ -179,6 +200,22 @@ describe("HubStore snapshot assembly", () => {
       repo: null,
       oversight: { enabled: false, latest: null },
     });
+  });
+
+  it("does not create a project just because something read one", () => {
+    // A browser names the projectId in `peek`, `watch_project` and `join`, and
+    // the hub reads the store on all three. A creating read is therefore
+    // unbounded growth from unauthenticated input that no socket close ever
+    // reclaims. It is also what keeps `peek` parity with the standalone
+    // server, which reads with `projects.get` and never creates.
+    const store = new HubStore();
+    expect(store.ownerOf("ghost", "auth")).toBeNull();
+    expect(store.eventsFor("ghost", "auth", 0)).toEqual([]);
+    expect(store.snapshot("ghost").sessions).toEqual([]);
+    expect(store.resumeOffsets("nobody")).toEqual({});
+    // Reaching into the private map is the point: "did not grow" has no other
+    // observable form, and the leak is invisible until the hub is out of RAM.
+    expect((store as unknown as { projects: Map<string, unknown> }).projects.size).toBe(0);
   });
 
   it("deep-copies session facts so mutating a returned snapshot cannot reach stored state", () => {

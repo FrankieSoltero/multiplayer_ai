@@ -29,6 +29,13 @@ into `JSON.parse` (`server.ts:301`), amplifying into a much larger object graph.
 this is generous), applied on browser-facing *and* uplink-facing sockets, enforced before
 authentication. Test: oversized frame is rejected without allocating.
 
+**v7b1 note — the two halves now diverge.** `poc/hub/src/hub.ts:135` *does* set
+`maxPayload: MAX_FRAME_BYTES` (1 MB) on both hub planes; `server.ts` still does not. So the
+same >1 MB paste into the prompt box is accepted by a standalone laptop and answered with a
+1009 close by the hub. The hub's cap is correct and stays. What makes it user-visible is §4's
+missing client reconnect: a 1009 leaves the tab on a dead socket until a manual reload.
+Fixing `server.ts` here removes the divergence; fixing the client reconnect removes the sting.
+
 ### 1.2 Invite token travels in query parameters and persists in the address bar
 
 `poc/client/src/components/InviteSignIn.tsx:29` passes `location.pathname + location.search` —
@@ -70,6 +77,32 @@ Acceptable for a localhost POC, not for a public hub. Affects `/auth/*`, the Web
 and — once v7 lands — device-pairing code submission, which is brute-forceable by construction
 (v7 spec §10.5).
 
+### 1.5b `HubStore.uplinks` grows without bound — and the frame validation under it is shallow
+
+Two v7b2 inputs that until now lived only in the v7b1 plan's Deviations (§D.9 and §B.3). They
+are recorded here because this is the file a v7b2 planner opens.
+
+**Unbounded `uplinks`.** `poc/hub/src/hubStore.ts` — `attach()` inserts a permanent `Uplink`
+per distinct `uplinkId` and `detach()` only flips `online = false`. Nothing ever deletes.
+**Same class as the `HubStore.projects` leak that was fixed during v7b1, surviving on the other
+plane.** The uplink plane is unauthenticated, so a connect/`hello`/disconnect loop with fresh
+ids leaks an entry per cycle, plus a session-map entry per `facts`/`publish`. Bounded in
+practice only by the "must not be exposed until v7b2" caveat, which is exactly the caveat v7b2
+removes. **Fixed looks like:** reclaim on close once no session references the uplink, or a
+TTL — noting that sessions surviving their laptop is the hub's whole point, so the uplink
+record cannot simply be dropped with its socket.
+
+**Shallow frame validation (v7b1 ruling B.3, a named input for v7b2's validation task — do not
+lose it).** `poc/server/src/relayProtocol.ts`: `parseUpFrame` checks `Array.isArray(f.events)`
+and then casts, so a malformed *element* reaches the hub inside a structurally "valid" frame;
+`isFacts` does the same for `participants`/`skills` and checks `pendingGate` is
+`object | null` with no deeper shape check. `repoKey`, `identity.userId` and `identity.name`
+are length-bounded but not charset-checked, which is weaker than v7 spec §10.3. Ruled
+deliberate for v7b1 (trusted-network target; the laptop is the only publisher; the hub never
+interprets events, it fans them out). **Anyone touching `hubStore`: do not assume a fully
+shaped `PendingGate`.** One element-level hole — an out-of-range `seq` that froze a session's
+history permanently — was closed by the whole-branch review; the rest stands.
+
 ### 1.6 UNEXAMINED: the plugin clone path
 
 `poc/server/src/pluginStore.ts:154` and `:173` `JSON.parse` metadata from a cloned third-party
@@ -106,6 +139,83 @@ a bare `mkdir`: failing loudly beats an agent silently working in an empty direc
 Blocks A1b. Dissolved for the hub (which provisions nothing) but still live for standalone
 `mpai`.
 
+### 2.3 A hub-attached laptop cannot reclaim its own sessions after a restart
+
+`poc/server/src/cli.ts` passes no `uplinkId`, so `poc/server/src/server.ts`'s relay construction
+mints a fresh `randomUUID()` on **every** launch. The hub keys session ownership on `uplinkId`
+(`poc/hub/src/hubStore.ts` — `HubSession.uplinkId`, `ownerOf`, and `snapshot`'s
+`presence` lookup), so after `mpai --hub` is restarted:
+
+- every session the previous run owned stays bound to the now-`online:false` uplink and reads
+  `offline` forever, with no machine able to adopt it; and
+- if the restarted laptop re-creates a session with the same id, `setFacts` returns
+  `session "<id>" ... is already owned by another machine` and `hub.ts`'s `facts` handler closes
+  the uplink with 1008 — a same-machine restart is indistinguishable from the two-laptop
+  collision that error was written for.
+
+Observed live during v7b1 Task 8's two-process walk (2026-07-28); the hub logged the refusal
+once per project push and the laptop reconnected into it each time.
+
+**Consequence, stated plainly because it is the part that matters.** Task 6's entire resume
+machinery is dead code in every real deployment: `hubStore.resumeOffsets`
+(`poc/hub/src/hubStore.ts:79-88`) skips any session whose `uplinkId` differs, and the `have` map
+it feeds (`poc/hub/src/hub.ts:181`) exists *solely* to serve a laptop returning under the same id
+— which no laptop ever does. And the plan's central promise, that sessions survive on the hub
+when a laptop goes away, **is false after any laptop restart**: they survive as unreachable
+`offline` rows that no machine can adopt.
+
+**No new protocol is needed — the takeover rule already ships.** `hubStore.setFacts`
+(`hubStore.ts:100`) refuses ownership only when `existing.uplinkId !== uplinkId`, so a
+reconnecting *same* identity silently re-owns its sessions; `hub.ts:227-230` already handles a
+same-`uplinkId` socket superseding a stale one. Everything downstream of a stable id works today.
+
+**What is actually open is narrow: the grain.** An uplink identity must be stable across restarts
+*and* distinct per machine. `WorkspaceManager.repoKey()` (`poc/server/src/workspace.ts:79-86`)
+supplies the stable-per-repo half and is already in hand at `poc/server/src/server.ts:1006` as
+`repo?.key` — but note it is **deliberately shared across machines** when the repo has an
+`origin` (that is its entire purpose, grouping teammates by repo, spec §3.3), so it cannot be the
+uplink id on its own. The machine-scoping ingredient already exists beside it: `localRepoKey`'s
+`hostname` + hashed `repoRoot` (`poc/server/src/repoKey.ts`). So the decision is "is one uplink
+per repo-per-machine the right grain, and what should a *second* `mpai` on the same repo do —
+refuse, or share?", plus close to a one-line default at `server.ts:1007`. A grain decision, not a
+protocol project.
+
+Also the reason spec §3.2's "runId trap" could not be exercised at all: the laptop never
+re-adopts the session, so a second run is never appended.
+
+### 2.4 The hub refuses a `join` to an offline session, so its stored history is unreachable
+
+`poc/hub/src/hub.ts`'s browser `join` handler answers
+`no machine is running session "<id>" right now` and returns **before** the replay from
+`store.eventsFor`. The hub holds the whole transcript (that is the stated payoff of keeping
+sessions after `detach`), but no browser can read it once the owning laptop is offline: the
+picker row renders `OFFLINE`, JOIN still navigates, and the session view opens empty with
+`PARTY · 0`. Observed live during Task 8's walk (item 6). The fix is to replay and snapshot
+first and only refuse the *drive/approve* paths, which `tunnel()` already does on its own.
+
+### 2.5 The invite flow is dead through the hub — needs design, not a patch
+
+`peek_invite` is sent by `poc/client/src/components/InviteLanding.tsx:24` and
+`InviteSignIn.tsx:17`. The hub's `HUB_HANDLED` set (`poc/hub/src/hub.ts:18`) covers only
+`watch_project` and `peek`, so `peek_invite` falls through to `tunnel()` and — on a socket that
+has not joined a session, which is every invite landing by definition — is answered
+`"join a session first"`. The landing page renders `INVITE UNAVAILABLE`. **Every invite link is
+broken against a hub.** Found by the v7b1 whole-branch review; not a regression, the flow was
+never wired.
+
+**Why it is not a two-line fix.** The hub cannot *answer* it: invites live on the laptop, in
+`poc/server/src/invites.ts`, keyed by a token the laptop minted. It cannot *route* it either:
+the token encodes a project and session that only the laptop can decode, so the hub has nothing
+to select an uplink by — and it has no identity plane of its own until v7b2.
+
+**Fixed looks like** one of: (a) a hub-side invite store, which means the hub mints and
+redeems, which means it needs v7b2's identity first; (b) an unauthenticated
+`peek_invite`-by-broadcast to every uplink in every project, first non-error wins — cheap, but
+it hands an unauthenticated caller a probe across every laptop, so it needs the §10 floor too;
+or (c) putting the projectId in the invite URL so the hub can pick the project, then
+broadcasting only within it. All three are v7b2-or-later. Sits next to the `create_session`
+bound in the v7b1 plan's "Known bounds" list.
+
 ---
 
 ## 3. Test coverage gaps
@@ -135,6 +245,17 @@ truth per item:
 - Arrow-navigation deferred items — HANDOFF §7.
 - Carried v3–v6c items (worktree-containment approvals, Bash-allowlist two-hop risk,
   frontend-design polish, meta-tools bypass) — HANDOFF §7 tail.
+- **v7 scrub candidates: `poc/server/src/auth.ts` and `poc/server/src/staticFiles.ts` go dead
+  for hub-attached `mpai` once v7b2 lands.** The hub serves the client and (from v7b2) owns
+  sign-in, so a laptop launched with `--hub` needs neither. Both stay live for standalone
+  `mpai`, so this is a scrub-pass question ("is standalone still a supported mode?"), not a
+  deletion — noted per the v7b1 plan's closing checklist.
+- **The client never reconnects its session WebSocket** (`poc/client/src/useSessionSocket.ts` —
+  `ws.onclose = () => setConnected(false)`, no retry). Pre-existing and equally true standalone,
+  but the hub makes it load-bearing: a hub restart strands every browser on a dead socket showing
+  a stale roster and live-looking APPROVE buttons that silently do nothing (the click logs
+  `WebSocket is already in CLOSING or CLOSED state`). Only a manual reload recovers. Observed
+  during v7b1 Task 8's walk, item 4.
 
 ---
 

@@ -31,6 +31,18 @@ describe("parseArgs", () => {
     expect(args.error).toBeUndefined();
   });
 
+  it("rejects a --project id the hub's frame parser would refuse", () => {
+    // Without this the failure is invisible: `hello` carries the projectId,
+    // `parseUpFrame` rejects anything outside SLUG, the hub answers with a
+    // 1008 close, and the relay swallows it and reconnects every 2s — forever,
+    // after `launch()` has already printed "attached to hub".
+    expect(parseArgs(["--hub", "ws://hub.test", "--project", "MyProject"]).error).toMatch(
+      /--project requires 1-40 chars/,
+    );
+    expect(parseArgs(["--project", "a b"]).error).toMatch(/--project requires 1-40 chars/);
+    expect(parseArgs(["--project", "team-api-2"]).error).toBeUndefined();
+  });
+
   it("errors when new has no name", () => {
     expect(parseArgs(["new"]).error).toMatch(/requires a session name/);
   });
@@ -62,5 +74,37 @@ describe("findRepoRoot", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mpai-nogit-"));
     tmpDirs.push(dir);
     expect(findRepoRoot(dir)).toBe(null);
+  });
+});
+
+describe("--hub", () => {
+  it("parses a hub url", () => {
+    expect(parseArgs(["--hub", "ws://hub.example:4000/uplink"])).toMatchObject({
+      cmd: "launch",
+      hub: "ws://hub.example:4000/uplink",
+    });
+  });
+
+  it("requires a value", () => {
+    expect(parseArgs(["--hub"]).error).toBe("--hub requires a url");
+  });
+
+  it("rejects a non-websocket scheme, so a typo cannot silently do nothing", () => {
+    // A wrong scheme fails deep inside `ws` with an opaque error; the laptop
+    // would look attached and never be.
+    expect(parseArgs(["--hub", "https://hub.example"]).error).toBe(
+      "--hub requires a ws:// or wss:// url",
+    );
+  });
+
+  // Names what it asserts, and no more: `parseArgs` leaves `hub` unset. The
+  // additive invariant itself — that no `--hub` means `startServer` receives no
+  // `hub` key at all, so `relay` is null — lives in `launch` (cli.ts's
+  // conditional spread and the `args.open && !args.hub` guard), which has no
+  // test here or anywhere: it is not exported and calls the real `startServer`.
+  // What this case does buy is real: it fails the day someone initialises `hub`
+  // eagerly, which is what would make that spread emit a key unconditionally.
+  it("leaves hub undefined when the flag is absent", () => {
+    expect(parseArgs([]).hub).toBeUndefined();
   });
 });

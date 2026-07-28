@@ -7,6 +7,7 @@
     "build": "tsc -p tsconfig.build.json",
     "pretest": "npm --prefix ../server run build",
     "test": "vitest run",
+    "pretypecheck": "npm --prefix ../server run build",
     "typecheck": "tsc --noEmit",
     "dev": "npm --prefix ../server run build && tsx --env-file-if-exists=.env src/main.ts"
   },

@@ -3022,7 +3022,7 @@ Expected: 25 passed, tsc clean.
 Run: `cd poc/client && npx tsc --noEmit && npx vitest run && npm run build`
 Expected: tsc clean, **179 passed**, build clean — the client is untouched by this plan.
 
-- [ ] **Step 6: The two-process walk — REQUIRED, not optional polish**
+- [x] **Step 6: The two-process walk — REQUIRED, not optional polish**
 
 Spec §5 names three failure modes tests structurally cannot catch, and this project has been burned three times by live-behaviour drift (the `skills:"all"` reversal, `canUseTool` shadowing, the `<label>`/`<select>` focus trap). Walk all seven items by hand and write every result — including the ones that did not work — into Deviations.
 
@@ -3066,25 +3066,612 @@ cd ../client && npx tsc --noEmit && npx vitest run && npm run build   # 179 pass
 cd ../server && npm run build && ls dist/main.js        # top level, NOT dist/src/main.js
 ```
 
-- [ ] All three suites green, all three typechecks clean, client build clean.
-- [ ] `git diff --stat main -- poc/server/test/` shows **insertions only** in pre-existing test files. Any deletion means the additive invariant broke.
-- [ ] `mpai` with **no** `--hub` still launches, opens a browser and runs a turn exactly as before. Check this explicitly — it is the promise the whole plan rests on (spec §6).
-- [ ] All seven items of Task 8 Step 6 walked by hand, results written into Deviations.
-- [ ] `docs/tech-debt.md` gains an entry: `poc/server`'s `auth.ts` and `staticFiles.ts` become dead for hub-attached `mpai` once v7b2 lands, and are candidates for the v7 scrub pass.
+- [x] All three suites green, all three typechecks clean, client build clean.
+- [x] `git diff --numstat main -- poc/server/test/` shows **insertions only** in pre-existing test files — *with one disclosed exception*. `poc/server/test/project.test.ts` reports a single deletion, from Task 2's commit `e894dda`: a one-line `import { Project, projectSnapshot, SLUG } from "../src/project.js"` reformatted onto six lines to add `sessionFactsOf` and `arcadeRecordsFrom`. **No test was removed or changed** — verify with `git show e894dda -- poc/server/test/project.test.ts` before treating it as a breach. Any *other* deletion means the additive invariant broke. (The whole-branch fix wave is insertions-only over that directory: `git diff --numstat 43169d9 HEAD -- poc/server/test/`.)
+- [x] `mpai` with **no** `--hub` still launches, opens a browser and runs a turn exactly as before. Check this explicitly — it is the promise the whole plan rests on (spec §6).
+- [x] All seven items of Task 8 Step 6 walked by hand, results written into Deviations.
+- [x] `docs/tech-debt.md` gains an entry: `poc/server`'s `auth.ts` and `staticFiles.ts` become dead for hub-attached `mpai` once v7b2 lands, and are candidates for the v7 scrub pass.
 
 ## Known bounds this plan ships with, stated so they are not reported as bugs
 
 - **The hub has no authentication.** v7b1 stamps the identity the browser claims. It is a development target for a trusted network and **must not be exposed to the internet**. v7b2 is the plan that changes this.
 - **The hub's log is in memory** (spec §2.11). A hub restart loses history. That is v7c's job and must not be presented to users as durable before then (spec §8).
-- **Two laptops cannot both own a session id in one project.** The second is refused with a plain error rather than silently merged. Hub-scoped session ids are v7c/v7e — the same shape of problem as spec §9's shared-worktree bug.
+- **Two laptops cannot both own a session id in one project.** The second laptop's `facts` frame for that session is **dropped, and logged once per `(uplinkId, sessionId)` to the hub's console**; the rest of that laptop's uplink, including sessions it genuinely owns, is unaffected. It is *not* merged, and it is *not* — as an earlier draft of this line claimed — a refusal that closes anything. **No browser is told.** That is deliberate: the channels joined to the contested session id belong to the laptop that legitimately *owns* it, so an error there would tell the users whose session is working fine that it is broken — and at the once-a-second cadence below, into a client error list with no cap and no dedup. **The losing laptop's operator has no in-product signal at all**, only the hub's console; giving them one needs a per-frame rejection the protocol does not carry, which is v7b2's business. Closing the uplink was the shipped behaviour until the whole-branch review: a collision is a permanent, per-session condition, `server.ts` republishes facts for every session about once a second, and the relay reconnects every 2 s, so the close re-fired on a loop and the laptop flapped ONLINE/OFFLINE in every browser forever. Note that a same-machine restart under a fresh `uplinkId` (D.1) presents exactly as a collision. Hub-scoped session ids are v7c/v7e — the same shape of problem as spec §9's shared-worktree bug.
 - **Plugins and oversight read empty when hub-attached.** Plugins are laptop-local files (spec §4); oversight is host-configured (spec §3.7). Both are surfaced in v7b3.
 - **`repo` is null on a hub snapshot.** A hub spans repos, so there is no single one to report; the per-session `repoKey` is the honest answer and the client already reads it (v7a).
 - **Approvals gain roughly 100ms** (browser → hub → laptop). Irrelevant for a human clicking a button (spec §8).
 - **`create_session` is tunnelled but has no owner before a laptop attaches**, so creating a session from the browser only works for a project that already has an uplink. Creating the *first* session on a machine is still `mpai new`. Making the hub route a create to a chosen laptop is v7b3.
+- **The invite flow is dead through the hub.** `peek_invite` (`InviteLanding.tsx:24`, `InviteSignIn.tsx:17`) is not in `HUB_HANDLED`, so it falls through to `tunnel()` and is answered `"join a session first"` — the landing page renders `INVITE UNAVAILABLE`. The hub cannot answer it (invites live on the laptop, in `invites.ts`) and cannot route it either (the token encodes a project/session only the laptop can decode, so the hub has nothing to pick an uplink by). This genuinely needs design — a hub-side invite store, or a broadcast-and-first-answer route — and is deliberately **not** fixed in v7b1. Sits next to the `create_session` bound above and is recorded in `docs/tech-debt.md` §2.5.
+- **`maxPayload` is asymmetric between the hub and a standalone laptop.** `hub.ts:135` caps every browser frame at `MAX_FRAME_BYTES` (1 MB, correct per spec §10.2); `server.ts:367` sets no cap at all, so a standalone laptop inherits `ws`'s 100 MB default (`docs/tech-debt.md` §1.1). A >1 MB paste into the prompt box is therefore accepted standalone and answered with a 1009 close against the hub — and because the client never reconnects its session WebSocket (D.2), that close leaves the tab dead until a manual reload. The cap is right and stays; what is open is the missing cap on `server.ts` and the missing client reconnect, and it is their *interaction* that turns a rejected frame into a dead tab.
 
 ## Deviations
 
-*Fill this in during execution. Every divergence from the listings above, with the reason. This section becomes the authority on why the shipped code differs from the plan — future sessions read it before touching this code.*
+*Written 2026-07-28, at the close of execution: eight tasks, each implemented, reviewed, fixed and re-reviewed clean. It is drawn from the execution ledger and the eight task reports, which lived in this plan's git-ignored SDD workspace and do not survive it. This section is what remains of them, and it is the authority on why the shipped code differs from the listings above.*
+
+### A. The two-process walk (Task 8, Step 6) — all seven items, as observed
+
+Walked by hand on 2026-07-28. Not simulated: the hub ran `node dist/main.js` with
+`CLIENT_DIST=poc/client/dist HOST=127.0.0.1 PORT=4000`, the laptop ran
+`mpai --hub ws://127.0.0.1:4000/uplink --no-open` in `poc/demo-project`, and the browser was driven
+with Playwright. Sessions were created with `mpai new` (see A.8).
+
+**4 of the 7 items passed, including item 3 — the one this whole plan exists for.**
+
+Handshake sanity check before item 1: a raw `watch_project` against the hub returned the relayed
+session with `presence: "online"`, `repoKey: "local:mac.lan:585cc4c5c6ba"`, `repo: null` and
+`plugins: []` — all four exactly as the "known bounds" section above predicts. Laptop-local skills
+came through populated; they are session facts, not the `plugins` array.
+
+**1. The session appears and streams — PASS.**
+`http://127.0.0.1:4000/?session=walkone&name=alice` rendered the session view directly, with no
+picker round-trip: `PARTY · 1`, `♠ alice 🛞 DRIVING · you`, `● ONLINE`. A prompt typed in the browser
+ran an agent turn **on the laptop** and streamed back through the relay: `ToolSearch`, `set_intent`,
+`✦ QUEST ACCEPTED`, `Bash`, tool result, final text. The hub snapshot picked up
+`intent: "Running echo hub-relay-walk and reporting its output."`. First working proof of the spine.
+
+**2. A second tab sees the same session — PASS.**
+`&name=ben` in a second tab: `PARTY · 2`, `♠ alice 🛞 DRIVING`, `✦ ben · you`, model select and MODE
+disabled for the watcher, and a live `🛞 TAKE THE WHEEL`. Clicking it tunnelled down to the laptop and
+back: `🛞 ben took the wheel` appeared in **both** tabs and the wheel moved.
+
+**3. A permission gate answered from the browser — PASS. The wedge travels.**
+A `Bash` gate raised on the laptop, rendered in the hub browser, approved from the **second** tab. The
+first tab showed:
+
+```
+🔐 PERMISSION CHECK   DECIDED
+the agent wants to use Bash — not on the auto-approve list
+touch /tmp/hub-walk-proof.txt
+✅ approved by ben
+```
+
+and `/tmp/hub-walk-proof.txt` was really created on the laptop. Browser → hub → laptop → SDK → back,
+with correct identity attribution.
+
+Two corrections to the walk recipe above, both worth keeping:
+- **`echo hub-relay-walk` does not gate.** The installed SDK auto-approves trivially-safe bash *before*
+  `canUseTool` is consulted, so it never reaches the driver gate. A walk needs a genuinely
+  unsafe-looking command — `touch /tmp/...` did gate.
+- **A watcher sees the gate card but gets no buttons**, only `⏳ driver deciding…`. Ben had to take the
+  wheel first. That is the product's existing driver rule, not a relay defect.
+
+**4. Reconnect mid-gate (spec §5.1) — PARTIAL FAIL. The laptop recovers; the browser does not.**
+With a second gate pending, `SIGINT` on the hub. *While the hub was down* the browser degraded
+honestly: header `○ OFFLINE`, ARCADE and the model select disabled, the full transcript retained, the
+footer still reading `🔐 1 gate pending`. Nothing lied. *On hub restart* the laptop re-attached within
+the reconnect delay and the hub's store was rebuilt from the replay — the pending gate returned to the
+snapshot with its **original** `sinceTs`, so the replay was faithful.
+
+**But the browser never reconnected.** `poc/client/src/useSessionSocket.ts:84` is
+`ws.onclose = () => setConnected(false)` with no retry of any kind. The tab sat on a dead socket
+showing a stale-but-plausible roster and a live-*looking* `[A]PPROVE` button; clicking it did nothing
+except log `WebSocket is already in CLOSING or CLOSED state`, the gate stayed pending, and
+`/tmp/hub-walk-gate2.txt` was not created. After a **manual page reload** the same gate was answerable
+and executed — file created, gate cleared, `driverName: "ben"` restored.
+
+So the relay half of §5.1 is sound and the client half does not exist. It is pre-existing and equally
+true standalone, but the hub makes it load-bearing: a hub restart is now a routine event that strands
+every browser on the team. Recorded in `docs/tech-debt.md` §4.
+
+One cosmetic side effect of the reload: the earliest replayed events rendered the raw userId
+(`🛞 fff778e8-231a-… took the wheel`) instead of `alice`, because display names resolve from the
+current roster and alice's presence had been dropped when the uplink went down.
+
+**5. Laptop restart mid-session, the `runId` trap (spec §3.2) — FAIL. The trap was never reachable.**
+Hub left up, `SIGINT` on `mpai`, restarted with the same `--hub`. Two compounding causes stopped this
+cold:
+
+1. **Laptop session state is in memory.** The restarted laptop had *zero* sessions — a `watch_project`
+   against `:3001` returned `[]`. The worktree survives; the session does not.
+2. **`cli.ts:131` passes no `uplinkId`,** so `server.ts:1007` mints a fresh `randomUUID()` on every
+   launch and the hub sees a different machine. `walkone` stayed bound to the now-`online:false`
+   uplink and read `offline` permanently, with no machine able to adopt it.
+
+Pushed on it: `mpai new walkone` on the restarted laptop, same id. The hub logged
+
+```
+uplink 847b74ec-…: session "walkone" in project "default" is already owned by another machine
+```
+
+and closed the uplink with 1008; the laptop's forever-reconnect walked straight back into it. It
+settled at two occurrences rather than a hot loop only because `facts` are sent on project pushes,
+which are event-driven — so it re-fires the moment anyone touches that session. **A same-machine
+restart is indistinguishable from the two-laptop collision that error was written for, and it poisons
+the uplink for every session id the laptop previously owned.**
+
+No second run was ever appended, so "the hub must append, not overwrite" could not be observed in
+either direction. See D.1 — this is the most serious thing v7b1 ships with.
+
+**6. Laptop drop (spec §5.2) — PASS, with a finding.**
+From the picker the row read `walktwo LIVE` with `alice · ben · cara`. `kill -9` on `mpai`: within
+~2s the same row read **`walktwo OFFLINE`** and stayed listed. It does **not** read `LIVE` with a JOIN
+button — the v7a conflation this item guards against is absent.
+
+The finding sits right next to it: **JOIN is still offered on an offline row, and taking it opens an
+empty session.** `hub.ts:312-315`'s browser `join` handler answers
+`no machine is running session "walktwo" right now` and returns *before* the replay from
+`store.eventsFor` at `hub.ts:320-323`, so the view rendered `PARTY · 0`, an empty transcript and
+`⚠ no machine is running session "walktwo" right now` — while the hub was holding the entire
+transcript in memory. That is the opposite of the hub's stated payoff. Recorded in
+`docs/tech-debt.md` §2.4. Also noted: the header still reads `● ONLINE` on such a session, because
+that indicator means "my socket to the hub is up", not "a laptop is running this".
+
+**7. Watcher cost — PASS, decisively.**
+Measured with a temporary byte-counting TCP passthrough on `:4100` between laptop and hub (written to
+`/tmp`, never committed, deleted afterwards). Identical deterministic prompt ("Reply with exactly the
+word: alpha. Use no tools at all."), laptop→hub bytes for one turn:
+
+| watchers | laptop→hub bytes |
+|---|---|
+| 1 tab | **6,988 B** |
+| 4 tabs | **7,010 B** (1.003×) |
+
+Per-watcher fan-out would have cost ~28 kB. All four tabs received the stream. The publish plane does
+exactly what it exists for. Separately: *joining* three extra tabs cost ~19.9 kB up, because presence
+and roster are laptop-owned facts that must be tunnelled — by design. The invariant this item pins is
+that **streaming** cost is flat in watcher count, and it is.
+
+**8. Session creation through the hub — the known `create_session` hole is unreachable.**
+`SessionPicker.tsx:48-59` sends `create_session` on its watch-only socket, which the hub answers
+`join a session first` (`hub.ts:348`). It never fires from a hub-attached browser: the hub's snapshot
+carries `repo: null` (correct — a hub spans repos) and the picker gates its entire create form on
+`repo !== null` (`SessionPicker.tsx:47-50,100,107,117,123`), rendering it disabled with *"launch via
+the CLI (mpai) to create sessions."* That is precisely the bound this plan ships with. No client
+change was made or needed; walk sessions were created with `mpai new <name>` against the laptop's own
+server. **Closed, not deferred.**
+
+**9. The additive invariant, re-checked by hand.**
+`mpai --no-open` with **no** `--hub` printed the byte-identical old line
+(`multiplayer-ai on http://localhost:3001/ (repo: …)`), `mpai new` worked, and a full agent turn ran
+and streamed. The auto-open-a-browser arm was verified by *reading* the single unchanged guard
+(`if (args.open && !args.hub)` at `cli.ts:144`) rather than by opening a window on the operator's
+desktop — stated here so the strength of that one sub-claim is not overread.
+
+### B. Human rulings made during execution
+
+Four questions were escalated out of the review loop to a human. All four are settled; do not
+re-litigate them without new information.
+
+**B.1 — `snapshot()` deep-copies per-session facts; `eventsFor()`/`publish()` deliberately do not.**
+(Task 4, 2026-07-27.) As the plan listed it, `hubStore` handed back live references in three places:
+`eventsFor()` returned the stored `StoredEvent` instances, `publish()` pushed the same object into both
+the stored and the returned array, and `snapshot()` shallow-spread facts so `skills`, `participants`
+and `pendingGate` stayed shared. **Ruling: copy at the snapshot boundary only.** `snapshot()` now
+deep-copies the per-session facts (`participants`, `skills` per-element spread, `pendingGate` via a
+null-safe ternary — verified against the `SessionFacts` declaration to be the only nested mutable
+fields, and `SkillInfo`/`PendingGate` are flat, so one level is a complete copy). `eventsFor()` and
+`publish()` stay allocation-free and are documented in-code as returning read-only instances.
+**Reasoning: the event fan-out path is the one watcher count multiplies**, and `snapshot()` is the
+value that leaves the hub toward browsers and the one most likely to be normalized downstream. Task 7's
+review checked the contract held: its three touch points are all read-then-serialize, and `fanOut`'s
+third parameter is typed `readonly { event: unknown }[]` to state it in the type.
+
+**B.2 — the plan's two vacuous relay tests kept their names and were given working bodies.**
+(Task 5, 2026-07-28.) Two of the five relay tests this plan authored asserted nothing. **A relay join
+is silent by construction** — it skips the replay, takes the `() => {}` subscribe arm, skips
+`watchers.add` and skips the personal snapshot — so `sent` was always `[]`. The identity-overwrite test
+passed with the *entire* `io.stampedIdentity` overwrite deleted, and `"drops the participant on close"`
+only caught a throw. **Ruling: keep both names, replace both bodies with assertions that can fail.**
+The identity test now reads the log back through a *direct* client's replay (a relay client joins
+claiming `totally-not-ana`/`Mallory`; the assertions run over the `presence_join` events a direct
+client replays); the close test now has a second, direct connection as a witness and asserts it sees
+**exactly one** `presence_leave` for `ana` across two `close()` calls — which pins the departure *and*
+makes "idempotent" enforceable on an append-only log. A sixth test was a duplicate of the first, so it
+was folded in and deleted. Both mutations were verified to fail without their fix. The plan's
+zero-edit invariant over pre-existing tests is untouched: it authorises editing only tests the task
+itself authored, and `git diff --numstat` over `poc/server/test/` stayed insertions-only.
+
+**B.3 — shallow frame validation stands; the security floor is v7b2's job.**
+(Task 1, 2026-07-27.) `parseUpFrame` checks `Array.isArray(f.events)` and then casts; `isFacts` does
+the same for `participants`/`skills`, and checks `pendingGate` is `object | null` with no deeper shape
+check. A malformed *element* therefore reaches the hub inside a "valid" frame. Related: `repoKey`,
+`identity.userId` and `identity.name` are length-bounded but not charset-checked, which is weaker than
+spec §10.3. **Ruling: the plan governs, deferred to v7b2.** v7b1's hub is explicitly a
+localhost/trusted-network target that must not be exposed to the internet; spec §10's security floor is
+v7b2's entire job; the laptop is the only publisher and the hub never interprets events, it fans them
+out. **This is a named input for v7b2's validation task — do not lose it.** Note for anyone touching
+Task 4's store: do not assume a fully-shaped `PendingGate`.
+
+**B.4 — `relayProtocol.ts` imports `SLUG` from `project.ts` rather than duplicating the regex.**
+(Task 1, 2026-07-27.) The listing declared its own `SLUGISH`, byte-identical to the `SLUG` already
+exported from `project.ts:10`. **Ruling: dedupe — import it.** The consequence was accepted knowingly:
+this gives `relayProtocol.ts` its **first runtime (value) import**; every other import in the file is
+`import type` and erases at compile time. So when the hub imports `relayProtocol` through the
+`poc/server` exports map, `project.js` and its runtime dependencies (`digest.js`, `pendingGate.js`,
+`lifecycle.js`) now load with it. Task 3 proved that chain resolves at runtime against real `dist`
+output, not just at typecheck. The other direction stays type-only: `project.ts` uses
+`import type { SessionFacts }`, so `relayProtocol.ts → project.ts` is the only runtime edge.
+**Do not turn that into a value import in either direction.**
+
+### C. Divergences from the plan's code listings, task by task
+
+**Task 1 — `relayProtocol.ts`.** `SLUGISH` replaced by an imported `SLUG` (ruling B.4). Otherwise
+byte-identical to the listing.
+
+**Task 2 — one producer for session facts.** No divergence. `sessionFactsOf(id, entry, repoKey)` and
+`arcadeRecordsFrom(logs)` shipped as listed, with `projectSnapshot`/`arcadeRecords` delegating.
+Confirmed by direct comparison that `SessionFacts` is `ProjectMessage.sessions[]` minus `presence` —
+identical 10 fields in the same order.
+
+**Task 3 — `poc/hub` and the shared-module seam.** No divergence in file contents or layout.
+`poc/server/tsconfig.build.json` adds only `"declaration": true`; `rootDir: "src"` and
+`include: ["src"]` are untouched and `rootDir` is explicit, so **`dist/main.js` stays at the top
+level** — the path baked into `deploy/multiplayer-ai.service:16`. The `exports` map is purely
+additive: the client has zero references to `multiplayer-ai-server`, the systemd unit references the
+literal `dist/main.js` path and never the package name, and there is no bare `"."` self-import.
+
+**Task 4 — `hubStore.ts`.** Two divergences, both from the fix round:
+- `snapshot()` deep-copies per-session facts (ruling B.1).
+- **A crash guard on `publish`.** A non-object element in an events array — reachable because of B.3 —
+  hit `.seq` on `null` and threw. `typeof event !== "object" || event === null` now runs before any
+  `.seq` read; the covering test pushes `[ev(0), null, "x", 42, ev(1)]` and asserts it does not throw
+  and still stores seq 0 and 1.
+
+**Task 5 — the `ConnectionIO` seam.** The listing (above, at `interface ConnectionIO`) made
+`stampedIdentity` optional independently of `mode`. **Shipped as a discriminated union
+`DirectIO | RelayIO`, with `stampedIdentity` required on the relay arm.** Reason: the identity sites
+discriminated on the *stamp* while replay/subscribe/snapshot discriminated on *`mode`*, and the two
+discriminators could disagree. `{ mode: "relay", send }` with no stamp was representable, reached the
+identity `else` arm, and with auth off **kept the payload's claimed `userId`/`name`** — fail-open on
+exactly the trust inversion this seam exists to enforce. Latent (nothing constructed one) but not
+worth leaving representable. All four watcher sites now derive `watcher` once as
+`io.mode === "direct" ? io.watcher : undefined`, which removes per-site disagreement by construction;
+`io.cookieHeader` typechecks only because the relay arm returns first. No casts paper over the
+narrowing.
+
+Two deliberate **non**-maximal choices, both reviewed and kept: `watcher` stays optional on `DirectIO`
+(a watcher-less direct connection is legitimate, cannot fail open on anything, and requiring it would
+have forced an edit to this plan's own `{ mode: "direct", send }` test construction), and
+`cookieHeader` stays optional (`IncomingMessage.headers.cookie` is itself `string | undefined`).
+
+Plus the two test bodies of ruling B.2. Everything else in the extraction is verbatim: the join tail
+order (replay → subscribe → ctx → watchers.add → glyph/color → session.join → invite_redeemed →
+personal snapshot), `watch_project`'s `watching = project` still after both watcher mutations,
+`peek`/`peek_invite`/both `create_session` acks byte-identical through `io.send`, and per-connection
+`ctx`/`watching` still one pair per connection with `denyUnauthed` re-created per message. Nothing
+moved to module scope. Note for later: `server.ts` grew 938 → 1004 lines with a ~600-line
+`createConnection` nested inside `startServer`. If it ever moves to its own module it **will** need an
+`exports` map entry.
+
+**Task 6 — `relay.ts`, the laptop's outbound uplink.** Five divergences:
+
+1. **`require("ws")` → a top-level `import { WebSocket } from "ws"`.** `poc/server` is
+   `"type": "module"`, so the listing's `defaultConnect` would have been a runtime `ReferenceError`
+   the first time anyone passed `--hub`. `import type { ConnectionIO } from "./server.js"` stays
+   type-only, so there is still **no runtime import cycle** between `server.ts` and `relay.ts`.
+2. **The replay is chunked into multiple frames, not emitted as one.** The listing emitted one
+   unbounded frame against the protocol's own `MAX_FRAME_BYTES = 1_000_000` cap, which livelocks a
+   >1MB session: oversized frame → `ws` 1009 close → reconnect → same empty `have` → same frame,
+   forever. A module-level `publishFrames(sessionId, runId, events)` now splits it, budgeting for the
+   frame's own envelope (`budget = MAX − len(envelope with events: [])`, per-event `size = len(event)+1`
+   for the joining comma, same key order in the emitted frame). Both producers route through it — the
+   `welcome` replay and `trackSession`'s backlog. Safe because `(runId, seq)` keying already makes many
+   publish frames per session equivalent to one.
+3. **Per-socket identity guards in the lifecycle.** `connect()` captures `const socket` and every
+   handler early-returns unless `socket === this.socket`; `start()` early-returns when `this.socket`
+   is set **or** a reconnect timer is pending. Without this, real `ws` reporting a close
+   asynchronously means `stop()` then `start()` delivers the *old* socket's close after the *new*
+   socket is assigned — nulling `this.socket`, clearing the new socket's channels, and leaving `write`
+   sending into the void with `open` still true. Latent under a single caller, but the class is
+   exported for Task 8 to drive. Note: double-start is now a silent no-op rather than an error.
+4. **The pending buffer evicts oldest-first** instead of the listing's `return` that rejected new
+   frames, so a long outage keeps the *freshest* facts rather than the stalest. `pending` became
+   `{ frame, size }[]` so eviction never re-stringifies. `stop()` now clears `pending`/`pendingBytes`,
+   so a restarted relay cannot flush a previous life's frames on its next `welcome`.
+5. **`sessionFactsOf` is computed twice per push when a hub is attached** (`server.ts:198` vs `:206` —
+   `snapshotFor` → `projectSnapshot` already computes it). Only paid when `relay` is non-null, so the
+   additive invariant is intact. The facts could be threaded through; nobody has.
+
+The `server.ts` side is exactly the listing and is **47 insertions, 0 deletions**. Ordering there is
+load-bearing and commented in place: `relay?.trackSession(...)` is the *last* statement of the
+`if (!entry)` block because `skill_roster` is appended before the subscribe exists, so only
+`trackSession`'s backlog publish reaches the hub for a session created while the uplink is already up;
+the two paths cannot double-publish because `trackSession` returns early for an already-tracked
+session. Facts are republished for every session on every push, with no change detection, on the
+snapshot's existing 1-second throttle — brief-specified, and the obvious place to add change detection
+if uplink chattiness ever matters.
+
+**Task 7 — the hub's WebSocket surface.** Three deliberate deviations from the listing, all reviewed
+and kept:
+
+1. **Stale-socket guard on uplink close.** The listing's close handler unconditionally
+   `uplinks.delete(uplinkId)` + `store.detach(uplinkId)`. A laptop reconnecting under the same
+   `uplinkId` before the hub observes the old socket's close — the flaky-network case `relay.ts` exists
+   for — would have had its *live* uplink unregistered and its sessions pinned `offline` by the late
+   close of the superseded socket. The handler now returns early unless `uplinks.get(uplinkId) === socket`.
+2. **`msg?.type` instead of `msg.type`.** A browser sending the literal `null` (valid JSON) throws
+   inside the `message` listener, and an exception in a `ws` event handler is an uncaught exception
+   that **takes the hub process down**. There is now a regression test for exactly this frame.
+3. **A non-string `sessionId` is rejected outright.** The listing validated
+   `SLUG.test(String(msg.sessionId ?? ""))` but then stored the raw `msg.sessionId`.
+   **Correction on record:** the justification originally given for this change — that a JSON number
+   like `123` would be stored as a key that can never match the store's string-keyed map — is **wrong**.
+   `ownerOf(projectId, 123)` returns `null` and the join is rejected before `channel.sessionId` is ever
+   assigned, so the unmatchable key would never have been stored. The change is still net-better (an
+   accurate error message, no `any` in channel state, and parity with the laptop) but **do not carry
+   the original reasoning forward.**
+
+Also from the fix round, all divergences from the listing:
+- **`hubStore` split into creating and non-creating reads.** `sessionsOf` was a lazily-*creating*
+  accessor used on read paths, so unauthenticated `peek` grew `HubStore.projects` without bound and
+  never reclaimed it — also a parity divergence from `server.ts:532`'s non-creating `projects.get`. A
+  private `readSessionsOf` now serves `resumeOffsets`, `ownerOf`, `eventsFor` and `snapshot`; the
+  creating `sessionsOf` survives at exactly the two uplink **write** paths (`setFacts`, `publish`).
+  Task 4's store contract is unchanged by the split.
+- **A second `hello` on one uplink socket is refused** with `close(1008, "already identified")`. It
+  previously leaked a registration and pinned presence `online` forever. Verified not to fire for a
+  real laptop: `relay.ts` sends `hello` only from the socket `open` handler, once per socket, via
+  `write` rather than the `emit` buffer, so it is never replayed on a `welcome` flush.
+- **The hub runs `server.ts`'s identical join `typeof` triple, with the identical message.**
+  Previously the hub accepted a `name`-less join that the laptop rejects. The alternative fix —
+  `tunnel({ ...msg, userId, name })` — was **rejected deliberately**: rejecting at the hub also
+  preserves `DownFrame`'s "the ORIGINAL client message, untouched" contract (`relayProtocol.ts:53-57`),
+  which is the contract worth keeping intact. `tunnel(msg)` is still unrewritten.
+- **An "already joined" guard**, mirroring `server.ts`. Without it a re-join rebound channel state and
+  orphaned the previous laptop's roster entry as a permanent ghost participant.
+- **A `reply` is dropped unless the channel is joined and
+  `store.ownerOf(channel.projectId, channel.sessionId) === uplinkId`**; a payload-less reply now
+  produces no frame at all rather than a zero-length one the browser's `JSON.parse` throws on;
+  `close()` calls `wss.close()` before `httpServer.close()`.
+- **`fanOut`'s third parameter is typed `readonly { event: unknown }[]`**, to state ruling B.1's
+  read-only contract in the type rather than in a comment.
+- **A joined channel is never re-homed by `watch_project`** — see D.9, which is the cost of that guard.
+
+**Task 8 — `mpai --hub`.** The `cli.ts` and `cli.test.ts` listings were applied **verbatim**. The only
+addition is a one-line doc comment on the new `hub?: string` field. One test was later renamed
+(`"defaults to no hub, which is today's standalone behaviour"` →
+`"leaves hub undefined when the flag is absent"`) because it asserts only
+`parseArgs([]).hub === undefined`, while the invariant it was named for actually lives at `cli.ts:131`
+(a conditional spread that emits no `hub` key at all, so `server.ts:1001-1012` sets `relay = null`) and
+`cli.ts:144`. **`launch` has no test, here or anywhere**, because it is not exported and calls the real
+`startServer`; a comment in the test file records this. `mpai --hub --no-open` consumes `--no-open` as
+the flag's value and reports the scheme error rather than a missing-value one — left as specified,
+because `--project` and `--base` have the same defect *silently*, so fixing one of the three is worse
+than fixing none.
+
+**Every test count in this plan is a prediction, and all of them are low.** The plan's Global
+Constraints cite server 345 / client 179, which were `main` at `a6e9d76`; v7a2 and the workdir guard
+landed in between. The true baseline at the branch point (`18900ff`) was **server 362, client 207**.
+Final counts after Task 8: **server 409 (20 files), hub 43, client 207**, all three typechecks clean,
+client build clean, `dist/main.js` still top level. Read every number in the listings above as "the
+count the suite reports", not as a target. Task 5's real acceptance criterion was never the number —
+it was the zero-edit part, and that held: `git diff --numstat` over `poc/server/test/` is
+insertions-only across the whole branch.
+
+### D. Shipped bounds — what v7b1 ships with, open and known
+
+These are in addition to the "Known bounds" section above, which still stands. Read this list before
+touching this code.
+
+**D.1 — A hub-attached laptop cannot reclaim its own sessions after a restart. The serious one.**
+Full write-up in `docs/tech-debt.md` §2.3; walk evidence in A.5. The short version: `cli.ts:131` passes
+no `uplinkId`, so `server.ts:1007` mints a fresh `randomUUID()` per launch. **Consequence: Task 6's
+entire resume machinery — `hubStore.resumeOffsets` and the `have` handshake — is dead code in every
+real deployment, and this plan's central promise that sessions survive on the hub is false after any
+laptop restart.** They survive as unreachable `offline` rows no machine can adopt. Spec §3.2's
+`runId` append-not-overwrite trap was therefore never reachable and remains **unverified by anything** —
+not by the walk, and not by a hub unit test driving two runs of one session through `publish`.
+
+Two things narrow the fix, and both are easy to get wrong:
+
+- **The takeover rule already ships.** `hubStore.ts:100` refuses only when
+  `existing.uplinkId !== uplinkId`, so a reconnecting *same* identity re-owns its sessions with no new
+  protocol; `hub.ts:227-230` already replaces a superseded same-id socket. What is open is the
+  **grain** — is one uplink per repo-per-machine right, and what should a second `mpai` on the same
+  repo do — plus roughly a one-line default at `server.ts:1007`. A grain decision, not a protocol
+  project.
+- **`workspace.repoKey()` is NOT a ready-made stable uplink identity, and using it as one is a
+  session-hijack bug.** `repoKeyFor` (`repoKey.ts:97-103`) returns `normalizeRemote(remoteUrl)`
+  **alone** whenever an `origin` exists — `ctx.hostname` and `ctx.repoRoot` are never consulted. Only a
+  null normalize (no origin, or an unparseable remote) falls through to
+  `localRepoKey(hostname, repoRoot)` (`repoKey.ts:90-93`). And `normalizeRemote` is built to be
+  **byte-identical across every machine and protocol** for the same remote (`repoKey.ts:3-9`); that is
+  its entire purpose — grouping teammates by repo (spec §3.3) — and `workspace.ts:76-78` says so in its
+  own doc comment. **So `repo?.key` used directly as the uplink id would make two teammates who cloned
+  the same repo present the SAME `uplinkId`, and `hubStore.ts:100` would read them as one machine
+  reconnecting — each silently taking over the other's sessions.** The collision is by construction,
+  which is what makes it invisible. The correct construction is the normalized remote as the
+  stable-per-repo **half**, with `localRepoKey`'s hostname + hashed repo root supplying the
+  machine-scoping ingredient. `docs/tech-debt.md` §2.3 states this correctly.
+
+**D.2 — The client never reconnects its session WebSocket.** `useSessionSocket.ts:84`, no retry of any
+kind. Pre-existing and equally true standalone, but the hub makes it load-bearing: a hub restart
+strands every browser on a dead socket with live-looking APPROVE buttons until a manual reload. Walk
+item A.4; `docs/tech-debt.md` §4.
+
+**D.3 — JOIN on an offline session opens empty.** The hub refuses the join before the replay it is
+already holding. Walk item A.6; `docs/tech-debt.md` §2.4. The fix is to replay and snapshot first and
+refuse only the drive/approve paths, which `tunnel()` already does on its own.
+
+**D.4 — A relay join emits no success signal, and none was invented.** This plan specifies no ack, and
+three separate tasks were told not to invent one. A tunnelled `join` that succeeds produces no up-frame
+at all — Task 5's `if (io.mode === "direct") io.send(...)` guard suppresses even the personal snapshot.
+The only success signal is the absence of an `error` reply. Worse, a `tunnel` frame that fails
+`parseDownFrame` is dropped with no reply either, so from the hub's side "succeeded", "silently rejected
+as malformed" and "arrived after teardown" are **one indistinguishable observation**. Task 7 makes this
+narrow rather than fatal — the hub answers the browser from its own store *before* tunnelling, so
+"joined" never depends on interpreting laptop silence — but the residual failure is real: if the laptop
+silently rejects a join, the browser sees a fully populated session with no participant row for it and
+commands that all fail. An ack is the fix and it needs a ruling.
+
+**D.5 — The laptop's uplink fails silently.** `socket.on("error", () => {})` plus `write`'s `catch {}`
+swallow every uplink failure, so `mpai --hub ws://wrong-host` is indistinguishable from a working
+uplink. This is **plan-mandated code**, which is why it was routed to a human rather than fixed in the
+loop, and it is out of step with `overseer.ts:120`, which logs exactly this class of failure. It is a
+live question, not a closed item.
+
+**D.6 — Channel re-establishment after an uplink drop has no owner.** Confirmed from both sides and
+assigned to nobody by this plan. `relay.ts` closes and forgets every channel on `close` and never tells
+the hub; the hub's channel keeps its `projectId`/`sessionId`/`identity` across the drop, so once the
+laptop re-registers, `tunnel()` resolves the new socket and forwards a command down a channel the laptop
+never saw a `join` for. A browser that was mid-session gets a fresh, never-joined connection on its next
+`prompt`. Observed directly during the walk: when the uplink dropped, the session's participants
+emptied to `[]` while the browser's hub socket stayed open and unaware; only a page reload recovered.
+
+**The design space is narrower than it looks, and this is the useful part:** `channel.sessionId` is set
+only at `hub.ts:319` and is cleared **nowhere** (the close handler deletes the whole channel), and the
+new "already joined" guard at `hub.ts:284` fires first — **so a browser whose laptop dropped cannot
+re-join on its existing socket.** The fix therefore cannot be browser-side. It must run hub-side per
+surviving channel (re-issuing a join after the new uplink's `welcome`), or something must reset
+`channel.sessionId`.
+
+**D.7 — FIXED in the whole-branch fix wave. The chunk budget counted UTF-16 code units, not bytes.**
+`relay.ts` used `JSON.stringify(...).length` at both `publishFrames` sites and in the pending buffer's
+budget. All three now use `Buffer.byteLength`. Covered twice over: a relay unit test that asserts an
+emoji log splits into frames each under `MAX_FRAME_BYTES` *in bytes* (`relay.test.ts`, "chunks by
+BYTES"), and the integration test's chunked-replay scenario, which is judged by the hub's real
+`maxPayload` rather than by a re-implementation of it. Both were verified to fail against the unfixed
+source; the integration one fails by holding **zero** events, because the oversized frame livelocks the
+uplink exactly as predicted.
+
+**D.8 — A single event larger than `MAX_FRAME_BYTES` still ships alone and still livelocks**
+(`relay.ts:304-307`). Chunking fixes the aggregate case only. This was escalated rather than silently
+dropped, because dropping such an event would punch a permanent hole in an append-only log. It wants a
+real answer — a truncation marker event, or a hub-side oversize ack — not a silent drop. Relatedly, the
+pending buffer's worst case is now `MAX_FRAME_BYTES` plus one oversized frame, because the eviction loop
+keeps at least one entry; deliberate, commented, bounded by a single frame.
+
+**D.9 — `HubStore.uplinks` grows without bound.** `hubStore.ts:43-45,50-53`: `attach` inserts a
+permanent `Uplink` per distinct `uplinkId` and `detach` only flips `online = false` — nothing ever
+deletes. **This is the same class as the `HubStore.projects` leak that was fixed, surviving on the other
+plane.** The uplink plane is unauthenticated in v7b1, so a connect/`hello`/disconnect loop with fresh ids
+leaks an entry per cycle plus a session-map entry per `facts`/`publish`. Bounded in practice only by the
+"must not be exposed to the internet until v7b2" caveat.
+
+**D.10 — A joined browser that watches another project keeps receiving its own session's pushes.**
+`hub.ts:343`'s re-home guard (added by Task 7's fix round) trades one divergence from `server.ts` for
+another. The standalone server keeps the project-watch subscription and the joined session as
+independent variables (`watching` vs `ctx`), so a joined socket may re-home its watch freely. The hub
+overloads `channel.projectId` for **both** the push subscription and the `fanOut` key, so the guard
+preserves the event stream at the cost of the subscription: such a browser gets one snapshot for the
+project it asked about and then keeps receiving pushes for its own session's project. Unreachable from
+the shipped client (`SessionPicker` opens a dedicated socket and never joins). Structural fix: a
+separate `channel.watchProjectId`, distinct from the `fanOut` key.
+
+**D.11 — An unreproduced test flake. Carry it; do not assume it is gone.** One full server-suite run
+during Task 8's fix round returned `1 failed | 408 passed`, and **which test failed was not captured**
+(the run was piped through `tail -6`). Evidence since: 12 green full runs and 10 green `relay.test.ts`
+runs by the implementer, plus 8 more green full runs (409/409) by the controller — 20+ consecutive
+green, not reproducible on demand. The fix diff could not have caused it (a docs edit plus one `it()`
+name string; the assertion body is a byte-identical, pure-sync `parseArgs` call).
+
+**The ranking this entry first gave was impossible, and the whole-branch review caught it.** The
+captured line read `1 failed | 408 passed` — 409 tests in one run. The **server** suite alone reported
+409 passed across 20 files; the **hub** suite is a different package under a different command and
+reported 43 across 3 files. So `poc/hub/test/routing.test.ts` **cannot have been in that run at all**,
+and naming it first sent the reader to the wrong package. `poc/server/test/relay.test.ts` is also
+implausible: it is fully synchronous apart from two `vi.useFakeTimers()` tests driven by
+`advanceTimersByTime`, so it has no wall-clock race to lose.
+
+**The plausible homes are pre-existing wall-clock sleeps**, all of which predate this branch:
+`overseer.test.ts:61` (a 60 ms wait around a ~30 ms debounce, asserting an exact call count — the
+classic shape), `agentDriver.test.ts:1153-1160`, and `server.test.ts`'s many `wait(50)` calls. **Do not
+rewrite those tests on this evidence.** The failing test was never identified, and re-timing a suite
+that gates every future task on a guess is worse than carrying the flake. Carry it. If it recurs,
+capture the FULL output — never `tail` — and name the test before touching anything.
+
+**D.12 — Minor gaps recorded so they are not rediscovered.**
+
+**Out-of-order events within one run — the premise of the original entry was FALSE, and it was hiding a
+Critical.** It read: "dropped, not reordered (`hubStore.ts`, `seq <= lastSeq` skip) — accepted for v7b1
+(a single WS gives TCP ordering and the resume protocol extends monotonically), untested either way."
+TCP ordering is real but irrelevant, and the resume protocol does **not** extend monotonically: the
+`welcome` branch deliberately **rewinds** to `have.lastSeq + 1`, and `have` is computed at hello time —
+one full round trip before the laptop acts on it. The relay used to write live frames the moment the
+socket was `open`, so a single event appended in that window travelled *ahead* of the replay it was
+rewinding to. Out-of-order arrival was therefore not a hypothetical the transport ruled out; it was
+manufactured by the handshake, on every reconnect, and the `seq <= lastSeq` skip then silently discarded
+the entire outage backlog. Laptop 36 events, hub 6, no error anywhere, a permanent hole in every
+browser's transcript and in the hub's stored history for every future joiner.
+
+**Fixed** in the whole-branch fix wave: `relay.ts` gates `emit()` on a new `ready` flag set in the
+`welcome` branch — after the replay and immediately before `flush()` — instead of on `open`. Frames
+produced in the window buffer, and the replay (which reads the live log) carries them in order. `hello`
+still goes out from the `open` handler, and `reply` frames never pass through `emit()`, so nothing on
+the command plane is delayed. No protocol change. The store's `seq <= lastSeq` skip is unchanged and is
+now *correct as stated*, because nothing arrives out of order any more. Covered by
+`relay.test.ts`'s "writes nothing but hello between open and welcome" and, end to end, by
+`poc/hub/test/relayIntegration.test.ts` — both verified to fail against the unfixed source.
+
+The general lesson this cost: the relay's in-code comment asserted the hub "keys on (runId, seq)", while
+the hub keys on a per-session **high-water mark**. Two modules, two packages, one false shared premise,
+and no test that ran them together. That is what `relayIntegration.test.ts` now exists for.
+
+Remaining minor gaps:
+`resumeOffsets`' `lastRunId === null` exclusion of facts-only sessions has no test.
+`setFacts` returns `{ ok: false, error }` while `publish`/`attach` silently no-op on unknown-uplink or
+wrong-owner, so a caller cannot distinguish "nothing new" from "rejected".
+The client's `lastSeq` is ignored on join — the hub always replays from 0, which is harmless only
+because the client always sends 0, but the field is silently non-functional against a hub while it is
+honoured against a standalone server.
+~~`poc/hub/package.json` has no `pretypecheck` hook~~ — FIXED in the whole-branch fix wave; it now
+mirrors `pretest`/`prebuild`, so `npm run typecheck` alone on a clean checkout builds the server's
+`dist/*.d.ts` first.
+~~`poc/hub/test/httpSurface.test.ts:39-42` ("binds the host it was given") only asserts `port > 0`~~ —
+FIXED: renamed to what it checks and given a real reachability assertion plus a negative probe at the
+IPv6 loopback, the latter carrying its own comment that it can pass vacuously on a host without IPv6.
+`createConnection` returns an anonymous handle type and `msg` is `any` on what is now a package
+surface; exporting a `ConnectionHandle` interface would cost two lines.
+`test/workspace.test.ts:80` emits a stderr `HEAD is now at … init` from `git checkout --detach` during
+full-suite runs and not focused ones — pre-existing, harmless, and *not* introduced by v7b1.
+
+**D.13 — What the whole-branch review changed, in one place.** After the eight tasks closed, the branch
+was reviewed as a whole and fixed in a single wave. One Critical and four Importants, all of which had
+survived every per-task review:
+
+- **C1** — the reconnect event-loss bug. See the rewritten D.12 above; it is the reason that entry's
+  original premise was false.
+- **I5** — no test anywhere ran a real `relay.ts` against a real `hub.ts`. Each side was only ever
+  tested against a fake counterpart written by its own author, which is precisely why C1 survived eight
+  reviews and two fix rounds. `poc/hub/test/relayIntegration.test.ts` now runs both, over a real
+  `startHub({ port: 0 })` on loopback: reconnect-with-a-gap, chunked replay, browser join.
+- **I1** — a session-name collision closed the losing laptop's whole uplink on a 2-second loop. Now the
+  frame is dropped and logged once per `(uplinkId, sessionId)`, and no browser is notified. The first
+  cut of this fix *did* narrowcast an error to browsers joined to that session; the re-review caught
+  that those are the **winner's** browsers, so the message was false from their vantage and repeated at
+  the same one-second cadence the finding was about — into a client error list with no cap or dedup.
+  The lesson: this fix's whole subject was an unbounded repeat of a permanent condition, and the first
+  attempt moved the repeat from the transport to the browser rather than removing it. See the corrected
+  "Known bounds" entry.
+- **I2** — one out-of-range `seq` froze a session's hub history permanently, and the resume protocol
+  confirmed the corruption rather than repairing it. `hubStore.publish` now requires
+  `Number.isSafeInteger(seq) && seq >= 0`.
+- **I4** — see D.7, now fixed.
+- **I3** (invite flow dead through the hub) was **documented, not fixed** — it needs design. Recorded in
+  "Known bounds" above and `docs/tech-debt.md` §2.5.
+- Minors: `--project` is now validated against `SLUG` at parse time (an invalid one used to produce an
+  invisible infinite reconnect loop *after* "attached to hub" was printed); `server.ts`'s `peek` and
+  `watch_project` handlers now name the cross-package `HUB_HANDLED` coupling in a comment; the hub's
+  `pretypecheck` hook and the over-promising `httpSurface` test name are fixed above.
+
+Every fix ships with a test that was **verified to fail against the unfixed source** — the revert sweep
+is written up in `.superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/whole-branch-fix-report.md`. B.2's
+lesson (two tests that passed against the very bug they were named for) is why that is now the standard,
+not an option.
+
+### E. Which boxes above are ticked, and which are not
+
+The five items under "Verification before calling v7b1 done" are ticked, plus Task 8's Step 6. The
+evidence for each:
+
+- **All three suites green, typechecks clean, client build clean** — server 409 / hub 43 / client 207,
+  three clean `tsc --noEmit` runs, clean `npm run build` on client and server, `dist/main.js` at the top
+  level of `poc/server/dist`. Output was pristine apart from D.12's pre-existing `workspace.test.ts`
+  stderr line.
+- **Insertions only in `poc/server/test/`** — `git diff --stat main -- poc/server/test/` reports 512
+  insertions, 0 deletions. Independently re-verified at Task 5, the one task that could have broken it.
+- **`mpai` with no `--hub` still launches and runs a turn** — walked by hand (A.9). Read that tick with
+  A.9's caveat: the launch, the standalone line, `mpai new` and a full streaming turn were observed; the
+  browser auto-open arm was verified by reading the unchanged `if (args.open && !args.hub)` guard, not
+  by observing a window open.
+- **All seven walk items walked by hand, results written into Deviations** — section A. Satisfied by
+  this section; it is the reason this section was written before the plan's workspace was torn down.
+- **`docs/tech-debt.md` gains the `auth.ts`/`staticFiles.ts` scrub entry** — present at
+  `docs/tech-debt.md` §4.
+
+**The per-task Step checkboxes throughout the plan above are left unticked.** Execution was tracked in
+the SDD ledger rather than in the plan, and ticking them now from a report would be a claim about
+process rather than about evidence. What those steps produced is recorded in sections A–D.
 
 ---
 

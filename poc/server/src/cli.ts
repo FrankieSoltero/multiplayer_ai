@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import { SLUG } from "./project.js";
 import { startServer } from "./server.js";
 import { WorkspaceManager } from "./workspace.js";
 
@@ -13,6 +14,8 @@ export interface CliArgs {
   port: number;
   project: string;
   open: boolean;
+  /** Absent unless `--hub` was passed; only `launch` reads it. */
+  hub?: string;
   error?: string;
 }
 
@@ -39,7 +42,22 @@ export function parseArgs(argv: string[]): CliArgs {
     } else if (flag === "--project") {
       const value = rest.shift();
       if (!value) return { ...args, error: "--project requires an id" };
+      // Validated HERE because the failure it prevents is invisible. A
+      // projectId the hub's `parseUpFrame` rejects makes every `hello` a
+      // "bad frame" 1008 close, and the relay's error handling swallows it and
+      // reconnects every 2s — while `launch()` has already printed "attached
+      // to hub". A startup error beats an infinite silent loop.
+      if (!SLUG.test(value)) {
+        return { ...args, error: "--project requires 1-40 chars of a-z, 0-9, -" };
+      }
       args.project = value;
+    } else if (flag === "--hub") {
+      const value = rest.shift();
+      if (!value) return { ...args, error: "--hub requires a url" };
+      if (!/^wss?:\/\//i.test(value)) {
+        return { ...args, error: "--hub requires a ws:// or wss:// url" };
+      }
+      args.hub = value;
     } else if (flag === "--no-open") {
       args.open = false;
     } else {
@@ -119,10 +137,20 @@ async function launch(args: CliArgs): Promise<number | null> {
       port: args.port,
       workspace: new WorkspaceManager(repoRoot, worktreesRoot),
       staticDir: distDir,
+      ...(args.hub ? { hub: { url: args.hub, projectId: args.project } } : {}),
     });
     const url = `http://localhost:${port}/`;
-    console.log(`multiplayer-ai on ${url} (repo: ${repoRoot})`);
-    if (args.open) openBrowser(url);
+    if (args.hub) {
+      // The local URL still works and is still served; it is just not where
+      // the team is. Printing the hub first is the honest ordering, and not
+      // auto-opening a browser at the local URL avoids sending someone to a
+      // single-machine view of a multi-machine session.
+      console.log(`multiplayer-ai attached to hub ${args.hub} (repo: ${repoRoot})`);
+      console.log(`open the hub in your browser; this machine is also on ${url}`);
+    } else {
+      console.log(`multiplayer-ai on ${url} (repo: ${repoRoot})`);
+    }
+    if (args.open && !args.hub) openBrowser(url);
     return null; // server holds the process open
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") {
@@ -185,7 +213,7 @@ export async function main(argv: string[]): Promise<number | null> {
   if (args.error) {
     console.error(args.error);
     console.error(
-      "usage: mpai [--port N] [--no-open] | mpai new <name> [--base <ref>] [--project <id>] [--port N]",
+      "usage: mpai [--port N] [--hub <ws-url>] [--project <id>] [--no-open] | mpai new <name> [--base <ref>] [--project <id>] [--port N]",
     );
     return 1;
   }

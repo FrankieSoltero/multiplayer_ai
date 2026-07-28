@@ -9,10 +9,12 @@ import { isModelKey } from "./models.js";
 import {
   Project,
   projectSnapshot,
+  sessionFactsOf,
   SLUG,
   type ProjectSessionEntry,
   type ProjectWatcher,
 } from "./project.js";
+import { Relay, type ConnectFn } from "./relay.js";
 import { Session } from "./session.js";
 import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
@@ -123,6 +125,15 @@ export async function startServer(opts: {
   inviteTtlMs?: number;
   inviteMaxUses?: number;
   auth?: AuthConfig;
+  /** When set, this process also dials the hub and relays its sessions
+   *  (spec §3.1). Absent, `mpai` behaves exactly as it always has — the hub
+   *  is strictly additive (spec §6). */
+  hub?: {
+    url: string;
+    projectId: string;
+    uplinkId?: string;
+    connect?: ConnectFn;
+  };
 }) {
   const runQuery = opts.runQuery ?? runAgentQuery;
   const pluginStore = opts.plugins ?? new PluginStore(process.env.AGENT_PLUGINS_ROOT);
@@ -187,6 +198,13 @@ export async function startServer(opts: {
     const payload = JSON.stringify(snapshotFor(project));
     for (const watcher of project.watchers) {
       if (watcher.readyState === WebSocket.OPEN) watcher.send(payload);
+    }
+    // Facts ride the snapshot's existing 1-second throttle rather than a
+    // second timer: a fact change is by definition accompanied by a push.
+    if (relay) {
+      for (const [id, entry] of project.sessions) {
+        relay.publishFacts(id, sessionFactsOf(id, entry, repo?.key ?? null));
+      }
     }
     lastPush.set(project, Date.now());
   }
@@ -264,8 +282,18 @@ export async function startServer(opts: {
       session.subscribe((event) => {
         if (INTERESTING.has(event.type)) schedulePush(project);
         if (OVERSEER_EVENTS.has(event.type)) overseer.notify(project.id);
+        relay?.publishEvent(sessionId, event);
       });
       overseer.notify(project.id); // session created (spec §3 lifecycle)
+      // LAST, deliberately. `skill_roster` is appended above, before the
+      // subscribe exists, so it is never published live. Registering here
+      // means `trackSession` sees a session that already holds its backlog
+      // and publishes it — which is the only path that reaches the hub for a
+      // session created while the uplink is ALREADY up (no second `welcome`
+      // is coming). Every later event arrives through the subscribe, and the
+      // two cannot double-publish because `trackSession` returns early for a
+      // session it already tracks.
+      relay?.trackSession(sessionId, session);
     }
     return entry;
   }
@@ -495,6 +523,11 @@ export async function startServer(opts: {
         return;
       }
 
+      // Unreachable on the RELAY arm: `HUB_HANDLED` (`poc/hub/src/hub.ts:18`)
+      // answers `peek` from the hub's own store and never tunnels it, because
+      // only the hub sees every laptop. Removing this id from that set — in a
+      // different package — silently re-routes `peek` here, where it would
+      // answer with one machine's view of a multi-machine project.
       if (msg.type === "peek") {
         if (denyUnauthed()) return;
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
@@ -527,6 +560,10 @@ export async function startServer(opts: {
         return;
       }
 
+      // Unreachable on the RELAY arm, for the same reason as `peek` above:
+      // `HUB_HANDLED` at `poc/hub/src/hub.ts:18`. If it ever did arrive here
+      // the `watcher` below is undefined on a relay connection, so the
+      // subscription would silently never happen.
       if (msg.type === "watch_project") {
         if (denyUnauthed()) return;
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
@@ -966,6 +1003,23 @@ export async function startServer(opts: {
     return { handleMessage, close };
   }
 
+  // Null unless `--hub` was asked for, and every `relay?.` call site above is
+  // then a no-op: the hub is strictly additive (spec §6). Declared after
+  // `createConnection` because it takes it, and read only from inside handlers
+  // that cannot run before `listen` resolves.
+  const relay = opts.hub
+    ? new Relay(
+        {
+          hubUrl: opts.hub.url,
+          projectId: opts.hub.projectId,
+          repoKey: repo?.key ?? "",
+          uplinkId: opts.hub.uplinkId ?? randomUUID(),
+          connect: opts.hub.connect,
+        },
+        { createConnection },
+      )
+    : null;
+
   wss.on("connection", (ws: WebSocket, upgradeReq: IncomingMessage) => {
     const conn = createConnection({
       mode: "direct",
@@ -1013,6 +1067,7 @@ export async function startServer(opts: {
     });
     httpServer.listen(opts.port, opts.host);
   });
+  relay?.start();
   const address = httpServer.address();
   const port = typeof address === "object" && address ? address.port : opts.port;
 
@@ -1023,6 +1078,7 @@ export async function startServer(opts: {
     createConnection,
     close: () =>
       new Promise<void>((resolve, reject) => {
+        relay?.stop();
         overseer.dispose();
         for (const timer of pushTimers.values()) clearTimeout(timer);
         pushTimers.clear();
