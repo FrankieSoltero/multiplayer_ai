@@ -25,11 +25,22 @@ interface BrowserChannel {
   sessionId: string | null;
   identity: { userId: string; name: string } | null;
   /** Set the moment the hub routes a `create_session` to a specific uplink
-   *  (spec §5.3 step 4), cleared the moment that uplink's reply is delivered.
-   *  A narrower capability than session ownership: this one uplink, this one
-   *  channel, exactly once — for the case a reply must reach a channel that
-   *  has joined no session, which `sessionId`-based ownership cannot express
-   *  because no session exists yet to own. */
+   *  (spec §5.3 step 4). A narrower capability than session ownership: this
+   *  one uplink, this one channel, exactly once — for the case a reply must
+   *  reach a channel that has joined no session, which `sessionId`-based
+   *  ownership cannot express because no session exists yet to own.
+   *
+   *  Cleared on ACCEPTANCE, not on delivery: the reply-narrowcast branch
+   *  spends the grant before it looks at `frame.payload`, so a payload-less
+   *  reply still burns the single use even though nothing is sent to the
+   *  browser. Also cleared by `join` (the grant must not survive rebinding
+   *  the channel to a different machine's session) and by the browser's
+   *  socket closing. A grant that gets neither a reply nor a join — the
+   *  routed machine crashed or simply never answers — has no other expiry:
+   *  it lives, unusable by anything but that one uplink, until this socket
+   *  closes. That is a deliberately accepted bound, not an oversight; adding
+   *  a time-based expiry for it was considered and rejected as unneeded
+   *  complexity for an edge case this plan does not need to close further. */
   pendingReplyFrom: string | null;
 }
 
@@ -451,6 +462,12 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         channel.projectId = projectId;
         channel.sessionId = sessionId;
         channel.identity = { userId, name };
+        // A create_session this channel routed earlier and never got a reply
+        // for (crashed machine, hung machine, browser gave up and joined
+        // something else) must not survive into this new binding. Without
+        // this, the originally-routed machine could still push one arbitrary
+        // payload into a session that now belongs to a different machine.
+        channel.pendingReplyFrom = null;
 
         // Replay from the HUB's store, not from the laptop (spec §3.2). This
         // is what makes a watcher free: the laptop never learns this browser
@@ -472,9 +489,20 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
        *
        *  The payload is forwarded UNTOUCHED (`DownFrame`'s contract). The
        *  browser has already picked a free name (spec P6); this only refuses a
-       *  name a different machine owns. The `session_created` reply needs no
-       *  handling here: the laptop answers over `reply` (relay.ts:252) and the
-       *  uplink plane already narrowcasts it back to this channel. */
+       *  name a different machine owns.
+       *
+       *  The `session_created` reply DOES need handling here, and this is the
+       *  one line of it: `channel.pendingReplyFrom = target.machineId` below.
+       *  The reply itself still travels over the pre-existing `reply` frame
+       *  (relay.ts:252) and lands in the same narrowcast branch every other
+       *  reply does — but that branch's guard authorizes by SESSION OWNERSHIP
+       *  (`store.ownerOf`), and at this point in the flow there is no session
+       *  to own yet; this channel has joined none (spec P5, again). Without
+       *  the grant below, the guard has nothing to authorize on and drops the
+       *  reply every time — which is exactly the bug this comment used to
+       *  claim couldn't happen. Do not delete `pendingReplyFrom` as
+       *  "redundant" with `sessionOwned`: it is the only thing that makes a
+       *  create-flow reply deliverable at all. */
       if (msg?.type === "create_session") {
         if (!channel.identity) return error("identify first");
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";

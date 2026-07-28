@@ -455,4 +455,151 @@ describe("creating a session through the hub", () => {
     b.close();
     browser.close();
   });
+
+  it("clears a stale grant when the browser joins instead — a never-answered create cannot inject into the new session", async () => {
+    // Finding 1, Task 12 fix round 1: `pendingReplyFrom` is granted the
+    // moment a create_session is routed and is otherwise only cleared on
+    // delivery or on this socket closing. If the routed machine crashes,
+    // hangs, or just never answers, and the browser gives up and `join`s a
+    // DIFFERENT machine's session on the same channel, the stale grant must
+    // not survive that rebinding — otherwise the originally-routed machine
+    // could still push one arbitrary payload into a session it has nothing
+    // to do with.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+
+    // Machine A: routed to, but never answers.
+    const a = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    const aSeen: any[] = [];
+    collect(a, aSeen);
+    a.send(JSON.stringify({
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-a",
+      projectId: "default", repoKey: "github.com/acme/api",
+    }));
+
+    // Machine B: genuinely owns a session the browser will join afterward.
+    const b = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    b.send(JSON.stringify({
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-b",
+      projectId: "default", repoKey: "github.com/acme/other",
+    }));
+    b.send(JSON.stringify({
+      t: "facts", sessionId: "auth", runId: "run-b",
+      facts: {
+        id: "auth", participants: ["ana"], driverName: "ana", intent: null,
+        lastActivityTs: null, ended: false, pendingGate: null, skills: [],
+        repoKey: "github.com/acme/other", lifecycle: "open",
+      },
+    }));
+    await wait(40);
+
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    browser.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    await wait(60);
+    seen.length = 0;
+
+    // Routed to A. A never answers.
+    browser.send(JSON.stringify({
+      type: "create_session", projectId: "default",
+      name: "billing", repoKey: "github.com/acme/api",
+    }));
+    await wait(60);
+    const channelId = aSeen.find((f) => f.t === "tunnel")?.channelId;
+    expect(channelId).toBeTruthy();
+
+    // The browser gives up and joins B's unrelated, pre-existing session
+    // instead — same socket, same channel, a different machine's session.
+    browser.send(JSON.stringify({
+      type: "join", sessionId: "auth", projectId: "default", userId: "ana", name: "ana",
+    }));
+    await wait(60);
+    seen.length = 0;
+
+    // A — routed to, never answered, now stale — tries to cash in its old
+    // grant on the very same channelId.
+    a.send(JSON.stringify({
+      t: "reply", channelId,
+      payload: { type: "session_created", sessionId: "billing" },
+    }));
+    await wait(60);
+    expect(seen).toEqual([]);
+
+    a.close();
+    b.close();
+    browser.close();
+  });
+
+  it("pins a known bound: a second create on one channel supersedes the first, and the first machine's late reply is silently dropped", async () => {
+    // Finding 2(b), Task 12 fix round 1. `pendingReplyFrom` is a single
+    // scalar per channel, by design — concurrent create_sessions racing on
+    // one browser connection are not a scenario this plan needs to support.
+    // This test PINS that limitation so it stays a visible, deliberate bound
+    // rather than something discovered later: firing a second create before
+    // the first replies overwrites the grant, and the first machine's reply
+    // — even if it eventually arrives — is dropped, not queued or merged.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+
+    const a = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    const aSeen: any[] = [];
+    collect(a, aSeen);
+    a.send(JSON.stringify({
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-a",
+      projectId: "default", repoKey: "github.com/acme/api",
+    }));
+
+    const b = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    b.send(JSON.stringify({
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-b",
+      projectId: "default", repoKey: "github.com/acme/other",
+    }));
+    await wait(40);
+
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    browser.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    await wait(60);
+    seen.length = 0;
+
+    // First create, routed to A. A does not get to answer before...
+    browser.send(JSON.stringify({
+      type: "create_session", projectId: "default",
+      name: "one", repoKey: "github.com/acme/api",
+    }));
+    // ...a second create on the SAME channel/socket, routed to B, overwrites
+    // the grant. Both share one channelId — it belongs to the connection,
+    // not to any one request.
+    browser.send(JSON.stringify({
+      type: "create_session", projectId: "default",
+      name: "two", repoKey: "github.com/acme/other",
+    }));
+    await wait(60);
+    const channelId = aSeen.find((f) => f.t === "tunnel")?.channelId;
+    expect(channelId).toBeTruthy();
+
+    // A's reply for the request it genuinely was routed to, arriving late.
+    a.send(JSON.stringify({
+      t: "reply", channelId,
+      payload: { type: "session_created", sessionId: "one" },
+    }));
+    await wait(60);
+    expect(seen.some((m) => m.type === "session_created" && m.sessionId === "one")).toBe(false);
+
+    // B — the machine the grant now belongs to — can still answer normally.
+    b.send(JSON.stringify({
+      t: "reply", channelId,
+      payload: { type: "session_created", sessionId: "two" },
+    }));
+    await wait(60);
+    expect(seen.some((m) => m.type === "session_created" && m.sessionId === "two")).toBe(true);
+
+    a.close();
+    b.close();
+    browser.close();
+  });
 });
