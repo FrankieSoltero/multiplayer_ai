@@ -12,7 +12,8 @@
     "./lifecycle": { "types": "./dist/lifecycle.d.ts", "default": "./dist/lifecycle.js" },
     "./auth": { "types": "./dist/auth.d.ts", "default": "./dist/auth.js" },
     "./relay": { "types": "./dist/relay.d.ts", "default": "./dist/relay.js" },
-    "./session": { "types": "./dist/session.d.ts", "default": "./dist/session.js" }
+    "./session": { "types": "./dist/session.d.ts", "default": "./dist/session.js" },
+    "./workspace": { "types": "./dist/workspace.d.ts", "default": "./dist/workspace.js" }
   },
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",

@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { staticHandler } from "multiplayer-ai-server/staticFiles";
+import { slugify } from "multiplayer-ai-server/workspace";
 import {
   MAX_FRAME_BYTES,
   RELAY_PROTOCOL_VERSION,
@@ -62,6 +63,13 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       if (channel.projectId === projectId) send(channel.socket, payload);
     }
     lastPush.set(projectId, Date.now());
+  }
+
+  /** The project directory changed. Every browser sees every project (spec
+   *  P2), so this is a broadcast rather than a per-project narrowcast. */
+  function pushProjects(): void {
+    const payload = { type: "projects", projects: store.listProjects() };
+    for (const channel of channels.values()) send(channel.socket, payload);
   }
 
   /** The same 1s leading+trailing throttle the server uses (server.ts's
@@ -317,6 +325,60 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         if (!userId) return error("identify requires userId");
         channel.identity = { userId, name };
         send(socket, { type: "identified", userId, name });
+        return;
+      }
+
+      if (msg?.type === "list_projects") {
+        send(socket, { type: "projects", projects: store.listProjects() });
+        return;
+      }
+
+      if (msg?.type === "create_project") {
+        if (!channel.identity) return error("identify first");
+        if (typeof msg.name !== "string") return error("create_project requires name");
+        const projectId = slugify(msg.name.slice(0, 200));
+        if (!SLUG.test(projectId)) return error("create_project requires a usable name");
+        const created = store.createProject(
+          projectId,
+          msg.name.slice(0, 60),
+          channel.identity.userId,
+          new Date().toISOString(),
+        );
+        if (!created.ok) return error(created.error);
+        send(socket, { type: "project_created", projectId });
+        pushProjects();
+        return;
+      }
+
+      if (msg?.type === "join_project" || msg?.type === "leave_project") {
+        if (!channel.identity) return error("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) return error(`${msg.type} requires a valid projectId`);
+        if (store.lifecycleOf(projectId) === null) return error(`no project "${projectId}"`);
+        if (msg.type === "join_project" && store.lifecycleOf(projectId) !== "active") {
+          return error(`project "${projectId}" is not open to new members`);
+        }
+        if (msg.type === "join_project") store.joinProject(projectId, channel.identity.userId);
+        else store.leaveProject(projectId, channel.identity.userId);
+        pushProjects();
+        return;
+      }
+
+      if (msg?.type === "set_project_lifecycle") {
+        if (!channel.identity) return error("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) return error("set_project_lifecycle requires a valid projectId");
+        const lifecycle = msg.lifecycle;
+        if (lifecycle !== "active" && lifecycle !== "closed" && lifecycle !== "archived") {
+          return error("lifecycle must be active, closed or archived");
+        }
+        // Participation is membership-scoped (spec P2). Visibility is not.
+        if (!store.isMember(projectId, channel.identity.userId)) {
+          return error("join this project before changing it");
+        }
+        const result = store.setLifecycle(projectId, lifecycle);
+        if (!result.ok) return error(result.error);
+        pushProjects();
         return;
       }
 

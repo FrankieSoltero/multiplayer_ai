@@ -637,3 +637,133 @@ describe("hub per-connection identity", () => {
     ws.close();
   });
 });
+
+describe("hub project registry", () => {
+  async function identified(port: number, userId = "ana") {
+    const ws = await connect(`ws://127.0.0.1:${port}`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId, name: userId }));
+    await wait(30);
+    seen.length = 0;
+    return { ws, seen };
+  }
+
+  it("creates a project and lists it back", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { ws, seen } = await identified(hub.port);
+    ws.send(JSON.stringify({ type: "create_project", name: "Acme Migration" }));
+    await wait(30);
+    expect(seen[0]).toEqual({ type: "project_created", projectId: "acme-migration" });
+    seen.length = 0;
+    ws.send(JSON.stringify({ type: "list_projects" }));
+    await wait(30);
+    expect(seen[0].type).toBe("projects");
+    expect(seen[0].projects[0]).toMatchObject({
+      id: "acme-migration", name: "Acme Migration", members: ["ana"], lifecycle: "active",
+    });
+    ws.close();
+  });
+
+  it("refuses to create a project without identifying first", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ws = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+    await wait(30);
+    // Asserting on message text, not just type: an unjoined connection's
+    // unrecognized-message fallthrough (`tunnel()` -> "join a session first")
+    // also produces `{ type: "error" }`, so a type-only assertion here would
+    // pass even if create_project's own "identify first" guard were absent.
+    expect(seen[0]).toEqual({ type: "error", message: "identify first" });
+    ws.close();
+  });
+
+  it("refuses a name that slugifies to nothing", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { ws, seen } = await identified(hub.port);
+    ws.send(JSON.stringify({ type: "create_project", name: "!!!" }));
+    await wait(30);
+    // Same fallthrough trap as above: this connection is identified but has
+    // joined no session, so an unhandled create_project would also surface
+    // as `{ type: "error" }` via tunnel()'s "join a session first". The
+    // message text is what proves the slugify guard itself fired.
+    expect(seen[0]).toEqual({ type: "error", message: "create_project requires a usable name" });
+    ws.close();
+  });
+
+  it("lets anyone list projects they are not a member of — visibility is hub-wide", async () => {
+    // Spec P2: visibility is hub-wide, participation is membership-scoped.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ana = await identified(hub.port, "ana");
+    ana.ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+    await wait(30);
+    const bo = await identified(hub.port, "bo");
+    bo.ws.send(JSON.stringify({ type: "list_projects" }));
+    await wait(30);
+    expect(bo.seen[0].projects[0].id).toBe("acme");
+    expect(bo.seen[0].projects[0].members).toEqual(["ana"]);
+    ana.ws.close();
+    bo.ws.close();
+  });
+
+  it("joins and leaves a project", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ana = await identified(hub.port, "ana");
+    ana.ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+    await wait(30);
+    const bo = await identified(hub.port, "bo");
+    bo.ws.send(JSON.stringify({ type: "join_project", projectId: "acme" }));
+    await wait(30);
+    expect(bo.seen[0].projects[0].members).toContain("bo");
+    bo.seen.length = 0;
+    bo.ws.send(JSON.stringify({ type: "leave_project", projectId: "acme" }));
+    await wait(30);
+    expect(bo.seen[0].projects[0].members).not.toContain("bo");
+    ana.ws.close();
+    bo.ws.close();
+  });
+
+  it("only a member may change a project's lifecycle", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ana = await identified(hub.port, "ana");
+    ana.ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+    await wait(30);
+    const bo = await identified(hub.port, "bo");
+    bo.ws.send(JSON.stringify({ type: "set_project_lifecycle", projectId: "acme", lifecycle: "closed" }));
+    await wait(30);
+    // Message text, not just type: bo is identified but has joined no
+    // session, so a missing isMember guard would still fall through to
+    // tunnel()'s "join a session first" and pass a type-only check.
+    expect(bo.seen[0]).toEqual({ type: "error", message: "join this project before changing it" });
+    bo.seen.length = 0;
+    ana.seen.length = 0;
+    ana.ws.send(JSON.stringify({ type: "set_project_lifecycle", projectId: "acme", lifecycle: "closed" }));
+    await wait(30);
+    expect(ana.seen[0].projects[0].lifecycle).toBe("closed");
+    ana.ws.close();
+    bo.ws.close();
+  });
+
+  it("rejects an unknown lifecycle value", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { ws, seen } = await identified(hub.port);
+    ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+    await wait(30);
+    seen.length = 0;
+    ws.send(JSON.stringify({ type: "set_project_lifecycle", projectId: "acme", lifecycle: "deleted" }));
+    await wait(30);
+    // Message text, not just type: same fallthrough trap as the membership
+    // test above — this connection has joined no session either.
+    expect(seen[0]).toEqual({ type: "error", message: "lifecycle must be active, closed or archived" });
+    ws.close();
+  });
+});
