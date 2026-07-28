@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canAct } from "./projectAccess";
+import { canAct, refusalText, type ActRefusal } from "./projectAccess";
 import type { ProjectSummary } from "./types";
 
 const project = (over: Partial<ProjectSummary> = {}): ProjectSummary => ({
@@ -39,5 +39,40 @@ describe("canAct", () => {
     // A non-member should be told they are a spectator, not that the team is
     // offline — the second is a different and misleading problem.
     expect(canAct(project({ machines: [] }), "bo")).toBe("not-a-member");
+  });
+});
+
+describe("refusalText", () => {
+  // This is the only text a blocked user gets, and one string carries the
+  // command they are expected to run. A typo in it ships silently — nothing
+  // else in the codebase reads these strings, so nothing else can catch one.
+  const cases: Array<[ActRefusal, string]> = [
+    ["unknown-project", "this project no longer exists"],
+    ["not-a-member", "you are spectating — join this project to work in it"],
+    ["not-active", "this project is closed"],
+    ["no-machine", "no machine is online — run: mpai --hub <url> --project <id>"],
+  ];
+
+  it.each(cases)("says the right thing for %s", (refusal, text) => {
+    expect(refusalText(refusal)).toBe(text);
+  });
+
+  it("gives the blocked user a runnable command, spelled exactly", () => {
+    // Pinned separately from the table row above: the table would still pass
+    // if this string were reworded into something un-runnable, as long as both
+    // copies were reworded together. This names the invariant that matters.
+    const text = refusalText("no-machine");
+    expect(text).toContain("mpai --hub <url> --project <id>");
+    expect(text).toMatch(/run: mpai\b/);
+  });
+
+  it("covers every refusal canAct can produce, with no two alike", () => {
+    // Guards the failure mode a table test cannot see: a new ActRefusal added
+    // to canAct but not to this table, or two arms accidentally sharing copy.
+    const reasons = cases.map(([r]) => r);
+    expect(new Set(reasons).size).toBe(reasons.length);
+    expect(new Set(cases.map(([, t]) => t)).size).toBe(cases.length);
+    // Every arm returns a non-empty string rather than falling off the switch.
+    for (const r of reasons) expect(refusalText(r).length).toBeGreaterThan(0);
   });
 });
