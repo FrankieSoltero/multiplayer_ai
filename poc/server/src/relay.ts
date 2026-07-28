@@ -59,10 +59,11 @@ export class Relay {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private tracked = new Map<string, Tracked>();
   private channels = new Map<string, { handleMessage: (msg: any) => void; close: () => void }>();
-  /** Frames produced before the socket was ready. Bounded by MAX_FRAME_BYTES
-   *  worth of accumulated JSON so a hub that never comes up cannot grow the
-   *  laptop's memory without limit. */
-  private pending: UpFrame[] = [];
+  /** Frames produced before the socket was ready, each with the JSON size it
+   *  was measured at. Bounded by MAX_FRAME_BYTES worth of accumulated JSON so
+   *  a hub that never comes up cannot grow the laptop's memory without limit;
+   *  the size rides along so eviction never has to re-stringify. */
+  private pending: { frame: UpFrame; size: number }[] = [];
   private pendingBytes = 0;
 
   constructor(
@@ -70,7 +71,13 @@ export class Relay {
     private deps: RelayDeps,
   ) {}
 
+  /** Idempotent. A second `start()` must not open a second uplink: two live
+   *  sockets would both send `hello` and both feed `onMessage` — duplicating
+   *  every tunnelled command — while only the later one is reachable by
+   *  `write` and the earlier one is never closed. A pending reconnect counts
+   *  as started for the same reason. */
   start(): void {
+    if (this.socket || this.reconnectTimer) return;
     this.stopped = false;
     this.connect();
   }
@@ -86,6 +93,11 @@ export class Relay {
     this.socket?.close();
     this.socket = null;
     this.open = false;
+    // Frames buffered in this life must not surface in the next one: after a
+    // stop()/start() pair the next `welcome` would otherwise flush facts and
+    // replies belonging to a session state that has since moved on.
+    this.pending = [];
+    this.pendingBytes = 0;
   }
 
   /** Register a session so it takes part in the handshake replay. Called for
@@ -101,9 +113,8 @@ export class Relay {
     // it already holds; the handshake replay covers the other case, and the
     // two cannot double-publish because this method returns early for a
     // session it already tracks.
-    const backlog = session.eventsFrom(0);
-    if (backlog.length > 0) {
-      this.emit({ t: "publish", sessionId, runId, events: backlog });
+    for (const frame of publishFrames(sessionId, runId, session.eventsFrom(0))) {
+      this.emit(frame);
     }
   }
 
@@ -123,7 +134,15 @@ export class Relay {
     const connect = this.opts.connect ?? defaultConnect;
     const socket = connect(this.opts.hubUrl);
     this.socket = socket;
+    // Every handler below is guarded on the identity of the socket that
+    // registered it. `ws` reports a socket's `close` ASYNCHRONOUSLY, so a
+    // stop()/start() pair delivers the OLD socket's close after the new one is
+    // already assigned. Unguarded, that stale handler nulls `this.socket`,
+    // tears down the new socket's channels, and leaves `write` sending into
+    // the void for the rest of the process's life — with `open` still true.
+    const isCurrent = () => socket === this.socket;
     socket.on("open", () => {
+      if (!isCurrent()) return;
       this.open = true;
       this.write({
         t: "hello",
@@ -133,8 +152,11 @@ export class Relay {
         repoKey: this.opts.repoKey,
       });
     });
-    socket.on("message", (data) => this.onMessage(data));
+    socket.on("message", (data) => {
+      if (isCurrent()) this.onMessage(data);
+    });
     socket.on("close", () => {
+      if (!isCurrent()) return;
       this.open = false;
       this.socket = null;
       // Every channel's browser is now unreachable from here. Dropping them
@@ -172,16 +194,15 @@ export class Relay {
       // anything buffered while the socket was down is already contained in
       // it. Dropping buffered publishes avoids re-sending events the hub
       // would only discard by (runId, seq) anyway.
-      this.pending = this.pending.filter((f) => f.t !== "publish");
-      this.pendingBytes = this.pending.reduce((n, f) => n + JSON.stringify(f).length, 0);
+      this.pending = this.pending.filter((p) => p.frame.t !== "publish");
+      this.pendingBytes = this.pending.reduce((n, p) => n + p.size, 0);
       for (const [sessionId, tracked] of this.tracked) {
         const have = frame.have[sessionId];
         // Same run → replay only the gap. Different run (or none) → this is
         // new history and the hub appends it beside what it already holds.
         const from = have && have.runId === tracked.runId ? have.lastSeq + 1 : 0;
-        const events = tracked.session.eventsFrom(from);
-        if (events.length > 0) {
-          this.write({ t: "publish", sessionId, runId: tracked.runId, events });
+        for (const out of publishFrames(sessionId, tracked.runId, tracked.session.eventsFrom(from))) {
+          this.write(out);
         }
       }
       this.flush();
@@ -216,20 +237,34 @@ export class Relay {
 
   private emit(frame: UpFrame): void {
     if (this.open) {
+      // Between `open` and `welcome` this writes immediately AND the replay
+      // re-sends the same events moments later. Benign: the hub keys on
+      // (runId, seq) and discards the repeat. The `pending` filter in the
+      // welcome branch deliberately handles only the buffered half of that
+      // same duplicate — suppressing the live half would mean modelling
+      // "handshake in flight" for no gain the keying does not already give.
       this.write(frame);
       return;
     }
     const size = JSON.stringify(frame).length;
-    if (this.pendingBytes + size > MAX_FRAME_BYTES) return; // drop rather than grow without bound
-    this.pending.push(frame);
+    this.pending.push({ frame, size });
     this.pendingBytes += size;
+    // Evict the OLDEST, not the newest. `facts` are latest-wins, so a full
+    // buffer that rejected new frames would leave the hub holding the stalest
+    // view of every session — and `flush()` runs AFTER the replay, so that
+    // stale view would land on top of freshly replayed events. Keeping at
+    // least one entry means a single frame larger than the cap still ships
+    // rather than vanishing.
+    while (this.pendingBytes > MAX_FRAME_BYTES && this.pending.length > 1) {
+      this.pendingBytes -= this.pending.shift()!.size;
+    }
   }
 
   private flush(): void {
     const queued = this.pending;
     this.pending = [];
     this.pendingBytes = 0;
-    for (const frame of queued) this.write(frame);
+    for (const { frame } of queued) this.write(frame);
   }
 
   private write(frame: UpFrame): void {
@@ -239,6 +274,41 @@ export class Relay {
       /* the close handler will reconnect */
     }
   }
+}
+
+/** Split a session's events into publish frames that each fit under
+ *  MAX_FRAME_BYTES.
+ *
+ *  Load-bearing, not tidiness. MAX_FRAME_BYTES is the `maxPayload` on the
+ *  hub's uplink-facing socket, and a long session's full replay easily exceeds
+ *  it. Sent as one frame, `ws` answers with a 1009 close — whereupon the relay
+ *  reconnects, receives the same `welcome` with the same `have`, and sends the
+ *  same oversized frame again, forever. The session never syncs and the uplink
+ *  never stabilises. Chunking costs nothing because the hub keys events on
+ *  (runId, seq): many publish frames for one session are equivalent to one. */
+function publishFrames(sessionId: string, runId: string, events: LoggedEvent[]): UpFrame[] {
+  if (events.length === 0) return [];
+  // What the envelope itself costs, so a full chunk plus its wrapper still fits.
+  const budget =
+    MAX_FRAME_BYTES - JSON.stringify({ t: "publish", sessionId, runId, events: [] }).length;
+  const frames: UpFrame[] = [];
+  let chunk: LoggedEvent[] = [];
+  let bytes = 0;
+  for (const event of events) {
+    const size = JSON.stringify(event).length + 1; // +1 for the joining comma
+    if (chunk.length > 0 && bytes + size > budget) {
+      frames.push({ t: "publish", sessionId, runId, events: chunk });
+      chunk = [];
+      bytes = 0;
+    }
+    // A single event over budget still ships alone. Dropping it would punch a
+    // permanent hole in an append-only log, which is worse than handing the
+    // hub one frame it may reject.
+    chunk.push(event);
+    bytes += size;
+  }
+  frames.push({ t: "publish", sessionId, runId, events: chunk });
+  return frames;
 }
 
 /** Real socket, kept out of the class so tests never reach the network. */

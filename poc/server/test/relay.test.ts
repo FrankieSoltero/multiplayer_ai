@@ -1,23 +1,63 @@
 import { describe, expect, it, vi } from "vitest";
 import { Relay, type RelaySocket } from "../src/relay.js";
 import { Session } from "../src/session.js";
-import { RELAY_PROTOCOL_VERSION } from "../src/relayProtocol.js";
+import { MAX_FRAME_BYTES, RELAY_PROTOCOL_VERSION, type SessionFacts } from "../src/relayProtocol.js";
 
-/** A socket that records what was sent and lets the test drive the far end. */
+/** One end of one socket: what the relay sent on it, and the levers to drive
+ *  the far end. */
+interface FakeEnd {
+  socket: RelaySocket;
+  sent: any[];
+  /** True once the relay asked for a close. The `close` EVENT is separate and
+   *  fired by `drop()`, because `ws` reports it asynchronously — the gap
+   *  between the two is where the stale-handler bug lives. */
+  closeRequested: boolean;
+  open: () => void;
+  deliver: (frame: unknown) => void;
+  /** Hands the handler a raw value, bypassing the JSON encoding `deliver`
+   *  does — the only way to exercise the parse failure path. */
+  deliverRaw: (data: unknown) => void;
+  drop: () => void;
+}
+
+/** A fake hub end that mints a GENUINELY NEW socket per connect, each with its
+ *  own handler map — a reconnect must produce a distinct object, as `ws` does,
+ *  or the multi-socket lifecycle cannot be tested at all. The bare accessors
+ *  address the latest socket, which is what every single-connection test means;
+ *  tests about the lifecycle across a reconnect reach into `sockets[]`. */
 function fakeSocket() {
-  const sent: any[] = [];
-  const handlers = new Map<string, (arg?: unknown) => void>();
-  const socket: RelaySocket = {
-    send: (data) => sent.push(JSON.parse(data)),
-    close: () => handlers.get("close")?.(),
-    on: (event, fn) => void handlers.set(event, fn),
+  const sockets: FakeEnd[] = [];
+  const connect = (): RelaySocket => {
+    const sent: any[] = [];
+    const handlers = new Map<string, (arg?: unknown) => void>();
+    const socket: RelaySocket = {
+      send: (data) => sent.push(JSON.parse(data)),
+      close: () => void (end.closeRequested = true),
+      on: (event, fn) => void handlers.set(event, fn),
+    };
+    const end: FakeEnd = {
+      socket,
+      sent,
+      closeRequested: false,
+      open: () => handlers.get("open")?.(),
+      deliver: (frame) => handlers.get("message")?.(JSON.stringify(frame)),
+      deliverRaw: (data) => handlers.get("message")?.(data),
+      drop: () => handlers.get("close")?.(),
+    };
+    sockets.push(end);
+    return socket;
   };
+  const latest = (): FakeEnd => sockets[sockets.length - 1]!;
   return {
-    socket,
-    sent,
-    open: () => handlers.get("open")?.(),
-    deliver: (frame: unknown) => handlers.get("message")?.(JSON.stringify(frame)),
-    drop: () => handlers.get("close")?.(),
+    connect,
+    sockets,
+    get sent() {
+      return latest().sent;
+    },
+    open: () => latest().open(),
+    deliver: (frame: unknown) => latest().deliver(frame),
+    deliverRaw: (data: unknown) => latest().deliverRaw(data),
+    drop: () => latest().drop(),
   };
 }
 
@@ -29,12 +69,20 @@ function relayWith(fake: ReturnType<typeof fakeSocket>, over: Record<string, unk
       projectId: "default",
       repoKey: "github.com/acme/api",
       uplinkId: "lap-1",
-      connect: () => fake.socket,
+      connect: fake.connect,
       newRunId: () => `run-${++n}`,
       ...over,
     },
     { createConnection: () => ({ handleMessage: () => {}, close: () => {} }) },
   );
+}
+
+function factsFor(intent: string): SessionFacts {
+  return {
+    id: "auth", participants: ["ana"], driverName: "ana", intent,
+    lastActivityTs: null, ended: false, pendingGate: null, skills: [],
+    repoKey: "github.com/acme/api", lifecycle: "open",
+  };
 }
 
 describe("Relay handshake", () => {
@@ -114,11 +162,7 @@ describe("Relay publish plane", () => {
     fake.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
     fake.sent.length = 0;
 
-    relay.publishFacts("auth", {
-      id: "auth", participants: ["ana"], driverName: "ana", intent: null,
-      lastActivityTs: null, ended: false, pendingGate: null, skills: [],
-      repoKey: "github.com/acme/api", lifecycle: "open",
-    });
+    relay.publishFacts("auth", factsFor("shipping the uplink"));
     expect(fake.sent.filter((f) => f.t === "facts")).toHaveLength(1);
   });
 
@@ -165,7 +209,7 @@ describe("Relay command plane", () => {
     const handled: unknown[] = [];
     const fake = fakeSocket();
     const relay = new Relay(
-      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: () => fake.socket },
+      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: fake.connect },
       {
         createConnection: (io) => ({
           handleMessage: (msg) => {
@@ -192,7 +236,7 @@ describe("Relay command plane", () => {
     const created: unknown[] = [];
     const fake = fakeSocket();
     const relay = new Relay(
-      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: () => fake.socket },
+      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: fake.connect },
       { createConnection: (io) => { created.push(io); return { handleMessage: () => {}, close: () => {} }; } },
     );
     relay.start();
@@ -207,7 +251,7 @@ describe("Relay command plane", () => {
     const ios: any[] = [];
     const fake = fakeSocket();
     const relay = new Relay(
-      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: () => fake.socket },
+      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: fake.connect },
       { createConnection: (io) => { ios.push(io); return { handleMessage: () => {}, close: () => {} }; } },
     );
     relay.start();
@@ -229,7 +273,7 @@ describe("Relay command plane", () => {
     const created: unknown[] = [];
     const fake = fakeSocket();
     const relay = new Relay(
-      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: () => fake.socket },
+      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: fake.connect },
       {
         createConnection: () => {
           created.push(1);
@@ -253,26 +297,48 @@ describe("Relay command plane", () => {
     const relay = relayWith(fake);
     relay.start();
     fake.open();
+    // Well-formed JSON, unusable frame: rejected by parseDownFrame.
     expect(() => fake.deliver({ t: "tunnel", channelId: "c1" })).not.toThrow();
-    expect(() => fake.deliver("not json at all")).not.toThrow();
+    // Not JSON at all: rejected by the parse guard. Delivered raw, because
+    // `deliver` would encode it into a perfectly valid JSON string and never
+    // reach that guard.
+    expect(() => fake.deliverRaw("not json at all")).not.toThrow();
+    expect(fake.sent.filter((f) => f.t === "reply")).toHaveLength(0);
   });
 });
 
 describe("Relay reconnect", () => {
-  it("reconnects after the socket drops and re-handshakes", () => {
+  it("reconnects on a fresh socket, re-handshakes, and delivers what happened during the outage", () => {
     vi.useFakeTimers();
     const fake = fakeSocket();
-    let connects = 0;
-    const relay = relayWith(fake, {
-      connect: () => { connects++; return fake.socket; },
-      reconnectDelayMs: 500,
-    });
+    const relay = relayWith(fake, { reconnectDelayMs: 500 });
+    const session = new Session("auth");
+    relay.trackSession("auth", session);
     relay.start();
-    fake.open();
-    expect(connects).toBe(1);
-    fake.drop();
+    fake.sockets[0]!.open();
+    fake.sockets[0]!.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    expect(fake.sockets).toHaveLength(1);
+
+    fake.sockets[0]!.drop();
+    // Produced with the uplink down — the whole point of reconnecting is that
+    // this still lands.
+    relay.publishEvent("auth", session.append({ type: "intent_update", text: "during" }));
     vi.advanceTimersByTime(500);
-    expect(connects).toBe(2);
+    expect(fake.sockets).toHaveLength(2);
+
+    const second = fake.sockets[1]!;
+    second.open();
+    expect(second.sent[0]).toEqual({
+      t: "hello",
+      v: RELAY_PROTOCOL_VERSION,
+      uplinkId: "lap-1",
+      projectId: "default",
+      repoKey: "github.com/acme/api",
+    });
+    second.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    const events = second.sent.filter((f) => f.t === "publish").flatMap((f: any) => f.events);
+    expect(events.map((e: any) => e.text)).toEqual(["during"]);
+
     relay.stop();
     vi.useRealTimers();
   });
@@ -280,14 +346,142 @@ describe("Relay reconnect", () => {
   it("stops reconnecting once stopped", () => {
     vi.useFakeTimers();
     const fake = fakeSocket();
-    let connects = 0;
-    const relay = relayWith(fake, { connect: () => { connects++; return fake.socket; }, reconnectDelayMs: 500 });
+    const relay = relayWith(fake, { reconnectDelayMs: 500 });
+    relay.start();
+    fake.sockets[0]!.open();
+    relay.stop();
+    expect(fake.sockets[0]!.closeRequested).toBe(true);
+    fake.sockets[0]!.drop();
+    vi.advanceTimersByTime(5000);
+    expect(fake.sockets).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it("opens no second uplink when start() is called twice", () => {
+    // Two live sockets would both handshake and both feed onMessage —
+    // duplicating every tunnelled command — while only the later one is
+    // reachable by `write` and the earlier one is never closed.
+    const fake = fakeSocket();
+    const relay = relayWith(fake);
+    relay.start();
+    relay.start();
+    expect(fake.sockets).toHaveLength(1);
+    relay.stop();
+  });
+
+  it("ignores a stale socket's late close, so a restart cannot orphan the live uplink", () => {
+    // `ws` reports a close asynchronously, so stop() then start() delivers the
+    // OLD socket's close AFTER the new socket is assigned. Unguarded, that
+    // stale handler nulls out the live socket and every later frame — hello
+    // included — is written into the void.
+    const fake = fakeSocket();
+    const relay = relayWith(fake);
+    const session = new Session("auth");
+    relay.trackSession("auth", session);
+    relay.start();
+    fake.sockets[0]!.open();
+
+    relay.stop();
+    relay.start();
+    expect(fake.sockets).toHaveLength(2);
+
+    fake.sockets[0]!.drop(); // the stale close, finally landing
+    const live = fake.sockets[1]!;
+    live.open();
+    live.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    relay.publishEvent("auth", session.append({ type: "intent_update", text: "after restart" }));
+
+    expect(live.sent[0]).toMatchObject({ t: "hello" });
+    const events = live.sent.filter((f) => f.t === "publish").flatMap((f: any) => f.events);
+    expect(events.map((e: any) => e.text)).toEqual(["after restart"]);
+    relay.stop();
+  });
+
+  it("forgets frames buffered in a previous life when stopped", () => {
+    const fake = fakeSocket();
+    const relay = relayWith(fake);
+    relay.trackSession("auth", new Session("auth"));
+    relay.start();
+    relay.publishFacts("auth", factsFor("from the previous life")); // buffered: never opened
+    relay.stop();
+
+    relay.start();
+    fake.sockets[1]!.open();
+    fake.sockets[1]!.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    expect(fake.sockets[1]!.sent.filter((f) => f.t === "facts")).toHaveLength(0);
+    relay.stop();
+  });
+});
+
+describe("Relay bounds", () => {
+  it("splits a replay too big for one frame, so an oversized session cannot livelock the uplink", () => {
+    // One frame over the hub's maxPayload is answered with a 1009 close; the
+    // relay reconnects, sees the same `have`, and sends the same oversized
+    // frame forever. The session would never sync.
+    const fake = fakeSocket();
+    const relay = relayWith(fake);
+    const session = new Session("auth");
+    const big = "x".repeat(100_000);
+    for (let i = 0; i < 15; i++) session.append({ type: "intent_update", text: big });
+    relay.trackSession("auth", session);
     relay.start();
     fake.open();
+    fake.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+
+    const publishes = fake.sent.filter((f) => f.t === "publish");
+    expect(publishes.length).toBeGreaterThan(1);
+    for (const frame of publishes) {
+      expect(JSON.stringify(frame).length).toBeLessThanOrEqual(MAX_FRAME_BYTES);
+    }
+    // Chunking must not lose, duplicate or reorder anything.
+    expect(publishes.flatMap((f: any) => f.events).map((e: any) => e.seq)).toEqual([
+      ...Array(15).keys(),
+    ]);
+  });
+
+  it("bounds the offline buffer by evicting the OLDEST, so the hub gets the freshest facts", () => {
+    // Facts are latest-wins. A buffer that stayed full by rejecting new frames
+    // would keep the stalest view of every session — and flush() runs AFTER
+    // the replay, so that stale view would land on top of fresh events.
+    const fake = fakeSocket();
+    const relay = relayWith(fake);
+    relay.trackSession("auth", new Session("auth"));
+    relay.start(); // socket exists but never opens: everything buffers
+    const filler = "y".repeat(200_000);
+    for (let i = 0; i < 10; i++) {
+      relay.publishFacts("auth", factsFor(`${filler}#${String(i).padStart(2, "0")}`));
+    }
+
+    fake.open();
+    fake.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    const kept = fake.sent
+      .filter((f) => f.t === "facts")
+      .map((f: any) => f.facts.intent.slice(-3));
+    expect(kept.length).toBeLessThan(10); // 2MB offered, ~1MB kept
+    expect(JSON.stringify(fake.sent).length).toBeLessThanOrEqual(2 * MAX_FRAME_BYTES);
+    expect(kept).toContain("#09"); // the freshest survived
+    expect(kept).not.toContain("#00"); // the stalest was evicted
+  });
+
+  it("closes every open channel on stop, so no connection is left holding a session", () => {
+    const closed: string[] = [];
+    const fake = fakeSocket();
+    const relay = new Relay(
+      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: fake.connect },
+      {
+        createConnection: (io) => ({
+          handleMessage: () => {},
+          close: () => closed.push(io.mode === "relay" ? io.stampedIdentity.userId : "direct"),
+        }),
+      },
+    );
+    relay.start();
+    fake.open();
+    fake.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    fake.deliver({ t: "tunnel", channelId: "c1", identity: { userId: "ana", name: "ana" }, payload: { type: "join" } });
+    fake.deliver({ t: "tunnel", channelId: "c2", identity: { userId: "ben", name: "ben" }, payload: { type: "join" } });
+
     relay.stop();
-    fake.drop();
-    vi.advanceTimersByTime(5000);
-    expect(connects).toBe(1);
-    vi.useRealTimers();
+    expect(closed).toEqual(["ana", "ben"]);
   });
 });
