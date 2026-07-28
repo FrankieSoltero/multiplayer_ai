@@ -41,14 +41,16 @@ export function Cabinet(props: { legend?: string[]; right?: ReactNode; children:
   return (
     <div className="cabinet">
       <div className="cabinet-inner">
-        <div className="marquee">
-          <div>
-            <div className="marquee-title">
-              MULTIPLAYER<span>_</span>AI
+        <div className="crt-chrome-top">
+          <div className="marquee">
+            <div>
+              <div className="marquee-title">
+                MULTIPLAYER<span>_</span>AI
+              </div>
+              <div className="marquee-sub">SHARED AGENT SESSIONS FOR TEAMS</div>
             </div>
-            <div className="marquee-sub">SHARED AGENT SESSIONS FOR TEAMS</div>
+            {props.right}
           </div>
-          {props.right}
         </div>
         {props.children}
         {props.legend && props.legend.length > 0 && (
