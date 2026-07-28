@@ -30,7 +30,7 @@ import { InviteSignIn } from "./components/InviteSignIn";
 import { Denied } from "./components/Denied";
 import { authStateFrom, type AuthState } from "./authState";
 import { ExitConfirm } from "./components/ExitConfirm";
-import { pickerUrlFrom } from "./pickerUrl";
+import { activeProjectIdFrom, pickerUrlFrom } from "./pickerUrl";
 import { pullsFrom, thresholdFromStorage, PULL_STORAGE_KEY } from "./pulls";
 import { screenFor, selfIdFor } from "./authRoute";
 
@@ -43,9 +43,10 @@ export default function App() {
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   // No param → session picker (spec §4). Deep links keep exact old behavior.
   const sessionId = params.get("session");
-  // No `project` param → the hub entrance. Defaulting to "default" here is
-  // what made the project a hidden URL parameter nobody could see.
-  const projectId = params.get("project");
+  // No `project` param AND no session → the hub entrance. The conditional
+  // `default` fallback lives in pickerUrl.ts so it can be tested; see the
+  // comment there for why it is neither unconditional nor absent.
+  const projectId = activeProjectIdFrom(window.location.search);
   // v6a: screen is state seeded by ?screen= — deep links keep working, but
   // SKILLS is reachable in-app without a reload. ?screen=status stays a
   // URL-only design surface (no nav points at it).

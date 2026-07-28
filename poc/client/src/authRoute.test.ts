@@ -153,4 +153,51 @@ describe("entrance route", () => {
     expect(withoutProject).toBe("entrance");
     expect(withoutProject).not.toBe(withProject);
   });
+
+  // The regression the entrance introduced: testing the project alone, BEFORE
+  // the session, sent every `?session=X` link carrying no `?project=` to the
+  // entrance. In the `default` project that was every link the UI built, so no
+  // session in `default` could be opened at all.
+  it("routes a session with no project to the session, not the entrance", () => {
+    const route = screenFor({
+      auth: { status: "off" } as any,
+      inviteToken: null,
+      inviteTarget: null,
+      activeSessionId: "ana",
+      activeProjectId: null,
+      profile: { name: "ana" } as any,
+    } as any);
+    expect(route).toBe("session");
+    expect(route).not.toBe("entrance");
+  });
+
+  it("routes a session with no project and no profile to the lobby, not the entrance", () => {
+    const route = screenFor({
+      auth: { status: "off" } as any,
+      inviteToken: null,
+      inviteTarget: null,
+      activeSessionId: "ana",
+      activeProjectId: null,
+      profile: null,
+    } as any);
+    expect(route).toBe("lobby");
+    expect(route).not.toBe("entrance");
+  });
+
+  it("takes the entrance only when BOTH are absent", () => {
+    // The discriminating pair: `activeSessionId` is the only thing that moves,
+    // and it must flip the answer. If the entrance guard were back to testing
+    // the project alone, both rows would read "entrance" and this fails.
+    const input = {
+      auth: { status: "off" } as any,
+      inviteToken: null,
+      inviteTarget: null,
+      activeProjectId: null,
+      profile: { name: "ana" } as any,
+    };
+    const neither = screenFor({ ...input, activeSessionId: null } as any);
+    const sessionOnly = screenFor({ ...input, activeSessionId: "ana" } as any);
+    expect(neither).toBe("entrance");
+    expect(sessionOnly).not.toBe("entrance");
+  });
 });

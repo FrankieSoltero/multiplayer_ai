@@ -6,7 +6,7 @@ import { sessionBadgeLabel, sessionStateClass } from "../sessionState";
 import { groupByRepo } from "../repoGroups";
 import { canAct, refusalText } from "../projectAccess";
 import { freeSessionName } from "../sessionNames";
-import { entranceUrl } from "../pickerUrl";
+import { entranceUrl, sessionUrlFrom } from "../pickerUrl";
 
 /** The project screen (spec §4.2): every session across every repo, each
  *  labelled with its repo and machine. Spectators see everything and can act
@@ -201,8 +201,5 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
 }
 
 function joinSession(sessionId: string, projectId: string): void {
-  const params = new URLSearchParams(window.location.search);
-  params.set("session", sessionId);
-  if (projectId !== "default") params.set("project", projectId);
-  window.location.search = params.toString();
+  window.location.search = sessionUrlFrom(window.location.search, sessionId, projectId);
 }
