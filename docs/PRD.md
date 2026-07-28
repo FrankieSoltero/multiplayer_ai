@@ -6,9 +6,9 @@
 plan of record. That chain is not deleted — its specs remain the authority on *shipped* code — but
 "what do we build next" is now answered by picking a section from §8, not by incrementing a letter.
 
-> **Reading the code references.** Line refs to `poc/hub/`, `poc/server/src/relay.ts` and `mpai`'s
-> `--hub` flag are against **`feature/v7b1-hub-relay-spine`** (PR #20, unmerged) — that branch is
-> where the hub exists. Everything else is on `main` and is identical on both branches.
+> **Reading the code references.** Every line ref in this document — including those to `poc/hub/`,
+> `poc/server/src/relay.ts` and `mpai`'s `--hub` flag — is against **`main`**. The hub landed there
+> when `feature/v7b1-hub-relay-spine` (PR #20) merged; no separate branch is needed to read them.
 
 ---
 
