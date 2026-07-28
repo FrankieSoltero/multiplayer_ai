@@ -290,9 +290,13 @@ not testing what its name claims.
 
 ## 10. Open questions
 
-1. **Does leaving a project you created transfer ownership, or may the last member leave and strand
-   it?** Recommendation: allow it and let it be archived — a stranded active project is worse than
-   an archived one.
+1. ~~Does leaving a project you created transfer ownership, or may the last member leave and strand
+   it?~~ **RESOLVED 2026-07-28 (user): the last member may leave, and an empty project stays
+   active.** *Why:* a project's lifetime is independent of who happens to be in it right now.
+   Someone may want to join a project precisely because everyone else has gone — to pick the work
+   up — and projects should sit empty and repopulate as people come into and leave work. So an
+   empty project is a **normal state, not a stranded one**, and there is no auto-archive on empty.
+   This also means "members" is a record of who is currently participating, not of who owns it.
 2. **Does the entrance list every project on a hub even at hundreds?** Fine for a team-sized hub
    (PRD §2), and the point at which it stops being fine should be measured rather than guessed.
 3. **Does `intent` belong on a project?** A one-line "what is this project for" would carry a lot
