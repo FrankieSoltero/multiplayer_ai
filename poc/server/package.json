@@ -10,7 +10,9 @@
     "./events": { "types": "./dist/events.d.ts", "default": "./dist/events.js" },
     "./pendingGate": { "types": "./dist/pendingGate.d.ts", "default": "./dist/pendingGate.js" },
     "./lifecycle": { "types": "./dist/lifecycle.d.ts", "default": "./dist/lifecycle.js" },
-    "./auth": { "types": "./dist/auth.d.ts", "default": "./dist/auth.js" }
+    "./auth": { "types": "./dist/auth.d.ts", "default": "./dist/auth.js" },
+    "./relay": { "types": "./dist/relay.d.ts", "default": "./dist/relay.js" },
+    "./session": { "types": "./dist/session.d.ts", "default": "./dist/session.js" }
   },
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
