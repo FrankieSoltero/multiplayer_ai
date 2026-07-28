@@ -775,3 +775,13 @@ code, pre { font-family: var(--fm); }
 .member-pull { color: var(--amber); font-size: 11px; margin-top: 2px; }
 .pull-badge { color: var(--amber); }
 .pull-setting { display: inline-flex; gap: 4px; align-items: center; font-size: 10px; margin-left: 8px; }
+
+.exitconfirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--red);
+}
+.exitconfirm .exitwhy { flex: 1; min-width: 0; }
