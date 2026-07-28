@@ -39,28 +39,50 @@ interface ClientContext {
 
 /** The transport seam between a message handler and whatever is carrying it.
  *
- *  `direct` is a browser on a WebSocket straight to this process — it replays
- *  the log, subscribes per socket, and registers as a project watcher, exactly
- *  as it always has.
- *
- *  `relay` is a browser attached to the hub, tunnelled here (spec §3.2). The
- *  hub owns replay and fan-out, so this connection does none of it: doing it
- *  here would push one copy of every event per attached browser up a single
- *  uplink. Identity arrives pre-verified from the hub (spec §3.5 rule 1) —
- *  and identity is the ONLY thing trusted from upstream. Shape, length and
- *  charset validation below is untouched and still runs on every field
- *  (spec §10.4). */
-export interface ConnectionIO {
-  mode: "direct" | "relay";
+ *  A DISCRIMINATED UNION, not a bag of optional fields, and deliberately so.
+ *  Every question the handler asks about its transport — do I replay? do I
+ *  subscribe? whose cookie do I check? whose identity do I trust? — now has
+ *  exactly one discriminator, `mode`. When identity was keyed on an optional
+ *  `stampedIdentity` while replay was keyed on `mode`, the two could disagree:
+ *  a `{ mode: "relay" }` with no stamp fell through to `requireAuth(undefined)`
+ *  and, with auth disabled, kept the payload's claimed `userId` — fail-open on
+ *  the exact trust inversion this seam exists to enforce. The union makes that
+ *  connection unrepresentable rather than merely unlikely. */
+export type ConnectionIO = DirectIO | RelayIO;
+
+/** A browser on a WebSocket straight to this process. It replays the log,
+ *  subscribes per socket, and registers as a project watcher, exactly as it
+ *  always has. */
+export interface DirectIO {
+  mode: "direct";
   /** Narrowcast reply to the one client that sent the command. Best-effort:
    *  implementations drop the message if their transport has gone away. */
   send(msg: unknown): void;
-  /** Direct only. Receives throttled project snapshots. */
+  /** Receives throttled project snapshots. Optional: a direct connection
+   *  without one is a legitimate degenerate case (it simply gets no snapshot
+   *  pushes), and unlike a missing stamp it cannot fail open on anything. */
   watcher?: ProjectWatcher;
-  /** Direct only — this process verifies the cookie itself. */
+  /** This process verifies the cookie itself. Optional because
+   *  `IncomingMessage.headers.cookie` is itself `string | undefined` — absent
+   *  means "no cookie presented", which `requireAuth` already rejects. */
   cookieHeader?: string;
-  /** Relay only — the hub verified this browser and stamped it. */
-  stampedIdentity?: { userId: string; name: string };
+}
+
+/** A browser attached to the hub, tunnelled here (spec §3.2). The hub owns
+ *  replay and fan-out, so this connection does none of it: doing it here would
+ *  push one copy of every event per attached browser up a single uplink.
+ *  Identity arrives pre-verified from the hub (spec §3.5 rule 1) — and identity
+ *  is the ONLY thing trusted from upstream. Shape, length and charset
+ *  validation is untouched and still runs on every field (spec §10.4). */
+export interface RelayIO {
+  mode: "relay";
+  /** Narrowcast reply to the one client that sent the command. Best-effort:
+   *  implementations drop the message if their transport has gone away. */
+  send(msg: unknown): void;
+  /** REQUIRED. The hub verified this browser and stamped it; without a stamp
+   *  there is no verifier on either side of the uplink, so the type forbids
+   *  constructing the connection at all. */
+  stampedIdentity: { userId: string; name: string };
 }
 
 const INTERESTING = new Set([
@@ -326,6 +348,11 @@ export async function startServer(opts: {
     let ctx: ClientContext | null = null;
     let watching: Project | null = null;
 
+    // Derived once from the single discriminator: only a direct socket can be
+    // a project watcher, and the union makes that structural rather than a
+    // convention every call site has to remember.
+    const watcher = io.mode === "direct" ? io.watcher : undefined;
+
     const sendError = (message: string) => io.send({ type: "error", message });
 
     // The token rides this reply and nothing else — never the session log,
@@ -353,7 +380,7 @@ export async function startServer(opts: {
       const denyUnauthed = (): boolean => {
         // Relay: the hub already verified this browser before stamping it
         // (spec §3.5 rule 1), so there is no cookie to check on this side.
-        if (io.stampedIdentity) return false;
+        if (io.mode === "relay") return false;
         const check = requireAuth(io.cookieHeader, opts.auth);
         if (check.ok) return false;
         sendError(check.error);
@@ -387,9 +414,11 @@ export async function startServer(opts: {
         // client-chosen would relocate the impersonation rather than remove
         // it. Enforced here, not in the client Lobby — a hand-rolled
         // WebSocket client bypasses any browser UI.
-        if (io.stampedIdentity) {
+        if (io.mode === "relay") {
           // Relay: the hub already verified this browser and stamped it
-          // (spec §3.5 rule 1). Same overwrite, different verifier.
+          // (spec §3.5 rule 1). Same overwrite, different verifier — and the
+          // union guarantees the stamp is present, so there is no arm here
+          // that can fall through to the client's claim.
           msg.userId = io.stampedIdentity.userId;
           msg.name = io.stampedIdentity.name;
         } else {
@@ -443,7 +472,7 @@ export async function startServer(opts: {
             ? entry.session.subscribe((event) => io.send({ type: "event", event }))
             : () => {};
         ctx = { project, entry, userId: msg.userId, unsubscribe };
-        if (io.watcher) project.watchers.add(io.watcher);
+        if (watcher) project.watchers.add(watcher);
         const glyph =
           typeof msg.glyph === "string" && ALLOWED_GLYPHS.has(msg.glyph)
             ? msg.glyph
@@ -505,9 +534,9 @@ export async function startServer(opts: {
           return sendError("watch_project requires a valid projectId");
         }
         const project = getOrCreateProject(projectId);
-        if (io.watcher) {
-          if (watching) watching.watchers.delete(io.watcher);
-          project.watchers.add(io.watcher);
+        if (watcher) {
+          if (watching) watching.watchers.delete(watcher);
+          project.watchers.add(watcher);
         }
         watching = project;
         io.send(snapshotFor(project));
@@ -923,12 +952,12 @@ export async function startServer(opts: {
 
     const close = (): void => {
       if (watching) {
-        if (io.watcher) watching.watchers.delete(io.watcher);
+        if (watcher) watching.watchers.delete(watcher);
         watching = null;
       }
       if (ctx) {
         ctx.unsubscribe();
-        if (io.watcher) ctx.project.watchers.delete(io.watcher);
+        if (watcher) ctx.project.watchers.delete(watcher);
         ctx.entry.session.leave(ctx.userId);
         ctx = null;
       }

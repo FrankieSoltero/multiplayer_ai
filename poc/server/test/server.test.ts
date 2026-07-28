@@ -2471,26 +2471,12 @@ describe("relay-mode connections", () => {
     // already verified who is speaking, so the laptop takes identity from the
     // stamp. A payload that claims someone else must be discarded exactly as
     // a cookie-verified join discards a forged userId today.
-    const server = await startServer({ port: 0, runQuery: echoRun });
-    close = server.close;
-
-    const sent: unknown[] = [];
-    const conn = server.createConnection({
-      mode: "relay",
-      send: (m) => sent.push(m),
-      stampedIdentity: { userId: "ana", name: "ana" },
-    });
-    conn.handleMessage({ type: "join", sessionId: "s1", userId: "totally-not-ana", name: "Mallory" });
-
-    expect(JSON.stringify(sent)).not.toContain("totally-not-ana");
-    expect(JSON.stringify(sent)).not.toContain("Mallory");
-  });
-
-  it("writes the stamped identity, not the claimed one, into the session log", async () => {
-    // The assertion above can only observe what a relay connection is sent,
-    // and a relay connection is sent nothing on join. This one reads the
-    // overwrite back out of the log a direct client replays, so the trust
-    // inversion is actually witnessed rather than assumed.
+    //
+    // Asserted by reading the overwrite back OUT of the log rather than by
+    // inspecting what the relay connection was sent: a relay join is silent by
+    // construction, so an assertion over its own outbox is green no matter
+    // what the identity code does. A direct client joining the same session
+    // replays the log, and that replay is where the forgery would show up.
     const server = await startServer({ port: 0, runQuery: echoRun });
     close = server.close;
 
@@ -2499,11 +2485,11 @@ describe("relay-mode connections", () => {
       send: () => {},
       stampedIdentity: { userId: "ana", name: "ana" },
     });
-    relay.handleMessage({ type: "join", sessionId: "s1b", userId: "totally-not-ana", name: "Mallory" });
+    relay.handleMessage({ type: "join", sessionId: "s1", userId: "totally-not-ana", name: "Mallory" });
 
     const seen: any[] = [];
     const direct = server.createConnection({ mode: "direct", send: (m) => seen.push(m) });
-    direct.handleMessage({ type: "join", sessionId: "s1b", userId: "ben", name: "Ben" });
+    direct.handleMessage({ type: "join", sessionId: "s1", userId: "ben", name: "Ben" });
 
     const joins = seen
       .filter((m) => m.type === "event" && m.event?.type === "presence_join")
@@ -2511,6 +2497,24 @@ describe("relay-mode connections", () => {
     expect(joins.some((e: any) => e.userId === "ana" && e.name === "ana")).toBe(true);
     expect(JSON.stringify(joins)).not.toContain("totally-not-ana");
     expect(JSON.stringify(joins)).not.toContain("Mallory");
+  });
+
+  it("makes a relay connection without a stamp unrepresentable", () => {
+    // The fail-open this rules out: when identity keyed off an optional
+    // `stampedIdentity` but replay keyed off `mode`, a { mode: "relay" } with
+    // no stamp fell through to requireAuth(undefined) and — with auth
+    // disabled — kept the payload's claimed userId. ConnectionIO is now a
+    // discriminated union, so the connection cannot be constructed at all.
+    //
+    // This is a compile-time assertion, and it is load-bearing rather than
+    // decorative: tsconfig.json includes "test", so `tsc --noEmit` fails if
+    // the line below ever starts compiling.
+    type IO = Parameters<
+      Awaited<ReturnType<typeof startServer>>["createConnection"]
+    >[0];
+    // @ts-expect-error - relay requires stampedIdentity
+    const stampless: IO = { mode: "relay", send: () => {} };
+    expect(stampless.mode).toBe("relay");
   });
 
   it("does not replay the log or subscribe per client in relay mode", async () => {
@@ -2556,13 +2560,31 @@ describe("relay-mode connections", () => {
   });
 
   it("drops the participant on close, exactly as a socket close does", async () => {
+    // "Did not throw" is not evidence of a departure, and the relay side is
+    // silent, so the departure is witnessed through a direct client subscribed
+    // to the same session — the same way a real teammate would see it.
     const server = await startServer({ port: 0, runQuery: echoRun });
     close = server.close;
+
     const sent: any[] = [];
     const conn = server.createConnection({ mode: "relay", send: (m) => sent.push(m), stampedIdentity: { userId: "ana", name: "ana" } });
     conn.handleMessage({ type: "join", sessionId: "s5", userId: "ana", name: "ana" });
+
+    const seen: any[] = [];
+    const witness = server.createConnection({ mode: "direct", send: (m) => seen.push(m) });
+    witness.handleMessage({ type: "join", sessionId: "s5", userId: "ben", name: "Ben" });
+    seen.length = 0; // ignore the witness's own replay and join
+
     conn.close();
     conn.close(); // idempotent — a relay channel can be torn down twice
+
+    const leaves = seen.filter(
+      (m) => m.type === "event" && m.event?.type === "presence_leave" && m.event.userId === "ana",
+    );
+    // Exactly one: the second close must not append a second departure, which
+    // is what "idempotent" has to mean for an append-only log replayed to
+    // every late joiner.
+    expect(leaves).toHaveLength(1);
     expect(sent.some((m) => m.type === "error")).toBe(false);
   });
 });
