@@ -8,6 +8,7 @@ const base: RouteInput = {
   inviteToken: null,
   inviteTarget: null,
   activeSessionId: "s1",
+  activeProjectId: "acme",
   profile: { name: "ana", glyph: "@", color: "#0f0" },
 };
 
@@ -106,5 +107,31 @@ describe("selfIdFor", () => {
     // And the pre-fix comparison, for contrast: the local UUID never matched,
     // which is what made the permission gate unanswerable.
     expect(driverIdFromControlChange === LOCAL).toBe(false);
+  });
+});
+
+describe("entrance route", () => {
+  it("shows the entrance when no project and no session are selected", () => {
+    const route = screenFor({
+      auth: { status: "off" } as any,
+      inviteToken: null,
+      inviteTarget: null,
+      activeSessionId: null,
+      activeProjectId: null,
+      profile: { name: "ana" } as any,
+    } as any);
+    expect(route).toBe("entrance");
+  });
+
+  it("still shows the project screen when a project is selected", () => {
+    const route = screenFor({
+      auth: { status: "off" } as any,
+      inviteToken: null,
+      inviteTarget: null,
+      activeSessionId: null,
+      activeProjectId: "acme",
+      profile: { name: "ana" } as any,
+    } as any);
+    expect(route).toBe("picker");
   });
 });
