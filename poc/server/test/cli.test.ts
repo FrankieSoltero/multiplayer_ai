@@ -31,6 +31,18 @@ describe("parseArgs", () => {
     expect(args.error).toBeUndefined();
   });
 
+  it("rejects a --project id the hub's frame parser would refuse", () => {
+    // Without this the failure is invisible: `hello` carries the projectId,
+    // `parseUpFrame` rejects anything outside SLUG, the hub answers with a
+    // 1008 close, and the relay swallows it and reconnects every 2s — forever,
+    // after `launch()` has already printed "attached to hub".
+    expect(parseArgs(["--hub", "ws://hub.test", "--project", "MyProject"]).error).toMatch(
+      /--project requires 1-40 chars/,
+    );
+    expect(parseArgs(["--project", "a b"]).error).toMatch(/--project requires 1-40 chars/);
+    expect(parseArgs(["--project", "team-api-2"]).error).toBeUndefined();
+  });
+
   it("errors when new has no name", () => {
     expect(parseArgs(["new"]).error).toMatch(/requires a session name/);
   });

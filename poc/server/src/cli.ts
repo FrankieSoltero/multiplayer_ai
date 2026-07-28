@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import { SLUG } from "./project.js";
 import { startServer } from "./server.js";
 import { WorkspaceManager } from "./workspace.js";
 
@@ -41,6 +42,14 @@ export function parseArgs(argv: string[]): CliArgs {
     } else if (flag === "--project") {
       const value = rest.shift();
       if (!value) return { ...args, error: "--project requires an id" };
+      // Validated HERE because the failure it prevents is invisible. A
+      // projectId the hub's `parseUpFrame` rejects makes every `hello` a
+      // "bad frame" 1008 close, and the relay's error handling swallows it and
+      // reconnects every 2s — while `launch()` has already printed "attached
+      // to hub". A startup error beats an infinite silent loop.
+      if (!SLUG.test(value)) {
+        return { ...args, error: "--project requires 1-40 chars of a-z, 0-9, -" };
+      }
       args.project = value;
     } else if (flag === "--hub") {
       const value = rest.shift();

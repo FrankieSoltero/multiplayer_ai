@@ -1,3 +1,4 @@
+import { createConnection } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { startHub } from "../src/hub.js";
 
@@ -35,9 +36,30 @@ describe("hub HTTP surface", () => {
     expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
   });
 
-  it("binds the host it was given rather than every interface", async () => {
+  it("reports the ephemeral port it actually bound, and serves on the host it was given", async () => {
+    // Renamed from "binds the host it was given rather than every interface",
+    // which asserted only `port > 0` — a name that promised an isolation
+    // property nothing checked. What is checked: `port` is the port the OS
+    // handed out (it must be reachable, not merely non-zero) and the hub
+    // answers there on the requested host.
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
     expect(hub.port).toBeGreaterThan(0);
+    expect(hub.port).not.toBe(0);
+    const res = await fetch(`http://127.0.0.1:${hub.port}/healthz`);
+    expect(res.status).toBe(200);
+
+    // The negative half, stated with its own caveat: nothing may be listening
+    // on that port at the IPv6 loopback. This cannot FALSELY fail — a host
+    // with no IPv6 also refuses — so it can pass vacuously, and a stronger
+    // claim would need a second interface this test cannot assume.
+    await expect(
+      new Promise((resolve, reject) => {
+        const socket = createConnection({ host: "::1", port: hub.port });
+        socket.setTimeout(2000, () => socket.destroy(new Error("timed out")));
+        socket.on("connect", () => { socket.destroy(); resolve("connected"); });
+        socket.on("error", reject);
+      }),
+    ).rejects.toThrow();
   });
 });

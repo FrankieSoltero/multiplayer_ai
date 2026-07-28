@@ -523,6 +523,11 @@ export async function startServer(opts: {
         return;
       }
 
+      // Unreachable on the RELAY arm: `HUB_HANDLED` (`poc/hub/src/hub.ts:18`)
+      // answers `peek` from the hub's own store and never tunnels it, because
+      // only the hub sees every laptop. Removing this id from that set — in a
+      // different package — silently re-routes `peek` here, where it would
+      // answer with one machine's view of a multi-machine project.
       if (msg.type === "peek") {
         if (denyUnauthed()) return;
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
@@ -555,6 +560,10 @@ export async function startServer(opts: {
         return;
       }
 
+      // Unreachable on the RELAY arm, for the same reason as `peek` above:
+      // `HUB_HANDLED` at `poc/hub/src/hub.ts:18`. If it ever did arrive here
+      // the `watcher` below is undefined on a relay connection, so the
+      // subscription would silently never happen.
       if (msg.type === "watch_project") {
         if (denyUnauthed()) return;
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
