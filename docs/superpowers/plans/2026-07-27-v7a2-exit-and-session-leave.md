@@ -1168,10 +1168,10 @@ Expected at the end: **server 357, client 203**, both tsc clean, build clean.
 Then, with two browser tabs on one session (HANDOFF §6 has the stack recipe):
 
 1. In tab B, type `/exit` and press Enter. Tab B lands on the session picker. Tab A's roster loses that participant and the session still reads **LIVE**.
-2. In tab A, click **▢ EXIT** in the header. Tab A lands on the picker. The session now reads **EMPTY** — then, because that was the last participant leaving deliberately, **CLOSED**.
+2. In tab A, click **▢ EXIT** in the header. Tab A lands on the picker. The session goes straight to **CLOSED** — the server appends `presence_leave` and `session_closed` and pushes once, so EMPTY is never actually observable on a deliberate last leave. (EMPTY is only reachable via the disconnect path — see step 5.)
 3. Rejoin the closed session from the picker and confirm prompting returns "this session has been closed" — leaving must not have broken the v7a guards.
 4. Start a fresh session, send a prompt, and hit EXIT while the agent is still working. Confirm the inline bar appears reading "the agent is still working", that **STAY** dismisses it and keeps you in the session, and that **LEAVE ANYWAY** leaves.
-5. Join a session in two tabs and **close** one tab rather than exiting it. Confirm the session stays **open** — the design's central guarantee. Then reopen it from the picker and confirm you can rejoin.
+5. Join a session in two tabs and **close** one tab rather than exiting it. Confirm the session stays **open** — the design's central guarantee — but now reads **EMPTY** (no deliberate `leave_session` was sent, so no `session_closed` was appended). It should also sort to the **top** of the picker: `sortSessions` orders by `lastActivityTs`, and the `presence_leave` the disconnect just wrote is the newest event in the project — read it as correct, not as a bug. Then reopen it from the picker and confirm you can rejoin.
 
 ## Deviations
 

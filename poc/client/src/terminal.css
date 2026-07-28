@@ -385,6 +385,11 @@ code, pre { font-family: var(--fm); }
 .member.closed:hover { opacity: 1; }
 .member.offline { border-style: dotted; }
 .member.closed { opacity: 0.55; }
+/* `empty` ranks weakest in the precedence chain (closed > offline > ended >
+   empty > healthy) — lighter than the three above, no dashing. Reuses the
+   0.8 opacity already used elsewhere (.panel.ghost, .node.queued). */
+.member.empty { opacity: 0.8; }
+.member.empty:hover { opacity: 1; }
 .member-head { font-weight: 600; }
 .member-head .role { color: var(--green); font-weight: 400; }
 .member-head .here { color: var(--dim); font-weight: 400; }

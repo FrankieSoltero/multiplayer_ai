@@ -388,6 +388,16 @@ function SessionView(props: {
     return null;
   }
 
+  // The confirm bar's reason can go stale: it's set once, when EXIT is
+  // clicked, but the condition that raised it (a busy agent, a pending gate)
+  // can resolve on its own while the bar is still showing. Re-check on every
+  // change to the inputs `exitWouldStrand` reads and drop the bar once
+  // neither reason still applies — display-only, LEAVE ANYWAY / STAY already
+  // work correctly either way.
+  useEffect(() => {
+    if (exitReason && !exitWouldStrand()) setExitReason(null);
+  }, [derived.agentBusy, gatesPending, isDriver, exitReason]);
+
   function leaveNow() {
     // Send BEFORE navigating: the reload closes the socket and any unsent
     // frame is lost. This message is what tells the server the departure was
