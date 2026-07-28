@@ -1,20 +1,120 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-27 (bg session #13, second pass).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-28 (bg session #14).*
 
 ---
 
-## 🚀 START HERE — THE NEXT SESSION'S JOB: EXECUTE THE v7 PLANS (PR #18)
+## 🚀 START HERE — v7b1 IS MID-EXECUTION. RESUME THE SDD LOOP AT TASK 5's SCOPED RE-REVIEW.
 
-**The user's instruction, verbatim in intent: merge/pick up the PR #18 plans and "rip through all 20 tasks."** Two corrections a fresh agent must know before starting:
+**You are on `feature/v7b1-hub-relay-spine`, branched from `main` at `18900ff`. Tasks 1–4 are complete and reviewed clean. Task 5's fix round is COMMITTED but its scoped re-review has NOT been run. Tasks 6, 7, 8 are untouched.**
 
-1. **It is 28 tasks, not 20** — v7b1 (8) + v7b2 (8) + v7b3 (7) + v7c (5). The user's "about 20" was an estimate; do not silently scope down to 20, and do not surprise them at task 21. Say the real number once at the start.
-2. **It is FOUR separate plans, not one run.** Each is its own SDD execution with its own branch, its own final whole-branch review, and its own merge. **Do not concatenate them into one 28-task marathon** — that is exactly the "no working-software checkpoint until the end" failure the planning session split them to avoid. Finish v7b1 and merge it before starting v7b2.
+**THE LEDGER IS YOUR RECOVERY MAP — READ IT BEFORE ANYTHING ELSE:**
+`.superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/progress.md`. It ends with a `>>> RESUME POINT`
+block giving the exact next command. It records every task, review, human ruling and deferred
+minor. **Trust it and `git log` over any recollection.** Do not delete that workspace until v7b1's
+whole-branch review is clean.
 
-**PR #18 — `docs: v7 implementation plans — v7b1, v7b2, v7b3, v7c`** — https://github.com/FrankieSoltero/multiplayer_ai/pull/18
-- **State: OPEN, docs-only** (no code, no test changes). Branch `feature/v7b-hub-relay-plan`, base `main`.
-- **It is checked out in a worktree**: `.claude/worktrees/v7b-plan` at `0df2241`. `git worktree list` confirms. Do not try to `git checkout` that branch from the main worktree — it will refuse.
-- **READ THIS FIRST, IT IS THE PLANNING TRACK'S OWN RESUME PACKET:** `docs/superpowers/plans/2026-07-27-v7-plan-status.md` (on that branch). It records every decision with its reasoning, four defects found and closed during planning, and the two scope interpretations v7b3 flags. It is NOT this file and does not replace it.
+**What session #14 did, in order:** resolved the "agent turns don't run here" blocker (it was a
+missing session workdir, not the SDK binary — see the section below) → merged **PR #18** (the four
+v7 plans) → merged **v7a2** (`/exit` + session leave) → merged the workdir-guard fix → pushed
+`main` at **`18900ff`** (server 362 / client 207, tsc clean both, client build clean) → branched
+`feature/v7b1-hub-relay-spine` and executed v7b1 Tasks 1–5 under
+`superpowers:subagent-driven-development`.
+
+**Branch state — 8 commits on top of `18900ff`:**
+
+| Task | Commits | State |
+|---|---|---|
+| 1 · `relayProtocol.ts` | `20482e6`, `7c5ee71` | ✅ complete, review clean |
+| 2 · one producer for session facts | `e894dda` | ✅ complete, review clean |
+| 3 · `poc/hub` package + shared-module seam | `22c9ded` | ✅ complete, review clean |
+| 4 · `hubStore.ts` | `43f54d5`, `9ca5db3` | ✅ complete, review clean |
+| 5 · `ConnectionIO` extraction | `d5aaca4`, `83bbf65` | **fix landed, RE-REVIEW NOT RUN** |
+| 6 · `relay.ts` uplink | — | not started (brief not yet extracted) |
+| 7 · hub WebSocket surface | — | not started |
+| 8 · `mpai --hub` + two-process walk | — | not started |
+
+**Suites on the branch right now: server 385 passed (19 files), hub 17 passed, both `tsc --noEmit` clean, `dist/main.js` still emitted top level. Test output verified pristine (no warnings).**
+
+**THE VERY NEXT ACTION, concretely** (SDD scripts live at
+`~/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/`):
+1. `bash <scripts>/review-package docs/superpowers/plans/2026-07-27-v7b1-hub-relay-spine.md d5aaca4 83bbf65`
+2. Dispatch `re-review-prompt.md` on **sonnet** with the three Task 5 findings verbatim from the
+   ledger, the brief, the report file, and the printed diff path. Tell it what counts as
+   OVERSHOOTING: any change to the direct path, to the join-order sequence, to
+   `pushProject`/`schedulePush`, or inventing a relay ack (that is Task 6's job).
+3. If clean → ledger `Task 5: complete (commits 9ca5db3..83bbf65, review clean)` → `scripts/task-brief … 6` → Task 6.
+
+**Resume & verify — run this first, expect exactly this:**
+
+```bash
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
+git status -sb                      # feature/v7b1-hub-relay-spine; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
+git log --oneline 18900ff..HEAD     # 8 commits, newest 83bbf65 'fix(server): make a stamp-less relay connection unrepresentable (v7b1)'
+git ls-remote origin refs/heads/main # 18900ff… — trust this over origin/main, which has been observed stale in this repo
+tail -20 .superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/progress.md   # ends with the >>> RESUME POINT block
+cd poc/server && npx tsc --noEmit && npx vitest run   # 385 passed, 19 files, ~26s, output pristine
+cd ../hub    && npx tsc --noEmit && npx vitest run    # 17 passed
+cd ../server && npm run build && ls dist/main.js      # TOP level, not dist/src/main.js
+git diff --numstat 18900ff -- poc/server/test/        # every pre-existing test file must show 0 deletions
+lsof -nP -iTCP:3001 -sTCP:LISTEN                      # expect empty; nothing of session #14's is running
+```
+
+**The branch is LOCAL ONLY — nothing has been pushed and no PR exists for v7b1.** Pushing/PRing is
+a user decision (see §7g, still unanswered: whether feature work should be PR-first from now on).
+
+**PRE-FLIGHT FACT THAT BINDS EVERY REMAINING TASK: the plan's stated baselines are STALE.** Global
+Constraints say "server 345 tests, client 179"; that was `main` at `a6e9d76`, before v7a2 and the
+workdir fix. Every count in the plan — Task 5's "363", the verification block's "385 / 25 / 179" —
+is a prediction, not a target. **Tell every implementer: judge by "all pre-existing tests still
+pass, plus mine," never by a literal number.** Task 5's real criterion was always the ZERO-EDIT
+part, and it held (`git diff --numstat 9ca5db3 -- poc/server/test/` → `124  0`).
+
+**Line refs in the plan were verified against `a6e9d76`; v7a2 has since shifted `server.ts`.** The
+plan's anchors are named symbols (`getOrCreateSession`, `pushProject`, `wss.on("connection")`) —
+tell implementers to trust the symbol over the line number.
+
+**FOUR HUMAN RULINGS MADE DURING EXECUTION — do not re-litigate, all recorded in the ledger with reasoning:**
+1. **Frame validation stays shallow.** `parseUpFrame` checks `Array.isArray` and casts; deep field
+   validation is deferred to **v7b2's security floor**, because v7b1's hub is explicitly a
+   trusted-network dev target. **This is a named input for v7b2 — do not let it be lost at merge.**
+2. **`relayProtocol.ts` imports `SLUG` from `project.ts`** rather than duplicating the regex.
+   Consequence accepted knowingly: that is its only runtime (value) import, so the hub pulls
+   `project.js` + `digest/pendingGate/lifecycle` through the exports map. Proven to resolve at
+   **runtime**, not just under `tsc`.
+3. **`hubStore.snapshot()` deep-copies per-session facts; `eventsFor()`/`publish()` do not.** The
+   event fan-out path is the one watcher count multiplies, so it stays allocation-free and is
+   documented in-code as returning read-only instances.
+4. **The plan's two vacuous relay tests keep their names and got working bodies.** A relay join is
+   silent by construction, so `sent` was always `[]` — the identity test passed with the entire
+   stamp overwrite deleted.
+
+**Rulings 3 and 4 are plan Deviations and MUST be written into the v7b1 plan's Deviations section before v7b1 is called done.** Ruling 2's consequence for Task 3 is already shipped.
+
+**THREE GATES CARRIED INTO TASK 6, from Task 5's review — put these in the Task 6 dispatch:**
+- **A relay join emits nothing on success.** No replay, no snapshot, no ack. Task 6 has only
+  "absence of an error" as its success signal, indistinguishable from a dropped frame. **Task 6
+  must invent an ack.** Task 5 was right not to.
+- **A relay join still requires `userId` and `name` in the payload** even though both are
+  immediately overwritten by the stamp — the `typeof` triple at `server.ts:367-373` runs before the
+  overwrite. Task 6's uplink must forward them or synthesize placeholders.
+- **Relay connections DO receive a `project` snapshot from `watch_project`** while a relay join
+  deliberately does not. Per the brief; Task 6 should confirm a narrowcast reply is meant to flow
+  up the uplink.
+- Also from Task 4's review, unanswerable until Task 7 exists: **does Task 7 mutate anything
+  `hubStore` handed it?** Make that a named check in Task 7's review.
+
+**PR #18 IS MERGED (`be3b1b2`), so the plans are on `main`.** The four plans live at
+`docs/superpowers/plans/2026-07-27-v7b{1,2,3}-*.md` and `…-v7c-hub-persistence.md`.
+- **READ THIS IF YOU TOUCH v7b2/v7b3/v7c:** `docs/superpowers/plans/2026-07-27-v7-plan-status.md`
+  is the planning track's own resume packet — every decision with its reasoning, four defects found
+  and closed during planning, and the two scope interpretations v7b3 flags. It is NOT this file.
+  Its §6 says to fold its §1–§4 into this HANDOFF and delete it now that the branch has merged;
+  that fold has NOT been done yet.
+- **It is 28 tasks across FOUR plans, not one run.** v7b1 (8) + v7b2 (8) + v7b3 (7) + v7c (5). Each
+  is its own SDD execution with its own branch, its own whole-branch review, and its own merge.
+  **Do not concatenate them** — that is exactly the "no working-software checkpoint until the end"
+  failure the split exists to avoid. Finish and merge v7b1 before starting v7b2.
 - **Plans** (all under `docs/superpowers/plans/`): `2026-07-27-v7b1-hub-relay-spine.md` (8 tasks — a browser on the hub drives a session whose agent runs on another machine), `…-v7b2-trust-and-pairing.md` (8 — the hub is safe to expose to the internet), `…-v7b3-host-and-team-surface.md` (7 — an owner, spanning repos, cross-machine oversight), `…-v7c-hub-persistence.md` (5 — the hub survives its own restart).
 - **Spec they are written against:** `docs/superpowers/specs/2026-07-27-v7-hub-architecture-design.md`.
 
@@ -27,11 +127,11 @@
 
 **v7d (handoff continuity) and v7e (collision detection) are deliberately NOT planned.** Each is one paragraph in spec §7 with no spec of its own, and v7e was shelved mid-brainstorm. **Their next step is `superpowers:brainstorming` → a spec, not a plan.** Writing TDD plans from that would invent design decisions and present them as settled.
 
-**Recommended opening moves for the fresh session:**
-1. Decide with the user whether PR #18 merges to `main` first (it is docs-only and green by construction) or whether v7b1 branches off `feature/v7b-hub-relay-plan`. **Merging first is cleaner** — the plans are then on `main` and each execution branch is independent.
-2. Read `2026-07-27-v7-plan-status.md`, then v7b1 only. **Do not read all four plans up front** — that is ~4 plans of context spent before task 1.
-3. Execute v7b1 with `superpowers:subagent-driven-development` (the process that just took v7a2 from 5 tasks to merge-ready; see §6c for what it caught).
-4. **Before v7b1 Task 1, resolve the agent-binary blocker below** if any task needs a live agent turn.
+**~~Recommended opening moves~~ — ALL DONE in session #14, kept only so nobody redoes them:** PR #18 merged to `main` first (the cleaner of the two options); v7b1 branched off `main`, not off the plan branch; the plan-status packet and v7b1 alone were read, not all four plans; execution runs under `superpowers:subagent-driven-development`; and the agent-binary blocker was resolved before Task 1 (it was a missing workdir).
+
+**Context economy that worked and should be repeated:** the controller read only the plan's header, Global Constraints, task titles and verification section — never the 3,122-line plan in full. Each implementer gets `scripts/task-brief PLAN N`, which extracts just its task. Reviewers get a `scripts/review-package` diff file. **No diff and no plan body ever entered the controller's context**, which is what made five tasks fit in one session.
+
+**Model selection that worked:** haiku for Task 1 (the brief carried the complete code — transcription plus testing), sonnet for Tasks 2–4 and for every task review and re-review, **opus for Task 5** (the pure refactor of the 938-line `server.ts`) and for its review. Task 5's opus reviewer proved the diff was complete by composing hunk offsets, which is what let it certify the ~300 unshown lines as genuinely untouched rather than elided — a cheaper reviewer would not have done that. **The whole-branch review at the end must be opus.**
 
 **✅ THE "AGENT TURNS DO NOT RUN ON THIS MACHINE" BLOCKER IS RESOLVED (session #14, 2026-07-27). Agent turns DO run here. There was never anything wrong with the SDK binary.**
 
@@ -45,11 +145,11 @@
 
 ---
 
-**🔴 READ THIS FIRST — v7a IS MERGED. v7a2 (exit/leave) IS CODE-COMPLETE AND FULLY REVIEWED ON ITS BRANCH, WAITING ON ONE BROWSER PASS BY THE USER (session #13, 2026-07-27).**
+**🟢 HISTORICAL FROM HERE DOWN — v7a2 IS MERGED (session #14, on the user's explicit go). `main` is `18900ff`.** The block below was written while v7a2 was still on its branch; its *content* is still the authority on why v7a2's code looks the way it does, but every "unmerged / waiting on a decision" framing in it is now stale. `feature/exit-and-session-leave` still exists locally; deleting branches is the user's call.
 
 **v7a shipped: PR #17 merged at `a6e9d76`. `main` == `origin/main`.** The SDD workspace for v7a was deleted on completion — git history is the record. `feature/v7a-repo-identity-lifecycle` still exists locally (deleting branches is the user's call).
 
-**You are on `feature/exit-and-session-leave` at `8711653`. NOT on main. Nothing is merged. Nothing is half-finished.**
+**~~You are on `feature/exit-and-session-leave` at `8711653`~~ — SUPERSEDED. v7a2 merged into `main` in session #14 and you are now on `feature/v7b1-hub-relay-spine`. See the top of this file.**
 
 - **The ledger is your recovery map — read it before anything else:** `.superpowers/sdd/2026-07-27-v7a2-exit-and-session-leave/progress.md`. It records every task, review, ruling, adjudication and parked residual, and ends with the browser checklist. Trust it and `git log` over any recollection. **Do not delete that workspace until the browser pass is done — the checklist is written down nowhere else.**
 - **All 5 tasks are complete and reviewed clean.** Then the whole-branch review ran on opus, found 2 Important + 7 Minor, one fix wave landed (`ef905ba`, `8711653`), and the scoped re-review verdicted all seven ADDRESSED with no new breakage.
@@ -58,7 +158,7 @@
 - **What the whole-branch review caught that all five task reviews missed:** `/exit` was **silently swallowed by the slash-autocomplete menu**. `parseClientCommand` ran only inside `submit()`, but `PromptBar`'s `onKeyDown` returned from the menu's Enter branch before `submit()` was ever reached. Because `matchSkills` does a case-insensitive **substring** match over the real SDK roster, typing `/exit` + Enter either did nothing or **rewrote the user's `/exit` into a different skill merely containing "exit"** and sent it as a skill suggestion. Spec §4's "the client command wins, `/exit` is reserved" was implemented in `submit()` but not at the key that reaches it — the branch's headline feature, broken on its headline surface. Fixed with a pure `shouldSubmitOverMenu` predicate in `clientCommands.ts`, unit-tested.
 - **The second Important, worth knowing because it upgraded a deferred minor:** `take_wheel` had no membership check, so the departed-but-connected state `leave_session` newly creates produced **a driver absent from the roster**. Reachable through the shipped UI — with auth ON, two tabs of one signed-in user share a `userId`, so tab 2 can `/exit` while tab 1 keeps a live UI and takes the wheel. Also sticky: `session.leave` short-circuits before the driver-handoff block, so `currentDriverId` stayed pinned to the departed user permanently. Guarded now, with a server test.
 - **A ruling that reversed an earlier reviewer, do not re-open it:** **not** nulling `ctx` in the `leave_session` handler is **correct**. Nulling it would skip `ctx.unsubscribe()` and `project.watchers.delete(ws)`, leaking a subscription and a watcher entry per exit. An earlier task review flagged the asymmetry with `ws.on("close")` as a defect; the final review traced it and ruled the code right.
-- **THE BROWSER PASS IS DONE — run 2026-07-27 via Playwright MCP. 6 of 8 scenarios PASS, 2 untestable on this machine (not failures).** Full detail in the ledger. v7a2 is merge-ready; **merging it is a user decision that has not been made.**
+- **THE BROWSER PASS IS DONE — run 2026-07-27 via Playwright MCP. 6 of 8 scenarios PASS, 2 untestable on this machine (not failures).** Full detail in the ledger. **The user decided in session #14: v7a2 was merged into `main` (no-ff) before v7b1 branched, so v7b1 builds on top of it.**
   - ✅ `/exit` beats the slash menu (the regression the fix wave existed for) · ✅ deliberate last leave → CLOSED with no intermediate EMPTY · ✅ a watcher can `/exit` · ✅ the `take_wheel` guard refuses a departed-but-connected ghost with "you have left this session" · ✅ **a disconnect never closes a session** (the load-bearing rule) · ✅ rejoin a closed session → prompting returns "⚠ this session has been closed", so v7a's guards survived.
   - ⚠️ The confirm bar (agent-busy reason, Escape, stale-reason clear) was recorded as **unreachable on this machine**. That was a consequence of the workdir bug, now resolved (see the top of this file): `agentBusy` is set by `user_message`/`tool_call`/`agent_text_delta`, and none were ever appended because every driver died at spawn. **Re-testable now — run the server via `mpai` and this scenario should work.** Still unverified, not a defect.
   - ❌ EXIT during socket CONNECTING — a genuine race, not hittable deliberately on localhost. One-line early return, verified by review only.
@@ -137,6 +237,7 @@ We are ON `main`, pushed and in sync with origin. No dev stack running (:3001 an
 
 ## 0. WHERE WE ARE
 
+- **CURRENT AS OF SESSION #14 (2026-07-28): `main` is `18900ff`, pushed** — it now carries PR #18's four v7 plans (`be3b1b2`), v7a2 (`/exit` + session leave), and the workdir-guard fix. **Baselines on main: server 362 / client 207**, tsc clean both, client build clean. Work is happening on `feature/v7b1-hub-relay-spine` (local only, 8 commits, see the top of this file). **Every baseline figure below this line is historical and superseded.**
 - **main** (pushed to origin; `0450c8d` = merge of A3, `ed09d9f` = sign-out, `0283e14` = merge of A2a, `f33ce06` = merge of A1a). Everything below is ON MAIN and verified there: session launcher + `mpai` CLI, oversight agent, invite system, arcade with Tetris + Doodle Jump, arrow-key navigation, header-clip fix, model-picker fix, **and A1a deployment wiring**. **Baselines on main now: server 305 tests / client 160 tests**, both `tsc --noEmit` clean, client build clean. (Earlier baselines of 297/147, 227/120, 116/215, 161/72 and 84/99 are all superseded.)
 - `mpai` is globally runnable via symlink `~/.local/bin/mpai → poc/server/bin/mpai.js` (machine setup, not in repo; npm link needs sudo here).
 - **Nothing running.** :3001 and :5173 both freed at the end of session #6d.
@@ -433,12 +534,25 @@ v7a2 ran 5 tasks through `superpowers:subagent-driven-development` end to end. W
   continuously. **Best hypothesis: another session or background process pushed once.** Unresolved, and worth knowing before v6b: two agents merging into the
   same `main` is precisely the collision problem v6b exists to surface. **Practical rule meanwhile:
   trust `git ls-remote`, not `origin/main`, which can be stale.**
-- **§7g — PR-first flow for v6b? USER DECISION PENDING.** A2a, sign-out and A3 were each merged
-  locally on the user's instruction, so by the time they asked to "PR this stuff" there was nothing
-  to PR — every commit was already in `main`. If the intent was *review on GitHub before landing*,
-  v6b should instead be: branch → push → open PR → **leave merging to the user**. Not yet chosen.
-  Also unanswered: whether to push the three local-only merged branches for archival (recommended
-  against — the repo already carries 8+ stale branches and their content is in main).
+- **§7g — RESOLVED 2026-07-28 (session #14). PR-FIRST IS THE STANDING FLOW FOR ALL FEATURE WORK.**
+  The user's ruling, verbatim: *"Pr first pls."* So every feature branch from here is
+  **branch → push → open PR → leave merging to the user.** Do not merge a feature branch locally
+  and do not merge a PR without being asked, even when the branch is green and reviewed. The
+  history that prompted this: A2a, sign-out and A3 were each merged locally on instruction, so by
+  the time the user asked to "PR this stuff" every commit was already in `main` and there was
+  nothing left to review on GitHub.
+  - **AMENDED the same day, by the user: the rule bends for LONG-RUNNING TASKS.** A multi-task SDD
+    run does not sit behind a review gate for its whole length. For work of that size, land
+    completed, reviewed slices into `main` as they finish and keep going on the branch — the PR is
+    the review surface, not a blocker. **PR #19 (v7b1 Tasks 1–5) was merged on that instruction**,
+    with Tasks 6–8 continuing on the same branch and a fresh PR for the remainder.
+  - **What did NOT change:** for ordinary feature work, still branch → push → PR → the user
+    merges. The amendment is about not stalling a long run, not a licence to merge unreviewed
+    work — every task merged under it had passed its task review first.
+  - This does NOT retroactively unmake session #14's merges. PR #18, v7a2 and the workdir fix were
+    merged earlier the same session on the user's explicit go, before this ruling existed.
+  - Still unanswered: whether to push the local-only merged branches for archival (recommended
+    against — the repo already carries 8+ stale branches and their content is in `main`).
 - **§7e — accepted, not fixed on this branch** (all triaged "can ship" by the whole-branch review): no `Origin` check on the WS upgrade — cross-site WebSocket hijacking is blocked today solely by `SameSite=Lax`, and now that the cookie confers identity an explicit origin check is worth having as defence in depth; identity is now **per-human, not per-tab**, so closing one of two tabs signed in as the same login removes that human from the roster and reassigns the wheel (recoverable by refresh, belongs in the spec's honest-bounds list); `/healthz` decodes the pathname while `authRoutes` matches raw (no security consequence, but the two guards should agree); the Lobby locked-name branch has no accessible name (`title=` is invisible to keyboard and touch).
 - **A1b unverified surface — the risk lives in the Caddyfile, not the client.** The `wss://` client fix is covered by unit tests AND was exercised for real in a browser (the built bundle ran `socketUrlFor` with `import.meta.env.DEV` false; only the `http:` branch was hit, and the `https:` branch differs solely in which of two string literals a ternary returns). What remains genuinely unproven: WebSocket **upgrade passthrough through Caddy**, `encode gzip` interaction with the WS handshake, and proxy timeouts on a long-lived socket. Spec §6.2 formally reassigns the `tls internal` rehearsal and the real-permission-gate run to A1b rather than leaving them as unmet A1a criteria.
 - **A1b hard blocker — workspace provisioning (see §0).** Not a deploy step; a code change. Must land before any real session runs on a box.

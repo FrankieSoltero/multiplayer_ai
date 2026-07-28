@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { Project, projectSnapshot, SLUG } from "../src/project.js";
+import {
+  Project,
+  projectSnapshot,
+  SLUG,
+  sessionFactsOf,
+  arcadeRecordsFrom,
+} from "../src/project.js";
 import { Session } from "../src/session.js";
 import { AgentDriver, type RunQuery } from "../src/agentDriver.js";
 
@@ -118,6 +124,62 @@ describe("arcade records", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("sessionFactsOf", () => {
+  it("produces exactly the snapshot row minus presence", () => {
+    // The relay publishes facts and the hub adds `presence`. If the two ever
+    // diverge, a hub-attached session renders differently from a standalone
+    // one for no reason a user could explain — so pin the relationship.
+    const project = new Project("p");
+    addSession(project, "auth");
+    const entry = project.sessions.get("auth")!;
+
+    const snapshot = projectSnapshot(project, undefined, {
+      defaultBranch: "main",
+      key: "github.com/acme/api",
+    });
+    const facts = sessionFactsOf("auth", entry, "github.com/acme/api");
+
+    const { presence, ...row } = snapshot.sessions[0];
+    expect(presence).toBe("online");
+    expect(facts).toEqual(row);
+  });
+
+  it("carries a null repoKey through rather than inventing one", () => {
+    const project = new Project("p");
+    addSession(project, "auth");
+    expect(sessionFactsOf("auth", project.sessions.get("auth")!, null).repoKey).toBeNull();
+  });
+});
+
+describe("arcadeRecordsFrom", () => {
+  it("aggregates best-per-game across independent event logs", () => {
+    const logs = [
+      [
+        { type: "presence_join", userId: "ana", name: "ana", seq: 0, ts: "2026-07-27T00:00:00.000Z" },
+        { type: "game_score", userId: "ana", game: "tetris", score: 100, seq: 1, ts: "2026-07-27T00:00:01.000Z" },
+      ],
+      [
+        { type: "presence_join", userId: "ben", name: "ben", seq: 0, ts: "2026-07-27T00:00:02.000Z" },
+        { type: "game_score", userId: "ben", game: "tetris", score: 250, seq: 1, ts: "2026-07-27T00:00:03.000Z" },
+      ],
+    ] as any;
+    expect(arcadeRecordsFrom(logs)).toEqual([
+      { game: "tetris", score: 250, userId: "ben", name: "ben", glyph: undefined, color: undefined },
+    ]);
+  });
+
+  it("resolves a holder's identity from any log, not just its own", () => {
+    // On the hub the join and the score can arrive on different sessions of
+    // the same project. Identity must still resolve, or the leaderboard reads
+    // "unknown" for a player who is right there in the roster.
+    const logs = [
+      [{ type: "presence_join", userId: "ana", name: "ana", glyph: "▲", seq: 0, ts: "2026-07-27T00:00:00.000Z" }],
+      [{ type: "game_score", userId: "ana", game: "snake", score: 12, seq: 0, ts: "2026-07-27T00:00:01.000Z" }],
+    ] as any;
+    expect(arcadeRecordsFrom(logs)[0]).toMatchObject({ name: "ana", glyph: "▲" });
   });
 });
 
