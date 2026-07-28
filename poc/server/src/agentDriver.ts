@@ -1,4 +1,5 @@
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
+import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AsyncQueue } from "./asyncQueue.js";
@@ -95,6 +96,53 @@ export type RunQuery = (
   hooks: DriverHooks,
 ) => RunQueryResult;
 
+/**
+ * Why this guard exists, so nobody removes it as redundant:
+ *
+ * The SDK spawns its native binary with `cwd: workdir`. If that directory
+ * does not exist the spawn fails with ENOENT, and the SDK reports it as
+ * "Claude Code native binary ... exists but failed to launch. This usually
+ * means the binary does not match this system's libc" — pointing at the
+ * architecture of the binary, which is fine, instead of at the cwd, which is
+ * not. That red herring cost a full session: the conclusion recorded at the
+ * time was "agent turns do not run on this machine."
+ *
+ * The workdir is missing whenever the server was started WITHOUT a workspace
+ * (`node dist/main.js` / `npx tsx src/main.ts` rather than the `mpai` CLI):
+ * `server.ts` then derives `AGENT_WORKDIR_ROOT/<sessionId>` and nothing ever
+ * creates it. Deliberately NOT auto-created here — an empty non-git directory
+ * would let the agent appear to work while operating in an empty folder.
+ * Failing loudly, naming the path, is the recorded decision (see the
+ * workspace-provisioning entry in HANDOFF §0 and deploy/RUNBOOK.md §0).
+ *
+ * Returns a human-readable reason, or null when the workdir is usable.
+ */
+export function describeUnusableWorkdir(workdir: string): string | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(workdir);
+  } catch {
+    return (
+      `session workspace does not exist: ${workdir} — nothing provisioned it. ` +
+      `Start the server from inside a git repo with the \`mpai\` CLI (or pass ` +
+      `startServer({ workspace }) ) so each session gets a real worktree.`
+    );
+  }
+  if (!stat.isDirectory()) {
+    return `session workspace is not a directory: ${workdir}`;
+  }
+  return null;
+}
+
+/** A stream that fails immediately, so `AgentDriver.consume` surfaces the
+ *  reason as a single agent_error and marks the driver dead — the same path
+ *  any other fatal stream error takes. */
+function failedStream(message: string): RunQueryResult {
+  return (async function* (): AsyncGenerator<SdkMessage> {
+    throw new Error(message);
+  })();
+}
+
 export const runAgentQuery: RunQuery = (prompts, hooks) => {
   const awareness = createSdkMcpServer({
     name: "awareness",
@@ -131,6 +179,8 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
     ],
   });
   const workdir = hooks.workdir ?? process.env.AGENT_WORKDIR ?? process.cwd();
+  const workdirProblem = describeUnusableWorkdir(workdir);
+  if (workdirProblem) return failedStream(workdirProblem);
   return query({
     prompt: prompts,
     options: {
