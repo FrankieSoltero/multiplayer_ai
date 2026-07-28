@@ -534,12 +534,21 @@ v7a2 ran 5 tasks through `superpowers:subagent-driven-development` end to end. W
   continuously. **Best hypothesis: another session or background process pushed once.** Unresolved, and worth knowing before v6b: two agents merging into the
   same `main` is precisely the collision problem v6b exists to surface. **Practical rule meanwhile:
   trust `git ls-remote`, not `origin/main`, which can be stale.**
-- **§7g — PR-first flow for v6b? USER DECISION PENDING.** A2a, sign-out and A3 were each merged
-  locally on the user's instruction, so by the time they asked to "PR this stuff" there was nothing
-  to PR — every commit was already in `main`. If the intent was *review on GitHub before landing*,
-  v6b should instead be: branch → push → open PR → **leave merging to the user**. Not yet chosen.
-  Also unanswered: whether to push the three local-only merged branches for archival (recommended
-  against — the repo already carries 8+ stale branches and their content is in main).
+- **§7g — RESOLVED 2026-07-28 (session #14). PR-FIRST IS THE STANDING FLOW FOR ALL FEATURE WORK.**
+  The user's ruling, verbatim: *"Pr first pls."* So every feature branch from here is
+  **branch → push → open PR → leave merging to the user.** Do not merge a feature branch locally
+  and do not merge a PR without being asked, even when the branch is green and reviewed. The
+  history that prompted this: A2a, sign-out and A3 were each merged locally on instruction, so by
+  the time the user asked to "PR this stuff" every commit was already in `main` and there was
+  nothing left to review on GitHub.
+  - **Enacted immediately for v7b1**, mid-execution rather than at the end, so the review surface
+    exists while the work is in flight: branch pushed, **draft PR #19** opened against `main`.
+    Mark it ready for review only when the whole-branch review is clean, and leave the merge to
+    the user.
+  - This does NOT retroactively unmake session #14's merges. PR #18, v7a2 and the workdir fix were
+    merged earlier the same session on the user's explicit go, before this ruling existed.
+  - Still unanswered: whether to push the local-only merged branches for archival (recommended
+    against — the repo already carries 8+ stale branches and their content is in `main`).
 - **§7e — accepted, not fixed on this branch** (all triaged "can ship" by the whole-branch review): no `Origin` check on the WS upgrade — cross-site WebSocket hijacking is blocked today solely by `SameSite=Lax`, and now that the cookie confers identity an explicit origin check is worth having as defence in depth; identity is now **per-human, not per-tab**, so closing one of two tabs signed in as the same login removes that human from the roster and reassigns the wheel (recoverable by refresh, belongs in the spec's honest-bounds list); `/healthz` decodes the pathname while `authRoutes` matches raw (no security consequence, but the two guards should agree); the Lobby locked-name branch has no accessible name (`title=` is invisible to keyboard and touch).
 - **A1b unverified surface — the risk lives in the Caddyfile, not the client.** The `wss://` client fix is covered by unit tests AND was exercised for real in a browser (the built bundle ran `socketUrlFor` with `import.meta.env.DEV` false; only the `http:` branch was hit, and the `https:` branch differs solely in which of two string literals a ternary returns). What remains genuinely unproven: WebSocket **upgrade passthrough through Caddy**, `encode gzip` interaction with the WS handshake, and proxy timeouts on a long-lived socket. Spec §6.2 formally reassigns the `tls internal` rehearsal and the real-permission-gate run to A1b rather than leaving them as unmet A1a criteria.
 - **A1b hard blocker — workspace provisioning (see §0).** Not a deploy step; a code change. Must land before any real session runs on a box.
