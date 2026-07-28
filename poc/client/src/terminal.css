@@ -212,7 +212,11 @@ code, pre { font-family: var(--fm); }
 
 /* CRT — the app lives inside the glass. Overlays are pointer-events:none and
    sit above the screen; --crt-op / --crt-flick let Crt.tsx dial them down or
-   off without unmounting anything. */
+   off without unmounting anything.
+
+   In full-bleed layout, the outer perimeter box-shadow (ring + drop shadow)
+   traces the viewport edges as visible dark bands — removed. The inner glass
+   character is preserved by .crt-bezel's inset shadows. */
 .crt {
   position: relative;
   flex: 1; min-height: 0;
@@ -221,7 +225,6 @@ code, pre { font-family: var(--fm); }
   border-radius: 0;
   border-left: 0;
   border-right: 0;
-  box-shadow: 0 0 0 7px #101317, 0 0 70px rgba(217, 184, 107, 0.05), 0 26px 70px rgba(0, 0, 0, 0.75);
   overflow: hidden;
 }
 .crt-screen { position: relative; padding: var(--sp-4); }
