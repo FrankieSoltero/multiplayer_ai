@@ -342,7 +342,9 @@ export class HubStore {
         skills: session.facts.skills.map((skill) => ({ ...skill })),
         pendingGate: session.facts.pendingGate ? { ...session.facts.pendingGate } : null,
         presence: this.uplinks.get(session.uplinkId)?.online ? ("online" as const) : ("offline" as const),
+        machineId: session.uplinkId,
       })),
+      machines: this.machinesIn(projectId),
       arcade: arcadeRecordsFrom(sessions.map((s) => s.events.map((e) => e.event))),
       // Plugins are laptop-local files the agent loads (spec §4) and the hub
       // does not aggregate them in v7b1. The panel reads empty when

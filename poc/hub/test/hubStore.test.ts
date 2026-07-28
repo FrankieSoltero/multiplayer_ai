@@ -194,6 +194,7 @@ describe("HubStore snapshot assembly", () => {
     expect(store.snapshot("nobody")).toEqual({
       type: "project",
       sessions: [],
+      machines: [],
       arcade: [],
       plugins: [],
       pluginsEnabled: false,
@@ -371,5 +372,26 @@ describe("HubStore project listing", () => {
 
   it("returns an empty machine list for a project that does not exist", () => {
     expect(new HubStore().machinesIn("nope")).toEqual([]);
+  });
+});
+
+describe("HubStore snapshot machines", () => {
+  const T = "2026-07-28T10:00:00.000Z";
+
+  it("reports which machines are present and which runs each session", () => {
+    const store = new HubStore();
+    store.attach("lap-1", "acme", "github.com/acme/api", T);
+    store.setFacts("lap-1", "auth", "run-a", facts({ id: "auth" }));
+    const snap = store.snapshot("acme") as any;
+    expect(snap.machines).toEqual([
+      { machineId: "lap-1", repoKey: "github.com/acme/api", online: true },
+    ]);
+    expect(snap.sessions[0].machineId).toBe("lap-1");
+  });
+
+  it("keeps repo null — a hub spans repos and has no single one", () => {
+    const store = new HubStore();
+    store.attach("lap-1", "acme", "github.com/acme/api", T);
+    expect(store.snapshot("acme").repo).toBe(null);
   });
 });

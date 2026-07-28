@@ -156,6 +156,10 @@ export interface ProjectMessage {
   pluginsEnabled: boolean;
   repo: { defaultBranch: string; key: string } | null;
   oversight: { enabled: boolean; latest: OversightSummary | null };
+  /** Which machines are in this project, and which repo each offers. Only a
+   *  hub can answer this — a standalone server has exactly one machine and
+   *  omits the field entirely, which is why it is optional. */
+  machines?: { machineId: string; repoKey: string; online: boolean }[];
 }
 
 export function projectSnapshot(
