@@ -41,7 +41,7 @@ v7 plans) → merged **v7a2** (`/exit` + session leave) → merged the workdir-g
 1. **The Task 6 brief is ALREADY EXTRACTED** at
    `.superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/task-6-brief.md` (690 lines, the largest in
    the plan). Do not re-run `task-brief` for 6 — just dispatch.
-2. **Record `BASE=01a46d6`** before dispatching; the review package needs it (never `HEAD~1`).
+2. **Record BASE before dispatching** — `git rev-parse HEAD`, which is `fce2905` unless you commit something first. The review package needs it, and it must never be `HEAD~1` (that silently drops all but the last commit of a multi-commit task).
 3. Dispatch the implementer on **opus**. Task 6 is the biggest remaining piece — a networking
    module with reconnect semantics — and the plan's riskiest unknowns are in the transport.
 4. Then: task review on **opus** (same risk argument) → fix loop if needed → Task 7 → Task 8 →
