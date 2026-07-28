@@ -15,8 +15,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HUB_PORT="${HUB_PORT:-4000}"
 LAPTOP_PORT="${LAPTOP_PORT:-3001}"
+LAPTOP_B_PORT="${LAPTOP_B_PORT:-3002}"
 RUN="$ROOT/poc/.demo-run"
+PROJECT="${PROJECT:-default}"
 SESSION="${SESSION:-hubdemo}"
+SESSION_B="${SESSION_B:-bendemo}"
 
 stop() {
   for f in "$RUN"/*.pid; do
@@ -33,7 +36,7 @@ stop() {
 
 if [ "${1:-start}" = "stop" ]; then stop; exit 0; fi
 
-for p in "$HUB_PORT" "$LAPTOP_PORT"; do
+for p in "$HUB_PORT" "$LAPTOP_PORT" "$LAPTOP_B_PORT"; do
   if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "port $p is already in use — stop that process first, or set HUB_PORT/LAPTOP_PORT." >&2
     exit 1
@@ -57,31 +60,66 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 
-echo "starting the laptop on :$LAPTOP_PORT, dialling out to the hub..."
-(cd "$ROOT/poc/demo-project" && \
-  "$HOME/.local/bin/mpai" --port "$LAPTOP_PORT" \
-    --hub "ws://127.0.0.1:$HUB_PORT/uplink" --no-open) > "$RUN/laptop.log" 2>&1 &
-echo $! > "$RUN/laptop.pid"
+# Two laptops, two unrelated repos, ONE hub. Both attach with the same
+# --project, which is what puts their sessions in a single browser view: that is
+# the whole product claim, and one laptop cannot demonstrate it.
+start_laptop() {                     # name  repo-dir  port  session
+  local name="$1" dir="$2" port="$3" session="$4"
+  echo "starting laptop '$name' on :$port from $(basename "$dir"), dialling out to the hub..."
+  (cd "$dir" && "$HOME/.local/bin/mpai" --port "$port" --project "$PROJECT" \
+      --hub "ws://127.0.0.1:$HUB_PORT/uplink" --no-open) > "$RUN/$name.log" 2>&1 &
+  echo $! > "$RUN/$name.pid"
+  for _ in $(seq 1 50); do
+    curl -sf "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && break
+    sleep 0.2
+  done
+  echo "creating session '$session' on '$name'..."
+  (cd "$dir" && "$HOME/.local/bin/mpai" new "$session" --port "$port" --project "$PROJECT") \
+    >/dev/null 2>&1 || true
+}
 
-for _ in $(seq 1 50); do
-  curl -sf "http://127.0.0.1:$LAPTOP_PORT/healthz" >/dev/null 2>&1 && break
-  sleep 0.2
-done
+if [ ! -d "$ROOT/poc/demo-project-b/.git" ]; then
+  echo "creating the second demo repo..."
+  mkdir -p "$ROOT/poc/demo-project-b/src"
+  cat > "$ROOT/poc/demo-project-b/README.md" <<'MD'
+# payments-service (demo repo B)
 
-echo "creating session '$SESSION' on the laptop..."
-(cd "$ROOT/poc/demo-project" && \
-  "$HOME/.local/bin/mpai" new "$SESSION" --port "$LAPTOP_PORT") >/dev/null 2>&1 || true
+A second, unrelated repo. Ben's agent runs here, in ben's own laptop process,
+while alice's agent runs in demo-project. One hub shows both.
+MD
+  cat > "$ROOT/poc/demo-project-b/src/charge.ts" <<'TS'
+export function chargeCents(amount: number): number {
+  if (!Number.isInteger(amount) || amount <= 0) throw new Error("amount must be a positive integer");
+  return amount;
+}
+TS
+  (cd "$ROOT/poc/demo-project-b" && git init -q && git add -A && \
+    git -c user.email=demo@local -c user.name=demo commit -qm "init payments-service demo repo")
+fi
+
+start_laptop laptop-a "$ROOT/poc/demo-project"   "$LAPTOP_PORT"   "$SESSION"
+start_laptop laptop-b "$ROOT/poc/demo-project-b" "$LAPTOP_B_PORT" "$SESSION_B"
 
 cat <<EOF
 
-  ready.
+  ready. Two engineers, two repos, two laptop processes, ONE hub.
 
-  DRIVER tab   http://127.0.0.1:$HUB_PORT/?session=$SESSION&name=alice
-  SECOND tab   http://127.0.0.1:$HUB_PORT/?session=$SESSION&name=ben
+  BOTH REPOS AT ONCE  http://127.0.0.1:$HUB_PORT/
+      one list, two sessions, two different repoKeys
 
-  Both URLs are the HUB. The agent runs in the laptop process on :$LAPTOP_PORT.
+  ALICE (demo-project, agent on :$LAPTOP_PORT)
+      http://127.0.0.1:$HUB_PORT/?session=$SESSION&name=alice
 
-  logs:  $RUN/hub.log   $RUN/laptop.log
+  BEN (demo-project-b, agent on :$LAPTOP_B_PORT)
+      http://127.0.0.1:$HUB_PORT/?session=$SESSION_B&name=ben
+
+  Every URL is the HUB. It runs no agent and holds no API key — each agent runs
+  in its own laptop process, against its own repo, and dials out.
+
+  To watch each other instead of driving, open the other person's session URL
+  with your own &name=.
+
+  logs:  $RUN/hub.log  $RUN/laptop-a.log  $RUN/laptop-b.log
   stop:  ./poc/demo-hub-relay.sh stop
 
 EOF
