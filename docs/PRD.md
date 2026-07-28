@@ -198,6 +198,51 @@ which is *why* today's session picker is a flat list. Full-bleed is what makes "
 side, sessions in the middle, who's where on the right" possible at all. The screen designs in §8
 depend on it.
 
+### 5.2 Two presentations
+
+The product ships **two themes over one interface**:
+
+- **Arcade** — the 90s gamified terminal: CRT glass, scanlines, bezel, pixel-face chrome, chunky
+  frames with hard offset shadows, the marquee. The product's identity.
+- **Clean** — corporate-friendly. No CRT, no scanlines, no pixel type, no cabinet. Quieter frames,
+  standard type, calmer density. The version you screen-share in a client meeting.
+
+**Functional parity is absolute.** Every control, every state, every affordance exists in both.
+A theme may change how something *reads*; it may never change *whether it is there*. No feature is
+arcade-only and none is clean-only.
+
+**This is one component tree with two themes, not two UIs**, and it is feasible because the styling
+already enforces the rule that makes it possible: `terminal.css:11-16` requires the pixel face to
+be **chrome only** and to "never carry information that isn't also in the mono layer." The arcade
+layer is therefore decorative over a complete information layer, by design. Clean strips the
+decoration and loses nothing. Anything that violates that rule is a bug in Arcade, not a gap in
+Clean.
+
+**What makes it cheap:** the palette is fully tokenized in `:root` (`terminal.css:18-45`), and
+`Crt.tsx`'s `intensity` knob already has an `"off"` mode that strips the overlays and curvature
+(`Crt.tsx:20`). **What is not yet themeable and is the actual work:** shape and density — the 2px
+chunky frames, `--chunk`'s hard offset shadows, segmented bars, the cabinet and marquee chrome —
+live in component classes rather than behind tokens.
+
+**Rules that hold in both:**
+
+- **The contrast floor is the same.** Today's palette documents its ratios inline and clears AA
+  throughout (`terminal.css:29-42`). Clean holds that floor. A quieter theme is the easiest place
+  to quietly drop it.
+- **Reduced motion is honoured in both** (`terminal.css:573`). Clean has less to suppress; the
+  handling does not change.
+- **Theme is a per-user preference**, persisted and switchable at runtime — not a build flag and
+  not a hub-wide setting. Two people in the same session can be in different themes.
+- **Arcade is the default.** It is the product's identity, and Clean is one control away. Reversible
+  if it turns out people meet the product in front of their team before they meet it alone.
+
+**The games exist in both**, because they are functionality (§8.9) and parity is absolute. In Clean
+they are opt-in and never take over the screen.
+
+**Explicitly not in scope: a light mode.** Both themes are dark. Light doubles a matrix that is
+already two-wide, and nothing in the target experience asks for it. Recorded as a later option, not
+a gap.
+
 ---
 
 ## 6. Decisions
@@ -250,6 +295,13 @@ skills, MCP, hooks and permission gating are SDK-level capabilities already avai
 overwhelmingly a job of **surfacing capabilities in the UI**, not of building an agent.
 
 **D10 — The terminal UI is full-bleed.** See §5.1.
+
+**D13 — Two themes over one interface: Arcade and Clean, with absolute functional parity.** *Why:*
+the 90s gamified look is the product's identity and should not be diluted, but it is not what you
+want on screen in a client meeting — and forcing that choice on the whole team would make one of
+those two situations permanently awkward. **Feasible because** the styling already forbids the
+arcade layer from carrying unique information (`terminal.css:11-16`), so Clean strips decoration
+rather than removing capability. Per-user, runtime-switchable, Arcade default. See §5.2.
 
 **D11 — The project is the unit of record.** *Why:* the requirement is "come out knowing what you
 both did without losing anything," and a record needs the edges a project provides.
@@ -398,14 +450,21 @@ project holds more than one repo, which is why it waited. Oversight configured h
 *Known bound, accepted:* forks do not group. Two engineers on forks of one repo produce different
 keys and will not be grouped, though they will conflict upstream.
 
-### 8.9 The arcade
+### 8.9 Presentation & the arcade
 
-*What:* the games, playable while the agent works.
+*What:* the two themes (§5.2), the full-bleed layout (§5.1), and the games.
 
-*Today:* built and client-side. Since the client is served by the hub, it comes along for free under
-D2.
+*Today:* one theme — the 90s gamified terminal — pinned to a 1296px centred column. The games are
+built and client-side; since the client is served by the hub, they come along for free under D2.
+`Crt.tsx`'s `intensity` knob is a partial theming precedent; shape and density are not yet behind
+tokens.
 
-*Final state:* survives the full-bleed relayout (§5.1) and the terminology rename.
+*Final state:* full-bleed, and Arcade / Clean switchable per user at runtime with absolute
+functional parity. Both hold the AA contrast floor and honour reduced motion.
+
+*Open:* whether Clean warrants its own information density (more rows visible, tighter panels) or
+only a quieter skin at the same density. Density changes are where parity is most likely to break
+by accident.
 
 ### 8.10 Operating a hub
 
@@ -447,6 +506,8 @@ correctly.** The gap is surface and workflow, not the data model.
 7. The hub's log does not survive a restart.
 8. Sub-sessions do not exist as a product concept.
 9. The UI is a 1296px centred column.
+10. There is one theme. Shape and density are not behind tokens, so Clean cannot be expressed
+    without extracting them.
 
 **Open branch:** `feature/v7b1-hub-relay-spine`, PR #20, unmerged. It is code-complete and reviewed;
 its relay and hub socket surface are the transport this PRD builds on.
