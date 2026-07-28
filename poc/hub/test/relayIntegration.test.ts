@@ -110,6 +110,38 @@ function laptop(
   return { relay, wire };
 }
 
+/** `laptop()` injects a no-op command plane, so nothing ever replies to a
+ *  tunnelled command. This variant records what arrived and answers it, which
+ *  is what makes the routed-create round trip observable. */
+function laptopThatAnswers(hubPort: number, over: Record<string, unknown> = {}) {
+  const wire = relayConnector(`ws://127.0.0.1:${hubPort}/uplink`);
+  const arrived: any[] = [];
+  const relay = new Relay(
+    {
+      hubUrl: `ws://127.0.0.1:${hubPort}/uplink`,
+      projectId: "default",
+      repoKey: "github.com/acme/api",
+      uplinkId: "lap-1",
+      connect: wire.connect,
+      newRunId: () => "run-1",
+      reconnectDelayMs: 40,
+      ...over,
+    },
+    {
+      createConnection: (io) => ({
+        handleMessage: (msg: any) => {
+          arrived.push(msg);
+          if (msg?.type === "create_session") {
+            io.send({ type: "session_created", sessionId: msg.name });
+          }
+        },
+        close: () => {},
+      }),
+    },
+  );
+  return { relay, wire, arrived };
+}
+
 /** What a browser actually sees: join the session on a fresh socket and read
  *  the hub's replay back. This is the only honest measure of "the hub has it" —
  *  it is the same path a real teammate takes. */
@@ -290,6 +322,71 @@ describe("laptop ↔ hub, real Relay against a real hub", () => {
 });
 
 describe("creating a session through the hub", () => {
+  it("routes the create to the laptop untouched and lands the reply on the asking browser", async () => {
+    // The whole point of this section: you could not create a session from the
+    // hub at all. The last cross-component break in this seam survived eight
+    // task reviews because no real-relay-against-real-hub harness existed.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const lap = laptopThatAnswers(hub.port);
+    lap.relay.start();
+    await wait(80);
+
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    browser.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    await wait(60);
+    seen.length = 0;
+
+    const create = {
+      type: "create_session", projectId: "default",
+      name: "billing", repoKey: "github.com/acme/api",
+    };
+    browser.send(JSON.stringify(create));
+    await wait(150);
+
+    expect(lap.arrived).toContainEqual(create);
+    expect(seen.find((m) => m.type === "session_created")?.sessionId).toBe("billing");
+    browser.close();
+    lap.relay.stop();
+  });
+
+  it("does not deliver that reply to a second browser watching the same project", async () => {
+    // `reply` is a narrowcast. If it fanned out, every watcher would navigate
+    // into a session somebody else just created.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const lap = laptopThatAnswers(hub.port);
+    lap.relay.start();
+    await wait(80);
+
+    const asking = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const other = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const askingSeen: any[] = [];
+    const otherSeen: any[] = [];
+    collect(asking, askingSeen);
+    collect(other, otherSeen);
+    asking.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    asking.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    other.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(60);
+    otherSeen.length = 0;
+
+    asking.send(JSON.stringify({
+      type: "create_session", projectId: "default",
+      name: "billing", repoKey: "github.com/acme/api",
+    }));
+    await wait(150);
+
+    expect(askingSeen.some((m) => m.type === "session_created")).toBe(true);
+    expect(otherSeen.some((m) => m.type === "session_created")).toBe(false);
+    asking.close();
+    other.close();
+    lap.relay.stop();
+  });
+
   it("refuses a reply from a different uplink on the routed channel's id — a laptop cannot inject into another's create_session", async () => {
     // The whole reason `pendingReplyFrom` is scoped to one uplink, not any
     // uplink: a channel awaiting a create_session reply has joined no
