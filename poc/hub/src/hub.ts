@@ -145,6 +145,14 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
   function handleUplink(socket: WebSocket): void {
     let uplinkId: string | null = null;
     let projectId: string | null = null;
+    /** Session ids this socket has already been told it does not own. One
+     *  identity per socket, so this IS a `(uplinkId, sessionId)` latch. A
+     *  collision is permanent — ownership never expires — while `server.ts`
+     *  republishes facts for every session on every throttled push, so without
+     *  a latch the report repeats once a second for as long as the losing
+     *  laptop is active. Scoped to the socket rather than the store so it dies
+     *  with the connection and leaks nothing. */
+    const reportedCollisions = new Set<string>();
 
     socket.on("message", (raw) => {
       let parsed: unknown;
@@ -211,14 +219,18 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
           // close re-fires on that cadence while `relay.ts` reconnects every
           // 2s and swallows it, and the laptop flaps ONLINE/OFFLINE in every
           // browser forever with no log line on either side.
-          console.error(`uplink ${uplinkId}: ${result.error} (facts frame dropped)`);
-          // Tell whoever is looking at that session, so the collision is
-          // visible somewhere a human is: silence here is what made it a
-          // 2-second flicker with no explanation.
-          for (const channel of channels.values()) {
-            if (channel.projectId === projectId && channel.sessionId === frame.sessionId) {
-              send(channel.socket, { type: "error", message: result.error });
-            }
+          //
+          // Reported ONCE per (uplinkId, sessionId), and only to the hub's
+          // console. Deliberately NOT narrowcast to browsers: the channels
+          // joined to this sessionId belong to the laptop that legitimately
+          // OWNS it, so an error there would tell the users whose session is
+          // working fine that it is broken — once a second, into a client
+          // error list that has no cap and no dedup. The party that needs to
+          // know is the losing laptop's operator, and this is the surface they
+          // have until the protocol carries a per-frame rejection.
+          if (!reportedCollisions.has(frame.sessionId)) {
+            reportedCollisions.add(frame.sessionId);
+            console.error(`uplink ${uplinkId}: ${result.error} (facts frame dropped)`);
           }
           return;
         }

@@ -3067,7 +3067,7 @@ cd ../server && npm run build && ls dist/main.js        # top level, NOT dist/sr
 ```
 
 - [x] All three suites green, all three typechecks clean, client build clean.
-- [x] `git diff --stat main -- poc/server/test/` shows **insertions only** in pre-existing test files. Any deletion means the additive invariant broke.
+- [x] `git diff --numstat main -- poc/server/test/` shows **insertions only** in pre-existing test files — *with one disclosed exception*. `poc/server/test/project.test.ts` reports a single deletion, from Task 2's commit `e894dda`: a one-line `import { Project, projectSnapshot, SLUG } from "../src/project.js"` reformatted onto six lines to add `sessionFactsOf` and `arcadeRecordsFrom`. **No test was removed or changed** — verify with `git show e894dda -- poc/server/test/project.test.ts` before treating it as a breach. Any *other* deletion means the additive invariant broke. (The whole-branch fix wave is insertions-only over that directory: `git diff --numstat 43169d9 HEAD -- poc/server/test/`.)
 - [x] `mpai` with **no** `--hub` still launches, opens a browser and runs a turn exactly as before. Check this explicitly — it is the promise the whole plan rests on (spec §6).
 - [x] All seven items of Task 8 Step 6 walked by hand, results written into Deviations.
 - [x] `docs/tech-debt.md` gains an entry: `poc/server`'s `auth.ts` and `staticFiles.ts` become dead for hub-attached `mpai` once v7b2 lands, and are candidates for the v7 scrub pass.
@@ -3076,7 +3076,7 @@ cd ../server && npm run build && ls dist/main.js        # top level, NOT dist/sr
 
 - **The hub has no authentication.** v7b1 stamps the identity the browser claims. It is a development target for a trusted network and **must not be exposed to the internet**. v7b2 is the plan that changes this.
 - **The hub's log is in memory** (spec §2.11). A hub restart loses history. That is v7c's job and must not be presented to users as durable before then (spec §8).
-- **Two laptops cannot both own a session id in one project.** The second laptop's `facts` frame for that session is **dropped and logged**, and an `{type:"error"}` is narrowcast to any browser channel joined to it; the rest of that laptop's uplink, including sessions it genuinely owns, is unaffected. It is *not* merged, and it is *not* — as an earlier draft of this line claimed — a refusal that closes anything. Closing the uplink was the shipped behaviour until the whole-branch review: a collision is a permanent, per-session condition, `server.ts` republishes facts for every session about once a second, and the relay reconnects every 2 s, so the close re-fired on a loop and the laptop flapped ONLINE/OFFLINE in every browser forever. Note that a same-machine restart under a fresh `uplinkId` (D.1) presents exactly as a collision. Hub-scoped session ids are v7c/v7e — the same shape of problem as spec §9's shared-worktree bug.
+- **Two laptops cannot both own a session id in one project.** The second laptop's `facts` frame for that session is **dropped, and logged once per `(uplinkId, sessionId)` to the hub's console**; the rest of that laptop's uplink, including sessions it genuinely owns, is unaffected. It is *not* merged, and it is *not* — as an earlier draft of this line claimed — a refusal that closes anything. **No browser is told.** That is deliberate: the channels joined to the contested session id belong to the laptop that legitimately *owns* it, so an error there would tell the users whose session is working fine that it is broken — and at the once-a-second cadence below, into a client error list with no cap and no dedup. **The losing laptop's operator has no in-product signal at all**, only the hub's console; giving them one needs a per-frame rejection the protocol does not carry, which is v7b2's business. Closing the uplink was the shipped behaviour until the whole-branch review: a collision is a permanent, per-session condition, `server.ts` republishes facts for every session about once a second, and the relay reconnects every 2 s, so the close re-fired on a loop and the laptop flapped ONLINE/OFFLINE in every browser forever. Note that a same-machine restart under a fresh `uplinkId` (D.1) presents exactly as a collision. Hub-scoped session ids are v7c/v7e — the same shape of problem as spec §9's shared-worktree bug.
 - **Plugins and oversight read empty when hub-attached.** Plugins are laptop-local files (spec §4); oversight is host-configured (spec §3.7). Both are surfaced in v7b3.
 - **`repo` is null on a hub snapshot.** A hub spans repos, so there is no single one to report; the per-session `repoKey` is the honest answer and the client already reads it (v7a).
 - **Approvals gain roughly 100ms** (browser → hub → laptop). Irrelevant for a human clicking a button (spec §8).
@@ -3626,7 +3626,12 @@ survived every per-task review:
   reviews and two fix rounds. `poc/hub/test/relayIntegration.test.ts` now runs both, over a real
   `startHub({ port: 0 })` on loopback: reconnect-with-a-gap, chunked replay, browser join.
 - **I1** — a session-name collision closed the losing laptop's whole uplink on a 2-second loop. Now the
-  frame is dropped and logged and browsers joined to that session get an error. See the corrected
+  frame is dropped and logged once per `(uplinkId, sessionId)`, and no browser is notified. The first
+  cut of this fix *did* narrowcast an error to browsers joined to that session; the re-review caught
+  that those are the **winner's** browsers, so the message was false from their vantage and repeated at
+  the same one-second cadence the finding was about — into a client error list with no cap or dedup.
+  The lesson: this fix's whole subject was an unbounded repeat of a permanent condition, and the first
+  attempt moved the repeat from the transport to the browser rather than removing it. See the corrected
   "Known bounds" entry.
 - **I2** — one out-of-range `seq` froze a session's hub history permanently, and the resume protocol
   confirmed the corruption rather than repairing it. `hubStore.publish` now requires

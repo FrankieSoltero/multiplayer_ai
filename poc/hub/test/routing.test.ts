@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { startHub } from "../src/hub.js";
 import { RELAY_PROTOCOL_VERSION } from "multiplayer-ai-server/relayProtocol";
@@ -518,7 +518,7 @@ describe("hub presence", () => {
 });
 
 describe("hub session-name collisions", () => {
-  it("drops a colliding facts frame and leaves the losing laptop's uplink open", async () => {
+  it("drops a colliding facts frame, keeps the uplink open, and reports it exactly once", async () => {
     // Two engineers naming a session "auth" in the default project is the
     // ORDINARY case for a cross-repo hub, not an edge case — and a
     // same-machine restart under a fresh uplinkId is indistinguishable from
@@ -539,11 +539,18 @@ describe("hub session-name collisions", () => {
     browser.send(join());
     await wait(40);
 
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const loser = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
     let closedCode: number | null = null;
     loser.on("close", (code) => void (closedCode = code));
     loser.send(JSON.stringify({ t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-2", projectId: "default", repoKey: "k2" }));
-    loser.send(JSON.stringify({ t: "facts", sessionId: "auth", runId: "run-z", facts: facts("auth") }));
+    const collide = JSON.stringify({ t: "facts", sessionId: "auth", runId: "run-z", facts: facts("auth") });
+    // TWICE, because the cadence is the whole problem. `server.ts` republishes
+    // facts for every session on every throttled push, so a real losing laptop
+    // sends this about once a second for as long as it is active — and the
+    // condition is permanent, since ownership never expires.
+    loser.send(collide);
+    loser.send(collide);
     // A session lap-2 genuinely owns, sent AFTER the collision: it must still
     // register, which is only possible if the socket survived.
     loser.send(JSON.stringify({ t: "facts", sessionId: "ui", runId: "run-z", facts: facts("ui") }));
@@ -552,14 +559,25 @@ describe("hub session-name collisions", () => {
     expect(closedCode).toBeNull();
     expect(loser.readyState).toBe(WebSocket.OPEN);
 
-    // The collision is reported to whoever is looking at that session, so it
-    // is visible somewhere a human is rather than being a silent flicker.
-    expect(seen.filter((m) => m.type === "error")).toEqual([
-      {
-        type: "error",
-        message: 'session "auth" in project "default" is already owned by another machine',
-      },
+    // NOT narrowcast to browsers, at any cadence. The channels joined to
+    // "auth" belong to lap-1 — the laptop that legitimately owns it — so an
+    // error here tells the users whose session is working fine that it is
+    // broken. Once a second, into a client error list with no cap and no
+    // dedup (`useSessionSocket.ts`), re-firing `SkillsPanel`'s effect and
+    // clearing any in-flight plugin add each time.
+    expect(seen.filter((m) => m.type === "error")).toEqual([]);
+
+    // Reported to the hub's console exactly ONCE per (uplinkId, sessionId),
+    // not once per frame. Asserting the count — not merely that something was
+    // logged — is what makes this test discriminate: a latch that never fires,
+    // and a latch that fires every time, both fail it.
+    const collisionLogs = logged.mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.includes("already owned by another machine"));
+    expect(collisionLogs).toEqual([
+      'uplink lap-2: session "auth" in project "default" is already owned by another machine (facts frame dropped)',
     ]);
+    logged.mockRestore();
 
     browser.send(JSON.stringify({ type: "peek", projectId: "default" }));
     await wait(50);

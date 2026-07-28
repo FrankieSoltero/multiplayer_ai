@@ -45,7 +45,6 @@ describe("hub HTTP surface", () => {
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
     expect(hub.port).toBeGreaterThan(0);
-    expect(hub.port).not.toBe(0);
     const res = await fetch(`http://127.0.0.1:${hub.port}/healthz`);
     expect(res.status).toBe(200);
 
