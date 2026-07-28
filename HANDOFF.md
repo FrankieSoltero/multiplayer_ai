@@ -1,147 +1,203 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-28 (bg session #14).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-28 (bg session #15).*
 
 ---
 
-## 🚀 START HERE — v7b1 IS MID-EXECUTION. TASKS 1–5 ARE MERGED. START AT TASK 6.
+## 🚀 START HERE — v7b1 IS CODE-COMPLETE. PR #20 IS OPEN AND UNMERGED. THE NEXT REAL WORK IS A PRODUCT QUESTION, NOT A TASK.
 
-**You are on `feature/v7b1-hub-relay-spine` at `01a46d6`. Tasks 1–5 are complete, reviewed clean, and MERGED to `main` at `c1f3661` via PR #19. The branch is identical in content to `main` (`main` is just the merge commit on top of it). Tasks 6, 7 and 8 remain and continue on this same branch; a fresh PR covers the remainder. NOTHING is half-done — Task 6 has not started.**
+**Branch `feature/v7b1-hub-relay-spine` at `acd5a3b`, pushed, in sync with origin. All 8 tasks done,
+whole-branch reviewed, fix wave applied and re-reviewed clean. PR #20 →
+https://github.com/FrankieSoltero/multiplayer_ai/pull/20 (base `main` at `c1f3661`, 19 commits).
+DO NOT MERGE IT — that is the user's call. Nothing is half-done. Nothing is running.**
 
-**THE LEDGER IS YOUR RECOVERY MAP — READ IT BEFORE ANYTHING ELSE:**
-`.superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/progress.md`. It ends with a `>>> RESUME POINT`
-block giving the exact next command. It records every task, review, human ruling and deferred
-minor. **Trust it and `git log` over any recollection.** Do not delete that workspace until v7b1's
-whole-branch review is clean.
+### ⛔ READ THIS BEFORE PROPOSING ANY NEXT TASK — the user rejected the demo, and they were right
 
-**What session #14 did, in order:** resolved the "agent turns don't run here" blocker (it was a
-missing session workdir, not the SDK binary — see the section below) → merged **PR #18** (the four
-v7 plans) → merged **v7a2** (`/exit` + session leave) → merged the workdir-guard fix → pushed
-`main` at **`18900ff`** (server 362 / client 207, tsc clean both, client build clean) → branched
-`feature/v7b1-hub-relay-spine` and executed v7b1 Tasks 1–5 under
-`superpowers:subagent-driven-development`.
+At the end of session #15 the user watched a live two-process demo and said, verbatim:
 
-**Branch state — 8 commits on top of `18900ff`:**
+> "This clearly is broken or the demo you are setting up is broken. The goal of this was to get to a
+> point where in one party multiple engineers could work on different things and still know what they
+> are doing and be able to take control of another persons agent session if they needed too. What we
+> have currently is that its one repo per party and a very confusing UI to tell the user where the
+> fuck they are."
+
+**This is the single most important fact in this file.** Separate the two halves:
+
+- **Not a demo bug — a missing product.** v7b1 is *transport only*. There is **no team surface**: no
+  grouping by repo, no "who is working on what", no way to tell where you are. The picker is a flat
+  list keyed to a `project` id that is a **hidden URL parameter** (`SessionPicker.tsx:11,25`).
+- **A real demo mistake I made, do not repeat it:** I started two different repos under one
+  `--project default` so both would appear in one list. That makes the UI *lie* — the header renders
+  the literal string `default` (`SessionPicker.tsx:70`) over two sessions from two unrelated repos with
+  no repo labels. The truthful configuration is one project per repo, which then shows only one repo at
+  a time — i.e. it demonstrates the gap instead of hiding it. **Do not force multiple repos under one
+  project id to make a demo look better.**
+- **What DOES work and was proven end to end:** joining someone else's session across the relay and
+  **taking the wheel**, including answering a permission gate that then executed on the *other*
+  machine. That half of the user's goal exists today.
+
+**THE DESIGN GAP, stated precisely, because this is what the next session must resolve:** today the
+model is **session = repo = party** — a party is people inside one session on one repo, because the
+agent needs a worktree. The user wants **party = team**, spanning repos, with each engineer's separate
+work visible inside it. **Those are different data models, not different screens.** v7b3 as currently
+scoped ("host role, host settings, per-repo grouping in the picker") layers onto the *existing* model
+and, on my reading, does **not** get there.
+
+**➡️ THE NEXT STEP IS `superpowers:brainstorming` → a spec. NOT `writing-plans`, and NOT executing
+v7b2 or v7b3 as written.** Writing a plan from the current v7b3 scope would invent the answer to a
+question the user has just reopened. Confirm the framing with the user first — the memory
+`v7-hub-product-vision` records this same tension from an earlier session, so it has now surfaced twice.
+
+### State of v7b1 (all verified at `acd5a3b`, nothing inferred)
 
 | Task | Commits | State |
 |---|---|---|
-| 1 · `relayProtocol.ts` | `20482e6`, `7c5ee71` | ✅ complete, review clean |
-| 2 · one producer for session facts | `e894dda` | ✅ complete, review clean |
-| 3 · `poc/hub` package + shared-module seam | `22c9ded` | ✅ complete, review clean |
-| 4 · `hubStore.ts` | `43f54d5`, `9ca5db3` | ✅ complete, review clean |
-| 5 · `ConnectionIO` extraction | `d5aaca4`, `83bbf65` | ✅ complete, review clean |
-| 6 · `relay.ts` uplink | — | **not started ← YOU ARE HERE** |
-| 7 · hub WebSocket surface | — | not started |
-| 8 · `mpai --hub` + two-process walk | — | not started |
+| 1–5 | merged to `main` via PR #19 (`c1f3661`) | ✅ |
+| 6 · `relay.ts` uplink | `b617fbe`, `baaa3c1` | ✅ complete, review clean |
+| 7 · hub WebSocket surface | `3b5e551`, `9b9262f` | ✅ complete, review clean |
+| 8 · `mpai --hub` + two-process walk | `140d76f`, `676fd6b`, `f7480d2` | ✅ complete, review clean |
+| Deviations section | `43169d9` | ✅ ~515 lines, committed |
+| Whole-branch fix wave | `bae78d9`, `2e3b63c`, `79e4913`, `0a9a4ac`, `5d567a1`, `f64492e` | ✅ re-reviewed clean |
+| Demo (script + walkthrough) | `3048ac8`, `acd5a3b` | ⚠️ works, but see the rejection above |
 
-**Suites on the branch right now: server 385 passed (19 files), hub 17 passed, both `tsc --noEmit` clean, `dist/main.js` still emitted top level. Test output verified pristine (no warnings).**
+**Suites: server 412 (20 files) / hub 48 (4 files) / client 207. All three `tsc --noEmit` clean,
+client build clean, `dist/main.js` still top level.**
 
-**THE VERY NEXT ACTION, concretely** (SDD scripts live at
-`~/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/`):
-1. **The Task 6 brief is ALREADY EXTRACTED** at
-   `.superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/task-6-brief.md` (690 lines, the largest in
-   the plan). Do not re-run `task-brief` for 6 — just dispatch.
-2. **Record BASE before dispatching** — `git rev-parse HEAD`, which is `fce2905` unless you commit something first. The review package needs it, and it must never be `HEAD~1` (that silently drops all but the last commit of a multi-commit task).
-3. Dispatch the implementer on **opus**. Task 6 is the biggest remaining piece — a networking
-   module with reconnect semantics — and the plan's riskiest unknowns are in the transport.
-4. Then: task review on **opus** (same risk argument) → fix loop if needed → Task 7 → Task 8 →
-   whole-branch review on **opus** over `git merge-base main HEAD`..HEAD → new PR.
-5. Every implementer dispatch must carry: the brief path, the report path, the Global Constraints,
-   the stale-baseline correction, the "trust the symbol not the line number" note, the explicit
-   `git add <paths>` instruction, and the carried gates below.
-
-**Resume & verify — run this first, expect exactly this:**
+### Resume & verify — run this first, expect exactly this
 
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
-git status -sb                      # feature/v7b1-hub-relay-spine, in sync with origin; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
-git log --oneline -1                # 01a46d6 'docs: HANDOFF — PR-first bends for long-running tasks (§7g amended)'
-git ls-remote origin refs/heads/main # c1f3661… (merge of PR #19) — trust this over origin/main, which has been observed stale in this repo
-git log --oneline 18900ff..HEAD     # 10 commits = v7b1 Tasks 1-5 + two HANDOFF commits
-tail -25 .superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/progress.md   # ends with the >>> RESUME POINT block for Task 6
-cd poc/server && npx tsc --noEmit && npx vitest run   # 385 passed, 19 files, ~26s, output pristine
-cd ../hub    && npx tsc --noEmit && npx vitest run    # 17 passed
-cd ../server && npm run build && ls dist/main.js      # TOP level, not dist/src/main.js
-git diff --numstat 18900ff -- poc/server/test/        # every pre-existing test file must show 0 deletions
-lsof -nP -iTCP:3001 -sTCP:LISTEN                      # expect empty; nothing of session #14's is running
+git status -sb                       # feature/v7b1-hub-relay-spine, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
+git log --oneline -1                 # acd5a3b docs(demo): make the demo show two repos on two laptops, not one
+git ls-remote origin refs/heads/main # c1f3661… — trust this over origin/main, observed stale in this repo
+gh pr view 20 --json state,title     # OPEN — do not merge without being asked
+for p in 3001 3002 4000 4100 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY — session #15 stopped everything
+cd poc/server && npx tsc --noEmit && npx vitest run   # 412 passed, 20 files, ~26s
+cd ../hub    && npx tsc --noEmit && npx vitest run    # 48 passed, 4 files
+cd ../client && npx tsc --noEmit && npx vitest run && npm run build  # 207 passed; build clean
+git diff --numstat 18900ff HEAD -- poc/server/test/   # only project.test.ts shows a deletion (63/1) — see gotchas
 ```
 
-**PR #19 (Tasks 1–5) is MERGED and the branch is pushed.** Tasks 6–8 continue on the same branch
-and get a **fresh PR** at the end — see §7g for the PR-first rule and its long-running-task
-amendment. Do not merge that PR without being asked.
+### THE CRITICAL THE WHOLE-BRANCH REVIEW CAUGHT — the lesson matters more than the fix
 
-**PRE-FLIGHT FACT THAT BINDS EVERY REMAINING TASK: the plan's stated baselines are STALE.** Global
-Constraints say "server 345 tests, client 179"; that was `main` at `a6e9d76`, before v7a2 and the
-workdir fix. Every count in the plan — Task 5's "363", the verification block's "385 / 25 / 179" —
-is a prediction, not a target. **Tell every implementer: judge by "all pre-existing tests still
-pass, plus mine," never by a literal number.** Task 5's real criterion was always the ZERO-EDIT
-part, and it held (`git diff --numstat 9ca5db3 -- poc/server/test/` → `124  0`).
+Eight task reviews and two fix rounds all missed it. The whole-branch reviewer found it by **writing
+the integration harness nobody had** (real `relay.ts` against real `hub.ts`) and it surfaced on the
+first scenario tried.
 
-**Line refs in the plan were verified against `a6e9d76`; v7a2 has since shifted `server.ts`.** The
-plan's anchors are named symbols (`getOrCreateSession`, `pushProject`, `wss.on("connection")`) —
-tell implementers to trust the symbol over the line number.
+`relay.ts` wrote events the moment the socket opened — a full round trip before `welcome` arrives — on
+the stated assumption that *"the hub keys on (runId, seq)"*. **The hub keys on a high-water mark**
+(`hubStore.ts:157`), equivalent only when frames arrive in seq order, and that window is exactly where
+they do not. A reconnect racing a publish silently dropped the whole outage backlog: **laptop 36
+events, hub 6**, a 30-event hole in every browser with no indication anything was missing.
 
-**FOUR HUMAN RULINGS MADE DURING EXECUTION — do not re-litigate, all recorded in the ledger with reasoning:**
-1. **Frame validation stays shallow.** `parseUpFrame` checks `Array.isArray` and casts; deep field
-   validation is deferred to **v7b2's security floor**, because v7b1's hub is explicitly a
-   trusted-network dev target. **This is a named input for v7b2 — do not let it be lost at merge.**
-2. **`relayProtocol.ts` imports `SLUG` from `project.ts`** rather than duplicating the regex.
-   Consequence accepted knowingly: that is its only runtime (value) import, so the hub pulls
-   `project.js` + `digest/pendingGate/lifecycle` through the exports map. Proven to resolve at
-   **runtime**, not just under `tsc`.
-3. **`hubStore.snapshot()` deep-copies per-session facts; `eventsFor()`/`publish()` do not.** The
-   event fan-out path is the one watcher count multiplies, so it stays allocation-free and is
-   documented in-code as returning read-only instances.
-4. **The plan's two vacuous relay tests keep their names and got working bodies.** A relay join is
-   silent by construction, so `sent` was always `[]` — the identity test passed with the entire
-   stamp overwrite deleted.
+**Why it survived:** the only reconnect test delivered `have: {}`, replaying from 0 — a superset, where
+loss is impossible *by construction*. **That is the THIRD test in this plan that could not fail for the
+reason it was named.** The standing countermeasure that actually works: **revert each fix and re-run its
+test**; two separate agents caught non-discriminating tests that way.
 
-**Rulings 3 and 4 are plan Deviations and MUST be written into the v7b1 plan's Deviations section before v7b1 is called done.** Ruling 2's consequence for Task 3 is already shipped.
+Fixed via a `ready` flag (set only after the replay, before `flush()`), and now covered by
+`poc/hub/test/relayIntegration.test.ts` — **the first test anywhere that runs a real relay against a
+real hub. Keep it; it is the regression net for this entire seam.**
 
-**THREE GATES CARRIED INTO TASK 6, from Task 5's review — put these in the Task 6 dispatch:**
-- **A relay join emits nothing on success.** No replay, no snapshot, no ack. Task 6 has only
-  "absence of an error" as its success signal, indistinguishable from a dropped frame. Task 5 was
-  right not to solve it there. **But the brief governs**: if the Task 6 brief specifies no success
-  signal, the implementer should REPORT that as a concern rather than inventing an ack, which
-  would be scope creep. Do not phrase the dispatch as "Task 6 must invent an ack" — phrase it as
-  "here is the gap; the brief decides."
-- **A relay join still requires `userId` and `name` in the payload** even though both are
-  immediately overwritten by the stamp — the `typeof` triple at `server.ts:367-373` runs before the
-  overwrite. Task 6's uplink must forward them or synthesize placeholders.
-- **Relay connections DO receive a `project` snapshot from `watch_project`** while a relay join
-  deliberately does not. Per the brief; Task 6 should confirm a narrowcast reply is meant to flow
-  up the uplink.
-- Also from Task 4's review, unanswerable until Task 7 exists: **does Task 7 mutate anything
-  `hubStore` handed it?** Make that a named check in Task 7's review.
+### Decisions locked in during session #15 — do NOT re-litigate
 
-**PR #18 IS MERGED (`be3b1b2`), so the plans are on `main`.** The four plans live at
-`docs/superpowers/plans/2026-07-27-v7b{1,2,3}-*.md` and `…-v7c-hub-persistence.md`.
-- **READ THIS IF YOU TOUCH v7b2/v7b3/v7c:** `docs/superpowers/plans/2026-07-27-v7-plan-status.md`
-  is the planning track's own resume packet — every decision with its reasoning, four defects found
-  and closed during planning, and the two scope interpretations v7b3 flags. It is NOT this file.
-  Its §6 says to fold its §1–§4 into this HANDOFF and delete it now that the branch has merged;
-  that fold has NOT been done yet.
-- **It is 28 tasks across FOUR plans, not one run.** v7b1 (8) + v7b2 (8) + v7b3 (7) + v7c (5). Each
-  is its own SDD execution with its own branch, its own whole-branch review, and its own merge.
-  **Do not concatenate them** — that is exactly the "no working-software checkpoint until the end"
-  failure the split exists to avoid. Finish and merge v7b1 before starting v7b2.
-- **Plans** (all under `docs/superpowers/plans/`): `2026-07-27-v7b1-hub-relay-spine.md` (8 tasks — a browser on the hub drives a session whose agent runs on another machine), `…-v7b2-trust-and-pairing.md` (8 — the hub is safe to expose to the internet), `…-v7b3-host-and-team-surface.md` (7 — an owner, spanning repos, cross-machine oversight), `…-v7c-hub-persistence.md` (5 — the hub survives its own restart).
-- **Spec they are written against:** `docs/superpowers/specs/2026-07-27-v7-hub-architecture-design.md`.
+1. **The whole-branch review ran over `18900ff..HEAD` (all 8 tasks), not `git merge-base main HEAD`**
+   (which would have covered only 6–8). Tasks 1–5 merged separately and had never had a whole-branch
+   review, and cross-task integration is exactly what that review is for. It was the right call — the
+   Critical spans Tasks 4 and 6.
+2. **Finding "hub and laptop disagree on join validity" was fixed at the HUB** (`typeof msg.name` check)
+   rather than by rewriting the tunnelled payload, because that preserves `DownFrame`'s "the ORIGINAL
+   client message, untouched" contract (`relayProtocol.ts:53-57`).
+3. **The I1 collision fix drops the frame and logs it ONCE per `(uplinkId, sessionId)`; it does NOT
+   narrowcast to browsers.** The first attempt did narrowcast and it notified the **winner's** browsers
+   — the users whose session was fine — once per second forever, growing an uncapped array
+   (`useSessionSocket.ts:71` appends with no cap/dedup). Reverted deliberately.
+4. **`ready` REPLACED `open` outright** rather than joining it; judged "the stronger choice" because the
+   state machine is then total and provably has no silently-dropped frame.
+5. **The Deviations section (~515 lines) was written into the PLAN, not the SDD brief.** Task 8's walk
+   results had been written only into the git-ignored `task-8-brief.md` and would have been destroyed
+   with the workspace.
 
-**Decisions the planning session already made — do NOT re-litigate, reject them in one place if you disagree:**
-- **v7b is three plans, not one**, deviating from the spec's §1.2 "one spec, two plans." Recorded in v7b1's header.
-- **Spec §11's open questions are answered in the plans rather than blocking on them.** Uplink token revocation → per-device records with explicit revoke, bearer stored **only as a sha256 hash** (short-lived-tokens-with-refresh was rejected: expiry alone cannot revoke a laptop *now*, so you still need the list). Revocation scope → self-service in v7b2, host-wide in v7b3. Session close on reconnect → accept and surface it. Oversight's paid tier → **not built**; only the host-supplies-their-own-key arm, because reselling inference needs a read of Anthropic's commercial terms.
-- **Shared code between server and hub:** `poc/hub` depends on `poc/server` via a `file:` dependency plus an `exports` map. **Copying `auth.ts` was rejected** — two divergent copies of cookie verification is how a security bug ships. **A `poc/shared/` hoist was rejected** because it forces `tsconfig.build.json` off `rootDir: "src"`, which breaks `node dist/main.js` and the systemd `ExecStart` (§4e).
-- **v7c uses `node:sqlite` with ZERO new dependencies — settled by RUNNING it, not by reading docs.** Works synchronously on Node v22.22.0 here and prints an `ExperimentalWarning`. Both facts, the `better-sqlite3` fallback, and a Task 1 Step 1 check are in the plan.
-- **v7b1 Task 5's acceptance criterion is unusually strict and is deliberate:** all server tests pass with **zero edits to any existing test file**. It is a pure refactor; an edited assertion means behaviour changed. Do not let an implementer "fix" a test there.
+### Gotchas a fresh agent WILL hit
 
-**v7d (handoff continuity) and v7e (collision detection) are deliberately NOT planned.** Each is one paragraph in spec §7 with no spec of its own, and v7e was shelved mid-brainstorm. **Their next step is `superpowers:brainstorming` → a spec, not a plan.** Writing TDD plans from that would invent design decisions and present them as settled.
+- **`poc/server/.env` holds a PLACEHOLDER API key. Do not source it.** `mpai` deliberately does not load
+  it. Sourcing it breaks agent turns.
+- **Launch with the `mpai` CLI, never `tsx src/main.ts`.** `main.ts` passes no `workspace`, so the
+  session workdir is never created and the SDK reports a confidently wrong *"native binary … failed to
+  launch … libc"* error. A whole session was lost to that once. Guard now exists
+  (`describeUnusableWorkdir()` in `agentDriver.ts`).
+- **`echo` does not trigger a permission gate** — the SDK auto-approves trivially-safe bash before
+  `canUseTool`. Use `touch <path>` to demo a gate.
+- **The hub REQUIRES an explicit `projectId` on `watch_project`/`peek`** (`hub.ts:366-367`) and errors
+  without one; the standalone server is laxer. The shipped client always sends it, so nothing is broken
+  — **this divergence is NOT yet written down anywhere.**
+- **`git diff --numstat 18900ff HEAD -- poc/server/test/` shows ONE deletion** (`project.test.ts` 63/1).
+  It is an import line reformatted to six lines by Task 2's `e894dda`, removing no test. Verified with
+  `git show e894dda -- poc/server/test/project.test.ts`. The plan's checklist was corrected to say so.
+- **An unreproduced flake exists.** One historical `1 failed | 408 passed`, never captured; 30+ green
+  runs since. **Ranking corrected:** `routing.test.ts` cannot have been in that run (408+1=409 = the
+  server suite exactly; hub is a different package/command), and `relay.test.ts` is fully synchronous
+  apart from fake-timer tests. Plausible homes are **pre-existing** wall-clock sleeps:
+  `overseer.test.ts:61`, `agentDriver.test.ts:1153-1160`, `server.test.ts`'s many `wait(50)`.
+- **Never `git add -A`.** Subagent commits must spell out explicit paths; verify with
+  `git diff-tree --no-commit-id --name-only -r HEAD`.
 
-**~~Recommended opening moves~~ — ALL DONE in session #14, kept only so nobody redoes them:** PR #18 merged to `main` first (the cleaner of the two options); v7b1 branched off `main`, not off the plan branch; the plan-status packet and v7b1 alone were read, not all four plans; execution runs under `superpowers:subagent-driven-development`; and the agent-binary blocker was resolved before Task 1 (it was a missing workdir).
+### Open questions — THREE ASKED, NONE ANSWERED. Do not treat any as settled.
 
-**Context economy that worked and should be repeated:** the controller read only the plan's header, Global Constraints, task titles and verification section — never the 3,122-line plan in full. Each implementer gets `scripts/task-brief PLAN N`, which extracts just its task. Reviewers get a `scripts/review-package` diff file. **No diff and no plan body ever entered the controller's context**, which is what made five tasks fit in one session.
+1. **The laptop's uplink fails silently** — `socket.on("error", () => {})` and `write`'s `catch {}`
+   swallow everything, so `mpai --hub ws://wrong-host` is indistinguishable from a working uplink. It is
+   **plan-mandated** (the brief specified that code verbatim), so it needs a human ruling. My
+   recommendation: override the brief and log.
+2. **Where the join ack lands.** A relay join emits no success signal, so "succeeded", "silently
+   rejected as malformed" and "arrived after teardown" are one observation. Recommendation: fold a
+   minimal ack into whatever task owns the hub next.
+3. **Whether the `uplinkId` fix becomes a Task 9 inside v7b1.** `cli.ts:131` passes no `uplinkId`, so
+   `server.ts:1016` mints `randomUUID()` per launch. **Consequence: sessions do NOT survive a laptop
+   restart** (orphaned `offline`, and re-creating the same name trips the ownership collision), and the
+   resume path is unreachable across a restart. It IS live for same-process reconnects.
+   ⚠️ **TRAP: `workspace.repoKey()` is NOT a usable uplink identity.** With an `origin` present,
+   `repoKeyFor` returns the normalized remote *alone* (`repoKey.ts:97-103`) — byte-identical across every
+   clone by design — so using it would make two teammates **silently take over each other's sessions**.
+   Machine scoping must come from `localRepoKey`'s hostname + hashed repo root.
 
-**Model selection that worked:** haiku for Task 1 (the brief carried the complete code — transcription plus testing), sonnet for Tasks 2–4 and for every task review and re-review, **opus for Task 5** (the pure refactor of the 938-line `server.ts`) and for its review. Task 5's opus reviewer proved the diff was complete by composing hunk offsets, which is what let it certify the ~300 unshown lines as genuinely untouched rather than elided — a cheaper reviewer would not have done that. **The whole-branch review at the end must be opus.**
+### Ordered next steps
+
+1. **Ask the user the framing question first:** is the next move (a) brainstorm the team/party model
+   they described, (b) answer the three open questions and tidy v7b1, or (c) something else. **Do not
+   assume.** Their last message reopened the product direction.
+2. If (a): run `superpowers:brainstorming` toward a spec for **party = team spanning repos**. Inputs:
+   the quote above, the `session = repo = party` vs `party = team` framing, and
+   `docs/superpowers/specs/2026-07-27-v7-hub-architecture-design.md` §3.6/§7. **Do not start from v7b3's
+   current scope** — it assumes the model the user just questioned.
+3. PR #20 is open and waiting on the user. Do not merge it. If they want v7b1 tidied first, the three
+   open questions above are the list.
+4. The SDD workspace `.superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/` is **deliberately NOT deleted**
+   — it holds every task report and the full ledger (`progress.md`). The durable content is already in
+   the plan's Deviations and `docs/tech-debt.md`, so it *can* be `rm -rf`'d, but it is the only record of
+   the review reasoning. Deleting is the user's call.
+5. **The demo scripts stay but are known-misleading as configured.** `poc/demo-hub-relay.sh` +
+   `docs/demos/2026-07-28-v7b1-hub-relay.md`. If the model changes, rewrite the demo from the new model
+   rather than patching this one.
+
+### Files that matter, with line refs
+
+- `poc/server/src/relay.ts` — uplink. `ready` flag `:71`, cleared `:109/:151/:180`, set `:231`;
+  `emit()` `:263`; `publishFrames` byte budget `:274/:324/:329`; silent error swallow `:171`, `:298`.
+- `poc/hub/src/hub.ts` — `HUB_HANDLED` `:18`; uplink plane `:145-240`; collision drop+latched log
+  `:203-223`; browser plane `:275-370`; `already joined` `:284`; join typeof triple `:291-297`;
+  `watch_project`/`peek` projectId requirement `:366-367`.
+- `poc/hub/src/hubStore.ts` — high-water skip `:157`; seq bound `:143`; `resumeOffsets` `:79-88`;
+  ownership refusal `:100`; unbounded `uplinks` growth `:43-45,50-53` (known bound).
+- `poc/hub/test/relayIntegration.test.ts` — the real-relay-vs-real-hub net. **Do not delete.**
+- `poc/server/src/cli.ts` — `--hub` parse `:45-51`, `--project` SLUG check `:50`, conditional spread
+  `:131` (this is what makes the additive invariant structural), `args.open && !args.hub` `:144`.
+- `poc/server/src/server.ts` — `relay` construction `:1001-1016`; `relay?.` sites `:206,285,296,1061,1072`;
+  `HUB_HANDLED` coupling comments `:526`, `:564`.
+- `poc/client/src/components/SessionPicker.tsx:11,25,70` — the flat, project-id-keyed picker the user
+  called confusing.
+- Plan + Deviations: `docs/superpowers/plans/2026-07-27-v7b1-hub-relay-spine.md` (Deviations at ~`:3085`).
+- Bounds: `docs/tech-debt.md` §1.5b, §2.3, §2.4, §2.5, §4.
+
 
 **✅ THE "AGENT TURNS DO NOT RUN ON THIS MACHINE" BLOCKER IS RESOLVED (session #14, 2026-07-27). Agent turns DO run here. There was never anything wrong with the SDK binary.**
 
