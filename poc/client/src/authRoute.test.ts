@@ -124,7 +124,7 @@ describe("entrance route", () => {
   });
 
   it("still shows the project screen when a project is selected", () => {
-    const route = screenFor({
+    const withProject = screenFor({
       auth: { status: "off" } as any,
       inviteToken: null,
       inviteTarget: null,
@@ -132,6 +132,25 @@ describe("entrance route", () => {
       activeProjectId: "acme",
       profile: { name: "ana" } as any,
     } as any);
-    expect(route).toBe("picker");
+    expect(withProject).toBe("picker");
+
+    // Control: activeProjectId is the ONLY thing that changes below. The
+    // assertion above alone cannot fail if the entrance branch were deleted
+    // entirely — `activeSessionId === null` already produced "picker" before
+    // entrance existed, for this exact input. Pairing it with the opposite
+    // input is what makes this test sensitive to the branch actually being
+    // there, gated on activeProjectId, and checked before the picker branch:
+    // delete or misorder it and THIS assertion — not just a sibling test —
+    // fails.
+    const withoutProject = screenFor({
+      auth: { status: "off" } as any,
+      inviteToken: null,
+      inviteTarget: null,
+      activeSessionId: null,
+      activeProjectId: null,
+      profile: { name: "ana" } as any,
+    } as any);
+    expect(withoutProject).toBe("entrance");
+    expect(withoutProject).not.toBe(withProject);
   });
 });

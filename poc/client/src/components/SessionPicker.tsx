@@ -61,7 +61,13 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   // rather than as an unknown project, or the screen flashes a refusal.
   const refusal = projects.length === 0 ? null : canAct(project, props.userId);
   const online = machines.filter((m) => m.online);
-  const chosenRepo = repoKey ?? online[0]?.repoKey ?? null;
+  // Fallback order matters: an explicit choice always wins, then a hub
+  // machine offering a repo, and only then the standalone server's own repo
+  // (`repo.key`) — the one field a standalone server DOES send, and which
+  // the hub-shaped `machines`/`online` path can never populate for it. Without
+  // this last fallback, a standalone deployment (no `machines` message ever
+  // arrives) has `online` permanently empty and could never create a session.
+  const chosenRepo = repoKey ?? online[0]?.repoKey ?? repo?.key ?? null;
   const groups = groupByRepo(sortSessions(sessions));
   const showRepoHeads = groups.length > 1;
 
