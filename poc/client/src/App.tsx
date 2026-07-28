@@ -373,7 +373,15 @@ function SessionView(props: {
 
   /** Leaving strands something only in two cases: the agent is mid-run, or a
    *  gate is waiting and you are the one who can answer it. Everything else
-   *  leaves silently — nothing is destroyed by leaving and you can rejoin. */
+   *  leaves silently — nothing is destroyed by leaving and you can rejoin.
+   *
+   *  No separate branch for a pending plan approval (`plan_request`,
+   *  Transcript.tsx): it is covered incidentally, not by design, because
+   *  `plan_request` fires mid-turn while `agentBusy` is still true, and
+   *  agentDriver.ts auto-rejects an orphaned plan request on abort. If either
+   *  of those ever changes — the event timing relative to `agentBusy`, or the
+   *  abort-signal wiring — this function needs a third branch, or leaving
+   *  will silently strand a plan decision with no gate to catch it. */
   function exitWouldStrand(): string | null {
     if (derived.agentBusy) return "the agent is still working";
     if (gatesPending > 0 && isDriver) return "a permission gate is waiting on you";

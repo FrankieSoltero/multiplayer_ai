@@ -12,8 +12,8 @@ export function ExitConfirm(props: {
   onCancel: () => void;
 }) {
   return (
-    <div className="exitconfirm" role="alertdialog" aria-label="confirm leaving">
-      <span className="exitwhy">{props.reason}</span>
+    <div className="exitconfirm" role="alertdialog" aria-label="confirm leaving" aria-describedby="exit-why">
+      <span id="exit-why" className="exitwhy">{props.reason}</span>
       <button className="btn red" onClick={props.onConfirm}>
         LEAVE ANYWAY
       </button>
