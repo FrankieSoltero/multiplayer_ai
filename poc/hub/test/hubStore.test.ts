@@ -62,7 +62,8 @@ describe("HubStore event keying", () => {
   it("survives malformed event elements in a publish batch instead of crashing", () => {
     // parseUpFrame validates `events` is an array but not each element's
     // shape (Task 1 ruling), so a frame can legally carry null/string/number
-    // elements. publish() must degrade them to "skipped", not throw.
+    // elements — or an object whose `seq` is out of range. publish() must
+    // degrade them all to "skipped", not throw and not store them.
     const store = new HubStore();
     store.attach("lap-1", "default", "k");
     let accepted: unknown;
@@ -72,11 +73,31 @@ describe("HubStore event keying", () => {
         null as any,
         "not an event" as any,
         42 as any,
+        { ...ev(0), seq: 9e99 } as any, // legal JSON; Number.isInteger(9e99) is true
+        { ...ev(0), seq: -3 } as any,
+        { ...ev(0), seq: 1.5 } as any,
+        { ...ev(0), seq: "7" } as any,
         ev(1),
       ]);
     }).not.toThrow();
     expect((accepted as { event: { seq: number } }[]).map((e) => e.event.seq)).toEqual([0, 1]);
     expect(store.eventsFor("default", "auth", 0).map((e) => e.event.seq)).toEqual([0, 1]);
+  });
+
+  it("does not let one out-of-range seq freeze a session's history for the life of the hub", () => {
+    // `seq` becomes `session.lastSeq`, the high-water mark every later event is
+    // compared against AND the offset `resumeOffsets` hands back in `welcome`.
+    // Accept `9e99` once and every subsequent event fails `seq <= lastSeq`
+    // forever, while the resume protocol confirms the corruption rather than
+    // repairing it: the laptop replays from 9e99, which is an empty slice.
+    // Only a hub restart clears it.
+    const store = new HubStore();
+    store.attach("lap-1", "default", "k");
+    store.publish("lap-1", "auth", "run-a", [ev(0), { ...ev(1), seq: 9e99 } as any]);
+    store.publish("lap-1", "auth", "run-a", [ev(1), ev(2)]);
+
+    expect(store.eventsFor("default", "auth", 0).map((e) => e.event.seq)).toEqual([0, 1, 2]);
+    expect(store.resumeOffsets("lap-1")).toEqual({ auth: { runId: "run-a", lastSeq: 2 } });
   });
 });
 

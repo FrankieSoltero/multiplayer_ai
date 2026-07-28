@@ -152,7 +152,18 @@ export class HubStore {
       // the hub process. This is a crash guard, not validation: a
       // malformed element is simply never stored.
       if (typeof event !== "object" || event === null) continue;
-      const seq = typeof event.seq === "number" ? event.seq : -1;
+      // The `seq` must be a real log offset, because it becomes
+      // `session.lastSeq` — the high-water mark every later event is compared
+      // against and the value `resumeOffsets` hands back in `welcome`. A
+      // single `seq: 9e99` (legal JSON, and `Number.isInteger(9e99)` is true,
+      // so `parseDownFrame` waves it back through) would freeze this session's
+      // history for the life of the hub AND make the resume protocol confirm
+      // the corruption instead of repairing it: the laptop would replay from
+      // 9e99, which is an empty slice. Non-integer, negative and non-numeric
+      // `seq` were already skipped by the comparison below; this only makes
+      // the range explicit and closes the out-of-range end of it.
+      if (!Number.isSafeInteger(event.seq) || event.seq < 0) continue;
+      const seq = event.seq;
       // Same run, already-seen seq → a resume overshoot, not new history.
       if (runId === session.lastRunId && seq <= session.lastSeq) continue;
       const stored: StoredEvent = { id: session.events.length + 1, runId, event };

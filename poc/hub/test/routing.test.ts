@@ -516,3 +516,59 @@ describe("hub presence", () => {
     browser.close();
   });
 });
+
+describe("hub session-name collisions", () => {
+  it("drops a colliding facts frame and leaves the losing laptop's uplink open", async () => {
+    // Two engineers naming a session "auth" in the default project is the
+    // ORDINARY case for a cross-repo hub, not an edge case — and a
+    // same-machine restart under a fresh uplinkId is indistinguishable from
+    // it. A collision is a permanent, PER-SESSION condition (ownership never
+    // expires), so escalating it to a transport close punishes every other
+    // session that laptop owns: `server.ts`'s throttled push republishes facts
+    // for every session about once a second, so the close re-fires on that
+    // cadence while the relay reconnects every 2s and swallows it. The laptop
+    // flaps ONLINE/OFFLINE in every browser, forever, with no log line on
+    // either side. Drop the frame; keep the socket.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    await attachedUplink(hub.port, "auth", "lap-1");
+
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(join());
+    await wait(40);
+
+    const loser = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    let closedCode: number | null = null;
+    loser.on("close", (code) => void (closedCode = code));
+    loser.send(JSON.stringify({ t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-2", projectId: "default", repoKey: "k2" }));
+    loser.send(JSON.stringify({ t: "facts", sessionId: "auth", runId: "run-z", facts: facts("auth") }));
+    // A session lap-2 genuinely owns, sent AFTER the collision: it must still
+    // register, which is only possible if the socket survived.
+    loser.send(JSON.stringify({ t: "facts", sessionId: "ui", runId: "run-z", facts: facts("ui") }));
+    await wait(60);
+
+    expect(closedCode).toBeNull();
+    expect(loser.readyState).toBe(WebSocket.OPEN);
+
+    // The collision is reported to whoever is looking at that session, so it
+    // is visible somewhere a human is rather than being a silent flicker.
+    expect(seen.filter((m) => m.type === "error")).toEqual([
+      {
+        type: "error",
+        message: 'session "auth" in project "default" is already owned by another machine',
+      },
+    ]);
+
+    browser.send(JSON.stringify({ type: "peek", projectId: "default" }));
+    await wait(50);
+    const snap = seen.filter((m) => m.type === "project").at(-1);
+    expect(snap.sessions.map((s: any) => s.id).sort()).toEqual(["auth", "ui"]);
+    // And "auth" still belongs to the laptop that claimed it first.
+    expect(snap.sessions.find((s: any) => s.id === "auth").repoKey).toBe("github.com/acme/api");
+
+    browser.close();
+    loser.close();
+  });
+});

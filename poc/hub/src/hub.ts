@@ -201,8 +201,25 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       if (frame.t === "facts") {
         const result = store.setFacts(uplinkId, frame.sessionId, frame.runId, frame.facts);
         if (!result.ok) {
-          console.error(`uplink ${uplinkId}: ${result.error}`);
-          socket.close(1008, result.error.slice(0, 100));
+          // Drop the FRAME, never the socket. A name collision is a permanent,
+          // PER-SESSION condition (ownership never expires), and two engineers
+          // naming a session "auth" in the default project is the ordinary
+          // case for a cross-repo hub — as is a same-machine restart, which is
+          // indistinguishable from it. Closing the transport would punish
+          // every OTHER session that laptop owns: `server.ts`'s throttled push
+          // republishes facts for every session roughly once a second, so the
+          // close re-fires on that cadence while `relay.ts` reconnects every
+          // 2s and swallows it, and the laptop flaps ONLINE/OFFLINE in every
+          // browser forever with no log line on either side.
+          console.error(`uplink ${uplinkId}: ${result.error} (facts frame dropped)`);
+          // Tell whoever is looking at that session, so the collision is
+          // visible somewhere a human is: silence here is what made it a
+          // 2-second flicker with no explanation.
+          for (const channel of channels.values()) {
+            if (channel.projectId === projectId && channel.sessionId === frame.sessionId) {
+              send(channel.socket, { type: "error", message: result.error });
+            }
+          }
           return;
         }
         schedulePush(projectId);
