@@ -8,6 +8,17 @@ import { canAct, refusalText } from "../projectAccess";
 import { freeSessionName } from "../sessionNames";
 import { entranceUrl, sessionUrlFrom } from "../pickerUrl";
 
+/** How long to wait for a routed `create_session` to be answered before giving
+ *  the button back. Generous on purpose: provisioning a worktree is real work
+ *  on a real laptop, and a false "no reply" on a slow-but-alive machine is
+ *  worse than a few extra seconds of waiting. */
+const CREATE_TIMEOUT_MS = 30_000;
+
+/** Names the real cause. "Something went wrong" would send the user looking at
+ *  their own input; the machine not answering is the thing they can act on. */
+const CREATE_TIMEOUT_TEXT =
+  "no reply from the machine — it may have gone offline. check it is still running and try again.";
+
 /** The project screen (spec §4.2): every session across every repo, each
  *  labelled with its repo and machine. Spectators see everything and can act
  *  on nothing — action controls are ABSENT, not disabled, because a disabled
@@ -23,6 +34,13 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   const [repoKey, setRepoKey] = useState<string | null>(null);
   const [baseRef, setBaseRef] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const createTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearCreateTimer = () => {
+    if (createTimer.current === null) return;
+    clearTimeout(createTimer.current);
+    createTimer.current = null;
+  };
 
   useEffect(() => {
     const ws = new WebSocket(SERVER_URL);
@@ -41,8 +59,12 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
           setRepo(msg.repo ?? null);
         }
         if (msg.type === "projects") setProjects(msg.projects ?? []);
-        if (msg.type === "session_created") joinSession(msg.sessionId, props.projectId);
+        if (msg.type === "session_created") {
+          clearCreateTimer();
+          joinSession(msg.sessionId, props.projectId);
+        }
         if (msg.type === "error") {
+          clearCreateTimer();
           setError(msg.message);
           setPending(false);
         }
@@ -50,7 +72,10 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
         return;
       }
     };
-    return () => ws.close();
+    return () => {
+      ws.close();
+      clearCreateTimer();
+    };
   }, [props.projectId, props.userId, props.name]);
 
   const project = useMemo(
@@ -80,6 +105,20 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
     if (!canCreate) return;
     setError(null);
     setPending(true);
+    // `create_session` is ROUTED: the hub picks an online machine and forwards
+    // it, answering itself only when it refuses. That adds a hop the
+    // pre-hub code never had — if the machine dies between being picked
+    // (hub.ts's `machinesIn().find(m => m.online)`) and its reply, nothing
+    // arrives at all. `pending` was cleared only by an incoming `error`, so
+    // CREATE stayed disabled forever with no message and no way out but a
+    // reload. Armed BEFORE the send so a send that throws on a closed socket
+    // recovers the same way. Cleared by a reply, by an error, and on unmount.
+    clearCreateTimer();
+    createTimer.current = setTimeout(() => {
+      createTimer.current = null;
+      setPending(false);
+      setError(CREATE_TIMEOUT_TEXT);
+    }, CREATE_TIMEOUT_MS);
     wsRef.current?.send(
       JSON.stringify({
         type: "create_session",
