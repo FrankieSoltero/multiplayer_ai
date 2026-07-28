@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { Relay, type RelaySocket } from "multiplayer-ai-server/relay";
-import { MAX_FRAME_BYTES } from "multiplayer-ai-server/relayProtocol";
+import { MAX_FRAME_BYTES, RELAY_PROTOCOL_VERSION } from "multiplayer-ai-server/relayProtocol";
 import { Session } from "multiplayer-ai-server/session";
 import { startHub } from "../src/hub.js";
 
@@ -37,6 +37,21 @@ afterEach(async () => {
 });
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** A plain browser-facing socket, mirroring `routing.test.ts` — this file's
+ *  own scenarios only ever need the uplink-facing `relayConnector` below, but
+ *  the create_session round trip is driven from the browser side. */
+function connect(url: string): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    ws.on("open", () => resolve(ws));
+    ws.on("error", reject);
+  });
+}
+
+function collect(ws: WebSocket, sink: any[]): void {
+  ws.on("message", (raw) => sink.push(JSON.parse(raw.toString())));
+}
 
 interface ConnectHooks {
   /** Runs SYNCHRONOUSLY after the relay's own `open` handler returns — i.e.
@@ -272,4 +287,75 @@ describe("laptop ↔ hub, real Relay against a real hub", () => {
     expect(snap.sessions[0].repoKey).toBe("github.com/acme/api");
     expect(snap.sessions[0].presence).toBe("online");
   }, TIMEOUT);
+});
+
+describe("creating a session through the hub", () => {
+  it("refuses a reply from a different uplink on the routed channel's id — a laptop cannot inject into another's create_session", async () => {
+    // The whole reason `pendingReplyFrom` is scoped to one uplink, not any
+    // uplink: a channel awaiting a create_session reply has joined no
+    // session, so the ownership check (`store.ownerOf`) cannot authorize it —
+    // there is no session yet to own. Without a check tying the reply to the
+    // exact uplink the hub routed to, ANY attached machine that learned or
+    // guessed this channelId could hand the asking browser a fabricated
+    // `session_created` for a session it never created.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+
+    // Machine A: the one the hub will actually route to, because it is the
+    // one offering this repo.
+    const a = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    const aSeen: any[] = [];
+    collect(a, aSeen);
+    a.send(JSON.stringify({
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-a",
+      projectId: "default", repoKey: "github.com/acme/api",
+    }));
+
+    // Machine B: a live, attached uplink in the same project — just not the
+    // one offering this repo, so the hub never routes this request to it.
+    const b = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    b.send(JSON.stringify({
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-b",
+      projectId: "default", repoKey: "github.com/acme/other",
+    }));
+    await wait(40);
+
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    browser.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    await wait(60);
+    seen.length = 0;
+
+    browser.send(JSON.stringify({
+      type: "create_session", projectId: "default",
+      name: "billing", repoKey: "github.com/acme/api",
+    }));
+    await wait(60);
+
+    const channelId = aSeen.find((f) => f.t === "tunnel")?.channelId;
+    expect(channelId).toBeTruthy();
+
+    // B — not the machine the hub routed to — tries to answer on A's channel.
+    b.send(JSON.stringify({
+      t: "reply", channelId,
+      payload: { type: "session_created", sessionId: "billing" },
+    }));
+    await wait(60);
+    expect(seen.some((m) => m.type === "session_created")).toBe(false);
+
+    // A, the machine actually routed to, can still answer on that same
+    // channel — the guard rejects the wrong uplink, not the right one.
+    a.send(JSON.stringify({
+      t: "reply", channelId,
+      payload: { type: "session_created", sessionId: "billing" },
+    }));
+    await wait(60);
+    expect(seen.some((m) => m.type === "session_created")).toBe(true);
+
+    a.close();
+    b.close();
+    browser.close();
+  });
 });

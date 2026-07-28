@@ -24,6 +24,13 @@ interface BrowserChannel {
   projectId: string | null;
   sessionId: string | null;
   identity: { userId: string; name: string } | null;
+  /** Set the moment the hub routes a `create_session` to a specific uplink
+   *  (spec §5.3 step 4), cleared the moment that uplink's reply is delivered.
+   *  A narrower capability than session ownership: this one uplink, this one
+   *  channel, exactly once — for the case a reply must reach a channel that
+   *  has joined no session, which `sessionId`-based ownership cannot express
+   *  because no session exists yet to own. */
+  pendingReplyFrom: string | null;
 }
 
 export interface HubOptions {
@@ -247,13 +254,29 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       }
       // frame.t === "reply" — narrowcast back to the browser that asked.
       const channel = channels.get(frame.channelId);
-      if (!channel || !channel.projectId || !channel.sessionId) return;
-      // A laptop may answer only on a channel joined to a session it owns.
-      // `channels` is hub-wide, so without this one comparison a laptop that
-      // learns another's channel id could inject any message into that
+      if (!channel) return;
+      // A laptop may answer only on a channel it has a standing right to
+      // answer on — either of two, and only two, shapes of that right.
+      // `channels` is hub-wide, so without one of these two checks a laptop
+      // that learns another's channel id could inject any message into that
       // browser's socket. Cheap now, load-bearing once the trust inversion
       // lands (spec §3.5).
-      if (store.ownerOf(channel.projectId, channel.sessionId) !== uplinkId) return;
+      //
+      // 1. Joined a session it owns — the ordinary case, unbounded in time
+      //    for as long as it owns the session.
+      const sessionOwned =
+        !!channel.projectId &&
+        !!channel.sessionId &&
+        store.ownerOf(channel.projectId, channel.sessionId) === uplinkId;
+      // 2. Routed here by `create_session` (spec §5.3 step 4) — the channel
+      //    has joined no session, so there is no session to own yet. This is
+      //    a narrower capability than #1: single-use (cleared the instant it
+      //    is spent, below) and scoped to the one uplink the hub actually
+      //    tunnelled the request to, not any uplink that later claims the
+      //    resulting session name.
+      const routedHere = channel.pendingReplyFrom === uplinkId;
+      if (routedHere) channel.pendingReplyFrom = null;
+      if (!sessionOwned && !routedHere) return;
       // `parseUpFrame` admits a reply with no payload, and `JSON.stringify`
       // turns that into a zero-length frame the browser's JSON.parse throws on.
       if (frame.payload !== undefined) send(channel.socket, frame.payload);
@@ -283,6 +306,7 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       projectId: null,
       sessionId: null,
       identity: null,
+      pendingReplyFrom: null,
     };
     channels.set(channelId, channel);
 
@@ -483,6 +507,12 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         if (owner !== null && owner !== target.machineId) {
           return error(`session "${desired}" is already used by another machine in this project`);
         }
+        // Grants the single-use reply capability checked at hub.ts's reply
+        // handler (`routedHere`): this channel has joined no session, so
+        // ownership cannot authorize the coming `session_created` reply —
+        // only "the hub itself just routed a request to this exact uplink"
+        // can (spec §5.3 step 4).
+        channel.pendingReplyFrom = target.machineId;
         down(uplink, { t: "tunnel", channelId, identity: channel.identity, payload: msg });
         return;
       }
