@@ -319,3 +319,57 @@ describe("HubStore project registry", () => {
     expect(store.lifecycleOf("acme")).toBe("active");
   });
 });
+
+describe("HubStore project listing", () => {
+  const T = "2026-07-28T10:00:00.000Z";
+
+  it("summarizes a project with its sessions and machines", () => {
+    const store = new HubStore();
+    store.createProject("acme", "Acme Migration", "ana", T);
+    store.attach("lap-1", "acme", "github.com/acme/api", T);
+    store.setFacts("lap-1", "auth", "run-a", facts({ id: "auth" }));
+    store.setFacts("lap-1", "billing", "run-a", facts({ id: "billing", lifecycle: "closed" }));
+
+    const [summary] = store.listProjects();
+    expect(summary.id).toBe("acme");
+    expect(summary.name).toBe("Acme Migration");
+    expect(summary.members).toEqual(["ana"]);
+    expect(summary.sessionCount).toBe(2);
+    expect(summary.liveSessionCount).toBe(1);
+    expect(summary.machines).toEqual([
+      { machineId: "lap-1", repoKey: "github.com/acme/api", online: true },
+    ]);
+  });
+
+  it("lists a project that has no sessions at all", () => {
+    // The launch-time seam: a project created in the UI is empty until
+    // somebody points a machine at it. It must still be visible.
+    const store = new HubStore();
+    store.createProject("acme", "Acme", "ana", T);
+    const [summary] = store.listProjects();
+    expect(summary.sessionCount).toBe(0);
+    expect(summary.machines).toEqual([]);
+  });
+
+  it("reports a machine as offline once it detaches, without dropping it", () => {
+    const store = new HubStore();
+    store.createProject("acme", "Acme", "ana", T);
+    store.attach("lap-1", "acme", "github.com/acme/api", T);
+    store.detach("lap-1");
+    expect(store.machinesIn("acme")).toEqual([
+      { machineId: "lap-1", repoKey: "github.com/acme/api", online: false },
+    ]);
+  });
+
+  it("keeps machines scoped to their own project", () => {
+    const store = new HubStore();
+    store.createProject("acme", "Acme", "ana", T);
+    store.createProject("other", "Other", "bo", T);
+    store.attach("lap-1", "acme", "github.com/acme/api", T);
+    expect(store.machinesIn("other")).toEqual([]);
+  });
+
+  it("returns an empty machine list for a project that does not exist", () => {
+    expect(new HubStore().machinesIn("nope")).toEqual([]);
+  });
+});

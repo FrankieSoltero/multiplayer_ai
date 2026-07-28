@@ -43,6 +43,22 @@ interface ProjectRecord {
   lifecycle: ProjectLifecycle;
 }
 
+export interface MachineInfo {
+  machineId: string;
+  repoKey: string;
+  online: boolean;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  lifecycle: ProjectLifecycle;
+  members: string[];
+  sessionCount: number;
+  liveSessionCount: number;
+  machines: MachineInfo[];
+}
+
 /** Everything the hub knows, with no sockets. Kept a plain class over pure
  *  data so the whole of Task 7's routing is testable without a network.
  *
@@ -128,6 +144,36 @@ export class HubStore {
   attach(uplinkId: string, projectId: string, repoKey: string, attachedAt: string): void {
     this.ensureProject(projectId, attachedAt);
     this.uplinks.set(uplinkId, { uplinkId, projectId, repoKey, online: true });
+  }
+
+  /** Every machine that has ever attached to this project this hub run,
+   *  online or not. An offline machine is kept deliberately: its sessions are
+   *  still listed and still readable, so hiding the machine would make them
+   *  look ownerless. */
+  machinesIn(projectId: string): MachineInfo[] {
+    const out: MachineInfo[] = [];
+    for (const uplink of this.uplinks.values()) {
+      if (uplink.projectId !== projectId) continue;
+      out.push({ machineId: uplink.uplinkId, repoKey: uplink.repoKey, online: uplink.online });
+    }
+    return out;
+  }
+
+  listProjects(): ProjectSummary[] {
+    const out: ProjectSummary[] = [];
+    for (const record of this.projectMeta.values()) {
+      const sessions = [...(this.readSessionsOf(record.id)?.values() ?? [])];
+      out.push({
+        id: record.id,
+        name: record.name,
+        lifecycle: record.lifecycle,
+        members: [...record.members],
+        sessionCount: sessions.length,
+        liveSessionCount: sessions.filter((s) => s.facts.lifecycle === "open").length,
+        machines: this.machinesIn(record.id),
+      });
+    }
+    return out;
   }
 
   /** The laptop is gone. Its sessions stay — that is the point of the hub —
