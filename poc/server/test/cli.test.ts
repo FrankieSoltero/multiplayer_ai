@@ -85,7 +85,14 @@ describe("--hub", () => {
     );
   });
 
-  it("defaults to no hub, which is today's standalone behaviour", () => {
+  // Names what it asserts, and no more: `parseArgs` leaves `hub` unset. The
+  // additive invariant itself — that no `--hub` means `startServer` receives no
+  // `hub` key at all, so `relay` is null — lives in `launch` (cli.ts's
+  // conditional spread and the `args.open && !args.hub` guard), which has no
+  // test here or anywhere: it is not exported and calls the real `startServer`.
+  // What this case does buy is real: it fails the day someone initialises `hub`
+  // eagerly, which is what would make that spread emit a key unconditionally.
+  it("leaves hub undefined when the flag is absent", () => {
     expect(parseArgs([]).hub).toBeUndefined();
   });
 });

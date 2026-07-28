@@ -121,11 +121,34 @@ mints a fresh `randomUUID()` on **every** launch. The hub keys session ownership
   collision that error was written for.
 
 Observed live during v7b1 Task 8's two-process walk (2026-07-28); the hub logged the refusal
-once per project push and the laptop reconnected into it each time. Fixing it needs a stable
-per-repo uplink identity (persisted beside `.mpai/`, or derived from `repoKey` + machine id) and
-an ownership takeover rule for a reconnecting owner — a protocol decision, deliberately not
-invented inside Task 8. Also the reason spec §3.2's "runId trap" could not be exercised at all:
-the laptop never re-adopts the session, so a second run is never appended.
+once per project push and the laptop reconnected into it each time.
+
+**Consequence, stated plainly because it is the part that matters.** Task 6's entire resume
+machinery is dead code in every real deployment: `hubStore.resumeOffsets`
+(`poc/hub/src/hubStore.ts:79-88`) skips any session whose `uplinkId` differs, and the `have` map
+it feeds (`poc/hub/src/hub.ts:181`) exists *solely* to serve a laptop returning under the same id
+— which no laptop ever does. And the plan's central promise, that sessions survive on the hub
+when a laptop goes away, **is false after any laptop restart**: they survive as unreachable
+`offline` rows that no machine can adopt.
+
+**No new protocol is needed — the takeover rule already ships.** `hubStore.setFacts`
+(`hubStore.ts:100`) refuses ownership only when `existing.uplinkId !== uplinkId`, so a
+reconnecting *same* identity silently re-owns its sessions; `hub.ts:227-230` already handles a
+same-`uplinkId` socket superseding a stale one. Everything downstream of a stable id works today.
+
+**What is actually open is narrow: the grain.** An uplink identity must be stable across restarts
+*and* distinct per machine. `WorkspaceManager.repoKey()` (`poc/server/src/workspace.ts:79-86`)
+supplies the stable-per-repo half and is already in hand at `poc/server/src/server.ts:1006` as
+`repo?.key` — but note it is **deliberately shared across machines** when the repo has an
+`origin` (that is its entire purpose, grouping teammates by repo, spec §3.3), so it cannot be the
+uplink id on its own. The machine-scoping ingredient already exists beside it: `localRepoKey`'s
+`hostname` + hashed `repoRoot` (`poc/server/src/repoKey.ts`). So the decision is "is one uplink
+per repo-per-machine the right grain, and what should a *second* `mpai` on the same repo do —
+refuse, or share?", plus close to a one-line default at `server.ts:1007`. A grain decision, not a
+protocol project.
+
+Also the reason spec §3.2's "runId trap" could not be exercised at all: the laptop never
+re-adopts the session, so a second run is never appended.
 
 ### 2.4 The hub refuses a `join` to an offline session, so its stored history is unreachable
 
