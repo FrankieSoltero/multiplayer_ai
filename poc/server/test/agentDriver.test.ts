@@ -1,6 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Session } from "../src/session.js";
-import { AgentDriver, type RunQuery, type SdkMessage } from "../src/agentDriver.js";
+import {
+  AgentDriver,
+  runAgentQuery,
+  type RunQuery,
+  type SdkMessage,
+} from "../src/agentDriver.js";
 
 const fakeRun: RunQuery = async function* (prompts) {
   for await (const _prompt of prompts) {
@@ -1247,5 +1255,58 @@ describe("task events (workflows)", () => {
     await vi.waitFor(() => {
       expect(s.eventsFrom(0).some((e) => e.type === "agent_error" && /no such task/.test((e as any).message))).toBe(true);
     });
+  });
+});
+
+// A session's workdir is a git worktree the server is supposed to have
+// provisioned. When it hasn't been (server started with no workspace, so the
+// workdir is derived from AGENT_WORKDIR_ROOT and nothing creates it), the SDK
+// spawns its native binary with a cwd that does not exist. The spawn fails
+// with ENOENT and the SDK reports it as "native binary ... failed to launch.
+// This usually means the binary does not match this system's libc" — a red
+// herring that cost a whole session. Fail before the spawn, naming the path.
+describe("workspace guard", () => {
+  it("fails with the missing path, not a libc red herring, when the workdir does not exist", async () => {
+    const missing = path.join(os.tmpdir(), `mpai-does-not-exist-${process.pid}`);
+    expect(fs.existsSync(missing)).toBe(false);
+    const stream = runAgentQuery((async function* () {})(), {
+      onIntent: () => {},
+      onPermissionRequest: async () => "allow",
+      onPlanRequest: async () => "approve",
+      workdir: missing,
+    });
+    await expect((async () => {
+      for await (const _m of stream) void _m;
+    })()).rejects.toThrow(new RegExp(`workspace.*${missing.replace(/[/\\]/g, "\\$&")}`, "s"));
+  });
+
+  it("fails the same way when the workdir exists but is a file", async () => {
+    const file = path.join(os.tmpdir(), `mpai-not-a-dir-${process.pid}`);
+    fs.writeFileSync(file, "");
+    try {
+      const stream = runAgentQuery((async function* () {})(), {
+        onIntent: () => {},
+        onPermissionRequest: async () => "allow",
+        onPlanRequest: async () => "approve",
+        workdir: file,
+      });
+      await expect((async () => {
+        for await (const _m of stream) void _m;
+      })()).rejects.toThrow(/not a directory/i);
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  });
+
+  it("surfaces the missing workspace as a single agent_error and marks the driver dead", async () => {
+    const missing = path.join(os.tmpdir(), `mpai-does-not-exist-drv-${process.pid}`);
+    const s = new Session("wg1");
+    const driver = new AgentDriver(s, runAgentQuery, missing);
+    await vi.waitFor(() => {
+      expect(driver.isDead).toBe(true);
+    });
+    const errors = s.eventsFrom(0).filter((e) => e.type === "agent_error");
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as { message: string }).message).toContain(missing);
   });
 });
