@@ -302,6 +302,24 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         return error("invalid JSON");
       }
 
+      /** Identity is per CONNECTION, not per join (spec P4): `create_session`
+       *  is routed to a machine before any session exists, and `tunnel()`
+       *  requires an identity to stamp. Same validation as `join`, in the same
+       *  order — the hub must reject precisely what the laptop rejects. */
+      if (msg?.type === "identify") {
+        if (typeof msg.userId !== "string" || typeof msg.name !== "string") {
+          return error("identify requires userId, name");
+        }
+        const userId = msg.userId.slice(0, 64);
+        const name = msg.name.slice(0, 40);
+        // An empty userId produces a `tunnel` frame the laptop's
+        // parseDownFrame drops on the floor — identity that fails in silence.
+        if (!userId) return error("identify requires userId");
+        channel.identity = { userId, name };
+        send(socket, { type: "identified", userId, name });
+        return;
+      }
+
       if (msg?.type === "join") {
         // The browser-facing protocol is the standalone server's, byte for
         // byte, so a second join is refused exactly as server.ts's join

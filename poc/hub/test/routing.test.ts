@@ -590,3 +590,45 @@ describe("hub session-name collisions", () => {
     loser.close();
   });
 });
+
+describe("hub per-connection identity", () => {
+  it("sets identity without joining a session", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ws = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "Ana" }));
+    await wait(40);
+    expect(seen).toEqual([{ type: "identified", userId: "ana", name: "Ana" }]);
+    ws.close();
+  });
+
+  it("rejects an identify the laptop would reject", async () => {
+    // The hub must refuse precisely what the laptop refuses. A join the hub
+    // accepts and the laptop drops is a failure that looks like success.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ws = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId: 7, name: "Ana" }));
+    ws.send(JSON.stringify({ type: "identify", userId: "", name: "Ana" }));
+    await wait(40);
+    expect(seen.map((m) => m.type)).toEqual(["error", "error"]);
+    ws.close();
+  });
+
+  it("truncates an over-long userId and name exactly as join does", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ws = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId: "u".repeat(80), name: "n".repeat(60) }));
+    await wait(40);
+    expect(seen[0].userId).toHaveLength(64);
+    expect(seen[0].name).toHaveLength(40);
+    ws.close();
+  });
+});
