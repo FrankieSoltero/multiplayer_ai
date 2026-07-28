@@ -1,15 +1,175 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-28 (bg session #15).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-28 (bg session #16).*
 
 ---
 
-## 🚀 START HERE — v7b1 IS CODE-COMPLETE. PR #20 IS OPEN AND UNMERGED. THE NEXT REAL WORK IS A PRODUCT QUESTION, NOT A TASK.
+## 🚀 START HERE — THE vN CHAIN IS DEAD. `docs/PRD.md` IS THE PLAN OF RECORD. WE ARE MID-EXECUTION ON ITS FIRST SECTION.
 
-**Branch `feature/v7b1-hub-relay-spine` at `acd5a3b`, pushed, in sync with origin. All 8 tasks done,
-whole-branch reviewed, fix wave applied and re-reviewed clean. PR #20 →
-https://github.com/FrankieSoltero/multiplayer_ai/pull/20 (base `main` at `c1f3661`, 19 commits).
-DO NOT MERGE IT — that is the user's call. Nothing is half-done. Nothing is running.**
+**Read `docs/PRD.md` before anything else.** Session #16 reframed the whole project: the
+`v7a → v7b1 → v7b2 → v7b3 → v7c → v7d → v7e` chain is **replaced** by ten named sections in PRD §8,
+each of which becomes its own brainstorm → spec → plan. "What next" is now picking a section, not
+incrementing a letter. The old specs remain the authority on *shipped* code and are not deleted.
+
+**Both open PRs merged during session #16. `main` is `0ffeaa3`** (verify with
+`git ls-remote origin refs/heads/main`, authoritative — the tracking ref has been observed stale in
+this repo). PR #20 (v7b1) was merged **by the user**; PR #21 (the PRD) was merged on their explicit
+instruction. `poc/hub/` is on `main` now.
+
+### Where execution actually is
+
+**Branch `feature/projects`, pushed, in sync with origin. Implementing PRD §8.2 via
+subagent-driven-development. Tasks 1–2 of 13 are COMPLETE and reviewed clean. Nothing is running.
+Nothing is half-done.**
+
+```
+feature/projects (= origin/feature/projects)
+  2d40a0d  test(hub): fix non-discriminating re-attach test      ← Task 2 fix
+  624d9f7  feat(hub): project records — name, members, lifecycle ← Task 2
+  8653327  docs(spec): resolve §10 Q1
+  977423c  fix(ui): remove outer box-shadow from full-bleed CRT  ← Task 1 fix
+  ee08b57  feat(ui): full-bleed layout — the glass is the page   ← Task 1
+  9c428bc  docs(plan): projects implementation plan — 13 tasks
+  1448635  docs(spec): projects — the container
+  (base = main 0ffeaa3)
+```
+
+**➡️ RESUME AT TASK 3.** Briefs for Tasks 2–6 are already generated in the SDD workspace; run
+`scripts/task-brief docs/superpowers/plans/2026-07-28-projects.md N` for 7–13.
+
+### THE LEDGER IS YOUR RECOVERY MAP — READ IT FIRST
+
+`.superpowers/sdd/2026-07-28-projects/progress.md`. It records every task, review finding, fix
+round, controller adjudication and ruling. **A task with a `Task <N>: complete` line is DONE — do
+not re-dispatch it.** Trust the ledger and `git log` over any recollection. It is git-ignored
+scratch, so `git clean -fdx` destroys it; recover from `git log` if that happens.
+
+The SDD skill's scripts live at
+`~/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/`
+(`sdd-workspace`, `task-brief`, `review-package`).
+
+### Resume & verify — run this first, expect exactly this
+
+```bash
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
+git status -sb                        # feature/projects, in sync; untracked: market-research.md (NEVER commit it)
+git log --oneline -1                  # 2d40a0d test(hub): fix non-discriminating re-attach test
+git ls-remote origin refs/heads/main  # 0ffeaa3…
+for p in 3001 4000 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY
+cd poc/hub    && npx tsc --noEmit && npx vitest run   # 55 passed (was 48 before Task 2)
+cd ../server  && npx tsc --noEmit && npx vitest run   # 412 passed, 20 files
+cd ../client  && npx tsc --noEmit && npx vitest run && npm run build  # 207 passed; build clean
+```
+
+### Decisions locked in during session #16 — do NOT re-litigate
+
+All twelve PRD decisions are in `docs/PRD.md` §6 **with their reasoning**, and the eight spec
+decisions in `docs/superpowers/specs/2026-07-28-projects-design.md` §2. The ones most likely to be
+accidentally reversed:
+
+1. **The hub is the only human surface; `mpai --hub` is headless** (PRD D2). No local web server, no
+   browser, no `localhost` URL when hub-attached. Plain `mpai` keeps the local UI as **solo mode**.
+   Two live surfaces is what made "where am I" unanswerable and broke the v7b1 demo.
+2. **One daemon per machine; repos attached from the hub UI** (D4). This makes an uplink **a
+   machine**, not a machine-bound-to-one-repo (`hubStore.ts:23-28`). Recorded so machine identity is
+   not built one-repo-shaped and then rebuilt.
+3. **The hub contains projects** (D5/D6) — "project", not "party". `projectId` was already the
+   top-level key; this gives an existing key an identity rather than adding a layer.
+4. **Visibility is hub-wide; participation is membership-scoped** (spec P2). This **amends PRD §8.1**,
+   which said membership was the access unit — written before spectating existed.
+5. **Spectating a project is silent; opening a live session announces you** (P3). Silent observation
+   of a colleague's live work converts the co-op model into a surveillance one.
+6. **The last member MAY leave; an empty project stays `active`** (spec §10 Q1, user ruling,
+   `8653327`). A project's lifetime is independent of who is in it now — someone may join precisely
+   *because* everyone left, to pick the work up. **No auto-archive on empty.**
+7. **The client disambiguates a colliding session name, not the hub** (P6). The obvious fix — have
+   the hub rename it — was **rejected because it breaks §5.3**: the hub would rewrite a payload it is
+   contractually a router for.
+8. **Two themes, Arcade and Clean, with absolute functional parity** (PRD D13/§5.2). **NOT in this
+   section** — Clean needs shape/density lifted into tokens first, and it should theme the new
+   screens once rather than twice.
+9. **Rejected and recorded in PRD §7, do not resurrect:** forking VS Code, `mpai` as a daily-driver
+   harness replacing Claude Code, hub-as-secondary-surface, hub-as-only-container.
+
+### The finding that matters most from this session
+
+**The hub's data model ALREADY spans repos.** It keys `projectId → sessionId → session` with a
+per-session `repoKey` and `uplinkId` (`hubStore.ts:41`, `:13-21`) and returns `repo: null` because
+"a hub spans repos" (`:219-223`). Five laptops in five repos under one project already store and fan
+out correctly. **The previous handoff concluded this needed a different data model. It does not.**
+The gap is surface and workflow — nine concrete items in PRD §9.
+
+### Gotchas specific to THIS work
+
+- **A 4th non-discriminating test was caught this session** (Task 2). The test named "does not
+  resurrect membership" could not fail for that reason: the reviewer deleted the guard and all 22
+  tests still passed. **The lesson, now standing: revert-and-rerun must break the code in the
+  specific way the test NAMES**, not merely in some way that fails some test. Put this in every
+  implementer dispatch.
+- **`laptop()` in `relayIntegration.test.ts:74` injects a NO-OP command plane**, so a tunnelled
+  command is swallowed and nothing ever replies. Task 12 must add `laptopThatAnswers()` — the plan
+  has the code. An end-to-end test written without this cannot pass.
+- **`attach()` gained a 4th parameter** (`attachedAt`) in Task 2. `poc/hub/src/hub.ts:185` passes
+  `new Date().toISOString()`.
+- **Client tests are pure-logic modules, never component renders.** No testing-library, no DOM env.
+  The pattern is stated in `sessionRow.ts:3-4`. Tasks 1 and 10 therefore mandate NO automated test —
+  that is deliberate, not an oversight, and reviewers are given the constraint.
+- **Task 10 leaves `tsc` failing until Task 11 lands.** Documented in the plan. If tasks go to
+  separate agents, 10 and 11 must not be split.
+- **Never `git add -A`.** Verify every commit with `git diff-tree --no-commit-id --name-only -r HEAD`.
+- **`poc/server/.env` holds a PLACEHOLDER API key — do not source it.** Launch laptops with the
+  `mpai` CLI, never `tsx src/main.ts` (no `workspace` → the SDK reports a confidently wrong
+  *"native binary … failed to launch … libc"*).
+
+### Parked residuals (deferred minors — final review must triage)
+
+- Task 1: `.crt-chrome-top` is a **sibling** of `.crt`, not inside the glass. Matches the brief's own
+  code and reads as one screen, but spec §6 said "fold INTO the CRT". Cosmetic.
+- Task 1: the legend row sits flush to the viewport bottom edge, no breathing room.
+- Task 2 ⚠️ resolved by controller: the store's methods take unvalidated ids. Covered — plan Task 5
+  applies `SLUG.test()` before calling in. **Task 5's reviewer must confirm this holds.**
+
+### Open questions
+
+1. **PRD §10 Q2/Q3** — whether the entrance lists every project at hundreds (measure, don't guess),
+   and whether a project deserves a one-line `intent` (violates P1's name-and-nothing-else).
+2. **Spec §8.4** — does a sub-session get its own worktree or share its parent's? Not needed for
+   §8.2; needed before PRD §8.4.
+3. **Spec §8.3** — how a headless machine offers a filesystem path picker to a browser it does not
+   serve, without becoming an arbitrary-path read primitive.
+4. **Three v7b1 residuals, still unanswered:** the uplink fails silently so a wrong hub URL looks
+   like a working one; a relay join emits no success signal; `uplinkId` is minted per launch so
+   sessions do not survive a laptop restart. The third is directly in D4's path.
+   ⚠️ **TRAP: `repoKey` is NOT a usable machine identity** — with an `origin` present it is
+   byte-identical across every clone by design, so two teammates would silently take over each
+   other's sessions.
+5. **Two documents are knowingly stale and are Task 13 Step 4's job:** `docs/PRD.md`'s opening
+   caveat says hub line refs are against an unmerged branch (they are on `main` now), and everything
+   in THIS file below the "HISTORICAL" marker predates the reframe.
+
+### Files that matter, with line refs
+
+- Plan: `docs/superpowers/plans/2026-07-28-projects.md` — 13 tasks, real code in every step.
+- Spec: `docs/superpowers/specs/2026-07-28-projects-design.md` — §2 decisions, §5 protocol, §9 bounds.
+- PRD: `docs/PRD.md` — §3 objects, §5.1 full-bleed, §5.2 themes, §6 decisions, §7 rejected, §8 sections, §9 gaps.
+- `poc/hub/src/hubStore.ts` — project registry added Task 2 (`ProjectRecord`, `createProject`,
+  `ensureProject`, lifecycle, membership); sessions map `:41`; ownership refusal `:100-108`;
+  `snapshot` `repo: null` `:219-223`.
+- `poc/hub/src/hub.ts` — `SLUG` `:13`; `HUB_HANDLED` `:18`; `attach` call `:185`; `tunnel` guard
+  `:285`; join validation `:320-341`; `reply` narrowcast `:240`.
+- `poc/server/src/relay.ts:252` — a tunnelled command's reply becomes `{t:"reply", channelId, payload}`.
+  **The return path for a routed `create_session` already works; only the outbound route is new.**
+- `poc/client/src/terminal.css:186-202` — full-bleed cabinet + `.crt-chrome-top` (Task 1).
+- `poc/client/src/components/SessionPicker.tsx:11,140` — the flat, project-id-keyed picker Task 10 replaces.
+
+---
+
+**🟡 EVERYTHING BELOW THIS LINE PREDATES THE session #16 REFRAME.** It remains the authority on why
+shipped v7a/v7a2/v7b1 code looks the way it does, but every "next step", "unmerged", "waiting on a
+decision" and vN-ordering framing in it is **superseded by `docs/PRD.md`**. PR #20 is merged; the
+"next step is a product question" framing was answered by the PRD.
+
+---
 
 ### ⛔ READ THIS BEFORE PROPOSING ANY NEXT TASK — the user rejected the demo, and they were right
 
