@@ -541,10 +541,14 @@ v7a2 ran 5 tasks through `superpowers:subagent-driven-development` end to end. W
   history that prompted this: A2a, sign-out and A3 were each merged locally on instruction, so by
   the time the user asked to "PR this stuff" every commit was already in `main` and there was
   nothing left to review on GitHub.
-  - **Enacted immediately for v7b1**, mid-execution rather than at the end, so the review surface
-    exists while the work is in flight: branch pushed, **draft PR #19** opened against `main`.
-    Mark it ready for review only when the whole-branch review is clean, and leave the merge to
-    the user.
+  - **AMENDED the same day, by the user: the rule bends for LONG-RUNNING TASKS.** A multi-task SDD
+    run does not sit behind a review gate for its whole length. For work of that size, land
+    completed, reviewed slices into `main` as they finish and keep going on the branch — the PR is
+    the review surface, not a blocker. **PR #19 (v7b1 Tasks 1–5) was merged on that instruction**,
+    with Tasks 6–8 continuing on the same branch and a fresh PR for the remainder.
+  - **What did NOT change:** for ordinary feature work, still branch → push → PR → the user
+    merges. The amendment is about not stalling a long run, not a licence to merge unreviewed
+    work — every task merged under it had passed its task review first.
   - This does NOT retroactively unmake session #14's merges. PR #18, v7a2 and the workdir fix were
     merged earlier the same session on the user's explicit go, before this ruling existed.
   - Still unanswered: whether to push the local-only merged branches for archival (recommended
