@@ -2186,4 +2186,281 @@ describe("session lifecycle", () => {
 
     ws.close();
   });
+
+  it("removes the sender from the roster on leave_session", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsAna, seen);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    const wsBen = await connect(server.port);
+    collect(wsBen, []);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    // Assert on the event stream, not a `project` snapshot: a second
+    // participant's `presence_join` does not force an immediate push, so a
+    // snapshot-only assertion here would pass even with no leave_session
+    // handler at all — Ben would simply never have appeared in a snapshot
+    // to begin with.
+    const leaves = seen.filter(
+      (m: any) => m.type === "event" && m.event.type === "presence_leave" && m.event.userId === "u2",
+    );
+    expect(leaves).toHaveLength(1);
+
+    const row = lastProject(seen).sessions.find((s: any) => s.id === "s");
+    expect(row.participants).toEqual(["Ana"]);
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("does NOT close the session when someone leaves and others remain", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsAna, seen);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    const wsBen = await connect(server.port);
+    collect(wsBen, []);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    // Assert on the event stream: reading "open" off a `project` snapshot
+    // can pass merely because no fresh snapshot happened to arrive, which
+    // would be true even with a broken handler. Absence of a session_closed
+    // event is the real claim.
+    const closed = seen.filter((m: any) => m.type === "event" && m.event.type === "session_closed");
+    expect(closed).toHaveLength(0);
+
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "s").lifecycle).toBe("open");
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("closes the session when the LAST participant leaves deliberately", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsWatch = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsWatch, seen);
+    wsWatch.send(JSON.stringify({ type: "watch_project", projectId: "demo" }));
+
+    const wsAna = await connect(server.port);
+    collect(wsAna, []);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    await wait(200);
+
+    wsAna.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "s").lifecycle).toBe("closed");
+
+    wsWatch.close();
+    wsAna.close();
+  });
+
+  it("attributes the auto-close to the participant who left last", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsAna, seen);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    wsAna.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    const closed = seen.filter((m: any) => m.type === "event" && m.event.type === "session_closed");
+    expect(closed).toHaveLength(1);
+    expect(closed[0].event.userId).toBe("u1");
+
+    wsAna.close();
+  });
+
+  it("a socket close does NOT close the session, even for the last participant", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsWatch = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsWatch, seen);
+    wsWatch.send(JSON.stringify({ type: "watch_project", projectId: "demo" }));
+
+    const wsAna = await connect(server.port);
+    collect(wsAna, []);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    await wait(200);
+
+    wsAna.close();
+    await wait(300);
+
+    // The whole point of leave_session existing: a dropped connection is not
+    // a statement of intent, and v7a made closing one-way.
+    expect(lastProject(seen).sessions.find((s: any) => s.id === "s").lifecycle).toBe("open");
+
+    wsWatch.close();
+  });
+
+  it("writes exactly one presence_leave when leave_session is followed by the socket closing", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsWatch = await connect(server.port);
+    collect(wsWatch, []);
+    wsWatch.send(JSON.stringify({ type: "watch_project", projectId: "demo" }));
+
+    const wsAna = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsAna, seen);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    await wait(200);
+    wsAna.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+    wsAna.close();
+    await wait(300);
+
+    const rejoin = await connect(server.port);
+    const replay: any[] = [];
+    collect(rejoin, replay);
+    rejoin.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(300);
+
+    const leaves = replay.filter(
+      (m: any) => m.type === "event" && m.event.type === "presence_leave" && m.event.userId === "u1",
+    );
+    expect(leaves).toHaveLength(1);
+
+    // Pin this task, not just Task 1's idempotency guard: leave_session was
+    // the sole participant's deliberate exit, so it must have auto-closed —
+    // attributed to u1 — before the socket ever dropped. Without this
+    // assertion, deleting the leave_session handler outright would not fail
+    // this test (the socket-close leave alone still produces exactly one
+    // presence_leave).
+    const closed = replay.filter(
+      (m: any) => m.type === "event" && m.event.type === "session_closed" && m.event.userId === "u1",
+    );
+    expect(closed).toHaveLength(1);
+
+    rejoin.close();
+    wsWatch.close();
+  });
+
+  it("still lets someone leave an already-closed session, without closing it twice", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seen: any[] = [];
+    collect(wsAna, seen);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    const wsBen = await connect(server.port);
+    collect(wsBen, []);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    wsBen.send(JSON.stringify({ type: "close_session" }));
+    await wait(200);
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    const closed = seen.filter((m: any) => m.type === "event" && m.event.type === "session_closed");
+    expect(closed).toHaveLength(1);
+    const row = lastProject(seen).sessions.find((s: any) => s.id === "s");
+    expect(row.participants).toEqual(["Ana"]);
+    expect(row.lifecycle).toBe("closed");
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("does NOT auto-close on a stale leave_session that didn't actually empty the room", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    // Ben leaves deliberately. Ana remains — session stays open.
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    // Ana's connection drops (not a deliberate exit) — session stays open,
+    // per the whole point of this feature.
+    wsAna.close();
+    await wait(200);
+
+    // Ben, still connected, sends leave_session AGAIN. He already left, so
+    // `Session.leave` is a no-op — but the room is now empty because of
+    // Ana's disconnect, not because of this call. This must NOT auto-close:
+    // a stale repeat leave_session must not get credit (or blame) for a
+    // departure it did not cause.
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    const closed = seenBen.filter((m: any) => m.type === "event" && m.event.type === "session_closed");
+    expect(closed).toHaveLength(0);
+    expect(lastProject(seenBen).sessions.find((s: any) => s.id === "s").lifecycle).toBe("open");
+
+    wsBen.close();
+  });
+
+  it("refuses take_wheel from someone who has left but is still connected", async () => {
+    // leave_session deliberately does not null ctx (that would skip
+    // ctx.unsubscribe() / ctx.project.watchers.delete(ws) and leak both), so
+    // a departed-but-connected socket is reachable — e.g. a second tab of the
+    // same signed-in user, since auth replaces userId with the verified
+    // login. Without this guard that socket could take the wheel while
+    // absent from the roster, and every other surface would show a turn
+    // running with no driver named.
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u1", name: "Ana" }));
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", projectId: "demo", sessionId: "s", userId: "u2", name: "Ben" }));
+    await wait(200);
+
+    // Ben leaves deliberately but keeps his socket open.
+    wsBen.send(JSON.stringify({ type: "leave_session" }));
+    await wait(200);
+
+    seenBen.length = 0;
+    wsBen.send(JSON.stringify({ type: "take_wheel" }));
+    await wait(200);
+
+    expect(seenBen.some((m: any) => m.type === "error")).toBe(true);
+    expect(seenBen.some((m: any) => m.event?.type === "control_change" && m.event.userId === "u2")).toBe(false);
+
+    // Ana, the sole remaining participant, is still the driver.
+    const row = lastProject(seenAna).sessions.find((s: any) => s.id === "s");
+    expect(row.driverName).toBe("Ana");
+
+    wsAna.close();
+    wsBen.close();
+  });
 });

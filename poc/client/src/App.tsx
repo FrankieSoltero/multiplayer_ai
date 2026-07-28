@@ -28,6 +28,8 @@ import { Landing } from "./components/Landing";
 import { InviteSignIn } from "./components/InviteSignIn";
 import { Denied } from "./components/Denied";
 import { authStateFrom, type AuthState } from "./authState";
+import { ExitConfirm } from "./components/ExitConfirm";
+import { pickerUrlFrom } from "./pickerUrl";
 import { pullsFrom, thresholdFromStorage, PULL_STORAGE_KEY } from "./pulls";
 import { screenFor, selfIdFor } from "./authRoute";
 
@@ -258,6 +260,8 @@ function SessionView(props: {
   // captured (game letters overlap a/d permission hotkeys).
   const [arcadeCapturing, setArcadeCapturing] = useState(false);
 
+  const [exitReason, setExitReason] = useState<string | null>(null);
+
   // Arrows move focus around the whole terminal whenever the prompt is empty;
   // a live arcade run steers with arrows, so it takes them back for itself.
   useArrowNav(!arcadeCapturing);
@@ -365,6 +369,51 @@ function SessionView(props: {
 
   function onPrompt(text: string) {
     send({ type: "prompt", text });
+  }
+
+  /** Leaving strands something only in two cases: the agent is mid-run, or a
+   *  gate is waiting and you are the one who can answer it. Everything else
+   *  leaves silently — nothing is destroyed by leaving and you can rejoin.
+   *
+   *  No separate branch for a pending plan approval (`plan_request`,
+   *  Transcript.tsx): it is covered incidentally, not by design, because
+   *  `plan_request` fires mid-turn while `agentBusy` is still true, and
+   *  agentDriver.ts auto-rejects an orphaned plan request on abort. If either
+   *  of those ever changes — the event timing relative to `agentBusy`, or the
+   *  abort-signal wiring — this function needs a third branch, or leaving
+   *  will silently strand a plan decision with no gate to catch it. */
+  function exitWouldStrand(): string | null {
+    if (derived.agentBusy) return "the agent is still working";
+    if (gatesPending > 0 && isDriver) return "a permission gate is waiting on you";
+    return null;
+  }
+
+  // The confirm bar's reason can go stale: it's set once, when EXIT is
+  // clicked, but the condition that raised it (a busy agent, a pending gate)
+  // can resolve on its own while the bar is still showing. Re-check on every
+  // change to the inputs `exitWouldStrand` reads and drop the bar once
+  // neither reason still applies — display-only, LEAVE ANYWAY / STAY already
+  // work correctly either way.
+  useEffect(() => {
+    if (exitReason && !exitWouldStrand()) setExitReason(null);
+  }, [derived.agentBusy, gatesPending, isDriver, exitReason]);
+
+  function leaveNow() {
+    // Send BEFORE navigating: the reload closes the socket and any unsent
+    // frame is lost. This message is what tells the server the departure was
+    // deliberate, which is what lets it auto-close a session the last person
+    // left — a socket close deliberately never does that.
+    send({ type: "leave_session" });
+    window.location.search = pickerUrlFrom(window.location.search);
+  }
+
+  function onExit() {
+    const reason = exitWouldStrand();
+    if (reason) {
+      setExitReason(reason);
+      return;
+    }
+    leaveNow();
   }
 
   function onTakeWheel() {
@@ -483,6 +532,7 @@ function SessionView(props: {
         onOpenOversight={() => props.onScreenChange("oversight")}
         oversightFresh={oversightFresh(oversight, seenOversightSeq)}
         onOpenInvite={() => props.onScreenChange("invite")}
+        onExit={onExit}
         runningTasks={runningTasks}
         hud={hud}
       />
@@ -526,6 +576,14 @@ function SessionView(props: {
 
       {errors.length > 0 && <div className="line red">⚠ {errors.at(-1)}</div>}
 
+      {exitReason && (
+        <ExitConfirm
+          reason={exitReason}
+          onConfirm={leaveNow}
+          onCancel={() => setExitReason(null)}
+        />
+      )}
+
       <PromptBar
         isDriver={isDriver}
         agentBusy={derived.agentBusy}
@@ -535,6 +593,9 @@ function SessionView(props: {
         onPrompt={onPrompt}
         onTakeWheel={onTakeWheel}
         onSuggestSkill={onSuggestSkill}
+        onClientCommand={(command) => {
+          if (command.type === "exit") onExit();
+        }}
         inputRef={inputRef}
       />
     </div>

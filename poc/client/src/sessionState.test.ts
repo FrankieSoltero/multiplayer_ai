@@ -64,6 +64,39 @@ describe("sessionBadgeLabel", () => {
   });
 });
 
+describe("the empty state", () => {
+  const live = { presence: "online" as const, lifecycle: "open" as const, ended: false };
+
+  test("a session nobody is in reads empty", () => {
+    expect(sessionStateLabel({ ...live, participantCount: 0 })).toBe("empty");
+    expect(sessionStateClass({ ...live, participantCount: 0 })).toBe("empty");
+    expect(sessionBadgeLabel({ ...live, participantCount: 0 })).toBe("EMPTY");
+  });
+
+  test("a session with people in it is healthy", () => {
+    expect(sessionStateLabel({ ...live, participantCount: 2 })).toBeNull();
+    expect(sessionBadgeLabel({ ...live, participantCount: 2 })).toBe("LIVE");
+  });
+
+  test("an absent count degrades to not-empty, not to empty", () => {
+    // An older server sends no participant list; showing every session as
+    // empty would be worse than showing none.
+    expect(sessionStateLabel(live)).toBeNull();
+  });
+
+  test("a stopped agent outranks emptiness", () => {
+    expect(sessionStateLabel({ ...live, ended: true, participantCount: 0 })).toBe("agent stopped");
+  });
+
+  test("an unreachable machine outranks emptiness", () => {
+    expect(sessionStateLabel({ ...live, presence: "offline", participantCount: 0 })).toBe("offline");
+  });
+
+  test("a deliberate close outranks emptiness", () => {
+    expect(sessionStateLabel({ ...live, lifecycle: "closed", participantCount: 0 })).toBe("closed");
+  });
+});
+
 /** `sessionStateLabel` and `sessionStateClass` share one internal precedence
  *  (see `sessionState.ts`'s `degradedState`), but nothing else enforces that
  *  they stay in agreement — a future edit to one without the other would only
@@ -107,6 +140,18 @@ describe("sessionStateLabel and sessionStateClass agree", () => {
       facts: { ended: true },
       label: "agent stopped",
       cls: "ended",
+    },
+    {
+      desc: "otherwise healthy, but nobody is in it",
+      facts: { presence: "online", lifecycle: "open", ended: false, participantCount: 0 },
+      label: "empty",
+      cls: "empty",
+    },
+    {
+      desc: "otherwise healthy, and people are in it",
+      facts: { presence: "online", lifecycle: "open", ended: false, participantCount: 3 },
+      label: null,
+      cls: "",
     },
   ];
 

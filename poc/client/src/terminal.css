@@ -385,6 +385,11 @@ code, pre { font-family: var(--fm); }
 .member.closed:hover { opacity: 1; }
 .member.offline { border-style: dotted; }
 .member.closed { opacity: 0.55; }
+/* `empty` ranks weakest in the precedence chain (closed > offline > ended >
+   empty > healthy) — lighter than the three above, no dashing. Reuses the
+   0.8 opacity already used elsewhere (.panel.ghost, .node.queued). */
+.member.empty { opacity: 0.8; }
+.member.empty:hover { opacity: 1; }
 .member-head { font-weight: 600; }
 .member-head .role { color: var(--green); font-weight: 400; }
 .member-head .here { color: var(--dim); font-weight: 400; }
@@ -728,7 +733,8 @@ code, pre { font-family: var(--fm); }
 .spstate.live { color: var(--green); }
 .spstate.ended { color: var(--red); }
 .spstate.closed { color: var(--red); }
-.spstate.offline { color: var(--dim); }
+.spstate.offline { color: var(--amber); }
+.spstate.empty { color: var(--dim); }
 .spintent { margin-top: 2px; overflow-wrap: anywhere; }
 .spwho { color: var(--accent); margin-top: 2px; }
 .spform { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
@@ -774,3 +780,13 @@ code, pre { font-family: var(--fm); }
 .member-pull { color: var(--amber); font-size: 11px; margin-top: 2px; }
 .pull-badge { color: var(--amber); }
 .pull-setting { display: inline-flex; gap: 4px; align-items: center; font-size: 10px; margin-left: 8px; }
+
+.exitconfirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--red);
+}
+.exitconfirm .exitwhy { flex: 1; min-width: 0; }

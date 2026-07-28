@@ -572,6 +572,15 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "take_wheel") {
+        // leave_session deliberately leaves ctx live (nulling it would skip
+        // ctx.unsubscribe() / ctx.project.watchers.delete(ws) and leak both),
+        // so a departed user can still be connected here — e.g. a second tab
+        // of the same signed-in user, since auth replaces userId with the
+        // verified login. Without this guard they could drive while absent
+        // from the roster, with every surface showing no driver named.
+        if (!ctx.entry.session.nameOf(ctx.userId)) {
+          return sendError("you have left this session");
+        }
         ctx.entry.session.takeWheel(ctx.userId);
         return;
       }
@@ -587,6 +596,31 @@ export async function startServer(opts: {
         ctx.entry.session.append({ type: "session_closed", userId: ctx.userId });
         // Deliberate user action, not a hot stream — immediate push (same
         // rationale as add_plugin / create_session).
+        pushProject(ctx.project);
+        return;
+      }
+
+      if (msg.type === "leave_session") {
+        // Deliberate departure. Deliberately NOT lifecycle-guarded: someone
+        // sitting in an already-closed session still needs a way out.
+        const departed = ctx.entry.session.leave(ctx.userId);
+        // Auto-close only on a DELIBERATE last departure. A socket close runs
+        // `session.leave` too (see the "close" handler) but never reaches
+        // here — that asymmetry IS the feature: v7a made closing one-way, so
+        // a dropped connection must not be able to end a session forever
+        // (spec §2, §3.1). `leave()` is idempotent, so a repeat leave_session
+        // from someone who already left (e.g. after their socket already
+        // dropped) must not auto-close on their behalf — `departed` guards
+        // against blaming a stale call for a departure it didn't cause.
+        if (departed && ctx.entry.session.participantList.length === 0 && !isClosed(ctx.entry)) {
+          ctx.entry.session.append({ type: "session_closed", userId: ctx.userId });
+        }
+        // Deliberate user action, not a hot stream — immediate push.
+        // `presence_leave` IS in the INTERESTING set, so it would reach
+        // watchers on its own via `schedulePush`, but only after up to
+        // PROJECT_PUSH_INTERVAL_MS of throttling; `session_closed` is not
+        // INTERESTING at all, so without this push watchers could see a
+        // stale roster for up to a second, or never see the lifecycle flip.
         pushProject(ctx.project);
         return;
       }

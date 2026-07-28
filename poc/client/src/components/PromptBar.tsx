@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { matchSkills, moveHighlight } from "../slashMatch";
+import { parseClientCommand, shouldSubmitOverMenu, type ClientCommand } from "../clientCommands";
 
 export function PromptBar(props: {
   isDriver: boolean; agentBusy: boolean; watcherNames: string[];
@@ -7,6 +8,7 @@ export function PromptBar(props: {
   gatesPending: number;
   onPrompt: (text: string) => void; onTakeWheel: () => void;
   onSuggestSkill: (skill: string, args: string) => void;
+  onClientCommand: (command: ClientCommand) => void;
   inputRef: React.RefObject<HTMLInputElement | null>;
 }) {
   const [text, setText] = useState("");
@@ -37,6 +39,15 @@ export function PromptBar(props: {
   const submit = () => {
     const t = text.trim();
     if (!t) return;
+    // Before the skill router: `/exit` is ours, not the agent's. Also before
+    // the isDriver check — leaving is not a driving privilege.
+    const command = parseClientCommand(t);
+    if (command) {
+      setText("");
+      setHint(null);
+      props.onClientCommand(command);
+      return;
+    }
     const cmd = t.match(/^\/(\S+)\s*(.*)$/);
     if (cmd) {
       props.onSuggestSkill(cmd[1], cmd[2]);
@@ -62,7 +73,11 @@ export function PromptBar(props: {
       if (e.key === "ArrowDown") { e.preventDefault(); setHighlight((h) => moveHighlight(h, 1, matches.length)); return; }
       if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => moveHighlight(h, -1, matches.length)); return; }
       if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); accept(sel.name); return; } // Shift+Tab stays reverse focus traversal (accessibility floor, v6a ruling)
-      if (e.key === "Enter") { accept(sel.name); return; }
+      // A reserved client command (currently just /exit) wins over the menu
+      // even when it's open and highlighting a skill — falls through to the
+      // plain Enter branch below, which reaches submit(). See
+      // shouldSubmitOverMenu / clientCommands.ts.
+      if (e.key === "Enter" && !shouldSubmitOverMenu(text)) { accept(sel.name); return; }
       if (e.key === "Escape") { setDismissed(true); return; }
     }
     if (e.key === "Enter") submit();

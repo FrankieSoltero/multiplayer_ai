@@ -91,7 +91,13 @@ export function useSessionSocket(opts: {
   // drove the INVITE screen's list_invites effect (App.tsx) into a tight
   // loop, since `send` was in that effect's dep array.
   const send = useCallback((msg: object) => {
-    wsRef.current?.send(JSON.stringify(msg));
+    const ws = wsRef.current;
+    // WebSocket.send() throws InvalidStateError while CONNECTING (the header
+    // EXIT control is clickable before `connected` flips true). CLOSING/
+    // CLOSED are left alone — send() only discards silently there, which is
+    // the correct degrade-to-disconnect behaviour.
+    if (!ws || ws.readyState === WebSocket.CONNECTING) return;
+    ws.send(JSON.stringify(msg));
   }, []);
 
   return { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, oversight, invites, send };

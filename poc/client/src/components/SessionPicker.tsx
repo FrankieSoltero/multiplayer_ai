@@ -79,8 +79,8 @@ export function SessionPicker(props: { projectId: string }) {
               <div className="spbody">
                 <div className="spname">
                   {s.id}
-                  <span className={`spstate pix sm ${sessionStateClass(s) || "live"}`}>
-                    {sessionBadgeLabel(s)}
+                  <span className={`spstate pix sm ${sessionStateClass({ ...s, participantCount: s.participants.length }) || "live"}`}>
+                    {sessionBadgeLabel({ ...s, participantCount: s.participants.length })}
                   </span>
                 </div>
                 {s.intent && <div className="spintent dim">{s.intent}</div>}

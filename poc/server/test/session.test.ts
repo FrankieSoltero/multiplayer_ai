@@ -87,3 +87,54 @@ describe("Steering lock", () => {
     expect(ev).toMatchObject({ userId: "u1", name: "ana", glyph: "▲", color: "#61afef" });
   });
 });
+
+describe("Session.leave idempotency", () => {
+  it("appends exactly one presence_leave when called twice for the same user", () => {
+    const s = new Session("s1");
+    s.join("u1", "Ana");
+    s.leave("u1");
+    s.leave("u1");
+
+    const leaves = s.eventsFrom(0).filter((e) => e.type === "presence_leave");
+    expect(leaves).toHaveLength(1);
+  });
+
+  it("appends nothing when a user who never joined leaves", () => {
+    const s = new Session("s1");
+    s.join("u1", "Ana");
+    const before = s.eventsFrom(0).length;
+
+    s.leave("someone-else");
+
+    expect(s.eventsFrom(0).length).toBe(before);
+  });
+
+  it("still hands the wheel on for a real departure", () => {
+    const s = new Session("s1");
+    s.join("u1", "Ana");
+    s.join("u2", "Ben");
+    expect(s.driverId).toBe("u1");
+
+    s.leave("u1");
+
+    expect(s.driverId).toBe("u2");
+  });
+
+  it("clears the driver when the last participant leaves", () => {
+    const s = new Session("s1");
+    s.join("u1", "Ana");
+    s.leave("u1");
+    expect(s.driverId).toBeNull();
+  });
+
+  it("lets a user rejoin after leaving and leave again", () => {
+    const s = new Session("s1");
+    s.join("u1", "Ana");
+    s.leave("u1");
+    s.join("u1", "Ana");
+    s.leave("u1");
+
+    const leaves = s.eventsFrom(0).filter((e) => e.type === "presence_leave");
+    expect(leaves).toHaveLength(2);
+  });
+});

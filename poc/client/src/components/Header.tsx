@@ -29,6 +29,7 @@ export function Header(props: {
   onOpenWorkflows: () => void; runningTasks: number;
   onOpenOversight: () => void; oversightFresh: boolean;
   onOpenInvite: () => void;
+  onExit: () => void;
   /** The verified GitHub login, or null when auth is off / anonymous. Absent
    *  means no sign-out control renders at all — there is nothing to sign out
    *  of, and a dead button would be worse than none. */
@@ -136,6 +137,13 @@ export function Header(props: {
           title="invite a teammate (I)"
         >
           ▢ INVITE
+        </button>
+        <button
+          className="planmode"
+          onClick={props.onExit}
+          title="leave this session (/exit)"
+        >
+          ▢ EXIT
         </button>
         <span className={props.connected ? "conn" : "conn off"}>
           {props.connected ? "● ONLINE" : "○ OFFLINE"}
