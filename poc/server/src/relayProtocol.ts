@@ -1,6 +1,10 @@
 import type { LoggedEvent, SkillInfo } from "./events.js";
 import type { PendingGate } from "./pendingGate.js";
 import type { Lifecycle } from "./lifecycle.js";
+/** `SLUG` is the canonical regex for session and project IDs; imported from
+ *  `project.ts` to ensure the relay parser accepts exactly what `server.ts`
+ *  enforces, keeping the shape in one place. */
+import { SLUG } from "./project.js";
 
 /** Bumped whenever a frame's meaning changes. A mismatch is rejected at the
  *  frame boundary (see parseUpFrame/parseDownFrame) rather than tolerated:
@@ -57,7 +61,6 @@ export type DownFrame =
    *  `presence_leave` never fires and the roster keeps a ghost forever. */
   | { t: "detach"; channelId: string };
 
-const SLUGISH = /^[a-z0-9-]{1,40}$/;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 function obj(raw: unknown): Record<string, unknown> | null {
@@ -96,20 +99,20 @@ export function parseUpFrame(raw: unknown): UpFrame | null {
   if (f.t === "hello") {
     if (f.v !== RELAY_PROTOCOL_VERSION) return null;
     const uplinkId = str(f.uplinkId, ID);
-    const projectId = str(f.projectId, SLUGISH);
+    const projectId = str(f.projectId, SLUG);
     if (!uplinkId || !projectId || typeof f.repoKey !== "string" || f.repoKey.length > 200) {
       return null;
     }
     return { t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId, projectId, repoKey: f.repoKey };
   }
   if (f.t === "publish") {
-    const sessionId = str(f.sessionId, SLUGISH);
+    const sessionId = str(f.sessionId, SLUG);
     const runId = str(f.runId, ID);
     if (!sessionId || !runId || !Array.isArray(f.events)) return null;
     return { t: "publish", sessionId, runId, events: f.events as LoggedEvent[] };
   }
   if (f.t === "facts") {
-    const sessionId = str(f.sessionId, SLUGISH);
+    const sessionId = str(f.sessionId, SLUG);
     const runId = str(f.runId, ID);
     if (!sessionId || !runId || !isFacts(f.facts)) return null;
     return { t: "facts", sessionId, runId, facts: f.facts };
@@ -132,7 +135,7 @@ export function parseDownFrame(raw: unknown): DownFrame | null {
     const out: Record<string, { runId: string; lastSeq: number }> = {};
     for (const [sessionId, value] of Object.entries(have)) {
       const entry = obj(value);
-      if (!str(sessionId, SLUGISH) || !entry) return null;
+      if (!str(sessionId, SLUG) || !entry) return null;
       const runId = str(entry.runId, ID);
       if (!runId || !Number.isInteger(entry.lastSeq) || (entry.lastSeq as number) < -1) return null;
       out[sessionId] = { runId, lastSeq: entry.lastSeq as number };
