@@ -64,3 +64,28 @@ describe("findRepoRoot", () => {
     expect(findRepoRoot(dir)).toBe(null);
   });
 });
+
+describe("--hub", () => {
+  it("parses a hub url", () => {
+    expect(parseArgs(["--hub", "ws://hub.example:4000/uplink"])).toMatchObject({
+      cmd: "launch",
+      hub: "ws://hub.example:4000/uplink",
+    });
+  });
+
+  it("requires a value", () => {
+    expect(parseArgs(["--hub"]).error).toBe("--hub requires a url");
+  });
+
+  it("rejects a non-websocket scheme, so a typo cannot silently do nothing", () => {
+    // A wrong scheme fails deep inside `ws` with an opaque error; the laptop
+    // would look attached and never be.
+    expect(parseArgs(["--hub", "https://hub.example"]).error).toBe(
+      "--hub requires a ws:// or wss:// url",
+    );
+  });
+
+  it("defaults to no hub, which is today's standalone behaviour", () => {
+    expect(parseArgs([]).hub).toBeUndefined();
+  });
+});
