@@ -607,6 +607,8 @@ describe("hub per-connection identity", () => {
   it("rejects an identify the laptop would reject", async () => {
     // The hub must refuse precisely what the laptop refuses. A join the hub
     // accepts and the laptop drops is a failure that looks like success.
+    // Asserting on message text (not just type) discriminates identify's own
+    // validation from the fallthrough path that unrecognized types take.
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
     const ws = await connect(`ws://127.0.0.1:${hub.port}`);
@@ -615,7 +617,10 @@ describe("hub per-connection identity", () => {
     ws.send(JSON.stringify({ type: "identify", userId: 7, name: "Ana" }));
     ws.send(JSON.stringify({ type: "identify", userId: "", name: "Ana" }));
     await wait(40);
-    expect(seen.map((m) => m.type)).toEqual(["error", "error"]);
+    expect(seen.map((m) => m.message)).toEqual([
+      "identify requires userId, name",
+      "identify requires userId",
+    ]);
     ws.close();
   });
 
