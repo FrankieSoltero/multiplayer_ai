@@ -350,6 +350,14 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
        *  requires an identity to stamp. Same validation as `join`, in the same
        *  order — the hub must reject precisely what the laptop rejects. */
       if (msg?.type === "identify") {
+        // Mirrors `join`'s "already joined" guard, for the same reason. A join
+        // binds this channel's identity; without this, a later `identify`
+        // could rebind it at will, and every membership decision that follows
+        // — `join_project`, `create_session`, `set_project_lifecycle` — would
+        // be attributed to whoever the channel most recently claimed to be.
+        // Spec §5.1 makes this the field the hub will VERIFY later; a field
+        // that can be overwritten mid-connection cannot become that.
+        if (channel.sessionId) return error("already joined");
         if (typeof msg.userId !== "string" || typeof msg.name !== "string") {
           return error("identify requires userId, name");
         }
@@ -496,11 +504,17 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
        *  The reply itself still travels over the pre-existing `reply` frame
        *  (relay.ts:252) and lands in the same narrowcast branch every other
        *  reply does — but that branch's guard authorizes by SESSION OWNERSHIP
-       *  (`store.ownerOf`), and at this point in the flow there is no session
-       *  to own yet; this channel has joined none (spec P5, again). Without
-       *  the grant below, the guard has nothing to authorize on and drops the
-       *  reply every time — which is exactly the bug this comment used to
-       *  claim couldn't happen. Do not delete `pendingReplyFrom` as
+       *  (`store.ownerOf`), and the session being created does not exist yet,
+       *  so nobody owns it. In the browser's flow the channel has also joined
+       *  no session at all (spec P5, again) — but nothing here ENFORCES that:
+       *  unlike `join` and `identify`, this branch does not check
+       *  `channel.sessionId`, so a channel that has already joined can
+       *  legitimately reach it, and then `sessionOwned` authorizes only its
+       *  OWN session's replies, never this one's. Either way the grant below
+       *  is what carries the reply. Without it the guard has nothing to
+       *  authorize on and drops the reply every time — which is exactly the
+       *  bug this comment used to claim couldn't happen. Do not delete
+       *  `pendingReplyFrom` as
        *  "redundant" with `sessionOwned`: it is the only thing that makes a
        *  create-flow reply deliverable at all. */
       if (msg?.type === "create_session") {

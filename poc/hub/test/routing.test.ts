@@ -624,6 +624,43 @@ describe("hub per-connection identity", () => {
     ws.close();
   });
 
+  it("refuses an identify on a channel that has already joined", async () => {
+    // `join` binds this channel's identity and refuses a second join. Without
+    // the same guard on `identify`, a joined channel could rebind who it is at
+    // any time — and every membership decision that follows (join_project,
+    // create_session, set_project_lifecycle) would be attributed to the new
+    // claim. Spec §5.1 makes this the field the hub will verify later; a field
+    // overwritable mid-connection cannot become that.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(join());
+    await wait(40);
+    seen.length = 0;
+    upSeen.length = 0;
+
+    browser.send(JSON.stringify({ type: "identify", userId: "mal", name: "Mal" }));
+    await wait(50);
+
+    // Asserted on TEXT, not type: the tunnel() fallthrough that unrecognized
+    // messages take also produces `{ type: "error" }`, with the message "join
+    // a session first". Only the message distinguishes the refusal below from
+    // that path — and this channel HAS joined, so that path would not even be
+    // reached; a type-only assertion would pass with the guard deleted, since
+    // the deleted guard's `identified` reply is also a message.
+    expect(seen.map((m) => m.message)).toEqual(["already joined"]);
+    expect(seen.some((m) => m.type === "identified")).toBe(false);
+
+    // The binding actually held: the next tunnelled frame is still stamped ana.
+    browser.send(JSON.stringify({ type: "set_intent", intent: "x" }));
+    await wait(50);
+    expect(upSeen.filter((f) => f.t === "tunnel").map((f) => f.identity.userId)).toEqual(["ana"]);
+    browser.close(); up.close();
+  });
+
   it("truncates an over-long userId and name exactly as join does", async () => {
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
