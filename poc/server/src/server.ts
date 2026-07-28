@@ -11,6 +11,7 @@ import {
   projectSnapshot,
   SLUG,
   type ProjectSessionEntry,
+  type ProjectWatcher,
 } from "./project.js";
 import { Session } from "./session.js";
 import { PluginStore } from "./pluginStore.js";
@@ -34,6 +35,32 @@ interface ClientContext {
   entry: ProjectSessionEntry;
   userId: string;
   unsubscribe: () => void;
+}
+
+/** The transport seam between a message handler and whatever is carrying it.
+ *
+ *  `direct` is a browser on a WebSocket straight to this process — it replays
+ *  the log, subscribes per socket, and registers as a project watcher, exactly
+ *  as it always has.
+ *
+ *  `relay` is a browser attached to the hub, tunnelled here (spec §3.2). The
+ *  hub owns replay and fan-out, so this connection does none of it: doing it
+ *  here would push one copy of every event per attached browser up a single
+ *  uplink. Identity arrives pre-verified from the hub (spec §3.5 rule 1) —
+ *  and identity is the ONLY thing trusted from upstream. Shape, length and
+ *  charset validation below is untouched and still runs on every field
+ *  (spec §10.4). */
+export interface ConnectionIO {
+  mode: "direct" | "relay";
+  /** Narrowcast reply to the one client that sent the command. Best-effort:
+   *  implementations drop the message if their transport has gone away. */
+  send(msg: unknown): void;
+  /** Direct only. Receives throttled project snapshots. */
+  watcher?: ProjectWatcher;
+  /** Direct only — this process verifies the cookie itself. */
+  cookieHeader?: string;
+  /** Relay only — the hub verified this browser and stamped it. */
+  stampedIdentity?: { userId: string; name: string };
 }
 
 const INTERESTING = new Set([
@@ -289,41 +316,27 @@ export async function startServer(opts: {
   });
   const wss = new WebSocketServer({ server: httpServer });
 
-  wss.on("connection", (ws: WebSocket, upgradeReq: IncomingMessage) => {
-    // Captured once: the cookie cannot change for the life of this socket.
-    const cookieHeader = upgradeReq.headers.cookie;
+  /** The whole per-connection protocol, independent of what is carrying it.
+   *  Closes over everything `startServer` already has in scope, so both the
+   *  direct WebSocket adapter below and the relay uplink share one handler. */
+  function createConnection(io: ConnectionIO): {
+    handleMessage: (msg: any) => void;
+    close: () => void;
+  } {
     let ctx: ClientContext | null = null;
     let watching: Project | null = null;
 
-    const sendError = (message: string) =>
-      ws.send(JSON.stringify({ type: "error", message }));
+    const sendError = (message: string) => io.send({ type: "error", message });
 
     // The token rides this reply and nothing else — never the session log,
     // which is replayed to every late joiner and cannot be un-replayed.
     const sendInviteList = (c: ClientContext) =>
-      ws.send(
-        JSON.stringify({
-          type: "invite_list",
-          invites: invites.listFor(c.project.id, c.entry.session.id),
-        }),
-      );
+      io.send({
+        type: "invite_list",
+        invites: invites.listFor(c.project.id, c.entry.session.id),
+      });
 
-    // Without a listener, an "error" event on this socket would be an
-    // unhandled EventEmitter error and crash the whole process. Cleanup
-    // (unsubscribe/leave) is handled by the "close" handler, which always
-    // follows an "error" event on a ws socket.
-    ws.on("error", (err: NodeJS.ErrnoException) => {
-      void err?.code;
-    });
-
-    ws.on("message", (raw) => {
-      let msg: any;
-      try {
-        msg = JSON.parse(raw.toString());
-      } catch {
-        return sendError("invalid JSON");
-      }
-
+    const handleMessage = (msg: any): void => {
       // Guard for the message types that are reachable BEFORE `ctx` exists
       // and therefore sit above the "join a session first" choke point.
       // Without it, one cookie-less frame from anyone on the internet could
@@ -338,7 +351,10 @@ export async function startServer(opts: {
       //
       // With auth off requireAuth admits everything, so this is a no-op.
       const denyUnauthed = (): boolean => {
-        const check = requireAuth(cookieHeader, opts.auth);
+        // Relay: the hub already verified this browser before stamping it
+        // (spec §3.5 rule 1), so there is no cookie to check on this side.
+        if (io.stampedIdentity) return false;
+        const check = requireAuth(io.cookieHeader, opts.auth);
         if (check.ok) return false;
         sendError(check.error);
         return true;
@@ -371,11 +387,18 @@ export async function startServer(opts: {
         // client-chosen would relocate the impersonation rather than remove
         // it. Enforced here, not in the client Lobby — a hand-rolled
         // WebSocket client bypasses any browser UI.
-        const joinAuth = requireAuth(cookieHeader, opts.auth);
-        if (!joinAuth.ok) return sendError(joinAuth.error);
-        if (joinAuth.login !== null) {
-          msg.userId = joinAuth.login;
-          msg.name = joinAuth.login;
+        if (io.stampedIdentity) {
+          // Relay: the hub already verified this browser and stamped it
+          // (spec §3.5 rule 1). Same overwrite, different verifier.
+          msg.userId = io.stampedIdentity.userId;
+          msg.name = io.stampedIdentity.name;
+        } else {
+          const joinAuth = requireAuth(io.cookieHeader, opts.auth);
+          if (!joinAuth.ok) return sendError(joinAuth.error);
+          if (joinAuth.login !== null) {
+            msg.userId = joinAuth.login;
+            msg.name = joinAuth.login;
+          }
         }
         // Invite gate (spec §4). Sits before getOrCreateProject/Session so a
         // rejected join never provisions a git worktree.
@@ -407,16 +430,20 @@ export async function startServer(opts: {
         // Replay first, then subscribe, then join — single-threaded, so no gap.
         const from =
           Number.isInteger(msg.lastSeq) && msg.lastSeq >= 0 ? msg.lastSeq : 0;
-        for (const event of entry.session.eventsFrom(from)) {
-          ws.send(JSON.stringify({ type: "event", event }));
-        }
-        const unsubscribe = entry.session.subscribe((event) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "event", event }));
+        if (io.mode === "direct") {
+          for (const event of entry.session.eventsFrom(from)) {
+            io.send({ type: "event", event });
           }
-        });
+        }
+        // Direct sockets get their own subscription; relayed clients receive
+        // events through the hub's fan-out instead (spec §3.2), so subscribing
+        // here would send N copies up one uplink for N watchers.
+        const unsubscribe =
+          io.mode === "direct"
+            ? entry.session.subscribe((event) => io.send({ type: "event", event }))
+            : () => {};
         ctx = { project, entry, userId: msg.userId, unsubscribe };
-        project.watchers.add(ws);
+        if (io.watcher) project.watchers.add(io.watcher);
         const glyph =
           typeof msg.glyph === "string" && ALLOWED_GLYPHS.has(msg.glyph)
             ? msg.glyph
@@ -435,7 +462,7 @@ export async function startServer(opts: {
         }
         // Immediate personal snapshot so the sidebar isn't blank until the
         // next throttled push.
-        ws.send(JSON.stringify(snapshotFor(project)));
+        if (io.mode === "direct") io.send(snapshotFor(project));
         return;
       }
 
@@ -446,12 +473,10 @@ export async function startServer(opts: {
           return sendError("peek requires a valid projectId");
         }
         const project = projects.get(projectId);
-        ws.send(
-          JSON.stringify(
-            project
-              ? snapshotFor(project)
-              : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: repo && { defaultBranch: repo.defaultBranch, key: repo.key }, oversight: { enabled: false, latest: null } },
-          ),
+        io.send(
+          project
+            ? snapshotFor(project)
+            : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: repo && { defaultBranch: repo.defaultBranch, key: repo.key }, oversight: { enabled: false, latest: null } },
         );
         return;
       }
@@ -462,16 +487,14 @@ export async function startServer(opts: {
         }
         const result = invites.peek(msg.token);
         if (!result.ok) return sendError(result.error);
-        ws.send(
-          JSON.stringify({
-            type: "invite_info",
-            projectId: result.invite.projectId,
-            sessionId: result.invite.sessionId,
-            inviterName: result.invite.createdByName,
-            expiresAt: result.invite.expiresAt,
-            remaining: result.invite.maxUses - result.invite.redeemedBy.size,
-          }),
-        );
+        io.send({
+          type: "invite_info",
+          projectId: result.invite.projectId,
+          sessionId: result.invite.sessionId,
+          inviterName: result.invite.createdByName,
+          expiresAt: result.invite.expiresAt,
+          remaining: result.invite.maxUses - result.invite.redeemedBy.size,
+        });
         return;
       }
 
@@ -482,10 +505,12 @@ export async function startServer(opts: {
           return sendError("watch_project requires a valid projectId");
         }
         const project = getOrCreateProject(projectId);
-        if (watching) watching.watchers.delete(ws);
-        project.watchers.add(ws);
+        if (io.watcher) {
+          if (watching) watching.watchers.delete(io.watcher);
+          project.watchers.add(io.watcher);
+        }
         watching = project;
-        ws.send(JSON.stringify(snapshotFor(project)));
+        io.send(snapshotFor(project));
         return;
       }
 
@@ -521,7 +546,7 @@ export async function startServer(opts: {
         const project = getOrCreateProject(projectId);
         if (project.sessions.has(slug)) {
           // Matches provision idempotence (spec §3): existing session acks.
-          ws.send(JSON.stringify({ type: "session_created", sessionId: slug }));
+          io.send({ type: "session_created", sessionId: slug });
           return;
         }
         if (!repo) return sendError("server not launched in a repo");
@@ -533,7 +558,7 @@ export async function startServer(opts: {
         if (!result.ok) return sendError(result.error);
         const entry = getOrCreateSession(project, slug, result.workdir);
         if ("error" in entry) return sendError(entry.error);
-        ws.send(JSON.stringify({ type: "session_created", sessionId: slug }));
+        io.send({ type: "session_created", sessionId: slug });
         // Deliberate user action, not a hot stream — immediate push (same
         // rationale as add_plugin).
         pushProject(project);
@@ -573,7 +598,7 @@ export async function startServer(opts: {
 
       if (msg.type === "take_wheel") {
         // leave_session deliberately leaves ctx live (nulling it would skip
-        // ctx.unsubscribe() / ctx.project.watchers.delete(ws) and leak both),
+        // ctx.unsubscribe() / ctx.project.watchers.delete(...) and leak both),
         // so a departed user can still be connected here — e.g. a second tab
         // of the same signed-in user, since auth replaces userId with the
         // verified login. Without this guard they could drive while absent
@@ -894,20 +919,58 @@ export async function startServer(opts: {
       }
 
       sendError(`unknown message type: ${String(msg.type)}`);
-    });
+    };
 
-    ws.on("close", () => {
+    const close = (): void => {
       if (watching) {
-        watching.watchers.delete(ws);
+        if (io.watcher) watching.watchers.delete(io.watcher);
         watching = null;
       }
       if (ctx) {
         ctx.unsubscribe();
-        ctx.project.watchers.delete(ws);
+        if (io.watcher) ctx.project.watchers.delete(io.watcher);
         ctx.entry.session.leave(ctx.userId);
         ctx = null;
       }
+    };
+
+    return { handleMessage, close };
+  }
+
+  wss.on("connection", (ws: WebSocket, upgradeReq: IncomingMessage) => {
+    const conn = createConnection({
+      mode: "direct",
+      // Guarded here rather than at every call site: a socket can close
+      // between an append and its fan-out, and a send on a closed socket
+      // throws.
+      send: (msg) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+      },
+      watcher: ws,
+      // Captured once: the cookie cannot change for the life of this socket.
+      cookieHeader: upgradeReq.headers.cookie,
     });
+
+    // Without a listener, an "error" event on this socket would be an
+    // unhandled EventEmitter error and crash the whole process. Cleanup
+    // (unsubscribe/leave) is handled by "close", which always follows an
+    // "error" event on a ws socket.
+    ws.on("error", (err: NodeJS.ErrnoException) => {
+      void err?.code;
+    });
+
+    ws.on("message", (raw) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch {
+        ws.send(JSON.stringify({ type: "error", message: "invalid JSON" }));
+        return;
+      }
+      conn.handleMessage(msg);
+    });
+
+    ws.on("close", () => conn.close());
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -926,6 +989,9 @@ export async function startServer(opts: {
 
   return {
     port,
+    // The transport seam: the direct WebSocket adapter above is one caller,
+    // the hub uplink is the other.
+    createConnection,
     close: () =>
       new Promise<void>((resolve, reject) => {
         overseer.dispose();

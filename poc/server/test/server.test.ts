@@ -2464,3 +2464,105 @@ describe("session lifecycle", () => {
     wsBen.close();
   });
 });
+
+describe("relay-mode connections", () => {
+  it("accepts a stamped identity instead of a cookie, and never lets the payload override it", async () => {
+    // The trust inversion (spec §3.5 rule 1): under the relay the HUB has
+    // already verified who is speaking, so the laptop takes identity from the
+    // stamp. A payload that claims someone else must be discarded exactly as
+    // a cookie-verified join discards a forged userId today.
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const sent: unknown[] = [];
+    const conn = server.createConnection({
+      mode: "relay",
+      send: (m) => sent.push(m),
+      stampedIdentity: { userId: "ana", name: "ana" },
+    });
+    conn.handleMessage({ type: "join", sessionId: "s1", userId: "totally-not-ana", name: "Mallory" });
+
+    expect(JSON.stringify(sent)).not.toContain("totally-not-ana");
+    expect(JSON.stringify(sent)).not.toContain("Mallory");
+  });
+
+  it("writes the stamped identity, not the claimed one, into the session log", async () => {
+    // The assertion above can only observe what a relay connection is sent,
+    // and a relay connection is sent nothing on join. This one reads the
+    // overwrite back out of the log a direct client replays, so the trust
+    // inversion is actually witnessed rather than assumed.
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const relay = server.createConnection({
+      mode: "relay",
+      send: () => {},
+      stampedIdentity: { userId: "ana", name: "ana" },
+    });
+    relay.handleMessage({ type: "join", sessionId: "s1b", userId: "totally-not-ana", name: "Mallory" });
+
+    const seen: any[] = [];
+    const direct = server.createConnection({ mode: "direct", send: (m) => seen.push(m) });
+    direct.handleMessage({ type: "join", sessionId: "s1b", userId: "ben", name: "Ben" });
+
+    const joins = seen
+      .filter((m) => m.type === "event" && m.event?.type === "presence_join")
+      .map((m) => m.event);
+    expect(joins.some((e: any) => e.userId === "ana" && e.name === "ana")).toBe(true);
+    expect(JSON.stringify(joins)).not.toContain("totally-not-ana");
+    expect(JSON.stringify(joins)).not.toContain("Mallory");
+  });
+
+  it("does not replay the log or subscribe per client in relay mode", async () => {
+    // The hub owns replay and fan-out (spec §3.2). If the laptop also replayed
+    // and subscribed per browser, a session with six watchers would push six
+    // copies of every event up one uplink — the exact cost the two-plane
+    // design exists to avoid.
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const direct: any[] = [];
+    const dconn = server.createConnection({ mode: "direct", send: (m) => direct.push(m) });
+    dconn.handleMessage({ type: "join", sessionId: "s2", userId: "ana", name: "ana" });
+    const directEvents = direct.filter((m) => m.type === "event").length;
+    expect(directEvents).toBeGreaterThan(0);
+
+    const relayed: any[] = [];
+    const rconn = server.createConnection({
+      mode: "relay",
+      send: (m) => relayed.push(m),
+      stampedIdentity: { userId: "ben", name: "ben" },
+    });
+    rconn.handleMessage({ type: "join", sessionId: "s3", userId: "ben", name: "ben" });
+    expect(relayed.filter((m: any) => m.type === "event")).toHaveLength(0);
+    expect(relayed.filter((m: any) => m.type === "project")).toHaveLength(0);
+  });
+
+  it("still enforces the driver gate for a relayed participant", async () => {
+    // Approval authority comes from presence, not from transport (spec §2.9).
+    // The gate rules are laptop-local and unchanged (spec §3.5 rule 3).
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const a: any[] = [];
+    const b: any[] = [];
+    const ana = server.createConnection({ mode: "relay", send: (m) => a.push(m), stampedIdentity: { userId: "ana", name: "ana" } });
+    ana.handleMessage({ type: "join", sessionId: "s4", userId: "ana", name: "ana" });
+    const ben = server.createConnection({ mode: "relay", send: (m) => b.push(m), stampedIdentity: { userId: "ben", name: "ben" } });
+    ben.handleMessage({ type: "join", sessionId: "s4", userId: "ben", name: "ben" });
+
+    ben.handleMessage({ type: "prompt", text: "hi" });
+    expect(b.some((m) => m.type === "error" && /not driving/.test(m.message))).toBe(true);
+  });
+
+  it("drops the participant on close, exactly as a socket close does", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const sent: any[] = [];
+    const conn = server.createConnection({ mode: "relay", send: (m) => sent.push(m), stampedIdentity: { userId: "ana", name: "ana" } });
+    conn.handleMessage({ type: "join", sessionId: "s5", userId: "ana", name: "ana" });
+    conn.close();
+    conn.close(); // idempotent — a relay channel can be torn down twice
+    expect(sent.some((m) => m.type === "error")).toBe(false);
+  });
+});
