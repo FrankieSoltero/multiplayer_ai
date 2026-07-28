@@ -4,9 +4,9 @@
 
 ---
 
-## 🚀 START HERE — v7b1 IS MID-EXECUTION. RESUME THE SDD LOOP AT TASK 5's SCOPED RE-REVIEW.
+## 🚀 START HERE — v7b1 IS MID-EXECUTION. TASKS 1–5 ARE MERGED. START AT TASK 6.
 
-**You are on `feature/v7b1-hub-relay-spine`, branched from `main` at `18900ff`. Tasks 1–4 are complete and reviewed clean. Task 5's fix round is COMMITTED but its scoped re-review has NOT been run. Tasks 6, 7, 8 are untouched.**
+**You are on `feature/v7b1-hub-relay-spine` at `01a46d6`. Tasks 1–5 are complete, reviewed clean, and MERGED to `main` at `c1f3661` via PR #19. The branch is identical in content to `main` (`main` is just the merge commit on top of it). Tasks 6, 7 and 8 remain and continue on this same branch; a fresh PR covers the remainder. NOTHING is half-done — Task 6 has not started.**
 
 **THE LEDGER IS YOUR RECOVERY MAP — READ IT BEFORE ANYTHING ELSE:**
 `.superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/progress.md`. It ends with a `>>> RESUME POINT`
@@ -29,8 +29,8 @@ v7 plans) → merged **v7a2** (`/exit` + session leave) → merged the workdir-g
 | 2 · one producer for session facts | `e894dda` | ✅ complete, review clean |
 | 3 · `poc/hub` package + shared-module seam | `22c9ded` | ✅ complete, review clean |
 | 4 · `hubStore.ts` | `43f54d5`, `9ca5db3` | ✅ complete, review clean |
-| 5 · `ConnectionIO` extraction | `d5aaca4`, `83bbf65` | **fix landed, RE-REVIEW NOT RUN** |
-| 6 · `relay.ts` uplink | — | not started (brief not yet extracted) |
+| 5 · `ConnectionIO` extraction | `d5aaca4`, `83bbf65` | ✅ complete, review clean |
+| 6 · `relay.ts` uplink | — | **not started ← YOU ARE HERE** |
 | 7 · hub WebSocket surface | — | not started |
 | 8 · `mpai --hub` + two-process walk | — | not started |
 
@@ -38,21 +38,27 @@ v7 plans) → merged **v7a2** (`/exit` + session leave) → merged the workdir-g
 
 **THE VERY NEXT ACTION, concretely** (SDD scripts live at
 `~/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/`):
-1. `bash <scripts>/review-package docs/superpowers/plans/2026-07-27-v7b1-hub-relay-spine.md d5aaca4 83bbf65`
-2. Dispatch `re-review-prompt.md` on **sonnet** with the three Task 5 findings verbatim from the
-   ledger, the brief, the report file, and the printed diff path. Tell it what counts as
-   OVERSHOOTING: any change to the direct path, to the join-order sequence, to
-   `pushProject`/`schedulePush`, or inventing a relay ack (that is Task 6's job).
-3. If clean → ledger `Task 5: complete (commits 9ca5db3..83bbf65, review clean)` → `scripts/task-brief … 6` → Task 6.
+1. **The Task 6 brief is ALREADY EXTRACTED** at
+   `.superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/task-6-brief.md` (690 lines, the largest in
+   the plan). Do not re-run `task-brief` for 6 — just dispatch.
+2. **Record `BASE=01a46d6`** before dispatching; the review package needs it (never `HEAD~1`).
+3. Dispatch the implementer on **opus**. Task 6 is the biggest remaining piece — a networking
+   module with reconnect semantics — and the plan's riskiest unknowns are in the transport.
+4. Then: task review on **opus** (same risk argument) → fix loop if needed → Task 7 → Task 8 →
+   whole-branch review on **opus** over `git merge-base main HEAD`..HEAD → new PR.
+5. Every implementer dispatch must carry: the brief path, the report path, the Global Constraints,
+   the stale-baseline correction, the "trust the symbol not the line number" note, the explicit
+   `git add <paths>` instruction, and the carried gates below.
 
 **Resume & verify — run this first, expect exactly this:**
 
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
-git status -sb                      # feature/v7b1-hub-relay-spine; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
-git log --oneline 18900ff..HEAD     # 8 commits, newest 83bbf65 'fix(server): make a stamp-less relay connection unrepresentable (v7b1)'
-git ls-remote origin refs/heads/main # 18900ff… — trust this over origin/main, which has been observed stale in this repo
-tail -20 .superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/progress.md   # ends with the >>> RESUME POINT block
+git status -sb                      # feature/v7b1-hub-relay-spine, in sync with origin; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
+git log --oneline -1                # 01a46d6 'docs: HANDOFF — PR-first bends for long-running tasks (§7g amended)'
+git ls-remote origin refs/heads/main # c1f3661… (merge of PR #19) — trust this over origin/main, which has been observed stale in this repo
+git log --oneline 18900ff..HEAD     # 10 commits = v7b1 Tasks 1-5 + two HANDOFF commits
+tail -25 .superpowers/sdd/2026-07-27-v7b1-hub-relay-spine/progress.md   # ends with the >>> RESUME POINT block for Task 6
 cd poc/server && npx tsc --noEmit && npx vitest run   # 385 passed, 19 files, ~26s, output pristine
 cd ../hub    && npx tsc --noEmit && npx vitest run    # 17 passed
 cd ../server && npm run build && ls dist/main.js      # TOP level, not dist/src/main.js
@@ -60,8 +66,9 @@ git diff --numstat 18900ff -- poc/server/test/        # every pre-existing test 
 lsof -nP -iTCP:3001 -sTCP:LISTEN                      # expect empty; nothing of session #14's is running
 ```
 
-**The branch is LOCAL ONLY — nothing has been pushed and no PR exists for v7b1.** Pushing/PRing is
-a user decision (see §7g, still unanswered: whether feature work should be PR-first from now on).
+**PR #19 (Tasks 1–5) is MERGED and the branch is pushed.** Tasks 6–8 continue on the same branch
+and get a **fresh PR** at the end — see §7g for the PR-first rule and its long-running-task
+amendment. Do not merge that PR without being asked.
 
 **PRE-FLIGHT FACT THAT BINDS EVERY REMAINING TASK: the plan's stated baselines are STALE.** Global
 Constraints say "server 345 tests, client 179"; that was `main` at `a6e9d76`, before v7a2 and the
@@ -93,8 +100,11 @@ tell implementers to trust the symbol over the line number.
 
 **THREE GATES CARRIED INTO TASK 6, from Task 5's review — put these in the Task 6 dispatch:**
 - **A relay join emits nothing on success.** No replay, no snapshot, no ack. Task 6 has only
-  "absence of an error" as its success signal, indistinguishable from a dropped frame. **Task 6
-  must invent an ack.** Task 5 was right not to.
+  "absence of an error" as its success signal, indistinguishable from a dropped frame. Task 5 was
+  right not to solve it there. **But the brief governs**: if the Task 6 brief specifies no success
+  signal, the implementer should REPORT that as a concern rather than inventing an ack, which
+  would be scope creep. Do not phrase the dispatch as "Task 6 must invent an ack" — phrase it as
+  "here is the gap; the brief decides."
 - **A relay join still requires `userId` and `name` in the payload** even though both are
   immediately overwritten by the stamp — the `typeof` triple at `server.ts:367-373` runs before the
   overwrite. Task 6's uplink must forward them or synthesize placeholders.
@@ -237,7 +247,7 @@ We are ON `main`, pushed and in sync with origin. No dev stack running (:3001 an
 
 ## 0. WHERE WE ARE
 
-- **CURRENT AS OF SESSION #14 (2026-07-28): `main` is `18900ff`, pushed** — it now carries PR #18's four v7 plans (`be3b1b2`), v7a2 (`/exit` + session leave), and the workdir-guard fix. **Baselines on main: server 362 / client 207**, tsc clean both, client build clean. Work is happening on `feature/v7b1-hub-relay-spine` (local only, 8 commits, see the top of this file). **Every baseline figure below this line is historical and superseded.**
+- **CURRENT AS OF SESSION #14 (2026-07-28): `main` is `c1f3661`, pushed.** It carries PR #18's four v7 plans (`be3b1b2`), v7a2 (`/exit` + session leave), the workdir-guard fix (together `18900ff`), and PR #19 — **v7b1 Tasks 1–5** (`c1f3661`). **Baselines on main: server 385 / hub 17 / client 207**, tsc clean in all three, client build clean, `dist/main.js` top level. Work continues on `feature/v7b1-hub-relay-spine` (pushed, in sync, identical content to main). **Every baseline figure below this line is historical and superseded.**
 - **main** (pushed to origin; `0450c8d` = merge of A3, `ed09d9f` = sign-out, `0283e14` = merge of A2a, `f33ce06` = merge of A1a). Everything below is ON MAIN and verified there: session launcher + `mpai` CLI, oversight agent, invite system, arcade with Tetris + Doodle Jump, arrow-key navigation, header-clip fix, model-picker fix, **and A1a deployment wiring**. **Baselines on main now: server 305 tests / client 160 tests**, both `tsc --noEmit` clean, client build clean. (Earlier baselines of 297/147, 227/120, 116/215, 161/72 and 84/99 are all superseded.)
 - `mpai` is globally runnable via symlink `~/.local/bin/mpai → poc/server/bin/mpai.js` (machine setup, not in repo; npm link needs sudo here).
 - **Nothing running.** :3001 and :5173 both freed at the end of session #6d.
