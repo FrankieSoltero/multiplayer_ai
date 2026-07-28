@@ -25,7 +25,7 @@ describe("HubStore event keying", () => {
     // seq to 0. Keyed by seq alone the hub would silently overwrite real
     // history. Keyed by (runId, seq) it appends a second run.
     const store = new HubStore();
-    store.attach("lap-1", "default", "github.com/acme/api");
+    store.attach("lap-1", "default", "github.com/acme/api", "2026-07-28T10:00:00.000Z");
     store.publish("lap-1", "auth", "run-a", [ev(0), ev(1), ev(2)]);
     store.publish("lap-1", "auth", "run-b", [ev(0), ev(1)]);
 
@@ -39,7 +39,7 @@ describe("HubStore event keying", () => {
     // A reconnecting laptop that resumes from the wrong offset must not
     // duplicate the log for everyone watching.
     const store = new HubStore();
-    store.attach("lap-1", "default", "k");
+    store.attach("lap-1", "default", "k", "2026-07-28T10:00:00.000Z");
     store.publish("lap-1", "auth", "run-a", [ev(0), ev(1)]);
     store.publish("lap-1", "auth", "run-a", [ev(0), ev(1), ev(2)]);
     expect(store.eventsFor("default", "auth", 0)).toHaveLength(3);
@@ -47,14 +47,14 @@ describe("HubStore event keying", () => {
 
   it("reports resume offsets per session so a reconnect replays only the gap", () => {
     const store = new HubStore();
-    store.attach("lap-1", "default", "k");
+    store.attach("lap-1", "default", "k", "2026-07-28T10:00:00.000Z");
     store.publish("lap-1", "auth", "run-a", [ev(0), ev(1), ev(2)]);
     expect(store.resumeOffsets("lap-1")).toEqual({ auth: { runId: "run-a", lastSeq: 2 } });
   });
 
   it("serves events from an id, so a late browser gets only what it is missing", () => {
     const store = new HubStore();
-    store.attach("lap-1", "default", "k");
+    store.attach("lap-1", "default", "k", "2026-07-28T10:00:00.000Z");
     store.publish("lap-1", "auth", "run-a", [ev(0), ev(1), ev(2)]);
     expect(store.eventsFor("default", "auth", 2).map((e) => e.id)).toEqual([3]);
   });
@@ -65,7 +65,7 @@ describe("HubStore event keying", () => {
     // elements — or an object whose `seq` is out of range. publish() must
     // degrade them all to "skipped", not throw and not store them.
     const store = new HubStore();
-    store.attach("lap-1", "default", "k");
+    store.attach("lap-1", "default", "k", "2026-07-28T10:00:00.000Z");
     let accepted: unknown;
     expect(() => {
       accepted = store.publish("lap-1", "auth", "run-a", [
@@ -92,7 +92,7 @@ describe("HubStore event keying", () => {
     // repairing it: the laptop replays from 9e99, which is an empty slice.
     // Only a hub restart clears it.
     const store = new HubStore();
-    store.attach("lap-1", "default", "k");
+    store.attach("lap-1", "default", "k", "2026-07-28T10:00:00.000Z");
     store.publish("lap-1", "auth", "run-a", [ev(0), { ...ev(1), seq: 9e99 } as any]);
     store.publish("lap-1", "auth", "run-a", [ev(1), ev(2)]);
 
@@ -106,7 +106,7 @@ describe("HubStore presence and ownership", () => {
     // The payoff of the hub: sessions survive a laptop disconnecting. What
     // must NOT survive is the illusion that they can be driven.
     const store = new HubStore();
-    store.attach("lap-1", "default", "k");
+    store.attach("lap-1", "default", "k", "2026-07-28T10:00:00.000Z");
     store.setFacts("lap-1", "auth", "run-a", facts());
     expect(store.snapshot("default").sessions[0].presence).toBe("online");
 
@@ -118,8 +118,8 @@ describe("HubStore presence and ownership", () => {
 
   it("routes a command to the laptop that owns the session", () => {
     const store = new HubStore();
-    store.attach("lap-1", "default", "github.com/acme/api");
-    store.attach("lap-2", "default", "github.com/acme/web");
+    store.attach("lap-1", "default", "github.com/acme/api", "2026-07-28T10:00:00.000Z");
+    store.attach("lap-2", "default", "github.com/acme/web", "2026-07-28T10:00:00.000Z");
     store.setFacts("lap-1", "auth", "run-a", facts({ id: "auth" }));
     store.setFacts("lap-2", "ui", "run-b", facts({ id: "ui", repoKey: "github.com/acme/web" }));
     expect(store.ownerOf("default", "auth")).toBe("lap-1");
@@ -132,9 +132,9 @@ describe("HubStore presence and ownership", () => {
     // called "auth". v7b1 rejects the collision rather than silently merging
     // two machines' streams into one row. Hub-scoped session ids are v7c.
     const store = new HubStore();
-    store.attach("lap-1", "default", "k1");
+    store.attach("lap-1", "default", "k1", "2026-07-28T10:00:00.000Z");
     store.setFacts("lap-1", "auth", "run-a", facts());
-    store.attach("lap-2", "default", "k2");
+    store.attach("lap-2", "default", "k2", "2026-07-28T10:00:00.000Z");
     expect(store.setFacts("lap-2", "auth", "run-z", facts())).toEqual({
       ok: false,
       error: 'session "auth" in project "default" is already owned by another machine',
@@ -143,10 +143,10 @@ describe("HubStore presence and ownership", () => {
 
   it("lets a reconnecting laptop reclaim its own session ids", () => {
     const store = new HubStore();
-    store.attach("lap-1", "default", "k");
+    store.attach("lap-1", "default", "k", "2026-07-28T10:00:00.000Z");
     store.setFacts("lap-1", "auth", "run-a", facts());
     store.detach("lap-1");
-    store.attach("lap-1", "default", "k");
+    store.attach("lap-1", "default", "k", "2026-07-28T10:00:00.000Z");
     expect(store.setFacts("lap-1", "auth", "run-b", facts())).toEqual({ ok: true });
   });
 });
@@ -156,8 +156,8 @@ describe("HubStore snapshot assembly", () => {
     // Only the hub sees every laptop, so only the hub can build this. It is
     // the thing four servers and four URLs could never do.
     const store = new HubStore();
-    store.attach("lap-1", "default", "github.com/acme/api");
-    store.attach("lap-2", "default", "github.com/acme/web");
+    store.attach("lap-1", "default", "github.com/acme/api", "2026-07-28T10:00:00.000Z");
+    store.attach("lap-2", "default", "github.com/acme/web", "2026-07-28T10:00:00.000Z");
     store.setFacts("lap-1", "auth", "run-a", facts({ id: "auth", repoKey: "github.com/acme/api" }));
     store.setFacts("lap-2", "ui", "run-b", facts({ id: "ui", repoKey: "github.com/acme/web" }));
 
@@ -172,8 +172,8 @@ describe("HubStore snapshot assembly", () => {
 
   it("aggregates arcade records across every attached laptop", () => {
     const store = new HubStore();
-    store.attach("lap-1", "default", "k");
-    store.attach("lap-2", "default", "k2");
+    store.attach("lap-1", "default", "k", "2026-07-28T10:00:00.000Z");
+    store.attach("lap-2", "default", "k2", "2026-07-28T10:00:00.000Z");
     store.setFacts("lap-1", "auth", "run-a", facts({ id: "auth" }));
     store.setFacts("lap-2", "ui", "run-b", facts({ id: "ui" }));
     store.publish("lap-1", "auth", "run-a", [
@@ -220,7 +220,7 @@ describe("HubStore snapshot assembly", () => {
 
   it("deep-copies session facts so mutating a returned snapshot cannot reach stored state", () => {
     const store = new HubStore();
-    store.attach("lap-1", "default", "k");
+    store.attach("lap-1", "default", "k", "2026-07-28T10:00:00.000Z");
     store.setFacts(
       "lap-1",
       "auth",
@@ -244,5 +244,68 @@ describe("HubStore snapshot assembly", () => {
       toolName: "bash",
       sinceTs: "2026-07-27T00:00:00.000Z",
     });
+  });
+});
+
+describe("HubStore project registry", () => {
+  const T = "2026-07-28T10:00:00.000Z";
+
+  it("creates a project with a name and its creator as the first member", () => {
+    const store = new HubStore();
+    expect(store.createProject("acme", "Acme Migration", "ana", T)).toEqual({ ok: true });
+    expect(store.isMember("acme", "ana")).toBe(true);
+    expect(store.lifecycleOf("acme")).toBe("active");
+  });
+
+  it("refuses to create a project that already exists", () => {
+    const store = new HubStore();
+    store.createProject("acme", "Acme Migration", "ana", T);
+    const again = store.createProject("acme", "Someone Else's", "bo", T);
+    expect(again.ok).toBe(false);
+  });
+
+  it("auto-creates a project when a machine attaches to one nobody named", () => {
+    // The launch-time seam (spec §9): `mpai --hub <url> --project acme` may
+    // name a project that does not exist yet. It must appear, not vanish.
+    const store = new HubStore();
+    store.attach("lap-1", "acme", "github.com/acme/api", "2026-07-28T10:00:00.000Z");
+    expect(store.lifecycleOf("acme")).toBe("active");
+    // Auto-created, so nobody is a member and the display name is the slug.
+    expect(store.isMember("acme", "ana")).toBe(false);
+  });
+
+  it("does not resurrect a project's membership when a machine re-attaches", () => {
+    const store = new HubStore();
+    store.createProject("acme", "Acme Migration", "ana", T);
+    store.leaveProject("acme", "ana");
+    store.attach("lap-1", "acme", "k", "2026-07-28T10:00:00.000Z");
+    expect(store.isMember("acme", "ana")).toBe(false);
+  });
+
+  it("joins and leaves membership idempotently", () => {
+    const store = new HubStore();
+    store.createProject("acme", "Acme", "ana", T);
+    expect(store.joinProject("acme", "bo")).toBe(true);
+    expect(store.joinProject("acme", "bo")).toBe(false);
+    expect(store.isMember("acme", "bo")).toBe(true);
+    expect(store.leaveProject("acme", "bo")).toBe(true);
+    expect(store.leaveProject("acme", "bo")).toBe(false);
+    expect(store.isMember("acme", "bo")).toBe(false);
+  });
+
+  it("refuses membership and lifecycle changes on a project that does not exist", () => {
+    const store = new HubStore();
+    expect(store.joinProject("nope", "ana")).toBe(false);
+    expect(store.lifecycleOf("nope")).toBe(null);
+    expect(store.setLifecycle("nope", "closed").ok).toBe(false);
+  });
+
+  it("moves through the lifecycle and back", () => {
+    const store = new HubStore();
+    store.createProject("acme", "Acme", "ana", T);
+    expect(store.setLifecycle("acme", "closed")).toEqual({ ok: true });
+    expect(store.lifecycleOf("acme")).toBe("closed");
+    expect(store.setLifecycle("acme", "active")).toEqual({ ok: true });
+    expect(store.lifecycleOf("acme")).toBe("active");
   });
 });

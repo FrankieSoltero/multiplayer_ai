@@ -182,7 +182,7 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         uplinkId = frame.uplinkId;
         projectId = frame.projectId;
         uplinks.set(frame.uplinkId, socket);
-        store.attach(frame.uplinkId, frame.projectId, frame.repoKey);
+        store.attach(frame.uplinkId, frame.projectId, frame.repoKey, new Date().toISOString());
         down(socket, {
           t: "welcome",
           v: RELAY_PROTOCOL_VERSION,
