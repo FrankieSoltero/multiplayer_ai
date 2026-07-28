@@ -274,11 +274,21 @@ describe("HubStore project registry", () => {
     expect(store.isMember("acme", "ana")).toBe(false);
   });
 
-  it("does not resurrect a project's membership when a machine re-attaches", () => {
+  it("does not overwrite an existing project's record when a machine re-attaches", () => {
+    // ensureProject must not touch a record that already exists — attaching a
+    // laptop is not a person creating or rejoining a project. `isMember`
+    // alone can't prove this: "ana" already left, so it reads `false` under
+    // both a correct guard and a buggy unconditional overwrite. Lifecycle is
+    // the state a fresh auto-created record would NOT carry (it is always
+    // "active"), so setting it to a non-default value before the re-attach
+    // and asserting it survives is what actually discriminates "left alone"
+    // from "silently replaced".
     const store = new HubStore();
     store.createProject("acme", "Acme Migration", "ana", T);
     store.leaveProject("acme", "ana");
+    store.setLifecycle("acme", "closed");
     store.attach("lap-1", "acme", "k", "2026-07-28T10:00:00.000Z");
+    expect(store.lifecycleOf("acme")).toBe("closed");
     expect(store.isMember("acme", "ana")).toBe(false);
   });
 
