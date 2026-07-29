@@ -391,14 +391,12 @@ becoming an arbitrary-path read primitive.
 
 *What:* the unit of agent work, and spawning sub-agents within it.
 
-*Today:* sessions are complete and work well. Sub-sessions do not exist as a product concept. You
-cannot create a session from the hub at all: `create_session` is not in `HUB_HANDLED` (`hub.ts:18`),
-`tunnel()` refuses anything before a join (`hub.ts:285`), and the hub reports `repo: null` so
-the form is disabled (`SessionPicker.tsx:99-101`). This is the break that sent people back to a
-`localhost` tab.
+*Today:* sessions are complete and work well. Creating a session from the hub now works — the
+projects branch (PR #22) routes `create_session` to the machine offering the chosen repo and
+narrowcasts the reply back (`hub.ts:494-546`), closing the break that sent people back to a
+`localhost` tab. Sub-sessions do not exist as a product concept.
 
-*Final state:* create a session from the hub, choosing a repo. Spawn sub-sessions and swap between
-them (D8).
+*Final state:* spawn sub-sessions and swap between them (D8).
 
 *Open:* does a sub-session get its own worktree (isolated and mergeable) or share its parent's
 (fast, but two agents writing one tree)?

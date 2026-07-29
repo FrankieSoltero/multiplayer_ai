@@ -4,7 +4,7 @@
 
 ---
 
-## 🚀 START HERE — `docs/PRD.md` IS THE PLAN OF RECORD. PRD §8.2 ("projects") IS BUILT, REVIEWED AND PUSHED. **ONE DECISION IS WAITING ON YOU.**
+## 🚀 START HERE — `docs/PRD.md` IS THE PLAN OF RECORD. PRD §8.2 ("projects") IS SHIPPED: **PR #22 IS OPEN — DO NOT MERGE IT YOURSELF.** Next: pick the next §8 section and run its brainstorm → spec → plan.
 
 The `v7a → v7b1 → … → v7e` chain is **dead**; PRD §8 has ten named sections, each getting its own
 brainstorm → spec → plan. Session #16 wrote the PRD. **Session #17 executed all 13 tasks of the
@@ -66,29 +66,38 @@ Important + two minors are fixed in `2efe6a2`.
   viewers (the hub broadcasts via `pushProjects()`, `hub.ts:392`). Harmless solo (one browser);
   recorded so it isn't rediscovered as a regression.
 
-### ⛔ RESUME HERE — ONE DECISION (I3), then Task 13
+### ✅ I3 RESOLVED (user ruling, session #18) + ✅ TASK 13 DONE — PR #22 OPEN
 
-- **I3 — NEEDS THE USER'S DECISION, do not guess.** `main.ts`'s deployed no-workspace mode now
-  returns `"no-machine"` where it used to return `null`, so the deployed box hides NEW SESSION,
-  turns every JOIN into WATCH, and advises *"run `mpai --hub <url> --project <id>`"* — the exact
-  dead-end this ruling set out to kill, in a mode with no hub either. Net change: disabled-button →
-  misleading refusal. **TRAP: reporting a machine with `repoKey: ""` makes it worse** — `chosenRepo`
-  becomes `""` and CREATE re-enables onto a server that cannot provision. `deploy/RUNBOOK.md` has
-  never been executed, so this is not urgent — but it is a design call, not a one-liner.
-  The user was asked at the end of session #18 — check the conversation for their answer before
-  asking again.
+- **I3:** the user ruled **option 1 — ship as-is**. Recorded with the `repoKey:""` trap in
+  `docs/tech-debt.md` §2.6, disclosed in PR #22's body. Do not re-open; a future fix starts from
+  that debt entry.
+- **Task 13:** walked THREE ways (ledger has the full record): `--project acme` (all 8 items),
+  no `--project` at all (F1's whole surface verified live against `default`), and solo
+  (I4's one-item entrance, C5's printed URL, JOIN landing in-session). New walk findings W1-W4
+  in the ledger; W1 matters for docs: **the brief's hub command needs
+  `CLIENT_DIST=<poc/client/dist>` and the hub reads `PORT`, not `--port`** — as written the hub
+  serves a 404 and no browser walk is possible.
+- **PR #22** (`feat: projects — the container (PRD §8.2 + §5.1)`) is open against `main` with
+  the §5.2/§4.1 gap, I3, debt §2.4, spec §10 Q1 and the create_session bound disclosed.
+  **Merging is the user's call, never yours.**
 
 ### ➡️ ORDERED NEXT STEPS — do these in this order
 
-1. **Get the I3 ruling from the user** (above). Implement or log it per their call.
-2. **Task 13**: amend the walkthrough to run Step 2 twice (once `--project acme`, once with no
-   `--project`), walk it, then open the PR with the §5.2/§4.1 surface gap disclosed in the body.
+1. **Pick the next PRD §8 section WITH THE USER** (PRD §8 preamble: listing order is not build
+   order; ordering is a deliberate per-section decision). Session #18's recommendation, put to
+   the user: **§8.3 Machines & repos** — debt §2.3 makes the hub's central promise false after
+   any laptop restart, the walk's UUID machine labels (W4) are the same missing grain, and §8.7's
+   durable record and §8.8's collision grouping would otherwise be built on per-launch UUIDs.
+2. **Run the cycle for the chosen section**: superpowers:brainstorming → spec → writing-plans,
+   as §8.2 was done. Reuse `.superpowers/sdd/<date>-<section>/` for the ledger.
+3. PRD §8.4's "Today" was refreshed in this session (hub create now works); sweep the other
+   section "Today" paragraphs against reality when §8.3 (or whichever) is specced.
 
 ### What is done — `feature/projects` = `origin/feature/projects`, last code commit `2efe6a2`
 
-All 13 tasks complete and reviewed, plus fix wave 2. Base is `main` `0ffeaa3`; `git rev-list
---count 0ffeaa3..2efe6a2` = 43 (an earlier "29 commits" note here was never measured — 80037ec is
-37; trust rev-list). **No PR is open yet** — deliberately held for the I3 ruling above.
+All 13 tasks complete and reviewed, plus fix wave 2, plus the three-way walk. Base is `main`
+`0ffeaa3`; `git rev-list --count 0ffeaa3..2efe6a2` = 43 (an earlier "29 commits" note here was
+never measured — 80037ec is 37; trust rev-list). **PR #22 is OPEN — the merge is the user's.**
 
 ```
 2efe6a2  fix(server): review follow-ups — comment fact, seed guard        ← fix wave 2
@@ -132,7 +141,8 @@ cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
 git status -sb                        # feature/projects, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
 git log --oneline -3                  # docs commits only above 2efe6a2 fix(server): review follow-ups … (the last CODE commit)
 git ls-remote origin refs/heads/main  # 0ffeaa3… — authoritative; the tracking ref has been observed stale in this repo
-for p in 3001 4000 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY
+gh pr view 22 --json state --jq .state # OPEN — do not merge without being asked
+for p in 3001 3002 4000 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY — session #18 stopped everything
 cd poc/server && npx tsc --noEmit && npx vitest run   # 436 passed, 20 files  (was 429 before fix wave 2)
 cd ../hub     && npx tsc --noEmit && npx vitest run   # 83 passed, 4 files
 cd ../client  && npx tsc -b && npx vitest run && npm run build  # 247 passed, 28 files; build clean
@@ -142,11 +152,11 @@ cd ../client  && npx tsc -b && npx vitest run && npm run build  # 247 passed, 28
 `"files": []`. Use **`npx tsc -b`**. Every "client tsc clean" claim made before session #17 found
 this was weaker evidence than it looked.
 
-### Task 13 — walk it, then open the PR (after the I3 ruling)
+### Task 13 — ✅ DONE (session #18). Kept for the amendments' rationale
 
-`.superpowers/sdd/2026-07-28-projects/task-13-brief.md`. Four steps; Step 4's doc corrections are
-**partly done** (`docs/PRD.md`'s stale caveat is fixed in `c302dce`; this file is now current).
-**Next after the I3 ruling** — see ORDERED NEXT STEPS above.
+`.superpowers/sdd/2026-07-28-projects/task-13-brief.md` (now carries Steps 2b/2c, the amended
+default-project and solo walks). All steps executed; results in the ledger's "Task 13 walk"
+entry; PR #22 opened with the disclosures below.
 
 **Amend the walkthrough before running it — the plan's script has a hole.** Step 2 uses
 `--project acme` throughout, so it **never exercises the `default` project**. That is exactly where
