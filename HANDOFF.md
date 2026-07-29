@@ -83,12 +83,14 @@ Important + two minors are fixed in `2efe6a2`.
 
 ### ➡️ ORDERED NEXT STEPS — do these in this order
 
-1. ✅ **SECTION CHOSEN (user, session #18): §8.3 Machines & repos.** Rationale that carried:
-   debt §2.3 makes the hub's central promise false after any laptop restart, the walk's UUID
-   machine labels (W4) are the same missing grain, and §8.7/§8.8 would otherwise be built on
-   per-launch UUIDs. Brainstorm is OPEN — first scoping question (full D4: one daemon per
-   machine + hub-UI repo attach, vs the identity-grain slice first) was put to the user;
-   check the conversation for their answer before re-asking.
+1. ✅ **SECTION CHOSEN (user): §8.3 Machines & repos. BRAINSTORM MID-FLIGHT — six rulings are
+   locked (scope=full D4 one spec; machine=daemon w/ persisted ~/.mpai id; attach=daemon-
+   enumerated list; session ids stay project-unique; detach refused while live; Approach A =
+   protocol v2, one uplink per machine, repos as a set).**
+   **READ `.superpowers/sdd/2026-07-28-machines-repos/brainstorm-state.md` FIRST** — it has all
+   rulings verbatim, the scout's four structural blockers with file:line, and the next action:
+   present the design section-by-section for approval, then spec → writing-plans. Do NOT
+   re-ask the settled questions.
 2. **Run the cycle for the chosen section**: superpowers:brainstorming → spec → writing-plans,
    as §8.2 was done. Reuse `.superpowers/sdd/<date>-<section>/` for the ledger.
 3. PRD §8.4's "Today" was refreshed in this session (hub create now works); sweep the other
