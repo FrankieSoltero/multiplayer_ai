@@ -377,24 +377,49 @@ lifecycle. The entrance screen lists yours.
 
 *What:* one daemon per machine, many repos, attached from the hub.
 
-*Today:* `mpai` binds to one repo fixed at launch from the working directory (`cli.ts:120`), and an
-uplink carries exactly one `repoKey` (`hubStore.ts:23-28`). Session names collide across machines
-in one project — the second is refused outright (`hubStore.ts:100-108`).
+*Today:* shipped (branch `feature/machines-repos`, spec
+`docs/superpowers/specs/2026-07-28-machines-repos-design.md`, unmerged). A machine is a durable
+identity: `~/.mpai/machine.json` (`MPAI_HOME` override) persists `{ machineId, name }` across
+restarts, and `mpai`'s `--machine-name`/`--root` flags give a one-launch display name and an
+allowlisted repo-candidate scan (`machineIdentity.ts`, `machineRepos.ts`). One daemon now offers a
+**set** of repos — `server.ts`'s single `repo` field is retired in favor of `repos: Map<string,
+RepoEntry>` — attached at launch (the cwd repo) or later, from the hub UI's MACHINES panel
+(`MachinesPanel.tsx`: ATTACH/DETACH per repo, candidate-only, blocker-refused while sessions are
+open). The relay protocol bumped to v2 (`RELAY_PROTOCOL_VERSION = 2`, no v1 shim): the hello and
+a new `repos` up-frame carry the machine's name and its full `RepoDecl[]` list, capped at 100 and
+deep-validated element-by-element (`relayProtocol.ts`'s `repoList()`). `create_session` takes an
+optional `machineId` to target one of several machines offering the same repo; the create form
+lists real `(repo, machine)` pairs with per-repo base-ref prefill from `origin/HEAD` (D8/D9).
+Session ids stay project-unique — no machine-scoped keys — so the collision this section used to
+describe was really debt §2.3's restart case (a laptop reappearing under a fresh id looked like a
+second machine fighting over the same session name); with a stable `machineId`, restarting a
+laptop now silently **reclaims** its own sessions instead of colliding with them (debt §2.3,
+dissolved; named tests there). Repo and machine labels render everywhere a UUID or raw key used
+to (walk finding W4, dissolved; `SessionPicker.tsx:213,228-229`), never rendered before this
+branch.
 
-*Final state:* D4. `mpai --hub <url>` runs once per machine; repos are attached and detached from
-the hub UI; session identity is scoped by repo and machine so names stop colliding.
+*Final state:* D4 — reached, with one deliberate refinement recorded in the spec (D4 there): names
+stop colliding via a stable machine identity plus create-time dedupe (`freeSessionName`), not via
+machine-scoped session ids — a smaller change with the same user-facing result. `mpai --hub <url>`
+runs once per machine; repos are attached and detached from the hub UI, exactly as this line
+originally asked.
 
-*Open:* how a machine surfaces a filesystem path picker to a browser it does not serve, without
-becoming an arbitrary-path read primitive.
+*Open:* multi-project machines (one daemon = one hub = one project per launch stands, unchanged
+— spec §10 non-goal); the candidate list is fixed for a daemon's lifetime, so a freshly cloned
+repo needs a restart to appear (spec §4, §12.5).
 
 ### 8.4 Sessions & sub-sessions
 
 *What:* the unit of agent work, and spawning sub-agents within it.
 
 *Today:* sessions are complete and work well. Creating a session from the hub now works — the
-projects branch (PR #22) routes `create_session` to the machine offering the chosen repo and
-narrowcasts the reply back (`hub.ts:494-546`), closing the break that sent people back to a
-`localhost` tab. Sub-sessions do not exist as a product concept.
+projects branch (PR #22) routes `create_session` and narrowcasts the reply back, closing the
+break that sent people back to a `localhost` tab. Machines & repos (§8.3, branch
+`feature/machines-repos`) extended the routing rather than replacing it: `create_session` now
+carries an optional `machineId`, so a repo offered by several online machines is routed to the
+one named instead of a coin-toss first-match, with three distinct refusals (machine unknown,
+offline, or not offering that repo) (`hub.ts:549-613`). Sub-sessions do not exist as a product
+concept.
 
 *Final state:* spawn sub-sessions and swap between them (D8).
 
@@ -427,9 +452,12 @@ behind the driver rather than building new agent machinery.
 
 *What:* D11 — come out knowing what everyone did, losing nothing.
 
-*Today:* the hub's log is **in memory** (`hubStore.ts:38`), so a hub restart loses everything. There
-is no cross-session summary and no continuity across a laptop restart. A closed lid fires no
-graceful shutdown.
+*Today:* the hub's log is **in memory** (`hubStore.ts:38`), so a hub restart loses everything, and
+there is no cross-session summary. **A laptop restart no longer loses continuity** (§8.3, debt
+§2.3 dissolved): a machine's persisted identity lets it silently reclaim its own sessions, which
+survive as `offline` rather than becoming permanently unreachable. What is still missing is a hub
+restart's continuity (unchanged — no durable storage yet) and any graceful-shutdown signal for a
+closed lid (a laptop vanishing and a laptop cleanly restarting still look identical to the hub).
 
 *Final state:* durable hub-side storage; a record built **continuously at turn boundaries**, not
 written at close; a project-scoped summary of what happened, who drove what, what changed, what was
@@ -495,11 +523,19 @@ correctly.** The gap is surface and workflow, not the data model.
 **The concrete gaps between here and §3–§5:**
 
 1. A project has no name, members or lifecycle — it is a hidden URL parameter.
-2. `repoKey` and machine are stored but never rendered, so a multi-repo list reads as flat and
-   unlabelled.
+2. ~~`repoKey` and machine are stored but never rendered, so a multi-repo list reads as flat and
+   unlabelled.~~ **Resolved** (§8.3, branch `feature/machines-repos`): every repo key and machine
+   id renders as a human label everywhere the project screen shows one (walk finding W4,
+   `docs/tech-debt.md` §2.3's closing note).
 3. Sessions cannot be created from the hub.
-4. Session names collide across machines within a project.
-5. An uplink is one machine bound to one repo; D4 needs it to be one machine.
+4. ~~Session names collide across machines within a project.~~ **Narrower than stated, and the
+   live case is resolved**: session ids stay project-unique by design (spec D4) rather than
+   scoped by machine, so a genuine same-name collision between two *different* machines is still
+   refused, correctly. What this line actually described in practice was debt §2.3's restart
+   case — a laptop reappearing under a fresh id looked exactly like that collision — which is
+   dissolved (§8.3).
+5. ~~An uplink is one machine bound to one repo; D4 needs it to be one machine.~~ **Resolved**
+   (D4, §8.3): a machine now offers a set of repos, attached and detached from the hub UI.
 6. The hub trusts the browser's identity claim.
 7. The hub's log does not survive a restart.
 8. Sub-sessions do not exist as a product concept.
@@ -517,15 +553,21 @@ its relay and hub socket surface are the transport this PRD builds on.
 Unresolved and deliberately not invented here.
 
 1. **Sub-session worktrees** — own worktree or share the parent's (§8.4).
-2. **Repo attachment UX** — how a headless machine offers a path picker to a browser it does not
-   serve, without becoming an arbitrary-path read primitive (§8.3).
+2. ~~**Repo attachment UX** — how a headless machine offers a path picker to a browser it does not
+   serve, without becoming an arbitrary-path read primitive (§8.3).~~ **Resolved by refusing to
+   build one** (machines-repos spec D3): a machine offers a fixed, launch-time-scanned candidate
+   list (`--root`/`machine.json` roots), never an arbitrary path.
 3. **Section ordering** — which of §8's sections is picked up first. Not decided by writing this
    document.
-4. **Three v7b1 residuals**, carried and still unanswered: the laptop's uplink fails silently, so a
-   wrong hub URL is indistinguishable from a working one; a relay join emits no success signal; and
-   `uplinkId` is minted per launch, so sessions do not survive a laptop restart. The third is
-   directly in D4's path and likely resolves with it. **Trap recorded:** `repoKey` is not a usable
-   machine identity — with an `origin` present it is byte-identical across every clone by design,
-   so two teammates would silently take over each other's sessions.
+4. **Three v7b1 residuals**, carried: the laptop's uplink fails silently, so a wrong hub URL is
+   indistinguishable from a working one; and a relay join emits no success signal. Both remain
+   unanswered and out of scope for machines & repos (spec §12.3 names the first explicitly as
+   inherited, not fixed). The third — `uplinkId` minted per launch, so sessions did not survive a
+   laptop restart — **is resolved**: it was directly in D4's path and did resolve with it
+   (`docs/tech-debt.md` §2.3). The trap this item used to record — `repoKey` is not a usable
+   machine identity, since with an `origin` present it is byte-identical across every clone by
+   design — is now moot as a *machine*-identity risk: machine identity is `machineId`, persisted
+   independently of `repoKey`, which keeps its original, unrelated job of grouping teammates on
+   the same repo (spec §3.3, D7).
 5. **Terminology migration** — retiring "party" touches client components and CSS class names; when
    to absorb that churn is a scheduling question.
