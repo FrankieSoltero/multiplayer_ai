@@ -696,7 +696,11 @@ export async function startServer(opts: {
               );
               entry.attached = true;
             } catch (err) {
-              // Stay unattached; reply the git error (spec §9).
+              // Stay unattached; reply the git error (spec §9). The default
+              // branch is computed first, so it has to be rolled back too —
+              // an unattached entry advertising a base ref would put a repo
+              // this machine cannot provision in on the create form.
+              entry.defaultBranch = null;
               const message = err instanceof Error ? err.message : String(err);
               return sendError(message.slice(0, 300));
             }

@@ -3206,6 +3206,50 @@ describe("attach and detach repos", () => {
     ws.close();
   });
 
+  it("stays unattached and replies the git error when building the workspace fails", async () => {
+    const api = keyedWorkspace("github.com/acme/api");
+    const server = await startServer({
+      port: 0,
+      runQuery: echoRun,
+      workspace: api,
+      repoCandidates: [{ key: "github.com/acme/web", label: "web", root: "/tmp/web" }],
+      workspaceFor: () => {
+        throw new Error("fatal: not a git repository");
+      },
+      defaultBaseRef: () => "origin/main",
+    });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(100);
+    expect(seen.filter((m) => m.type === "error").map((m) => m.message)).toEqual([
+      "fatal: not a git repository",
+    ]);
+    expect(seen.some((m) => m.type === "repo_attached")).toBe(false);
+
+    // Nothing half-written. `defaultBranch` is computed BEFORE the workspace,
+    // so a failure there must not leave the picker offering a base ref for a
+    // repo this machine cannot provision in (RepoEntry's stated invariant:
+    // both null until attached).
+    ws.send(JSON.stringify({ type: "peek", projectId: "default" }));
+    await wait(100);
+    const snap = [...seen].reverse().find((m) => m.type === "project");
+    expect(declOf(snap.machines[0].repos, "github.com/acme/web")).toEqual({
+      key: "github.com/acme/web",
+      label: "web",
+      attached: false,
+      defaultBranch: null,
+    });
+
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1", repoKey: "github.com/acme/web" }));
+    await wait(150);
+    expect(seen.some((m) => m.type === "error" && /is not attached on this machine/.test(m.message))).toBe(true);
+    ws.close();
+  });
+
   it("acks a second attach without rebuilding the workspace", async () => {
     const f = twoRepoFixture();
     const server = await startServer(f.opts);
