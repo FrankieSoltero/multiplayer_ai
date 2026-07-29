@@ -16,6 +16,8 @@ import {
   type ProjectWatcher,
 } from "./project.js";
 import { Relay, type ConnectFn } from "./relay.js";
+import type { RepoCandidate } from "./machineRepos.js";
+import type { RepoDecl } from "./relayProtocol.js";
 import { Session } from "./session.js";
 import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
@@ -113,12 +115,64 @@ const OVERSEER_EVENTS = new Set([
   "intent_update",
 ]);
 
+/** One repo this machine knows about (spec §5.1/§6). The server holds a SET of
+ *  these, not a single repo: the cwd repo it was launched in plus every
+ *  candidate the launch-time scan found. `attached` is the difference between
+ *  "could work here" and "can host a session here" — a candidate has no
+ *  workspace to provision worktrees in and no default branch to read, so both
+ *  are null until it is attached. */
+interface RepoEntry {
+  key: string;
+  label: string;
+  /** Absolute path on this machine. Null for the cwd repo when the caller did
+   *  not say where it is (the direct-API tests inject a fake workspace and have
+   *  no path to give). */
+  root: string | null;
+  attached: boolean;
+  workspace: WorkspaceLike | null;
+  defaultBranch: string | null;
+}
+
+/** An attached repo always has a workspace: the two are written together and
+ *  never apart. Stated as a predicate so the resolution paths get a non-null
+ *  `workspace` from the type system instead of from a `!` that would still
+ *  compile the day someone breaks the invariant. */
+type AttachedRepo = RepoEntry & { attached: true; workspace: WorkspaceLike };
+
+const isAttached = (entry: RepoEntry): entry is AttachedRepo =>
+  entry.attached && entry.workspace !== null;
+
+/** Untrusted repo keys are echoed back in refusals and used as map lookups;
+ *  bounded here for both, matching the relay protocol's own 200-char cap. */
+const MAX_REPO_KEY_LENGTH = 200;
+
 export async function startServer(opts: {
   port: number;
   host?: string;
   runQuery?: RunQuery;
   plugins?: PluginStore;
   workspace?: WorkspaceLike;
+  /** Display name for the cwd repo in the repo picker (spec §5.1). Defaults to
+   *  the generic "repo" so a caller that has no better name still produces a
+   *  labelled entry rather than a blank one. */
+  workspaceLabel?: string;
+  /** Absolute path of the cwd repo, when the caller knows it. Only used to
+   *  identify the repo to a human and to the scan; provisioning always goes
+   *  through `workspace`, never through this path. */
+  workspaceRoot?: string;
+  /** This laptop's persisted identity (spec §7). Absent on the direct-API test
+   *  paths, which fall back to deriving an identity from the attached repo. */
+  machine?: { machineId: string; name: string };
+  /** Repos the launch-time scan of the allowlisted roots found (spec §4). They
+   *  enter the set UNATTACHED: discoverable and selectable, but unable to host
+   *  a session until someone attaches them. */
+  repoCandidates?: RepoCandidate[];
+  /** Injection seams for attaching a candidate (spec §6): how to build a
+   *  workspace for a repo root, and what base ref its create form should
+   *  suggest. Held here so the attach path — which lands with `attach_repo` —
+   *  is testable without real git checkouts. */
+  workspaceFor?: (root: string) => WorkspaceLike;
+  defaultBaseRef?: (root: string) => string;
   staticDir?: string;
   summarize?: Summarize;
   oversightDebounceMs?: number;
@@ -142,17 +196,81 @@ export async function startServer(opts: {
 }) {
   const runQuery = opts.runQuery ?? runAgentQuery;
   const pluginStore = opts.plugins ?? new PluginStore(process.env.AGENT_PLUGINS_ROOT);
-  // Cached once at startup: the default branch changing mid-run is rare and
-  // harmless (it only seeds the create form's base-ref field).
-  const repo = opts.workspace
-    ? {
-        workspace: opts.workspace,
-        defaultBranch: opts.workspace.defaultBranch(),
-        // Cached at startup like defaultBranch: a repo's origin changing
-        // mid-run is not a case worth re-reading git for on every push.
-        key: opts.workspace.repoKey(),
-      }
-    : null;
+  // Every repo this machine knows about, keyed by repoKey (spec §6). Insertion
+  // order is load-bearing: the cwd repo goes in first, so the single-repo
+  // server this replaces still resolves to exactly the repo it was launched in.
+  const repos = new Map<string, RepoEntry>();
+  if (opts.workspace) {
+    // Both cached once at startup, as before: a repo's HEAD or origin changing
+    // mid-run is not worth re-reading git for on every push, and the default
+    // branch only seeds the create form's base-ref field.
+    //
+    // D8's cwd carve-out: the repo the server was launched IN reports the
+    // branch it is actually sitting on, not `origin/HEAD`. Someone who ran
+    // `mpai` from a feature branch means that branch.
+    const cwdKey = opts.workspace.repoKey(); // one git call, not two
+    repos.set(cwdKey, {
+      key: cwdKey,
+      label: opts.workspaceLabel ?? "repo",
+      root: opts.workspaceRoot ?? null,
+      attached: true,
+      workspace: opts.workspace,
+      defaultBranch: opts.workspace.defaultBranch(),
+    });
+  }
+  for (const candidate of opts.repoCandidates ?? []) {
+    // The scan almost always finds the cwd repo too. First wins, and the cwd
+    // entry was written first — the reverse would demote the one repo the
+    // server is guaranteed to be able to work in to an unattached candidate.
+    if (repos.has(candidate.key)) continue;
+    repos.set(candidate.key, {
+      key: candidate.key,
+      label: candidate.label,
+      root: candidate.root,
+      attached: false,
+      workspace: null,
+      defaultBranch: null,
+    });
+  }
+
+  const attachedRepos = (): AttachedRepo[] => [...repos.values()].filter(isAttached);
+
+  /** TEMPORARY (this task only): the call sites that still assume one repo —
+   *  the snapshot's `repo` field, the project summaries, `peek`'s empty-project
+   *  reply and the relay's `repoKey` — read the first attached repo so a
+   *  single-repo server behaves byte-for-byte as it did before the map. They
+   *  become genuinely multi-repo in the task that reshapes the wire. */
+  const firstAttached = (): AttachedRepo | null => attachedRepos()[0] ?? null;
+
+  /** What this machine offers, for the repo picker (spec §5.1). */
+  const repoDecls = (): RepoDecl[] =>
+    [...repos.values()].map((entry) => ({
+      key: entry.key,
+      label: entry.label,
+      attached: entry.attached,
+      defaultBranch: entry.defaultBranch,
+    }));
+
+  /** This machine as the project screen sees it (spec §6/§7). With a persisted
+   *  identity it reports the real one. Without — the direct-API tests, and any
+   *  caller predating the identity file — it falls back to the attached repo's
+   *  own key and label, which is the only identity such a server has to offer;
+   *  with nothing attached there is nothing truthful to report, so it is null
+   *  rather than a machine with an invented name. */
+  const machineView = (): { machineId: string; name: string; repos: RepoDecl[]; online: true } | null => {
+    if (opts.machine) {
+      return {
+        machineId: opts.machine.machineId,
+        name: opts.machine.name,
+        repos: repoDecls(),
+        online: true,
+      };
+    }
+    const primary = firstAttached();
+    return primary
+      ? { machineId: primary.key, name: primary.label, repos: repoDecls(), online: true }
+      : null;
+  };
   const projects = new Map<string, Project>();
   // Boot seed: the launch project exists before anyone asks, so a bare
   // localhost:PORT/ lands on a one-item entrance rather than an empty one.
@@ -196,10 +314,11 @@ export async function startServer(opts: {
   );
 
   function snapshotFor(project: Project) {
+    const primary = firstAttached();
     return projectSnapshot(
       project,
       { plugins: pluginStore.list(project.id), enabled: pluginStore.enabled },
-      repo && { defaultBranch: repo.defaultBranch, key: repo.key },
+      primary && { defaultBranch: primary.defaultBranch ?? "main", key: primary.key },
       { enabled: overseer.isEnabled(project.id), latest: overseer.latest(project.id) },
     );
   }
@@ -217,8 +336,9 @@ export async function startServer(opts: {
     // Facts ride the snapshot's existing 1-second throttle rather than a
     // second timer: a fact change is by definition accompanied by a push.
     if (relay) {
+      const primaryKey = firstAttached()?.key ?? null;
       for (const [id, entry] of project.sessions) {
-        relay.publishFacts(id, sessionFactsOf(id, entry, repo?.key ?? null));
+        relay.publishFacts(id, sessionFactsOf(id, entry, primaryKey));
       }
     }
     lastPush.set(project, Date.now());
@@ -247,24 +367,44 @@ export async function startServer(opts: {
     return project;
   }
 
+  /** `init` carries what a CALLER already resolved: `create_session` has both
+   *  provisioned a worktree and picked the repo, and passes them in. A
+   *  deep-link `join` knows neither, so this resolves them — and can only do so
+   *  unambiguously when exactly one repo is attached.
+   *
+   *  Named `init` rather than `opts` deliberately: shadowing `startServer`'s
+   *  own `opts` inside the one function that provisions worktrees is a
+   *  needlessly sharp edge. */
   function getOrCreateSession(
     project: Project,
     sessionId: string,
-    workdirOverride?: string,
+    init?: { workdir?: string; repoKey?: string | null },
   ): ProjectSessionEntry | { error: string } {
     let entry = project.sessions.get(sessionId);
     if (!entry) {
-      let workdir: string | undefined = workdirOverride;
+      let workdir: string | undefined = init?.workdir;
+      let repoKey: string | null = init?.repoKey ?? null;
       if (workdir === undefined) {
-        if (repo) {
+        const attached = attachedRepos();
+        if (attached.length === 1) {
           // Deep-link join to a not-yet-provisioned session: same core as
           // create_session, branched off the default branch (spec §3).
-          const result = repo.workspace.provision(sessionId, repo.defaultBranch);
+          const only = attached[0];
+          const result = only.workspace.provision(sessionId, only.defaultBranch ?? "main");
           if (!result.ok) return { error: result.error };
           workdir = result.workdir;
-        } else {
+          repoKey = only.key;
+        } else if (attached.length === 0) {
           const root = process.env.AGENT_WORKDIR_ROOT;
           workdir = root ? path.join(root, sessionId) : undefined;
+          repoKey = null;
+        } else {
+          // Several repos attached and nothing said which. A deep link carries
+          // no repo, and guessing would silently create the session in the
+          // wrong checkout — so refuse and point at the screen that can ask.
+          return {
+            error: `session "${sessionId}" does not exist — create it from the project screen`,
+          };
         }
       }
       const session = new Session(sessionId);
@@ -291,6 +431,7 @@ export async function startServer(opts: {
         skills,
         pendingSuggests: new Map(),
         pendingOversight: false,
+        repoKey,
       };
       entry = newEntry;
       project.sessions.set(sessionId, entry);
@@ -311,6 +452,27 @@ export async function startServer(opts: {
       relay?.trackSession(sessionId, session);
     }
     return entry;
+  }
+
+  /** Which repo a new session lands in (spec §6). An explicit key is honoured
+   *  or refused — never quietly redirected to another repo, which would put the
+   *  session in a checkout the requester did not ask for. Absent, the single
+   *  attached repo is unambiguous; several are not, and the refusal says so
+   *  rather than picking one. Zero keeps the pre-map wording exactly, because
+   *  the no-repo server is still a supported way to run. */
+  function resolveRepo(requested: unknown): AttachedRepo | { error: string } {
+    if (typeof requested === "string" && requested.length > 0) {
+      const key = requested.slice(0, MAX_REPO_KEY_LENGTH);
+      const found = repos.get(key);
+      if (!found || !isAttached(found)) {
+        return { error: `repo "${key}" is not attached on this machine` };
+      }
+      return found;
+    }
+    const attached = attachedRepos();
+    if (attached.length === 0) return { error: "server not launched in a repo" };
+    if (attached.length > 1) return { error: "several repos are attached — specify a repo" };
+    return attached[0];
   }
 
   function digestFor(project: Project, sessionId: string): string {
@@ -481,7 +643,7 @@ export async function startServer(opts: {
         io.send({
           type: "projects",
           projects: [...projects.values()].map((p) =>
-            projectSummaryOf(p, identity?.userId ?? null, repo?.key ?? null),
+            projectSummaryOf(p, identity?.userId ?? null, firstAttached()?.key ?? null),
           ),
         });
         return;
@@ -624,10 +786,11 @@ export async function startServer(opts: {
           return sendError("peek requires a valid projectId");
         }
         const project = projects.get(projectId);
+        const primary = firstAttached();
         io.send(
           project
             ? snapshotFor(project)
-            : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: repo && { defaultBranch: repo.defaultBranch, key: repo.key }, oversight: { enabled: false, latest: null } },
+            : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: primary && { defaultBranch: primary.defaultBranch ?? "main", key: primary.key }, oversight: { enabled: false, latest: null } },
         );
         return;
       }
@@ -704,14 +867,18 @@ export async function startServer(opts: {
           io.send({ type: "session_created", sessionId: slug });
           return;
         }
-        if (!repo) return sendError("server not launched in a repo");
+        const resolved = resolveRepo(msg.repoKey);
+        if ("error" in resolved) return sendError(resolved.error);
         const baseRef =
           typeof msg.baseRef === "string" && msg.baseRef.length > 0
             ? msg.baseRef.slice(0, 100)
-            : repo.defaultBranch;
-        const result = repo.workspace.provision(slug, baseRef);
+            : resolved.defaultBranch ?? "main";
+        const result = resolved.workspace.provision(slug, baseRef);
         if (!result.ok) return sendError(result.error);
-        const entry = getOrCreateSession(project, slug, result.workdir);
+        const entry = getOrCreateSession(project, slug, {
+          workdir: result.workdir,
+          repoKey: resolved.key,
+        });
         if ("error" in entry) return sendError(entry.error);
         io.send({ type: "session_created", sessionId: slug });
         // Deliberate user action, not a hot stream — immediate push (same
@@ -1101,7 +1268,7 @@ export async function startServer(opts: {
         {
           hubUrl: opts.hub.url,
           projectId: opts.hub.projectId,
-          repoKey: repo?.key ?? "",
+          repoKey: firstAttached()?.key ?? "",
           uplinkId: opts.hub.uplinkId ?? randomUUID(),
           connect: opts.hub.connect,
         },

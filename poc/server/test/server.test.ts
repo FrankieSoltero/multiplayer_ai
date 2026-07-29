@@ -52,6 +52,19 @@ function fakeWorkspace() {
   };
 }
 
+function keyedWorkspace(key: string) {
+  const calls: { slug: string; baseRef: string }[] = [];
+  return {
+    calls,
+    provision(slug: string, baseRef: string) {
+      calls.push({ slug, baseRef });
+      return { ok: true as const, workdir: `/tmp/wt/${key}/${slug}` };
+    },
+    defaultBranch: () => "main",
+    repoKey: () => key,
+  };
+}
+
 let close: (() => Promise<void>) | undefined;
 afterEach(async () => {
   await close?.();
@@ -2941,5 +2954,88 @@ describe("relay-mode connections", () => {
     // every late joiner.
     expect(leaves).toHaveLength(1);
     expect(sent.some((m) => m.type === "error")).toBe(false);
+  });
+});
+
+describe("repo set", () => {
+  it("create_session with an explicit repoKey resolves through the map and refuses an unattached candidate", async () => {
+    const cwd = keyedWorkspace("github.com/acme/api");
+    const server = await startServer({
+      port: 0,
+      runQuery: echoRun,
+      workspace: cwd,
+      repoCandidates: [{ key: "github.com/acme/web", label: "web", root: "/tmp/web" }],
+    });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1", repoKey: "github.com/acme/api" }));
+    await wait(200);
+    expect(seen.some((m) => m.type === "session_created" && m.sessionId === "s1")).toBe(true);
+    expect(cwd.calls.map((c) => c.slug)).toEqual(["s1"]);
+    // The candidate exists in the map but is NOT attached — refusal, not provisioning.
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s2", repoKey: "github.com/acme/web" }));
+    await wait(200);
+    expect(seen.some((m) => m.type === "error" && /not attached/.test(m.message))).toBe(true);
+    expect(cwd.calls.map((c) => c.slug)).toEqual(["s1"]); // and nothing provisioned anywhere
+    ws.close();
+  });
+
+  it("create_session with no repoKey keeps today's single-repo behavior", async () => {
+    const cwd = keyedWorkspace("github.com/acme/api");
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace: cwd });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1" }));
+    await wait(200);
+    expect(seen.some((m) => m.type === "session_created")).toBe(true);
+    expect(cwd.calls).toEqual([{ slug: "s1", baseRef: "main" }]);
+    ws.close();
+  });
+
+  it("create_session with zero repos keeps the legacy refusal verbatim (Constraint 9)", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1" }));
+    await wait(200);
+    expect(seen.some((m) => m.type === "error" && m.message === "server not launched in a repo")).toBe(true);
+    ws.close();
+  });
+
+  it("deep-link join to a never-created session binds the lone attached repo", async () => {
+    const cwd = keyedWorkspace("github.com/acme/api");
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace: cwd });
+    close = server.close;
+    const ws = await connect(server.port);
+    collect(ws, []);
+    ws.send(JSON.stringify({ type: "join", sessionId: "fresh", userId: "u1", name: "Ana" }));
+    await wait(200);
+    expect(cwd.calls).toEqual([{ slug: "fresh", baseRef: "main" }]);
+    ws.close();
+  });
+
+  it("the snapshot's session rows carry each session's OWN repoKey", async () => {
+    // Pins the entry.repoKey binding through the snapshot path. Full
+    // multi-repo divergence (two keys in one snapshot) becomes reachable in
+    // Task 6 via attach_repo — extend this test there.
+    const cwd = keyedWorkspace("github.com/acme/api");
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace: cwd });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1", repoKey: "github.com/acme/api" }));
+    await wait(200);
+    ws.send(JSON.stringify({ type: "peek", projectId: "default" }));
+    await wait(200);
+    const snap = seen.find((m) => m.type === "project" && m.sessions?.length > 0);
+    expect(snap.sessions[0].repoKey).toBe("github.com/acme/api");
+    ws.close();
   });
 });

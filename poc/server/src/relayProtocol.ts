@@ -36,6 +36,24 @@ export interface SessionFacts {
   lifecycle: Lifecycle;
 }
 
+/** One repo a machine offers (spec §5.1). `attached` is the whole point of the
+ *  shape: a candidate is a repo this machine COULD work in — discovered by the
+ *  launch-time scan, selectable in the UI — while an attached repo is one it
+ *  currently CAN host sessions in. Only an attached repo has a workspace, which
+ *  is why `defaultBranch` is null for a candidate: there is nothing to read it
+ *  from yet, and inventing "main" would seed the create form with a branch the
+ *  repo may not have.
+ *
+ *  Type only, deliberately: nothing puts a `RepoDecl` on the wire yet, so
+ *  `RELAY_PROTOCOL_VERSION` is NOT bumped here. The frame that carries it bumps
+ *  it, at which point a version mismatch means something real. */
+export interface RepoDecl {
+  key: string;
+  label: string;
+  attached: boolean;
+  defaultBranch: string | null;
+}
+
 /** Laptop → hub. */
 export type UpFrame =
   | { t: "hello"; v: number; uplinkId: string; projectId: string; repoKey: string }

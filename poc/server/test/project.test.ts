@@ -21,7 +21,7 @@ function addSession(
   skills: { name: string; description: string }[] = [],
 ): Session {
   const session = new Session(id);
-  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map(), pendingOversight: false });
+  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map(), pendingOversight: false, repoKey: null });
   return session;
 }
 

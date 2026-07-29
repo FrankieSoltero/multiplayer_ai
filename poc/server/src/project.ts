@@ -18,6 +18,14 @@ export interface ProjectSessionEntry {
   /** One-shot flag: the driver pulled the team summary; inject <oversight>
    *  into the next prompt only (spec §5). */
   pendingOversight: boolean;
+  /** Which repo this session's worktree lives in (spec §6). Bound once, at
+   *  creation, on EVERY creation path — a session's worktree cannot move, so
+   *  neither can its key. Required rather than optional precisely because a
+   *  path that forgot to bind it would otherwise compile and then report the
+   *  wrong repo for the rest of the session's life; `null` is the one honest
+   *  answer (no repo was attached when it was created) and has to be written
+   *  down deliberately. */
+  repoKey: string | null;
 }
 
 /** Minimal structural type so tests don't need real sockets. */
