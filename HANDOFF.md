@@ -36,6 +36,39 @@ server. If `server.ts` already keys sessions by `projectId` (the `--project` fla
 creating one is nearly free and the entrance is genuinely functional. If it does not, **refuse it
 with a legible message** — never ship a NEW PROJECT button that silently does nothing.
 
+### ⛔ RESUME HERE — the solo fix is IMPLEMENTED but has 2 CRITICALs open, and 1 decision for you
+
+Solo mode "1+" is built and committed (`9749d53`, `76a99fb`; server 429 / hub 83 / client 247, all
+green). Its opus review confirmed the **central trap is closed** — the standalone server's emitted
+`ProjectSummary` drives `canAct` to `null`, so the project screen is genuinely usable in solo, and
+both cosmetics dissolved. Hub/laptop message parity is verbatim. **But the review found four things,
+and none are fixed yet.** Full detail in the ledger; summary:
+
+- **C1 (Critical) — `create_project` is an unauthenticated write** (`server.ts:468-482`), against the
+  policy comment 30 lines above it (`:403-419`). With AUTH on (the `deploy/` config) anyone can loop
+  `identify` + `create_project` and grow the projects Map unbounded, pre-auth. **Fix: one
+  `if (denyUnauthed()) return;` in `create_project` and in `list_projects`** — free on the solo path,
+  since `requireAuth` admits everything when `opts.auth` is undefined. The implementer's report
+  claims this "would violate hub/laptop parity"; **that claim is wrong** — `denyUnauthed` is a
+  laptop-only transport gate already applied to four handlers the hub has no equivalent for.
+- **C2 (Critical) — `test/server.test.ts:1392` cannot fail for its stated reason.** It proves
+  "creates a real, reachable project" via `watch_project`, which itself calls `getOrCreateProject`.
+  Delete the create path's write and the test still passes. **Fix: assert via `list_projects`** (the
+  non-creating read) after the ack.
+- **I4 (Important) — the ruling's "one-item entrance" is only half met.** On a *fresh* solo server the
+  entrance lists **zero** projects: nothing materializes the launch project at boot
+  (`cli.ts:147-160` passes `args.project` to `startServer` only on the hub branch). **Fix: seed
+  `getOrCreateProject(args.project)` at boot.**
+- **I3 — NEEDS YOUR DECISION, do not guess.** `main.ts`'s deployed no-workspace mode now returns
+  `"no-machine"` where it used to return `null`, so the deployed box hides NEW SESSION, turns every
+  JOIN into WATCH, and advises *"run `mpai --hub <url> --project <id>`"* — the exact dead-end this
+  ruling set out to kill, in a mode with no hub either. Net change: disabled-button → misleading
+  refusal. **TRAP: reporting a machine with `repoKey: ""` makes it worse** — `chosenRepo` becomes
+  `""` and CREATE re-enables onto a server that cannot provision. `deploy/RUNBOOK.md` has never been
+  executed, so this is not urgent — but it is a design call, not a one-liner.
+
+**Then, and only then: Task 13** (walk it, open the PR) — see below.
+
 ### What is done — 25 commits, pushed, `feature/projects` = `origin/feature/projects` = `c302dce`
 
 All 13 tasks complete and reviewed. Base is `main` `0ffeaa3`. **No PR is open yet** — deliberately
