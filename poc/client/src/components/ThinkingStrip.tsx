@@ -11,7 +11,13 @@ const readBest = (game: string) => {
   const n = Number(localStorage.getItem(bestKey(game)) ?? 0);
   return Number.isFinite(n) && n > 0 ? n : 0;
 };
-const seed = () => (Date.now() % 100000) | 1;
+const timeSeed = () => (Date.now() % 100000) | 1;
+/** FNV-1a — stable 32-bit hash of a session identity string. */
+const hashSeed = (s: string) => {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+};
 
 /** v5b: a slot with an `engine` is playable; the rest render an honest empty
  *  cartridge. Adding a game = adding one pure GameEngine module here. */
@@ -43,14 +49,23 @@ export function ThinkingStrip(props: {
    *  changes (including unmount) so the transcript can mute its a/d
    *  permission hotkeys while game letters are live. */
   onPlayingChange?: (capturing: boolean) => void;
+  /** Stable session identity (e.g. `${project}/${session}`). When present,
+   *  seeds are derived from it per game, so every player in the session gets
+   *  the same world (fair party-score runs — doodle consumes its seed; the
+   *  others ignore it by design, spec §3.4). Absent → time-based seeds. */
+  sessionKey?: string;
 }) {
   const active = props.busy || (props.open ?? false);
 
   const [game, setGame] = useState("dino");
+  const mkSeed = (gameKey: string) =>
+    props.sessionKey != null
+      ? hashSeed(`${props.sessionKey}:${gameKey}`) | 1
+      : timeSeed();
   const slot = ROSTER.find((g) => g.key === game)!;
   const engine = slot.engine;
 
-  const [state, setState] = useState<unknown>(() => dinoEngine.init(seed()));
+  const [state, setState] = useState<unknown>(() => dinoEngine.init(mkSeed("dino")));
   const [playing, setPlaying] = useState(false);
   // state must be re-initialized in the SAME render pass that switches
   // engines — an effect runs after render, and the new engine would render
@@ -63,7 +78,7 @@ export function ThinkingStrip(props: {
     setRenderedGame(game);
     setPlaying(false);
     if (engine) {
-      runState = engine.init(seed());
+      runState = engine.init(mkSeed(game));
       setState(runState);
     }
   }
@@ -119,7 +134,7 @@ export function ThinkingStrip(props: {
     const b = readBest(game);
     setHigh(b);
     ledgerRef.current = { submitted: false, localBest: b };
-    if (engine) setState(engine.init(seed()));
+    if (engine) setState(engine.init(mkSeed(game)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, game]);
 
@@ -155,7 +170,7 @@ export function ThinkingStrip(props: {
 
   const start = () => {
     if (!engine) return;
-    setState(engine.init(seed()));
+    setState(engine.init(mkSeed(game)));
     ledgerRef.current = { submitted: false, localBest: ledgerRef.current.localBest };
     setPlaying(true);
   };
