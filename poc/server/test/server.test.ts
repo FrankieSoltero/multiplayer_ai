@@ -7,6 +7,7 @@ import { startServer } from "../src/server.js";
 import type { RunQuery, SdkMessage } from "../src/agentDriver.js";
 import { PluginStore, type CloneFn } from "../src/pluginStore.js";
 import { signSession, SESSION_COOKIE } from "../src/auth.js";
+import { RELAY_PROTOCOL_VERSION } from "../src/relayProtocol.js";
 
 const echoRun: RunQuery = async function* (prompts) {
   for await (const prompt of prompts) {
@@ -3066,21 +3067,388 @@ describe("repo set", () => {
   });
 
   it("the snapshot's session rows carry each session's OWN repoKey", async () => {
-    // Pins the entry.repoKey binding through the snapshot path. Full
-    // multi-repo divergence (two keys in one snapshot) becomes reachable in
-    // Task 6 via attach_repo — extend this test there.
-    const cwd = keyedWorkspace("github.com/acme/api");
-    const server = await startServer({ port: 0, runQuery: echoRun, workspace: cwd });
+    // Pins the entry.repoKey binding through the snapshot path. TWO sessions
+    // in TWO repos, deliberately: the single-repo version of this assertion
+    // passed just as happily for a machine-wide global, which is the exact
+    // defect the per-entry binding exists to prevent. Attaching the candidate
+    // (Task 6) is what makes the divergent case constructible at all.
+    const api = keyedWorkspace("github.com/acme/api");
+    const web = keyedWorkspace("github.com/acme/web");
+    const server = await startServer({
+      port: 0,
+      runQuery: echoRun,
+      workspace: api,
+      repoCandidates: [{ key: "github.com/acme/web", label: "web", root: "/tmp/web" }],
+      workspaceFor: () => web,
+      defaultBaseRef: () => "origin/main",
+    });
     close = server.close;
     const ws = await connect(server.port);
     const seen: any[] = [];
     collect(ws, seen);
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(100);
     ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1", repoKey: "github.com/acme/api" }));
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s2", repoKey: "github.com/acme/web" }));
     await wait(200);
     ws.send(JSON.stringify({ type: "peek", projectId: "default" }));
     await wait(200);
-    const snap = seen.find((m) => m.type === "project" && m.sessions?.length > 0);
-    expect(snap.sessions[0].repoKey).toBe("github.com/acme/api");
+    const snap = [...seen].reverse().find((m) => m.type === "project" && m.sessions?.length === 2);
+    expect(Object.fromEntries(snap.sessions.map((s: any) => [s.id, s.repoKey]))).toEqual({
+      s1: "github.com/acme/api",
+      s2: "github.com/acme/web",
+    });
     ws.close();
+  });
+});
+
+describe("attach and detach repos", () => {
+  const AUTH = {
+    clientId: "cid",
+    clientSecret: "csecret",
+    sessionSecret: "sekrit",
+    allowlist: "ana",
+  };
+
+  /** A machine holding its cwd repo (attached) plus one scanned candidate
+   *  (not), with both attach seams injected so nothing here touches real git.
+   *  `built` records every root the attach path asked a workspace for — the
+   *  side-effect witness for "lazily, and exactly once". */
+  function twoRepoFixture() {
+    const api = keyedWorkspace("github.com/acme/api");
+    const web = keyedWorkspace("github.com/acme/web");
+    const built: string[] = [];
+    return {
+      api,
+      web,
+      built,
+      opts: {
+        port: 0,
+        runQuery: echoRun,
+        workspace: api,
+        repoCandidates: [{ key: "github.com/acme/web", label: "web", root: "/tmp/web" }],
+        workspaceFor: (root: string) => {
+          built.push(root);
+          return web;
+        },
+        defaultBaseRef: () => "origin/main",
+      },
+    };
+  }
+
+  /** One hub end, enough to watch what the uplink declares. */
+  function fakeHub() {
+    const sent: any[] = [];
+    const handlers = new Map<string, (arg?: unknown) => void>();
+    return {
+      connect: () => ({
+        send: (data: string) => void sent.push(JSON.parse(data)),
+        close: () => {},
+        on: (event: string, fn: (arg?: unknown) => void) => void handlers.set(event, fn),
+      }),
+      sent,
+      open: () => handlers.get("open")?.(),
+      deliver: (frame: unknown) => handlers.get("message")?.(JSON.stringify(frame)),
+    };
+  }
+
+  const reposFrames = (hub: { sent: any[] }) => hub.sent.filter((f: any) => f.t === "repos");
+  const declOf = (repos: any[], key: string) => repos.find((r: any) => r.key === key);
+
+  it("attaches a scanned candidate and then hosts a session in it, off the injected base ref", async () => {
+    const f = twoRepoFixture();
+    const server = await startServer(f.opts);
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(100);
+    expect(seen.some((m) => m.type === "repo_attached" && m.repoKey === "github.com/acme/web")).toBe(true);
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+    // Lazily, and from the candidate's own root — not the cwd repo's.
+    expect(f.built).toEqual(["/tmp/web"]);
+
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1", repoKey: "github.com/acme/web" }));
+    await wait(200);
+    expect(seen.some((m) => m.type === "session_created" && m.sessionId === "s1")).toBe(true);
+    // The proof the attach really built a usable workspace: the session was
+    // provisioned in it, at the default branch the attach path computed.
+    expect(f.web.calls).toEqual([{ slug: "s1", baseRef: "origin/main" }]);
+    expect(f.api.calls).toEqual([]);
+    ws.close();
+  });
+
+  it("refuses a key this machine does not list, and bounds the key it echoes back", async () => {
+    const f = twoRepoFixture();
+    const server = await startServer(f.opts);
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/nope" }));
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "x".repeat(500) }));
+    ws.send(JSON.stringify({ type: "attach_repo" }));
+    ws.send(JSON.stringify({ type: "detach_repo", repoKey: "github.com/acme/nope" }));
+    await wait(100);
+
+    const errors = seen.filter((m) => m.type === "error").map((m) => m.message);
+    expect(errors[0]).toBe(`repo "github.com/acme/nope" is not in this machine's repo list`);
+    // Untrusted input reflected into a refusal, bounded like every other repo
+    // key that reaches this file (MAX_REPO_KEY_LENGTH).
+    expect(errors[1].length).toBeLessThan(300);
+    expect(errors[2]).toBe("attach_repo requires repoKey");
+    expect(errors[3]).toBe(`repo "github.com/acme/nope" is not in this machine's repo list`);
+    expect(seen.some((m) => m.type === "repo_attached" || m.type === "repo_detached")).toBe(false);
+    expect(f.built).toEqual([]);
+    ws.close();
+  });
+
+  it("acks a second attach without rebuilding the workspace", async () => {
+    const f = twoRepoFixture();
+    const server = await startServer(f.opts);
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(80);
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(80);
+
+    // Idempotent: a bare ack, not an error, and no second workspace — a
+    // rebuild would swap the live workspace out from under running sessions.
+    expect(seen.filter((m) => m.type === "repo_attached")).toHaveLength(2);
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+    expect(f.built).toEqual(["/tmp/web"]);
+    ws.close();
+  });
+
+  it("refuses a detach while an open session is bound to the repo, naming the blockers", async () => {
+    const f = twoRepoFixture();
+    const server = await startServer(f.opts);
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(80);
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "auth fix", repoKey: "github.com/acme/web" }));
+    await wait(200);
+    seen.length = 0;
+
+    ws.send(JSON.stringify({ type: "detach_repo", repoKey: "github.com/acme/web" }));
+    await wait(100);
+    expect(seen.filter((m) => m.type === "error").map((m) => m.message)).toEqual([
+      "cannot detach: 1 open session (auth-fix)",
+    ]);
+    expect(seen.some((m) => m.type === "repo_detached")).toBe(false);
+
+    // A refused detach must change nothing: the repo is still attached and
+    // still hosting.
+    ws.send(JSON.stringify({ type: "peek", projectId: "default" }));
+    await wait(100);
+    const snap = [...seen].reverse().find((m) => m.type === "project");
+    expect(declOf(snap.machines[0].repos, "github.com/acme/web").attached).toBe(true);
+    ws.close();
+  });
+
+  it("detaches once the only session bound to the repo has been closed", async () => {
+    const f = twoRepoFixture();
+    const server = await startServer(f.opts);
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(80);
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "auth fix", repoKey: "github.com/acme/web" }));
+    await wait(200);
+
+    // End it the way a person does — join, then close_session (lifecycle.ts
+    // reads the session_closed event, nothing else).
+    const closer = await connect(server.port);
+    collect(closer, []);
+    closer.send(JSON.stringify({ type: "join", projectId: "default", sessionId: "auth-fix", userId: "u1", name: "Ana" }));
+    await wait(150);
+    closer.send(JSON.stringify({ type: "close_session" }));
+    await wait(150);
+    seen.length = 0;
+
+    ws.send(JSON.stringify({ type: "detach_repo", repoKey: "github.com/acme/web" }));
+    await wait(100);
+    expect(seen.some((m) => m.type === "repo_detached" && m.repoKey === "github.com/acme/web")).toBe(true);
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+
+    // Really detached: it can no longer host.
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s2", repoKey: "github.com/acme/web" }));
+    await wait(150);
+    expect(seen.some((m) => m.type === "error" && /is not attached on this machine/.test(m.message))).toBe(true);
+    ws.close();
+    closer.close();
+  });
+
+  it("keeps the candidate after a detach, so it can be attached again", async () => {
+    const f = twoRepoFixture();
+    const server = await startServer(f.opts);
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(80);
+    ws.send(JSON.stringify({ type: "detach_repo", repoKey: "github.com/acme/web" }));
+    await wait(80);
+    // Detaching a candidate that is already detached is an ack too.
+    ws.send(JSON.stringify({ type: "detach_repo", repoKey: "github.com/acme/web" }));
+    await wait(80);
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(80);
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1", repoKey: "github.com/acme/web" }));
+    await wait(200);
+
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+    expect(seen.filter((m) => m.type === "repo_detached")).toHaveLength(2);
+    expect(seen.some((m) => m.type === "session_created")).toBe(true);
+    // Re-attaching builds a fresh workspace — the detached one was released.
+    expect(f.built).toEqual(["/tmp/web", "/tmp/web"]);
+    ws.close();
+  });
+
+  it("attaching a second repo makes both several-repos refusals reachable", async () => {
+    const f = twoRepoFixture();
+    const server = await startServer(f.opts);
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(100);
+
+    // (1) create_session with no key and two repos attached.
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1" }));
+    await wait(150);
+    expect(seen.some((m) => m.type === "error" && m.message === "several repos are attached — specify a repo")).toBe(true);
+
+    // (2) deep-link join to a session that was never created, same ambiguity.
+    const ws2 = await connect(server.port);
+    const seen2: any[] = [];
+    collect(ws2, seen2);
+    ws2.send(JSON.stringify({ type: "join", projectId: "default", sessionId: "fresh", userId: "u1", name: "Ana" }));
+    await wait(200);
+    expect(
+      seen2.some(
+        (m) => m.type === "error" && m.message === `session "fresh" does not exist — create it from the project screen`,
+      ),
+    ).toBe(true);
+
+    // Neither refusal guessed a repo and provisioned there anyway.
+    expect(f.api.calls).toEqual([]);
+    expect(f.web.calls).toEqual([]);
+    ws.close();
+    ws2.close();
+  });
+
+  it("pushes a fresh project snapshot on both acks", async () => {
+    const f = twoRepoFixture();
+    const server = await startServer(f.opts);
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(80);
+
+    seen.length = 0;
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(100);
+    const afterAttach = [...seen].reverse().find((m) => m.type === "project");
+    expect(declOf(afterAttach.machines[0].repos, "github.com/acme/web")).toEqual({
+      key: "github.com/acme/web",
+      label: "web",
+      attached: true,
+      defaultBranch: "origin/main",
+    });
+
+    seen.length = 0;
+    ws.send(JSON.stringify({ type: "detach_repo", repoKey: "github.com/acme/web" }));
+    await wait(100);
+    const afterDetach = [...seen].reverse().find((m) => m.type === "project");
+    expect(declOf(afterDetach.machines[0].repos, "github.com/acme/web")).toEqual({
+      key: "github.com/acme/web",
+      label: "web",
+      attached: false,
+      defaultBranch: null,
+    });
+    ws.close();
+  });
+
+  it("re-declares the whole repo set on the uplink after each ack", async () => {
+    const f = twoRepoFixture();
+    const hub = fakeHub();
+    const server = await startServer({
+      ...f.opts,
+      hub: { url: "ws://hub.test", projectId: "default", connect: hub.connect },
+    });
+    close = server.close;
+    hub.open();
+    hub.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+
+    const ws = await connect(server.port);
+    collect(ws, []);
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(100);
+    expect(reposFrames(hub)).toHaveLength(1);
+    expect(declOf(reposFrames(hub)[0].repos, "github.com/acme/web").attached).toBe(true);
+
+    ws.send(JSON.stringify({ type: "detach_repo", repoKey: "github.com/acme/web" }));
+    await wait(100);
+    expect(reposFrames(hub)).toHaveLength(2);
+    // The hub replaces its record wholesale, so the frame carries the cwd repo
+    // as well as the one that just changed.
+    expect(reposFrames(hub)[1].repos.map((r: any) => r.key)).toEqual([
+      "github.com/acme/api",
+      "github.com/acme/web",
+    ]);
+    expect(declOf(reposFrames(hub)[1].repos, "github.com/acme/web").attached).toBe(false);
+    ws.close();
+  });
+
+  it("refuses attach_repo and detach_repo with no cookie when auth is on, and builds nothing", async () => {
+    const f = twoRepoFixture();
+    const server = await startServer({ ...f.opts, auth: AUTH });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    ws.send(JSON.stringify({ type: "detach_repo", repoKey: "github.com/acme/api" }));
+    await wait(100);
+
+    expect(seen.filter((m) => m.type === "error" && /authentication required/.test(m.message))).toHaveLength(2);
+    expect(seen.some((m) => m.type === "repo_attached" || m.type === "repo_detached")).toBe(false);
+    // The gate has to run BEFORE the work: an unauthenticated frame must not
+    // shell out to git or drop a live repo.
+    expect(f.built).toEqual([]);
+
+    // ...and a signed-in allowlisted user still gets through.
+    const cookie = `${SESSION_COOKIE}=${signSession("ana", AUTH.sessionSecret)}`;
+    const anaWs = await connectWithCookie(server.port, cookie);
+    const anaSeen: any[] = [];
+    collect(anaWs, anaSeen);
+    anaWs.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+    await wait(100);
+    expect(anaSeen.some((m) => m.type === "repo_attached")).toBe(true);
+    expect(f.built).toEqual(["/tmp/web"]);
+    ws.close();
+    anaWs.close();
   });
 });

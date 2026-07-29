@@ -16,13 +16,13 @@ import {
   type ProjectWatcher,
 } from "./project.js";
 import { Relay, type ConnectFn } from "./relay.js";
-import type { RepoCandidate } from "./machineRepos.js";
+import { defaultBaseRefFor, type RepoCandidate } from "./machineRepos.js";
 import type { RepoDecl } from "./relayProtocol.js";
 import { Session } from "./session.js";
 import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
 import { lifecycleOf } from "./lifecycle.js";
-import { slugify, type WorkspaceLike } from "./workspace.js";
+import { slugify, WorkspaceManager, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
 import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
 import { InviteStore } from "./invites.js";
@@ -664,6 +664,72 @@ export async function startServer(opts: {
         // unauthenticated read.
         getOrCreateProject(projectId);
         io.send({ type: "project_created", projectId });
+        return;
+      }
+
+      // Attach/detach one repo of this machine's set (spec §6). Pre-join, and
+      // gated exactly like `create_session`: attaching shells out to git and
+      // detaching drops a live workspace, so neither may be reachable by a
+      // cookie-less frame. Both replies are IDEMPOTENT acks — the browser's
+      // ATTACH/DETACH is a routed command with one reply slot and a 30s
+      // timeout, so a retry has to land as a plain ack, not as an error a
+      // person then has to interpret.
+      if (msg.type === "attach_repo" || msg.type === "detach_repo") {
+        if (denyUnauthed()) return;
+        // Bounded like every other untrusted key that reaches this file: it is
+        // echoed back in the refusals below and used as a map lookup.
+        const key =
+          typeof msg.repoKey === "string" ? msg.repoKey.slice(0, MAX_REPO_KEY_LENGTH) : "";
+        if (!key) return sendError(`${msg.type} requires repoKey`);
+        const entry = repos.get(key);
+        if (!entry) return sendError(`repo "${key}" is not in this machine's repo list`);
+        if (msg.type === "attach_repo") {
+          if (!entry.attached) {
+            // Candidates always carry a root (the scanner set it); only the
+            // direct-API cwd entry can lack one, and it starts attached.
+            if (!entry.root) return sendError(`repo "${key}" has no root to attach from`);
+            try {
+              entry.defaultBranch = (opts.defaultBaseRef ?? defaultBaseRefFor)(entry.root);
+              entry.workspace = (opts.workspaceFor ??
+                ((root: string) => new WorkspaceManager(root, path.join(root, ".mpai", "worktrees"))))(
+                entry.root,
+              );
+              entry.attached = true;
+            } catch (err) {
+              // Stay unattached; reply the git error (spec §9).
+              const message = err instanceof Error ? err.message : String(err);
+              return sendError(message.slice(0, 300));
+            }
+          }
+          io.send({ type: "repo_attached", repoKey: key }); // idempotent ack
+        } else {
+          if (entry.attached) {
+            const blockers: string[] = [];
+            for (const project of projects.values()) {
+              for (const [id, e] of project.sessions) {
+                if (e.repoKey === key && lifecycleOf(e.session.eventsFrom(0)) === "open") {
+                  blockers.push(id);
+                }
+              }
+            }
+            if (blockers.length > 0) {
+              return sendError(
+                `cannot detach: ${blockers.length} open session${blockers.length === 1 ? "" : "s"} (${blockers.join(", ")})`,
+              );
+            }
+            if (!entry.root) {
+              return sendError(
+                `repo "${key}" was launched without a root and cannot be re-attached — detach refused`,
+              );
+            }
+            entry.attached = false;
+            entry.workspace = null;
+            entry.defaultBranch = null;
+          }
+          io.send({ type: "repo_detached", repoKey: key }); // idempotent ack
+        }
+        relay?.sendRepos();
+        for (const project of projects.values()) pushProject(project);
         return;
       }
 
