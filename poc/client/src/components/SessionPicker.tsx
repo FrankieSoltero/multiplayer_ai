@@ -8,11 +8,14 @@ import { choiceValue, chooseRepo, parseChoiceValue, repoChoices } from "../repoC
 import { canAct, refusalText } from "../projectAccess";
 import { freeSessionName } from "../sessionNames";
 import { entranceUrl, sessionUrlFrom } from "../pickerUrl";
+import { MachinesPanel } from "./MachinesPanel";
 
-/** How long to wait for a routed `create_session` to be answered before giving
- *  the button back. Generous on purpose: provisioning a worktree is real work
- *  on a real laptop, and a false "no reply" on a slow-but-alive machine is
- *  worse than a few extra seconds of waiting. */
+/** How long to wait for a routed command to be answered before giving the
+ *  button back. Shared by `create_session`, `attach_repo`, and `detach_repo`
+ *  (spec §12.1: one in-flight routed command per channel covers all three) —
+ *  generous on purpose, since provisioning a worktree or computing a default
+ *  branch is real work on a real laptop, and a false "no reply" on a
+ *  slow-but-alive machine is worse than a few extra seconds of waiting. */
 const CREATE_TIMEOUT_MS = 30_000;
 
 /** Names the real cause. "Something went wrong" would send the user looking at
@@ -44,6 +47,18 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
     createTimer.current = null;
   };
 
+  // Shared by create/attach/detach: arm the one no-reply timeout slot before
+  // sending, so a routed command that never gets answered gives the button
+  // back with a named reason instead of leaving `pending` stuck forever.
+  const armReplyTimer = () => {
+    clearCreateTimer();
+    createTimer.current = setTimeout(() => {
+      createTimer.current = null;
+      setPending(false);
+      setError(CREATE_TIMEOUT_TEXT);
+    }, CREATE_TIMEOUT_MS);
+  };
+
   useEffect(() => {
     const ws = new WebSocket(SERVER_URL);
     wsRef.current = ws;
@@ -63,6 +78,10 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
         if (msg.type === "session_created") {
           clearCreateTimer();
           joinSession(msg.sessionId, props.projectId);
+        }
+        if (msg.type === "repo_attached" || msg.type === "repo_detached") {
+          clearCreateTimer();
+          setPending(false);
         }
         if (msg.type === "error") {
           clearCreateTimer();
@@ -113,12 +132,7 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
     // CREATE stayed disabled forever with no message and no way out but a
     // reload. Armed BEFORE the send so a send that throws on a closed socket
     // recovers the same way. Cleared by a reply, by an error, and on unmount.
-    clearCreateTimer();
-    createTimer.current = setTimeout(() => {
-      createTimer.current = null;
-      setPending(false);
-      setError(CREATE_TIMEOUT_TEXT);
-    }, CREATE_TIMEOUT_MS);
+    armReplyTimer();
     wsRef.current?.send(
       JSON.stringify({
         type: "create_session",
@@ -133,6 +147,29 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
 
   const join = () => {
     wsRef.current?.send(JSON.stringify({ type: "join_project", projectId: props.projectId }));
+  };
+
+  // ATTACH/DETACH from the MACHINES panel: routed commands on the same
+  // one-slot reply bound as `create_session` (spec §12.1), so they share
+  // `pending`/`error` and the same no-reply timeout — an attach in flight
+  // disables CREATE too, and vice versa, which is honest: the channel really
+  // can only have one routed reply outstanding at a time.
+  const attach = (machineId: string, repoKey: string) => {
+    setError(null);
+    setPending(true);
+    armReplyTimer();
+    wsRef.current?.send(
+      JSON.stringify({ type: "attach_repo", projectId: props.projectId, machineId, repoKey }),
+    );
+  };
+
+  const detach = (machineId: string, repoKey: string) => {
+    setError(null);
+    setPending(true);
+    armReplyTimer();
+    wsRef.current?.send(
+      JSON.stringify({ type: "detach_repo", projectId: props.projectId, machineId, repoKey }),
+    );
   };
 
   return (
@@ -187,6 +224,15 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
             </div>
           ))}
         </div>
+        {refusal === null && (
+          <MachinesPanel
+            machines={machines}
+            onAttach={attach}
+            onDetach={detach}
+            pending={pending}
+            error={error}
+          />
+        )}
         {refusal === null && (
           <>
             <div className="panel pix top">NEW SESSION</div>
