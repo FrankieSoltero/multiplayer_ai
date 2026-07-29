@@ -1,84 +1,89 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-29 (session #19, mid-execution hand-off).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-29 (session #20, §8.3 shipped).*
 
 ---
 
-## 🚀 START HERE — §8.3 "MACHINES & REPOS" IS MID-EXECUTION. Resume the SDD task loop; do NOT re-plan, re-brainstorm, or merge anything.
+## 🚀 START HERE — §8.3 "MACHINES & REPOS" IS COMPLETE AND SHIPPED AS **PR #23**. Nothing is in flight. The next move is the USER'S (merge decisions), then the next PRD §8 section.
 
-**Goal:** execute `docs/superpowers/plans/2026-07-29-machines-repos.md` (13 tasks) via
-superpowers:subagent-driven-development on branch **`feature/machines-repos`** (pushed, tracks
-origin; cut from `feature/projects` @ 5f92009). Spec of record:
-`docs/superpowers/specs/2026-07-28-machines-repos-design.md` (user-approved; D1-D10 rulings
-inside — where plan code disagrees, the SPEC governs).
+**What happened (session #19 wrote the spec/plan + Tasks 1-6; session #20 executed Tasks 7-13,
+the final review, the fix wave, the live walk, and opened the PR):** all 13 tasks of
+`docs/superpowers/plans/2026-07-29-machines-repos.md` executed via
+superpowers:subagent-driven-development on branch **`feature/machines-repos`** (pushed; cut from
+`feature/projects` @ 5f92009). Spec of record:
+`docs/superpowers/specs/2026-07-28-machines-repos-design.md` (D1-D10 rulings; spec beats plan
+code — applied once at branch scope: the fix wave's RepoDecl clamp).
 
-**Status (exactly where it stopped):** Tasks 1-5 complete + reviewed (ledger has commits).
-Task 6 implemented + reviewed; its ONE Important finding was fixed in fix-round 1
-(commit `e6504af`, comment labeling the attach-failure catch injection-only) — **the scoped
-re-review of that fix has NOT run yet; that is the very next action.** Tasks 7-13 not started.
-Branch tip = `e6504af`, all three suites green there (server 478 / hub 93 / client 247).
+**Status:** branch tip **`455a922`**, suites there: **server 499 / hub 104 / client 271**, tsc ×3
+clean. Final whole-branch review (opus): 0 Critical, 3 Important — all fixed in the one fix wave
+(`11ca00f..455a922`: RepoDecl bounds clamped at the `repoDecls()` choke point + ≤100 cap counting
+cwd; `.mpai/` git-exclusion on attach; attach-volatility recorded as debt §2.7) and verified by
+the one scoped re-review. Live walk executed by the controller against real daemons + hub +
+browser: **every step passed** (attach round-trip, 3 sessions in 3 repos on 2 machines with
+worktrees in the correct repos, detach refusal text exact, restart reclaim with 0 ownership
+refusals — debt §2.3 live-proven, W4 labels visually confirmed, solo one-item entrance intact).
+Walk record + screenshot: ledger + `walk-step8-labels.png` (repo root, untracked).
 
-**THE LEDGER IS THE AUTHORITY:** `.superpowers/sdd/2026-07-29-machines-repos/progress.md` —
-per-task commits, deferred minors with rulings, and two items ROUTED TO TASK 8 (the launch cap
-must count the cwd repo so repoDecls() can never exceed 100 — otherwise hello is rejected with a
-misleading "versions may not match" loop; and verify/temper server.ts ~:1283's debt-§2.3 comment
-once the CLI passes `machine`). Briefs (`task-N-brief.md`), reports (`task-N-report.md`), and
-review packages live beside it. Git-ignored — `git clean -fdx` destroys it.
+**PRs — BOTH MERGES ARE THE USER'S, NEVER YOURS:**
+- **PR #22** (`feature/projects` → main): open, untouched.
+- **PR #23** (`feature/machines-repos` → main): open, carries 7 disclosures (spec §12's six + the
+  attach-volatility discovery) and the parked residuals in its body. #23 builds on #22 — its
+  GitHub diff includes #22's commits until #22 merges. Sensible order: merge #22 first, then #23.
 
-**Decisions locked (why):** (1) User model directive: fable orchestrates + gates every review;
-opus implements tasks 3/5/6/9/12; sonnet 1/2/4/7/8/10/11/13; haiku for summaries/light first-pass
-reviews — reviewer tier scales with diff risk (haiku tiny, sonnet mid, opus for Task 5-class).
-(2) "All three packages green at every commit" OUTRANKS task scoping — Task 4 precedent: hub got
-a labeled TEMPORARY shim rather than staying red (Task 5 then removed it; grep "Task-4 shim" is
-empty). (3) Findings conflicting with plan text go to the user; minors go to the ledger, never
-into the fix loop. (4) NEVER merge: PR #22 (feature/projects) stays untouched and open; §8.3 gets
-its own PR only after Task 13's walk.
+**THE LEDGER:** `.superpowers/sdd/2026-07-29-machines-repos/progress.md` — every task's commits,
+deferred minors with rulings and the final review's triage of them (all DEFER; two DISCHARGED),
+fix-wave record, walk record. Git-ignored — `git clean -fdx` destroys it. **Retained until #23
+merges** (PR feedback may need it); after merge, `rm -rf .superpowers/sdd/2026-07-29-machines-repos`
+— git + the PR body are the durable record.
 
-### ➡️ ORDERED NEXT STEPS (fresh session starts at step 1)
+**Parked residuals (real, trivial, disclosed in #23's body — fix only if the user asks or a next
+branch touches these files):** `docs/tech-debt.md` §2.7 cites `server.ts:677-742`, actual handler
+is `:707-787` at HEAD; `poc/server/test/relayProtocol.test.ts:4` imports `MAX_REPOS` but tests
+hardcode 101.
 
-1. **Finish Task 6's fix round:** run
-   `<skill>/scripts/review-package docs/superpowers/plans/2026-07-29-machines-repos.md e15a966 e6504af`
-   (skill dir: `/Users/franciscosoltero/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development`),
-   dispatch its `re-review-prompt.md` on **haiku** with the finding ("attach-failure catch at
-   server.ts:691-706 framed as live coverage; actually injection-only — fix = comment + report
-   §7 correction"), brief `task-6-brief.md`, report `task-6-report.md`, FIX_BASE e15a966, HEAD
-   e6504af. On ADDRESSED: append `Task 6: fix round 1/5 (1 addressed, 0 open)` and
-   `Task 6: complete (commits aa1144b..e6504af, review clean)` to the ledger.
-2. **Tasks 7-13, the standard loop per task N:** record BASE=`git rev-parse --short HEAD` →
-   `scripts/task-brief PLAN 7` → dispatch implementer (model per directive above; prompt shape =
-   prior dispatches: brief path + interfaces from earlier tasks + global constraints + report
-   path `task-N-report.md`; NEVER paste plan history) → on DONE run `scripts/review-package PLAN
-   BASE HEAD` → dispatch task-reviewer (haiku/sonnet by risk) → fix loop if needed (resume same
-   implementer via SendMessage rounds 1-3) → ledger completion. Task 8's dispatch MUST carry the
-   two ROUTED items from the ledger. Task 12 (opus) and 13 (sonnet) close it out.
-3. **After Task 13:** final whole-branch review on **opus** (`scripts/review-package PLAN
-   5f92009 HEAD` — merge-base is 5f92009), point it at the ledger's deferred-minor lines; ONE
-   fix wave max, one scoped re-review; then the controller (not a subagent) runs the live walk
-   from the walk brief Task 13 writes, opens the PR feature/machines-repos → main with spec §12
-   disclosures, and hands the merge to the user.
+**Decisions locked (why):** (1) model directive (fable orchestrates + gates; opus 3/5/6/9/12;
+sonnet the rest; haiku tiny reviews) — worked, keep for the next section. (2) Spec-of-record beats
+plan code (the RepoDecl clamp was exactly this: plan's Task 8 block omitted the slice the spec's
+§5.1-5.2 bounds require — resolved and logged, not escalated, per the standing ruling).
+(3) Minors → ledger, never the fix loop; ONE final fix wave, one scoped re-review, residuals
+parked with rulings. (4) NEVER merge PRs; the user does.
+
+### ➡️ NEXT STEPS (nothing to resume — these are the options)
+
+1. **User merges #22 then #23** (their call, their order). After #23 merges: delete this plan's
+   workspace (see above).
+2. **Next §8 section:** PRD §8 has ten named sections; §8.2 (projects) and §8.3 (machines/repos)
+   are done. The next section starts with its own brainstorm → spec → plan (superpowers flow),
+   fresh ledger in its own `.superpowers/sdd/<plan>/` dir. Spec §13 + PRD §10 list what's open at
+   product level (see Open questions below).
+3. **If PR feedback arrives on #23:** the ledger + `final-fix-report.md` +
+   `task-N-report.md` files in the workspace carry every decision's evidence.
 
 ### Resume & verify — run this first, expect exactly this
 
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
-git status -sb            # feature/machines-repos, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
-git log --oneline -1      # e6504af docs(server): label the attach-failure catch as injection-reachable today
+git status -sb            # feature/machines-repos, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png, walk-step8-labels.png (NEVER commit these)
+git log --oneline -2      # HANDOFF docs commit atop 455a922 fix(server): clearer refusal when no repo is attached
 head -5 .superpowers/sdd/2026-07-29-machines-repos/progress.md   # ledger names THIS plan
 gh pr view 22 --json state --jq .state   # OPEN — never merge it
-cd poc/server && npx tsc --noEmit && npx vitest run   # 478 passed, 22 files
-cd ../hub    && npx tsc --noEmit && npx vitest run    # 93 passed, 4 files
-cd ../client && npx tsc -b && npx vitest run          # 247 passed, 28 files
+gh pr view 23 --json state --jq .state   # OPEN — never merge it
+for p in 3001 3002 3003 4000 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY — walk cleaned up
+cd poc/server && npx tsc --noEmit && npx vitest run   # 499 passed, 24 files
+cd ../hub    && npx tsc --noEmit && npx vitest run    # 104 passed, 4 files
+cd ../client && npx tsc -b && npx vitest run          # 271 passed, 30 files
 ```
 
-**Gotchas for the execution loop:** client typecheck is `npx tsc -b` (`--noEmit` is a NO-OP);
+**Gotchas (unchanged, still true):** client typecheck is `npx tsc -b` (`--noEmit` is a NO-OP);
 rebuild `poc/server` (`npm run build`) after exported-type changes or hub/client typecheck stale
 dist; `poc/server/.env` holds a placeholder key — never source it; never `git add -A` (diff-tree
-verify every commit); never predict suite totals; implementers are told to SKIP any brief Step 0
-branch commands (branch exists); one implementer at a time, reviews via fresh subagents, fixes
-via SendMessage to the implementer's agentId (in the ledger context each dispatch records).
+verify every commit); never predict suite totals; launch laptops only via the `mpai` CLI (symlink
+`~/.local/bin/mpai` → this checkout's `poc/server/bin/mpai.js`, runs `src/cli.ts` via tsx); the
+hub reads `PORT` + `CLIENT_DIST` env, not flags (W1).
 
-**Open questions:** none blocking — all parked/deferred items live in the ledger with rulings;
-spec §13 lists what stays open at PRD level.
+**Open questions (product-level, not blocking):** PRD §10 Q2/Q3 (entrance at hundreds of
+projects; per-project `intent` line); spec §8.4 sub-session worktrees; spec §13's §8.3 leftovers
+(attach-state persistence — now debt §2.7; candidate rescan without restart — disclosure 5).
 
 ---
 
@@ -325,9 +330,11 @@ from the very end of the fix wave:
 2. **Spec §8.4** — does a sub-session get its own worktree or share its parent's? Needed before §8.4.
 3. **Spec §8.3** — how a headless machine offers a filesystem path picker to a browser it does not
    serve, without becoming an arbitrary-path read primitive.
-4. **Three v7b1 residuals, still unanswered:** the uplink fails silently so a wrong hub URL looks like
-   a working one; a relay join emits no success signal; `uplinkId` is minted per launch so sessions do
-   not survive a laptop restart.
+4. **v7b1 residuals:** the uplink fails silently so a wrong hub URL looks like a working one
+   (partially improved: a v1-vs-v2 protocol refusal now logs distinctly, latched once per episode);
+   a relay join emits no success signal. ~~`uplinkId` is minted per launch so sessions do not
+   survive a laptop restart~~ — **RESOLVED by §8.3/PR #23** (persistent `machine.json` identity;
+   debt §2.3 discharged, live-proven in the walk).
    ⚠️ **TRAP: `repoKey` is NOT a usable machine identity** — with an `origin` present it is
    byte-identical across every clone by design, so two teammates would silently take over each other's
    sessions. Machine scoping must come from `localRepoKey`'s hostname + hashed repo root.
