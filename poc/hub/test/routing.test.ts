@@ -1125,3 +1125,131 @@ describe("hub routed create_session", () => {
     ws.close();
   });
 });
+
+describe("hub routed attach_repo/detach_repo", () => {
+  it("tunnels attach_repo and detach_repo to the named machine with identity stamped and the grant set", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")]);
+    const { ws } = await member(hub.port, "default");
+    upSeen.length = 0;
+
+    const attach = { type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "k" };
+    ws.send(JSON.stringify(attach));
+    await wait(50);
+    const tunnelled1 = upSeen.find((f) => f.t === "tunnel");
+    expect(tunnelled1).toBeTruthy();
+    expect(tunnelled1.payload).toEqual(attach);
+    expect(tunnelled1.identity).toEqual({ userId: "ana", name: "ana" });
+
+    upSeen.length = 0;
+    const detach = { type: "detach_repo", projectId: "default", machineId: "lap-1", repoKey: "k" };
+    ws.send(JSON.stringify(detach));
+    await wait(50);
+    const tunnelled2 = upSeen.find((f) => f.t === "tunnel");
+    expect(tunnelled2).toBeTruthy();
+    expect(tunnelled2.payload).toEqual(detach);
+    expect(tunnelled2.identity).toEqual({ userId: "ana", name: "ana" });
+
+    up.close();
+    ws.close();
+  });
+
+  it("refuses a non-member — participation is membership-scoped", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")]);
+    const ws = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId: "bo", name: "bo" }));
+    await wait(30);
+    seen.length = 0;
+    ws.send(JSON.stringify({
+      type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "k",
+    }));
+    await wait(40);
+    // Message text, not just type: bo is identified but has joined no
+    // session, so the fallthrough to tunnel()'s "join a session first" also
+    // produces `{ type: "error" }` and would pass a type-only check even
+    // without an isMember guard.
+    expect(seen[0].message).toBe("join this project before changing its machines");
+    up.close();
+    ws.close();
+  });
+
+  it("refuses attach_repo/detach_repo to a machine that is offline", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")]);
+    up.close();
+    await wait(60);
+
+    const { ws, seen } = await member(hub.port, "default");
+    ws.send(JSON.stringify({
+      type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "k",
+    }));
+    await wait(40);
+    expect(seen[0].message).toBe('machine "lap-1" is not online right now');
+    ws.close();
+  });
+
+  it("refuses a repo key the machine never advertised", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")]);
+    const { ws, seen } = await member(hub.port, "default");
+    ws.send(JSON.stringify({
+      type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "ghost",
+    }));
+    await wait(40);
+    expect(seen[0].message).toBe('machine "lap-1" does not list repo "ghost"');
+    up.close();
+    ws.close();
+  });
+
+  it("routes attach_repo to a not-yet-attached candidate — the hub gate does not require `attached`", async () => {
+    // Deliberately coarser than create_session's `attached && key` offer
+    // check: attach targets a candidate that is NOT attached yet, so
+    // requiring `attached` here would make attach_repo permanently
+    // unroutable. Only a key the machine never advertised at all is refused
+    // at the hub; the laptop (Task 6) enforces candidate/blocker semantics.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [
+      decl("k", { attached: false, defaultBranch: null }),
+    ]);
+    const { ws } = await member(hub.port, "default");
+    upSeen.length = 0;
+    ws.send(JSON.stringify({
+      type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "k",
+    }));
+    await wait(50);
+    expect(upSeen.find((f) => f.t === "tunnel")?.payload).toEqual({
+      type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "k",
+    });
+    up.close();
+    ws.close();
+  });
+
+  it("routes the machine's reply back to the asking browser, grant spent on use", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")]);
+    const { ws, seen } = await member(hub.port, "default");
+    ws.send(JSON.stringify({
+      type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "k",
+    }));
+    await wait(50);
+    const channelId = upSeen.find((f) => f.t === "tunnel").channelId;
+    seen.length = 0;
+
+    up.send(JSON.stringify({
+      t: "reply", channelId, payload: { type: "repo_attached", repoKey: "k" },
+    }));
+    await wait(50);
+    expect(seen).toEqual([{ type: "repo_attached", repoKey: "k" }]);
+    up.close();
+    ws.close();
+  });
+});

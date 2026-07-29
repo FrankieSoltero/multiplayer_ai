@@ -612,6 +612,40 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         return;
       }
 
+      /** Routes `attach_repo`/`detach_repo` to the named machine, mirroring
+       *  `create_session`'s routing above (spec §5.3, §9): validate, set the
+       *  one-slot reply grant, tunnel. Deliberately coarser than
+       *  `create_session`'s `attached && key` offer check: attach targets a
+       *  not-yet-attached candidate, detach targets an attached one, so only
+       *  a key the machine never advertised at all is refused here — the
+       *  fine-grained candidate/blocker refusals live on the laptop
+       *  (Task 6). */
+      if (msg?.type === "attach_repo" || msg?.type === "detach_repo") {
+        if (!channel.identity) return error("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) return error(`${msg.type} requires a valid projectId`);
+        if (!store.isMember(projectId, channel.identity.userId)) {
+          return error("join this project before changing its machines");
+        }
+        if (store.lifecycleOf(projectId) !== "active") {
+          return error(`project "${projectId}" is not open`);
+        }
+        const machineId = typeof msg.machineId === "string" ? msg.machineId : "";
+        const repoKey = typeof msg.repoKey === "string" ? msg.repoKey : "";
+        if (!machineId || !repoKey) return error(`${msg.type} requires machineId and repoKey`);
+        const machine = store.machinesIn(projectId).find((m) => m.machineId === machineId);
+        const uplink = machine?.online ? uplinks.get(machineId) : undefined;
+        if (!machine || !uplink) return error(`machine "${machineId}" is not online right now`);
+        // Refuse before tunneling (spec §9): a key the machine never advertised
+        // would only burn the channel's one reply slot on a doomed round trip.
+        if (!machine.repos.some((r) => r.key === repoKey)) {
+          return error(`machine "${machineId}" does not list repo "${repoKey}"`);
+        }
+        channel.pendingReplyFrom = machineId;
+        down(uplink, { t: "tunnel", channelId, identity: channel.identity, payload: msg });
+        return;
+      }
+
       if (HUB_HANDLED.has(msg?.type)) {
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
         if (!SLUG.test(projectId)) return error(`${msg.type} requires a valid projectId`);
