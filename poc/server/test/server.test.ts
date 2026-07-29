@@ -3337,6 +3337,31 @@ describe("attach and detach repos", () => {
     closer.close();
   });
 
+  it("refuses to detach a repo it was launched in but could never find again", async () => {
+    // The direct-API cwd entry: an injected workspace with no root on disk to
+    // rebuild from. Detaching it would strand the machine with a repo nobody
+    // can ever re-attach, which is worse than refusing.
+    const api = keyedWorkspace("github.com/acme/api");
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace: api });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "detach_repo", repoKey: "github.com/acme/api" }));
+    await wait(100);
+    expect(seen.filter((m) => m.type === "error").map((m) => m.message)).toEqual([
+      `repo "github.com/acme/api" was launched without a root and cannot be re-attached — detach refused`,
+    ]);
+    expect(seen.some((m) => m.type === "repo_detached")).toBe(false);
+
+    // Untouched, so it still hosts.
+    ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1" }));
+    await wait(150);
+    expect(seen.some((m) => m.type === "session_created")).toBe(true);
+    ws.close();
+  });
+
   it("keeps the candidate after a detach, so it can be attached again", async () => {
     const f = twoRepoFixture();
     const server = await startServer(f.opts);
