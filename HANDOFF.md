@@ -69,6 +69,39 @@ and none are fixed yet.** Full detail in the ledger; summary:
 
 **Then, and only then: Task 13** (walk it, open the PR) — see below.
 
+- **C5 (found during the hand-off audit, NOT by any reviewer) — the last surviving instance of the
+  pattern that caused the branch's Critical.** `poc/server/src/cli.ts:213` still builds
+  `` `http://localhost:${args.port}/?session=${msg.sessionId}${project}` `` where
+  `const project = args.project !== "default" ? \`&project=${args.project}\` : ""` — i.e. it omits
+  `project` exactly when it is `default`. That is the same special-case the F1 fix removed from
+  `joinSession`/`pickerUrlFrom` on the client. It is **not broken today** only because F1's legacy
+  fallback (`pickerUrl.ts:45-48`, `params.get("project") ?? (params.get("session") ? "default" : null)`)
+  catches it — and the fix-wave re-review explicitly flagged that fallback as "true by convention,
+  not enforced anywhere". **Fix: always append `&project=`, matching the client's builders.**
+
+### ➡️ ORDERED NEXT STEPS — do these in this order
+
+1. **Fix C1** — add `if (denyUnauthed()) return;` as the first line of both `create_project`
+   (`poc/server/src/server.ts:468`) and `list_projects` (`:453`). `denyUnauthed` is defined at
+   `:418` and already used at `:598`, `:634`, `:650`, `:667`.
+   **You must ALSO rewrite the comment at `poc/server/src/server.ts:432-435`**, which states the
+   refuted rationale *in the code*: "Unguarded by `denyUnauthed` for the same reason the hub's
+   versions are unguarded…". Leaving it will talk the next reader out of the fix.
+2. **Fix C2** — rewrite `poc/server/test/server.test.ts:1392` ("creates a real, reachable project —
+   not just an ack") to prove reachability with `list_projects` (the non-creating read) instead of
+   `watch_project` (which calls `getOrCreateProject` at `server.ts:639` and so passes either way).
+   Then **revert `create_project`'s `getOrCreateProject` call (`server.ts:479`) and confirm the test
+   now fails** — that is the whole point of the rewrite.
+3. **Fix I4** — seed the launch project at boot so the entrance is the promised one-item list.
+   `poc/server/src/cli.ts:155` passes `projectId` to `startServer` only inside the
+   `args.hub ? … : {}` ternary; the non-hub branch passes nothing. Add a seed and assert the
+   entrance lists exactly one project on a fresh server.
+4. **Fix C5** — `poc/server/src/cli.ts:213`, always append `&project=`.
+5. **Re-review** the fix round (scoped, `review-package` over the fix range).
+6. **Ask the user about I3** (the deployed no-workspace mode) — do NOT guess; the naive fix is a trap.
+7. **Task 13**: amend the walkthrough to run Step 2 twice (once `--project acme`, once with no
+   `--project`), walk it, then open the PR with the §5.2/§4.1 surface gap disclosed in the body.
+
 ### What is done — 25 commits, pushed, `feature/projects` = `origin/feature/projects` = `c302dce`
 
 All 13 tasks complete and reviewed. Base is `main` `0ffeaa3`. **No PR is open yet** — deliberately
@@ -109,7 +142,7 @@ git status -sb                        # feature/projects, in sync; untracked: ma
 git log --oneline -1                  # c302dce docs(prd): the hub is on main …
 git ls-remote origin refs/heads/main  # 0ffeaa3… — authoritative; the tracking ref has been observed stale in this repo
 for p in 3001 4000 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY
-cd poc/server && npx tsc --noEmit && npx vitest run   # 412 passed, 20 files
+cd poc/server && npx tsc --noEmit && npx vitest run   # 429 passed, 20 files  (was 412 before the solo-mode commits)
 cd ../hub     && npx tsc --noEmit && npx vitest run   # 83 passed, 4 files
 cd ../client  && npx tsc -b && npx vitest run && npm run build  # 247 passed, 28 files; build clean
 ```
