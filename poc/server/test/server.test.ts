@@ -1401,13 +1401,17 @@ describe("solo-mode entrance protocol", () => {
       await wait(40);
       expect(seen.at(-1)).toEqual({ type: "project_created", projectId: "my-cool-project" });
       seen.length = 0;
-      // Reachable: watch_project on the slug returns a real (not synthetic
-      // "unknown project") snapshot with this machine's repo attached.
-      ws.send(JSON.stringify({ type: "watch_project", projectId: "my-cool-project" }));
+      // Reachable: list_projects is the NON-CREATING read (`projects.values()`
+      // never calls getOrCreateProject), so the slug appears here only if
+      // create_project actually wrote it. watch_project would not
+      // discriminate — it creates the project itself on the way in.
+      ws.send(JSON.stringify({ type: "list_projects" }));
       await wait(40);
-      const snap = seen.find((m) => m.type === "project");
-      expect(snap.sessions).toEqual([]);
-      expect(snap.repo).toEqual({ defaultBranch: "main", key: "local:test:000000000000" });
+      const projectsMsg = seen.find((m) => m.type === "projects");
+      const created = projectsMsg.projects.find((p: any) => p.id === "my-cool-project");
+      expect(created).toBeTruthy();
+      expect(created.lifecycle).toBe("active");
+      expect(created.sessionCount).toBe(0);
       ws.close();
     });
 
