@@ -9,6 +9,7 @@ import { isModelKey } from "./models.js";
 import {
   Project,
   projectSnapshot,
+  projectSummaryOf,
   sessionFactsOf,
   SLUG,
   type ProjectSessionEntry,
@@ -375,6 +376,15 @@ export async function startServer(opts: {
   } {
     let ctx: ClientContext | null = null;
     let watching: Project | null = null;
+    // Set by `identify`, read by `list_projects` / `create_project` — the
+    // solo-mode entrance protocol (spec: standalone server answers these
+    // instead of erroring). Deliberately separate from `ctx.userId`: `join`
+    // still establishes its own identity for a session exactly as before;
+    // this is only the per-connection claim the project/entrance screens make
+    // before any session exists, mirroring the hub's `channel.identity`
+    // (hub.ts's per-connection identity comment explains why `join`-time and
+    // pre-join identity cannot share one field).
+    let identity: { userId: string; name: string } | null = null;
 
     // Derived once from the single discriminator: only a direct socket can be
     // a project watcher, and the union makes that structural rather than a
@@ -414,6 +424,62 @@ export async function startServer(opts: {
         sendError(check.error);
         return true;
       };
+
+      // The three messages the entrance (ProjectPicker) and the project
+      // screen (SessionPicker) send before any session exists, mirrored from
+      // the hub (hub.ts's `identify` / `list_projects` / `create_project`) so
+      // the hub rejects precisely what this server rejects, and vice versa.
+      // Unguarded by `denyUnauthed` for the same reason the hub's versions
+      // are unguarded: with auth off it would be a no-op, and with auth on
+      // these three carry no session or project state to protect — only
+      // `join`/`create_session`/etc. provision or disclose anything.
+      if (msg.type === "identify") {
+        // Mirrors `join`'s "already joined" guard (hub.ts:360 has the same
+        // one, for the same reason): a joined connection's identity is
+        // locked, so a later `identify` cannot silently rebind who `ctx`
+        // attributes future actions to.
+        if (ctx) return sendError("already joined");
+        if (typeof msg.userId !== "string" || typeof msg.name !== "string") {
+          return sendError("identify requires userId, name");
+        }
+        const userId = msg.userId.slice(0, 64);
+        const name = msg.name.slice(0, 40);
+        if (!userId) return sendError("identify requires userId");
+        identity = { userId, name };
+        io.send({ type: "identified", userId, name });
+        return;
+      }
+
+      if (msg.type === "list_projects") {
+        // Non-creating READ, deliberately: `projects.values()` never calls
+        // `getOrCreateProject`. A creating read here would let unauthenticated
+        // input grow `projects` without bound — the hub's `readSessionsOf` vs
+        // `sessionsOf` split (hubStore.ts) guards the identical failure and
+        // this mirrors it.
+        io.send({
+          type: "projects",
+          projects: [...projects.values()].map((p) =>
+            projectSummaryOf(p, identity?.userId ?? null, repo?.key ?? null),
+          ),
+        });
+        return;
+      }
+
+      if (msg.type === "create_project") {
+        if (!identity) return sendError("identify first");
+        if (typeof msg.name !== "string") return sendError("create_project requires name");
+        const projectId = slugify(msg.name.slice(0, 200));
+        if (!SLUG.test(projectId)) return sendError("create_project requires a usable name");
+        if (projects.has(projectId)) {
+          return sendError(`project "${projectId}" already exists`);
+        }
+        // Creating here IS the point — unlike list_projects, this is a
+        // deliberate write gated by `identify first` above, not an
+        // unauthenticated read.
+        getOrCreateProject(projectId);
+        io.send({ type: "project_created", projectId });
+        return;
+      }
 
       if (msg.type === "join") {
         if (ctx) {
