@@ -216,6 +216,27 @@ or (c) putting the projectId in the invite URL so the hub can pick the project, 
 broadcasting only within it. All three are v7b2-or-later. Sits next to the `create_session`
 bound in the v7b1 plan's "Known bounds" list.
 
+### 2.6 Deployed no-workspace mode shows a misleading "no machine" refusal (was: quietly disabled)
+
+Ruled 2026-07-28 (user, session #18, "option 1"): **ship as-is, disclose in the projects PR,
+design later.** Introduced as a side effect of the solo-mode "1+" fix (`9749d53`): the deployed,
+no-workspace server (`poc/server/src/main.ts` passes no `workspace`, see §2.2) now emits a real
+`ProjectSummary` whose `machines` list is empty, so `canAct`
+(`poc/client/src/projectAccess.ts:15`) returns `"no-machine"` where the client previously ended
+up with `null`. The project screen then hides NEW SESSION, relabels every JOIN to WATCH, and
+`refusalText` (`projectAccess.ts:24`) advises *"run `mpai --hub <url> --project <id>`"* — a dead
+end on a deployment that has no hub either. Net change: disabled-button → misleading refusal.
+
+**Why deferred:** `deploy/RUNBOOK.md` has never been executed, so no live deployment shows this;
+and the honest fix is a design call (what *should* a session-incapable deployment say?), not a
+patch. **TRAP for whoever picks this up:** having the server report a machine with
+`repoKey: ""` makes it worse — `chosenRepo` becomes `""` and CREATE re-enables onto a server
+that cannot provision (recorded in the projects ledger, Fix wave 1, I3).
+
+**Fixed looks like:** a deliberate "this deployment can't host sessions" state with truthful
+copy (and no hub advice when there is no hub), or restoring the quiet disabled state — chosen by
+spec, with a component-level test once §3's infrastructure exists.
+
 ---
 
 ## 3. Test coverage gaps
