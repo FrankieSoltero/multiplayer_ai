@@ -22,7 +22,7 @@ import { Session } from "./session.js";
 import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
 import { lifecycleOf } from "./lifecycle.js";
-import { slugify, WorkspaceManager, type WorkspaceLike } from "./workspace.js";
+import { ensureExcluded, slugify, WorkspaceManager, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
 import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
 import { InviteStore } from "./invites.js";
@@ -715,9 +715,17 @@ export async function startServer(opts: {
             try {
               entry.defaultBranch = (opts.defaultBaseRef ?? defaultBaseRefFor)(entry.root);
               entry.workspace = (opts.workspaceFor ??
-                ((root: string) => new WorkspaceManager(root, path.join(root, ".mpai", "worktrees"))))(
-                entry.root,
-              );
+                ((root: string) => {
+                  // Finding 2: the launch path (`cli.ts`) has always done this
+                  // for the cwd repo; a repo attached LATER, from the MACHINES
+                  // panel, went through no equivalent call and permanently
+                  // showed `.mpai/` as untracked in `git status`. Beside the
+                  // `WorkspaceManager` construction it belongs to, so every
+                  // real attach gets it — injected `workspaceFor` fakes (the
+                  // tests below) intentionally bypass both, same as before.
+                  ensureExcluded(root);
+                  return new WorkspaceManager(root, path.join(root, ".mpai", "worktrees"));
+                }))(entry.root);
               entry.attached = true;
             } catch (err) {
               // REACHABLE TODAY ONLY THROUGH THE INJECTED SEAMS above: the

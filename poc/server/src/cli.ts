@@ -7,7 +7,7 @@ import { loadMachineIdentity, mpaiHome, type MachineIdentity } from "./machineId
 import { MAX_REPO_CANDIDATES, scanRepoRoots, type RepoCandidate } from "./machineRepos.js";
 import { SLUG } from "./project.js";
 import { startServer } from "./server.js";
-import { WorkspaceManager } from "./workspace.js";
+import { ensureExcluded, WorkspaceManager } from "./workspace.js";
 
 export interface CliArgs {
   cmd: "launch" | "new";
@@ -96,29 +96,6 @@ export function findRepoRoot(cwd: string): string | null {
     }).trim();
   } catch {
     return null;
-  }
-}
-
-/** .git/info/exclude keeps .mpai/ out of git status without touching the
- *  user's .gitignore (spec §5). Non-fatal on failure: worst case .mpai/
- *  shows as untracked. */
-function ensureExcluded(repoRoot: string): void {
-  try {
-    const gitDir = execFileSync("git", ["rev-parse", "--git-dir"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    }).trim();
-    const excludeFile = path.resolve(repoRoot, gitDir, "info", "exclude");
-    fs.mkdirSync(path.dirname(excludeFile), { recursive: true });
-    const current = fs.existsSync(excludeFile)
-      ? fs.readFileSync(excludeFile, "utf8")
-      : "";
-    if (!current.split("\n").includes(".mpai/")) {
-      const sep = current === "" || current.endsWith("\n") ? "" : "\n";
-      fs.writeFileSync(excludeFile, `${current}${sep}.mpai/\n`);
-    }
-  } catch {
-    /* non-fatal */
   }
 }
 

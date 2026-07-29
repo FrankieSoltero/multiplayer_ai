@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import WebSocket from "ws";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -3620,5 +3621,82 @@ describe("attach and detach repos", () => {
         }),
       ).rejects.toThrow(/100/);
     });
+  });
+});
+
+describe("attach excludes .mpai/ from git (Finding 2)", () => {
+  // cli.ts's launch path has always called ensureExcluded for the cwd repo.
+  // The attach path (a repo added later from the MACHINES panel) went through
+  // no equivalent call, so every panel-attached repo permanently showed
+  // .mpai/ as untracked in `git status`. Real git, real filesystem, no
+  // injected workspaceFor/defaultBaseRef — this exercises the actual default
+  // factory the attach handler falls back to, not a test fake standing in
+  // for it.
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    while (tmpDirs.length > 0) fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
+  });
+
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+
+  function realRepo(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mpai-attach-exclude-"));
+    tmpDirs.push(dir);
+    git(dir, "init", "-b", "main");
+    return dir;
+  }
+
+  it("writes .mpai/ into the attached repo's .git/info/exclude", async () => {
+    const candidateRoot = realRepo();
+    const cwd = keyedWorkspace("github.com/acme/api");
+    const server = await startServer({
+      port: 0,
+      runQuery: echoRun,
+      workspace: cwd,
+      repoCandidates: [{ key: "local:test:attachexclude01", label: "cand", root: candidateRoot }],
+      // Deliberately NO workspaceFor/defaultBaseRef — the point is to exercise
+      // the real default factory the attach handler falls back to.
+    });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "local:test:attachexclude01" }));
+    await wait(150);
+    expect(seen.some((m) => m.type === "repo_attached")).toBe(true);
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+
+    const excludeFile = path.join(candidateRoot, ".git", "info", "exclude");
+    expect(fs.existsSync(excludeFile)).toBe(true);
+    expect(fs.readFileSync(excludeFile, "utf8").split("\n")).toContain(".mpai/");
+    ws.close();
+  });
+
+  it("does not duplicate the entry on a second attach after a detach", async () => {
+    const candidateRoot = realRepo();
+    const cwd = keyedWorkspace("github.com/acme/api");
+    const server = await startServer({
+      port: 0,
+      runQuery: echoRun,
+      workspace: cwd,
+      repoCandidates: [{ key: "local:test:attachexclude02", label: "cand", root: candidateRoot }],
+    });
+    close = server.close;
+    const ws = await connect(server.port);
+    collect(ws, []);
+
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "local:test:attachexclude02" }));
+    await wait(100);
+    ws.send(JSON.stringify({ type: "detach_repo", repoKey: "local:test:attachexclude02" }));
+    await wait(100);
+    ws.send(JSON.stringify({ type: "attach_repo", repoKey: "local:test:attachexclude02" }));
+    await wait(100);
+
+    const excludeFile = path.join(candidateRoot, ".git", "info", "exclude");
+    const lines = fs.readFileSync(excludeFile, "utf8").split("\n").filter((l) => l === ".mpai/");
+    expect(lines).toHaveLength(1);
+    ws.close();
   });
 });

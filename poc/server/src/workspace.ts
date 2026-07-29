@@ -8,6 +8,32 @@ export type ProvisionResult =
   | { ok: true; workdir: string }
   | { ok: false; error: string };
 
+/** `.git/info/exclude` keeps `.mpai/` out of `git status` without touching the
+ *  user's `.gitignore` (spec §5). Non-fatal on failure: worst case `.mpai/`
+ *  shows as untracked. Lives here — beside `WorkspaceManager`, the thing that
+ *  actually creates `.mpai/worktrees` — rather than in the CLI, so both the
+ *  launch path (`cli.ts`, the cwd repo) and the attach path (`server.ts`'s
+ *  `attach_repo` handler, any repo attached later from the MACHINES panel)
+ *  can call the same function without the attach path importing CLI-only
+ *  code. Idempotent: safe to call on every attach, not just the first. */
+export function ensureExcluded(repoRoot: string): void {
+  try {
+    const gitDir = execFileSync("git", ["rev-parse", "--git-dir"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    }).trim();
+    const excludeFile = path.resolve(repoRoot, gitDir, "info", "exclude");
+    fs.mkdirSync(path.dirname(excludeFile), { recursive: true });
+    const current = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, "utf8") : "";
+    if (!current.split("\n").includes(".mpai/")) {
+      const sep = current === "" || current.endsWith("\n") ? "" : "\n";
+      fs.writeFileSync(excludeFile, `${current}${sep}.mpai/\n`);
+    }
+  } catch {
+    /* non-fatal */
+  }
+}
+
 /** Structural interface so server tests can inject a fake. */
 export interface WorkspaceLike {
   provision(slug: string, baseRef: string): ProvisionResult;
