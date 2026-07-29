@@ -266,9 +266,46 @@ patch. **TRAP for whoever picks this up:** having the server report a machine wi
 `repoKey: ""` makes it worse — `chosenRepo` becomes `""` and CREATE re-enables onto a server
 that cannot provision (recorded in the projects ledger, Fix wave 1, I3).
 
+**Cite refreshed 2026-07-29 (branch `feature/machines-repos` whole-branch review) — the
+paragraph above is now stale, not current behavior.** `chosenRepo` no longer exists:
+`SessionPicker.tsx`'s repo selection is `chosen` (`chooseRepo(choices, picked)`, `:113`), built
+off `repoChoices(machines)` — a list of real `(machine, repo)` pairs — rather than a bare
+`repoKey` string a machine could report as `""`. And the mechanism the TRAP warned about has
+flipped direction: `canCreate` (`:128`) requires `chosen !== null`, so a machine reporting zero
+usable repos now means `choices` is empty, `chosen` is `null`, and CREATE stays **disabled** —
+not re-enabled onto a server that cannot provision. The question this section asks — what a
+session-incapable deployment should say — is still open; only the old TRAP's code shape is gone.
+
 **Fixed looks like:** a deliberate "this deployment can't host sessions" state with truthful
 copy (and no hub advice when there is no hub), or restoring the quiet disabled state — chosen by
 spec, with a component-level test once §3's infrastructure exists.
+
+### 2.7 Attach/detach state is in-memory only — a daemon restart silently reverts every attached repo to candidate
+
+`poc/server/src/server.ts:677-742` (the `attach_repo`/`detach_repo` handler) mutates the
+in-process `repos` Map — flips `attached`, sets/clears `workspace` and `defaultBranch` — and
+writes nothing to disk. Attach a candidate repo from the MACHINES panel, then restart the daemon
+for any reason (crash, deploy, `mpai` relaunched by hand), and that repo is back to an unattached
+candidate exactly as the launch-time scan (`machineRepos.ts`) found it, with no record anywhere
+that anyone ever attached it. **User-visible composite behavior:** a repo a teammate attached
+yesterday can silently vanish from the create form's repo picker today — no error, no log line,
+nothing distinguishing "never attached" from "attached, then reverted by a restart nobody
+connected to this." Found during the 2026-07-29 whole-branch review of `feature/machines-repos`;
+not a regression against prior behavior — attach/detach are new this branch (Task 6, spec §6) and
+were never durable.
+
+**Why deferred:** no spec section asks for durability
+(`docs/superpowers/specs/2026-07-28-machines-repos-design.md` §5–§6 describe the wire protocol
+and the in-memory repo set; surviving a restart is out of scope as written), and today an `mpai`
+restart is still a manual, operator-driven event rather than the kind of always-on daemon a
+silent revert would ambush someone on.
+
+**Fixed looks like:** persist the attached set (or just its delta from the launch-time scan)
+alongside `machine.json` in `$MPAI_HOME`, restored when `startServer` builds its repo map — before
+the scan's candidates are merged in — so a scanned candidate matching a persisted-attached key
+starts attached instead of starting as a candidate the operator has to re-attach by hand. Needs a
+design call on ordering (persisted state vs. a candidate the scan no longer finds, or a candidate
+whose root moved) before it is a patch rather than a decision.
 
 ---
 

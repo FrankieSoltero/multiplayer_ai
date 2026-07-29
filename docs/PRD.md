@@ -385,7 +385,8 @@ allowlisted repo-candidate scan (`machineIdentity.ts`, `machineRepos.ts`). One d
 **set** of repos — `server.ts`'s single `repo` field is retired in favor of `repos: Map<string,
 RepoEntry>` — attached at launch (the cwd repo) or later, from the hub UI's MACHINES panel
 (`MachinesPanel.tsx`: ATTACH/DETACH per repo, candidate-only, blocker-refused while sessions are
-open). The relay protocol bumped to v2 (`RELAY_PROTOCOL_VERSION = 2`, no v1 shim): the hello and
+open; this attach/detach state lives in memory only and does not survive a daemon restart, debt
+§2.7). The relay protocol bumped to v2 (`RELAY_PROTOCOL_VERSION = 2`, no v1 shim): the hello and
 a new `repos` up-frame carry the machine's name and its full `RepoDecl[]` list, capped at 100 and
 deep-validated element-by-element (`relayProtocol.ts`'s `repoList()`). `create_session` takes an
 optional `machineId` to target one of several machines offering the same repo; the create form
