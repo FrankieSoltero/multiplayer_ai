@@ -10,6 +10,7 @@ const st = (over: Partial<DoodleState> = {}): DoodleState => ({
   x: 10, y: 5, vy: 0, dir: 0, cam: 0,
   platforms: [{ x: 8, y: 3 }],
   best: 5, alive: true,
+  acc: 0, rng: 42,
   ...over,
 });
 
