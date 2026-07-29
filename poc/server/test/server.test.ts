@@ -1355,6 +1355,22 @@ describe("solo-mode entrance protocol", () => {
       expect(projectsMsg.projects[0].members).toEqual([]);
       ws.close();
     });
+
+    it("lists the launch project on a fresh server, seeded at boot", async () => {
+      const workspace = fakeWorkspace();
+      const server = await startServer({ port: 0, runQuery: echoRun, workspace, projectId: "acme" });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "list_projects" }));
+      await wait(40);
+      const projectsMsg = seen.find((m) => m.type === "projects");
+      // Exactly one — a fresh solo server's entrance is the promised one-item
+      // list, not an empty page with only a NEW PROJECT button.
+      expect(projectsMsg.projects.map((p: any) => p.id)).toEqual(["acme"]);
+      ws.close();
+    });
   });
 
   describe("create_project", () => {

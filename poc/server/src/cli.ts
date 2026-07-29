@@ -152,6 +152,7 @@ async function launch(args: CliArgs): Promise<number | null> {
       port: args.port,
       workspace: new WorkspaceManager(repoRoot, worktreesRoot),
       staticDir: distDir,
+      projectId: args.project,
       ...(args.hub ? { hub: { url: args.hub, projectId: args.project } } : {}),
     });
     const url = localUrlFor(port, args);

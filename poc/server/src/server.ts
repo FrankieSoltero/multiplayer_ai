@@ -126,6 +126,10 @@ export async function startServer(opts: {
   inviteTtlMs?: number;
   inviteMaxUses?: number;
   auth?: AuthConfig;
+  /** Seeded into the project registry at boot, so a fresh server's entrance
+   *  (list_projects) offers the launch project instead of an empty list. The
+   *  CLI passes its --project value here. */
+  projectId?: string;
   /** When set, this process also dials the hub and relays its sessions
    *  (spec §3.1). Absent, `mpai` behaves exactly as it always has — the hub
    *  is strictly additive (spec §6). */
@@ -150,6 +154,9 @@ export async function startServer(opts: {
       }
     : null;
   const projects = new Map<string, Project>();
+  // Boot seed: the launch project exists before anyone asks, so a bare
+  // localhost:PORT/ lands on a one-item entrance rather than an empty one.
+  if (opts.projectId) getOrCreateProject(opts.projectId);
   const lastPush = new Map<Project, number>();
   const pushTimers = new Map<Project, NodeJS.Timeout>();
   const invites = new InviteStore({
