@@ -429,10 +429,16 @@ export async function startServer(opts: {
       // screen (SessionPicker) send before any session exists, mirrored from
       // the hub (hub.ts's `identify` / `list_projects` / `create_project`) so
       // the hub rejects precisely what this server rejects, and vice versa.
-      // Unguarded by `denyUnauthed` for the same reason the hub's versions
-      // are unguarded: with auth off it would be a no-op, and with auth on
-      // these three carry no session or project state to protect — only
-      // `join`/`create_session`/etc. provision or disclose anything.
+      // `identify` alone stays unguarded, like `peek_invite`: it sets
+      // per-connection state and echoes it back, provisioning and disclosing
+      // nothing. `list_projects` (reads the project roster) and
+      // `create_project` (grows `projects`) sit behind `denyUnauthed` like
+      // every other pre-join read/write — without it, one cookie-less
+      // connection could loop identify + create_project and grow the Map
+      // unbounded. Hub parity is not at stake: `denyUnauthed` is this
+      // laptop's transport gate (relay-mode traffic skips it because the hub
+      // verified the browser), already applied to four handlers the hub has
+      // no equivalent of.
       if (msg.type === "identify") {
         // Mirrors `join`'s "already joined" guard (hub.ts:360 has the same
         // one, for the same reason): a joined connection's identity is
@@ -451,6 +457,7 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "list_projects") {
+        if (denyUnauthed()) return;
         // Non-creating READ, deliberately: `projects.values()` never calls
         // `getOrCreateProject`. A creating read here would let unauthenticated
         // input grow `projects` without bound — the hub's `readSessionsOf` vs
@@ -466,6 +473,7 @@ export async function startServer(opts: {
       }
 
       if (msg.type === "create_project") {
+        if (denyUnauthed()) return;
         if (!identity) return sendError("identify first");
         if (typeof msg.name !== "string") return sendError("create_project requires name");
         const projectId = slugify(msg.name.slice(0, 200));

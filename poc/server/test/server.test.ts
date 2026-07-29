@@ -2104,6 +2104,72 @@ describe("auth gate on the pre-join message types", () => {
     ws.close();
   });
 
+  it("rejects create_project with no cookie and grows the registry by nothing", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    // identify stays reachable (per-connection state only) — the attack the
+    // gate exists to stop is looping identify + create_project pre-auth.
+    ws.send(JSON.stringify({ type: "identify", userId: "mallory", name: "M" }));
+    ws.send(JSON.stringify({ type: "create_project", name: "free lunch" }));
+    await wait(60);
+
+    expect(seen.some((m) => m.type === "error" && /authentication required/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "project_created")).toBe(false);
+
+    // The side-effect assertion: a signed-in user's list_projects (the
+    // non-creating read) shows the write never landed.
+    const cookie = `${SESSION_COOKIE}=${signSession("ana", AUTH.sessionSecret)}`;
+    const anaWs = await connectWithCookie(server.port, cookie);
+    const anaSeen: any[] = [];
+    collect(anaWs, anaSeen);
+    anaWs.send(JSON.stringify({ type: "list_projects" }));
+    await wait(60);
+    const projectsMsg = anaSeen.find((m) => m.type === "projects");
+    expect(projectsMsg).toBeTruthy();
+    expect(projectsMsg.projects.map((p: any) => p.id)).not.toContain("free-lunch");
+    ws.close();
+    anaWs.close();
+  });
+
+  it("rejects list_projects with no cookie and discloses no project list", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "list_projects" }));
+    await wait(60);
+
+    expect(seen.some((m) => m.type === "error" && /authentication required/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "projects")).toBe(false);
+    ws.close();
+  });
+
+  it("still lets a signed-in allowlisted user identify, list and create projects", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const cookie = `${SESSION_COOKIE}=${signSession("ana", AUTH.sessionSecret)}`;
+    const ws = await connectWithCookie(server.port, cookie);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "create_project", name: "Real Work" }));
+    ws.send(JSON.stringify({ type: "list_projects" }));
+    await wait(80);
+
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+    expect(seen.some((m) => m.type === "project_created" && m.projectId === "real-work")).toBe(true);
+    const projectsMsg = seen.find((m) => m.type === "projects");
+    expect(projectsMsg.projects.map((p: any) => p.id)).toContain("real-work");
+    ws.close();
+  });
+
   it("rejects set_oversight with no cookie and mutates nothing", async () => {
     const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
     close = server.close;
