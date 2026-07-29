@@ -1038,7 +1038,7 @@ describe("session initiation", () => {
     close = undefined;
   });
 
-  it("watch_project sends an immediate snapshot with repo info and live pushes", async () => {
+  it("watch_project sends an immediate snapshot with machine info and live pushes", async () => {
     const workspace = fakeWorkspace();
     const server = await startServer({ port: 0, runQuery: echoRun, workspace });
     close = server.close;
@@ -1049,7 +1049,16 @@ describe("session initiation", () => {
     await wait(50);
     const snap = seen.find((m) => m.type === "project");
     expect(snap).toBeTruthy();
-    expect(snap.repo).toEqual({ defaultBranch: "main", key: "local:test:000000000000" });
+    expect(snap.machines).toEqual([
+      {
+        machineId: "local:test:000000000000",
+        name: "repo",
+        repos: [
+          { key: "local:test:000000000000", label: "repo", attached: true, defaultBranch: "main" },
+        ],
+        online: true,
+      },
+    ]);
     expect(snap.sessions).toEqual([]);
     const joiner = await connect(server.port);
     joiner.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "u1", name: "Ana" }));
@@ -1348,7 +1357,16 @@ describe("solo-mode entrance protocol", () => {
           members: ["ana"],
           sessionCount: 0,
           liveSessionCount: 0,
-          machines: [{ machineId: "github.com/acme/api", repoKey: "github.com/acme/api", online: true }],
+          machines: [
+            {
+              machineId: "github.com/acme/api",
+              name: "repo",
+              repos: [
+                { key: "github.com/acme/api", label: "repo", attached: true, defaultBranch: "main" },
+              ],
+              online: true,
+            },
+          ],
         },
       ]);
       ws.close();
@@ -1484,7 +1502,14 @@ describe("machines on the project snapshot (solo-mode fix)", () => {
     await wait(40);
     const snap = seen.find((m) => m.type === "project");
     expect(snap.machines).toEqual([
-      { machineId: "github.com/acme/api", repoKey: "github.com/acme/api", online: true },
+      {
+        machineId: "github.com/acme/api",
+        name: "repo",
+        repos: [
+          { key: "github.com/acme/api", label: "repo", attached: true, defaultBranch: "main" },
+        ],
+        online: true,
+      },
     ]);
     ws.close();
   });
@@ -1499,6 +1524,26 @@ describe("machines on the project snapshot (solo-mode fix)", () => {
     await wait(40);
     const snap = seen.find((m) => m.type === "project");
     expect(snap.machines).toBeUndefined();
+    ws.close();
+  });
+
+  it("peek's synthetic snapshot for an unknown project has no top-level repo property (D10)", async () => {
+    const workspace = { ...fakeWorkspace(), repoKey: () => "github.com/acme/api" };
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "peek", projectId: "nosuch" }));
+    await wait(40);
+    const snap = seen.find((m) => m.type === "project");
+    expect(snap).not.toHaveProperty("repo");
+    // The synthetic reply mirrors the real snapshot's machine reporting too —
+    // the machine itself is reachable regardless of whether this particular
+    // project exists yet.
+    expect(snap.machines).toEqual([
+      { machineId: "github.com/acme/api", name: "repo", repos: expect.any(Array), online: true },
+    ]);
     ws.close();
   });
 });
@@ -2338,7 +2383,7 @@ describe("repo identity on the project snapshot", () => {
     await wait(200);
 
     const snap = lastProject(seen);
-    expect(snap.repo).toEqual({ defaultBranch: "main", key: "github.com/acme/api" });
+    expect(snap).not.toHaveProperty("repo");
     expect(snap.sessions.find((s: any) => s.id === "ana").repoKey).toBe("github.com/acme/api");
 
     ws.close();
@@ -2355,7 +2400,7 @@ describe("repo identity on the project snapshot", () => {
     await wait(200);
 
     const snap = lastProject(seen);
-    expect(snap.repo).toBeNull();
+    expect(snap).not.toHaveProperty("repo");
     expect(snap.sessions.find((s: any) => s.id === "ana").repoKey).toBeNull();
 
     ws.close();

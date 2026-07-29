@@ -351,10 +351,6 @@ export class HubStore {
       // hub-attached; surfacing per-laptop plugin rosters is v7b3.
       plugins: [],
       pluginsEnabled: false,
-      // A hub spans repos, so there is no single `repo` for it to report. The
-      // per-session `repoKey` is the honest answer and the client already
-      // reads it (v7a).
-      repo: null,
       // Oversight is host-configured and hub-side (spec §3.7) — v7b3.
       oversight: { enabled: false, latest: null },
     };

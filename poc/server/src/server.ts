@@ -235,11 +235,12 @@ export async function startServer(opts: {
 
   const attachedRepos = (): AttachedRepo[] => [...repos.values()].filter(isAttached);
 
-  /** TEMPORARY (this task only): the call sites that still assume one repo —
-   *  the snapshot's `repo` field, the project summaries, `peek`'s empty-project
-   *  reply and the relay's `repoKey` — read the first attached repo so a
-   *  single-repo server behaves byte-for-byte as it did before the map. They
-   *  become genuinely multi-repo in the task that reshapes the wire. */
+  /** The first attached repo, when there is one. `machineView()` below uses
+   *  this permanently — its no-persisted-identity fallback names itself after
+   *  whatever repo happens to be attached, same as day one. The relay's
+   *  `repoKey` (Relay ctor, below) is the one remaining TEMPORARY caller: it
+   *  still assumes a single repo per machine and is reshaped in the task that
+   *  wires the wire-level protocol (relay.ts, hub aggregation). */
   const firstAttached = (): AttachedRepo | null => attachedRepos()[0] ?? null;
 
   /** What this machine offers, for the repo picker (spec §5.1). */
@@ -314,11 +315,10 @@ export async function startServer(opts: {
   );
 
   function snapshotFor(project: Project) {
-    const primary = firstAttached();
     return projectSnapshot(
       project,
       { plugins: pluginStore.list(project.id), enabled: pluginStore.enabled },
-      primary && { defaultBranch: primary.defaultBranch ?? "main", key: primary.key },
+      machineView(),
       { enabled: overseer.isEnabled(project.id), latest: overseer.latest(project.id) },
     );
   }
@@ -336,9 +336,11 @@ export async function startServer(opts: {
     // Facts ride the snapshot's existing 1-second throttle rather than a
     // second timer: a fact change is by definition accompanied by a push.
     if (relay) {
-      const primaryKey = firstAttached()?.key ?? null;
+      // Each entry's OWN repoKey, bound at creation — never a machine-wide
+      // global (spec §6); see the identical reasoning on projectSnapshot's
+      // session-row construction in project.ts.
       for (const [id, entry] of project.sessions) {
-        relay.publishFacts(id, sessionFactsOf(id, entry, primaryKey));
+        relay.publishFacts(id, sessionFactsOf(id, entry, entry.repoKey));
       }
     }
     lastPush.set(project, Date.now());
@@ -643,7 +645,7 @@ export async function startServer(opts: {
         io.send({
           type: "projects",
           projects: [...projects.values()].map((p) =>
-            projectSummaryOf(p, identity?.userId ?? null, firstAttached()?.key ?? null),
+            projectSummaryOf(p, identity?.userId ?? null, machineView()),
           ),
         });
         return;
@@ -786,11 +788,20 @@ export async function startServer(opts: {
           return sendError("peek requires a valid projectId");
         }
         const project = projects.get(projectId);
-        const primary = firstAttached();
+        const machine = machineView();
         io.send(
           project
             ? snapshotFor(project)
-            : { type: "project", sessions: [], plugins: [], pluginsEnabled: pluginStore.enabled, repo: primary && { defaultBranch: primary.defaultBranch ?? "main", key: primary.key }, oversight: { enabled: false, latest: null } },
+            : {
+                type: "project",
+                sessions: [],
+                plugins: [],
+                pluginsEnabled: pluginStore.enabled,
+                machines: machine
+                  ? [{ machineId: machine.machineId, name: machine.name, repos: machine.repos, online: true }]
+                  : undefined,
+                oversight: { enabled: false, latest: null },
+              },
         );
         return;
       }
