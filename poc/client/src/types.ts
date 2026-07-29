@@ -84,7 +84,12 @@ export type ProjectSessionInfo = {
 
 export type ProjectLifecycle = "active" | "closed" | "archived";
 
-export type MachineInfo = { machineId: string; repoKey: string; online: boolean };
+/** One repo a machine knows about: `attached` ones serve sessions, the rest
+ *  are candidates a member can ATTACH. `defaultBranch` is only known for
+ *  attached repos (spec §5.1), hence nullable. */
+export type RepoDecl = { key: string; label: string; attached: boolean; defaultBranch: string | null };
+
+export type MachineInfo = { machineId: string; name: string; repos: RepoDecl[]; online: boolean };
 
 export type ProjectSummary = {
   id: string;
@@ -132,8 +137,6 @@ export const SERVER_URL = import.meta.env.DEV
  *  Every /auth/* URL is now same-origin and relative — served by the server in
  *  a built bundle, forwarded by the `/auth` proxy in vite.config.ts in dev.
  *  One convention, no CORS, and cookies work in both. */
-
-export type RepoInfo = { defaultBranch: string; key?: string };
 
 export type OversightState = {
   enabled: boolean;

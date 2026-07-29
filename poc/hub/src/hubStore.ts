@@ -1,6 +1,6 @@
 import type { LoggedEvent } from "multiplayer-ai-server/events";
 import { arcadeRecordsFrom, type ProjectMessage } from "multiplayer-ai-server/project";
-import type { SessionFacts } from "multiplayer-ai-server/relayProtocol";
+import type { RepoDecl, SessionFacts } from "multiplayer-ai-server/relayProtocol";
 
 export interface StoredEvent {
   /** The hub's own monotonic id, per session. Browsers resume from this, NOT
@@ -23,7 +23,12 @@ interface HubSession {
 interface Uplink {
   uplinkId: string;
   projectId: string;
-  repoKey: string;
+  /** As declared in `hello` — already bounded to 40 by `parseUpFrame`. */
+  name: string;
+  /** Everything this machine offers, attached and candidate alike. Only ever
+   *  overwritten WHOLESALE, from `attach` or `setRepos`, because the machine's
+   *  own list is the only authority on it (spec §5.2). */
+  repos: RepoDecl[];
   online: boolean;
 }
 
@@ -45,7 +50,8 @@ interface ProjectRecord {
 
 export interface MachineInfo {
   machineId: string;
-  repoKey: string;
+  name: string;
+  repos: RepoDecl[];
   online: boolean;
 }
 
@@ -141,20 +147,52 @@ export class HubStore {
     return this.projectMeta.get(id)?.members.has(userId) ?? false;
   }
 
-  attach(uplinkId: string, projectId: string, repoKey: string, attachedAt: string): void {
+  attach(
+    uplinkId: string,
+    projectId: string,
+    name: string,
+    repos: RepoDecl[],
+    attachedAt: string,
+  ): void {
     this.ensureProject(projectId, attachedAt);
-    this.uplinks.set(uplinkId, { uplinkId, projectId, repoKey, online: true });
+    this.uplinks.set(uplinkId, { uplinkId, projectId, name, repos: [...repos], online: true });
+  }
+
+  /** The machine re-declared its set (an attach or detach landed there). A
+   *  wholesale REPLACEMENT, never a merge: the frame carries the machine's
+   *  full authoritative list (spec §5.2), so merging would resurrect a repo it
+   *  just dropped and leave the hub routing `create_session` somewhere the
+   *  machine would only refuse — a failure the browser has no way to explain.
+   *
+   *  Silent for an unknown uplink. `hub.ts` only calls this after the "hello
+   *  first" guard, so the sole way to reach it is a race with a detach, where
+   *  there is no record to update and nothing to report. */
+  setRepos(uplinkId: string, repos: RepoDecl[]): void {
+    const uplink = this.uplinks.get(uplinkId);
+    if (!uplink) return;
+    uplink.repos = [...repos];
   }
 
   /** Every machine that has ever attached to this project this hub run,
    *  online or not. An offline machine is kept deliberately: its sessions are
    *  still listed and still readable, so hiding the machine would make them
-   *  look ownerless. */
+   *  look ownerless.
+   *
+   *  Copied out, like `snapshot`'s session facts and unlike `publish`'s stored
+   *  events: this value leaves the hub toward browsers (through `snapshot` and
+   *  `listProjects`) and callers normalize it further before serializing, so
+   *  nothing they mutate may reach back into a machine's record. Bounded by
+   *  the 100-entry cap `parseUpFrame` enforces. */
   machinesIn(projectId: string): MachineInfo[] {
     const out: MachineInfo[] = [];
     for (const uplink of this.uplinks.values()) {
       if (uplink.projectId !== projectId) continue;
-      out.push({ machineId: uplink.uplinkId, repoKey: uplink.repoKey, online: uplink.online });
+      out.push({
+        machineId: uplink.uplinkId,
+        name: uplink.name,
+        repos: uplink.repos.map((repo) => ({ ...repo })),
+        online: uplink.online,
+      });
     }
     return out;
   }
@@ -270,7 +308,7 @@ export class HubStore {
     const sessions = this.sessionsOf(uplink.projectId);
     let session = sessions.get(sessionId);
     if (!session) {
-      session = { uplinkId, facts: emptyFacts(sessionId, uplink.repoKey), events: [], lastRunId: null, lastSeq: -1 };
+      session = { uplinkId, facts: emptyFacts(sessionId), events: [], lastRunId: null, lastSeq: -1 };
       sessions.set(sessionId, session);
     }
     if (session.uplinkId !== uplinkId) return [];
@@ -344,6 +382,9 @@ export class HubStore {
         presence: this.uplinks.get(session.uplinkId)?.online ? ("online" as const) : ("offline" as const),
         machineId: session.uplinkId,
       })),
+      // The store's own machine records, verbatim: `MachineInfo` and
+      // `ProjectMessage.machines` are the same shape, because both are just
+      // what a machine declared in `hello`. Nothing is synthesized here.
       machines: this.machinesIn(projectId),
       arcade: arcadeRecordsFrom(sessions.map((s) => s.events.map((e) => e.event))),
       // Plugins are laptop-local files the agent loads (spec §4) and the hub
@@ -351,17 +392,22 @@ export class HubStore {
       // hub-attached; surfacing per-laptop plugin rosters is v7b3.
       plugins: [],
       pluginsEnabled: false,
-      // A hub spans repos, so there is no single `repo` for it to report. The
-      // per-session `repoKey` is the honest answer and the client already
-      // reads it (v7a).
-      repo: null,
       // Oversight is host-configured and hub-side (spec §3.7) — v7b3.
       oversight: { enabled: false, latest: null },
     };
   }
 }
 
-function emptyFacts(sessionId: string, repoKey: string): SessionFacts {
+/** The stand-in for a session that published events before it declared facts.
+ *
+ *  `repoKey` is null, and that is the honest answer rather than a gap: the hub
+ *  does not know which repo a session lives in until the owning laptop says so
+ *  in a `facts` frame (spec §7). It used to borrow the uplink's single scalar
+ *  key, which was only ever right because a machine had exactly one repo; a
+ *  machine now offers several, so there is nothing left to borrow that would
+ *  not be a confident guess on the project screen for the whole window before
+ *  facts land. */
+function emptyFacts(sessionId: string): SessionFacts {
   return {
     id: sessionId,
     participants: [],
@@ -371,7 +417,7 @@ function emptyFacts(sessionId: string, repoKey: string): SessionFacts {
     ended: false,
     pendingGate: null,
     skills: [],
-    repoKey,
+    repoKey: null,
     lifecycle: "open",
   };
 }

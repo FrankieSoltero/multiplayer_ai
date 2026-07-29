@@ -3,9 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import { loadMachineIdentity, mpaiHome, type MachineIdentity } from "./machineIdentity.js";
+import { MAX_REPO_CANDIDATES, scanRepoRoots, type RepoCandidate } from "./machineRepos.js";
 import { SLUG } from "./project.js";
 import { startServer } from "./server.js";
-import { WorkspaceManager } from "./workspace.js";
+import { ensureExcluded, WorkspaceManager } from "./workspace.js";
 
 export interface CliArgs {
   cmd: "launch" | "new";
@@ -16,11 +18,18 @@ export interface CliArgs {
   open: boolean;
   /** Absent unless `--hub` was passed; only `launch` reads it. */
   hub?: string;
+  /** Allowlisted roots for the repo candidate scan (spec §4), repeatable.
+   *  Empty means "no --root flags" — machine.json's persisted roots apply. */
+  roots: string[];
+  /** One-launch display-name override (spec's D2); sliced to 40 chars to
+   *  match the identity file's own bound and the hello frame's `name` field
+   *  (spec §5.2). */
+  machineName?: string;
   error?: string;
 }
 
 export function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { cmd: "launch", port: 3001, project: "default", open: true };
+  const args: CliArgs = { cmd: "launch", port: 3001, project: "default", open: true, roots: [] };
   const rest = [...argv];
   if (rest[0] === "new") {
     args.cmd = "new";
@@ -60,6 +69,14 @@ export function parseArgs(argv: string[]): CliArgs {
       args.hub = value;
     } else if (flag === "--no-open") {
       args.open = false;
+    } else if (flag === "--root") {
+      const value = rest.shift();
+      if (!value) return { ...args, error: "--root requires a path" };
+      args.roots.push(value);
+    } else if (flag === "--machine-name") {
+      const value = rest.shift();
+      if (!value) return { ...args, error: "--machine-name requires a name" };
+      args.machineName = value.slice(0, 40);
     } else {
       return { ...args, error: `unknown argument: ${flag}` };
     }
@@ -79,29 +96,6 @@ export function findRepoRoot(cwd: string): string | null {
     }).trim();
   } catch {
     return null;
-  }
-}
-
-/** .git/info/exclude keeps .mpai/ out of git status without touching the
- *  user's .gitignore (spec §5). Non-fatal on failure: worst case .mpai/
- *  shows as untracked. */
-function ensureExcluded(repoRoot: string): void {
-  try {
-    const gitDir = execFileSync("git", ["rev-parse", "--git-dir"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    }).trim();
-    const excludeFile = path.resolve(repoRoot, gitDir, "info", "exclude");
-    fs.mkdirSync(path.dirname(excludeFile), { recursive: true });
-    const current = fs.existsSync(excludeFile)
-      ? fs.readFileSync(excludeFile, "utf8")
-      : "";
-    if (!current.split("\n").includes(".mpai/")) {
-      const sep = current === "" || current.endsWith("\n") ? "" : "\n";
-      fs.writeFileSync(excludeFile, `${current}${sep}.mpai/\n`);
-    }
-  } catch {
-    /* non-fatal */
   }
 }
 
@@ -138,6 +132,43 @@ function openBrowser(url: string): void {
   }
 }
 
+/** The roots to scan (spec §4): the `--root` flag wins over machine.json's
+ *  persisted roots when both are present. Pure so the precedence rule has a
+ *  test that needs neither a real identity file nor a real scan. */
+export function resolveRoots(
+  args: Pick<CliArgs, "roots">,
+  identity: Pick<MachineIdentity, "roots">,
+): string[] {
+  return args.roots.length > 0 ? args.roots : identity.roots;
+}
+
+/** Drops the scanned candidate that collides with the cwd repo's key (it
+ *  enters pre-attached inside `startServer`, so a scanned duplicate would
+ *  collide) and enforces the launch-time cap COUNTING that pre-attached
+ *  entry. `scanRepoRoots`'s own >100 throw only bounds the scan itself
+ *  (`byKey.size`); the machine's final repo declarations are
+ *  candidates.length + 1, so a scan of exactly 100 (none sharing the cwd's
+ *  key) slips past that throw and would reach the hub as a 101-repo hello —
+ *  which `parseUpFrame`'s ≤100 bound (spec §5.1/§5.2) rejects with a
+ *  misleading "versions may not match" diagnosis while the relay reconnects
+ *  forever. Pure over the already-scanned list so this boundary is a fast
+ *  unit test instead of 100 real git repos on disk. */
+export function finalizeCandidates(
+  scanned: RepoCandidate[],
+  cwdKey: string,
+): { candidates: RepoCandidate[] } | { error: string } {
+  const candidates = scanned.filter((c) => c.key !== cwdKey);
+  const total = candidates.length + 1; // + the cwd repo itself
+  if (total > MAX_REPO_CANDIDATES) {
+    return {
+      error:
+        `repo scan found ${candidates.length} candidate repo(s); plus this launch's cwd ` +
+        `repo, that's ${total} repos — over the ${MAX_REPO_CANDIDATES} cap; narrow --root`,
+    };
+  }
+  return { candidates };
+}
+
 async function launch(args: CliArgs): Promise<number | null> {
   const repoRoot = findRepoRoot(process.cwd());
   if (!repoRoot) {
@@ -154,13 +185,46 @@ async function launch(args: CliArgs): Promise<number | null> {
     console.error(`client build missing at ${distDir} — run: cd poc/client && npm run build`);
     return 1;
   }
+  let identity: MachineIdentity;
+  try {
+    identity = loadMachineIdentity(mpaiHome());
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    return 1;
+  }
+  const machineName = args.machineName ?? identity.name;
+  let scanned: RepoCandidate[];
+  try {
+    scanned = scanRepoRoots(resolveRoots(args, identity));
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    return 1;
+  }
+  // One WorkspaceManager, constructed once and reused by the startServer call
+  // below.
+  const workspace = new WorkspaceManager(repoRoot, worktreesRoot);
+  // The cwd repo enters pre-attached inside startServer; a scanned candidate
+  // with the same key would collide, so drop it here, and refuse launch if
+  // the total (candidates + the cwd repo) is over spec §5.2's 100-entry cap.
+  const resolved = finalizeCandidates(scanned, workspace.repoKey());
+  if ("error" in resolved) {
+    console.error(resolved.error);
+    return 1;
+  }
+  const candidates = resolved.candidates;
   try {
     const { port } = await startServer({
       port: args.port,
-      workspace: new WorkspaceManager(repoRoot, worktreesRoot),
+      workspace,
+      workspaceLabel: path.basename(repoRoot),
+      workspaceRoot: repoRoot,
       staticDir: distDir,
       projectId: args.project,
-      ...(args.hub ? { hub: { url: args.hub, projectId: args.project } } : {}),
+      machine: { machineId: identity.machineId, name: machineName },
+      repoCandidates: candidates,
+      ...(args.hub
+        ? { hub: { url: args.hub, projectId: args.project, uplinkId: identity.machineId } }
+        : {}),
     });
     const url = localUrlFor(port, args);
     if (args.hub) {
@@ -235,7 +299,7 @@ export async function main(argv: string[]): Promise<number | null> {
   if (args.error) {
     console.error(args.error);
     console.error(
-      "usage: mpai [--port N] [--hub <ws-url>] [--project <id>] [--no-open] | mpai new <name> [--base <ref>] [--project <id>] [--port N]",
+      "usage: mpai [--port N] [--hub <ws-url>] [--project <id>] [--no-open] [--root <path>]... [--machine-name <name>] | mpai new <name> [--base <ref>] [--project <id>] [--port N]",
     );
     return 1;
   }

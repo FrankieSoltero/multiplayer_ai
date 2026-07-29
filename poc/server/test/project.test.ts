@@ -6,6 +6,7 @@ import {
   sessionFactsOf,
   arcadeRecordsFrom,
 } from "../src/project.js";
+import type { RepoDecl } from "../src/relayProtocol.js";
 import { Session } from "../src/session.js";
 import { AgentDriver, type RunQuery } from "../src/agentDriver.js";
 
@@ -19,9 +20,10 @@ function addSession(
   project: Project,
   id: string,
   skills: { name: string; description: string }[] = [],
+  repoKey: string | null = null,
 ): Session {
   const session = new Session(id);
-  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map(), pendingOversight: false });
+  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map(), pendingOversight: false, repoKey });
   return session;
 }
 
@@ -67,6 +69,35 @@ describe("projectSnapshot", () => {
       { name: "auth-migration-guide", description: "Migrate cookie auth to JWT." },
     ]);
     expect(snap.sessions.find((s) => s.id === "ben")!.skills).toEqual([]);
+  });
+
+  it("reports machines[0] with name and repos, and has NO top-level repo property (D10)", () => {
+    const project = new Project("demo");
+    addSession(project, "ana");
+    const repos: RepoDecl[] = [
+      { key: "github.com/acme/api", label: "api", attached: true, defaultBranch: "main" },
+    ];
+    const snap = projectSnapshot(project, undefined, {
+      machineId: "m1",
+      name: "Frankie's Laptop",
+      repos,
+    });
+    expect(snap).not.toHaveProperty("repo");
+    expect(snap.machines).toEqual([
+      { machineId: "m1", name: "Frankie's Laptop", repos, online: true },
+    ]);
+  });
+
+  it("session rows carry each entry's OWN repoKey, not a machine-wide global", () => {
+    // The two-keys assertion is the discriminating one: feeding every row the
+    // same (e.g. machine-derived) key instead of entry.repoKey must fail this.
+    const project = new Project("demo");
+    addSession(project, "ana", [], "github.com/acme/api");
+    addSession(project, "ben", [], "github.com/acme/web");
+
+    const snap = projectSnapshot(project);
+    expect(snap.sessions.find((s) => s.id === "ana")!.repoKey).toBe("github.com/acme/api");
+    expect(snap.sessions.find((s) => s.id === "ben")!.repoKey).toBe("github.com/acme/web");
   });
 });
 
@@ -133,13 +164,10 @@ describe("sessionFactsOf", () => {
     // diverge, a hub-attached session renders differently from a standalone
     // one for no reason a user could explain — so pin the relationship.
     const project = new Project("p");
-    addSession(project, "auth");
+    addSession(project, "auth", [], "github.com/acme/api");
     const entry = project.sessions.get("auth")!;
 
-    const snapshot = projectSnapshot(project, undefined, {
-      defaultBranch: "main",
-      key: "github.com/acme/api",
-    });
+    const snapshot = projectSnapshot(project);
     const facts = sessionFactsOf("auth", entry, "github.com/acme/api");
 
     const { presence, ...row } = snapshot.sessions[0];

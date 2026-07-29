@@ -1,7 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 import { Relay, type RelaySocket } from "../src/relay.js";
 import { Session } from "../src/session.js";
-import { MAX_FRAME_BYTES, RELAY_PROTOCOL_VERSION, type SessionFacts } from "../src/relayProtocol.js";
+import {
+  MAX_FRAME_BYTES,
+  RELAY_PROTOCOL_VERSION,
+  type RepoDecl,
+  type SessionFacts,
+} from "../src/relayProtocol.js";
+
+const decl = (over: Partial<RepoDecl> = {}): RepoDecl => ({
+  key: "github.com/acme/api",
+  label: "api",
+  attached: true,
+  defaultBranch: "origin/main",
+  ...over,
+});
 
 /** One end of one socket: what the relay sent on it, and the levers to drive
  *  the far end. */
@@ -17,7 +30,9 @@ interface FakeEnd {
   /** Hands the handler a raw value, bypassing the JSON encoding `deliver`
    *  does — the only way to exercise the parse failure path. */
   deliverRaw: (data: unknown) => void;
-  drop: () => void;
+  /** `ws` passes the close CODE as the handler's first argument; the relay
+   *  reads it to tell a hub refusal from an ordinary drop. */
+  drop: (code?: number) => void;
 }
 
 /** A fake hub end that mints a GENUINELY NEW socket per connect, each with its
@@ -42,7 +57,7 @@ function fakeSocket() {
       open: () => handlers.get("open")?.(),
       deliver: (frame) => handlers.get("message")?.(JSON.stringify(frame)),
       deliverRaw: (data) => handlers.get("message")?.(data),
-      drop: () => handlers.get("close")?.(),
+      drop: (code?: number) => handlers.get("close")?.(code),
     };
     sockets.push(end);
     return socket;
@@ -57,7 +72,7 @@ function fakeSocket() {
     open: () => latest().open(),
     deliver: (frame: unknown) => latest().deliver(frame),
     deliverRaw: (data: unknown) => latest().deliverRaw(data),
-    drop: () => latest().drop(),
+    drop: (code?: number) => latest().drop(code),
   };
 }
 
@@ -67,7 +82,8 @@ function relayWith(fake: ReturnType<typeof fakeSocket>, over: Record<string, unk
     {
       hubUrl: "ws://hub.test",
       projectId: "default",
-      repoKey: "github.com/acme/api",
+      name: "Ana's MacBook",
+      repos: () => [decl()],
       uplinkId: "lap-1",
       connect: fake.connect,
       newRunId: () => `run-${++n}`,
@@ -86,7 +102,7 @@ function factsFor(intent: string): SessionFacts {
 }
 
 describe("Relay handshake", () => {
-  it("sends hello with the protocol version, project and repo key on open", () => {
+  it("sends hello with the protocol version, project, machine name and repo set on open", () => {
     const fake = fakeSocket();
     relayWith(fake).start();
     fake.open();
@@ -94,9 +110,128 @@ describe("Relay handshake", () => {
       t: "hello",
       v: RELAY_PROTOCOL_VERSION,
       uplinkId: "lap-1",
+      name: "Ana's MacBook",
       projectId: "default",
-      repoKey: "github.com/acme/api",
+      repos: [decl()],
     });
+  });
+
+  it("re-reads the repo set on every hello, so a reconnect declares the CURRENT list", () => {
+    // `repos` is a getter for exactly this. The set changes while the process
+    // runs — an attach lands, a repo is dropped — and a list frozen at
+    // construction would re-declare a stale set on every reconnect for the
+    // whole life of the daemon, with nothing on either side to show why.
+    vi.useFakeTimers();
+    const fake = fakeSocket();
+    let repos = [decl()];
+    const relay = relayWith(fake, { repos: () => repos, reconnectDelayMs: 500 });
+    relay.start();
+    fake.sockets[0]!.open();
+    fake.sockets[0]!.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+
+    repos = [decl({ key: "github.com/acme/web", label: "web" })];
+    fake.sockets[0]!.drop();
+    vi.advanceTimersByTime(500);
+    fake.sockets[1]!.open();
+    expect(fake.sockets[1]!.sent[0].repos).toEqual([
+      { key: "github.com/acme/web", label: "web", attached: true, defaultBranch: "origin/main" },
+    ]);
+
+    relay.stop();
+    vi.useRealTimers();
+  });
+
+  it("emits a repos frame through the same buffered path facts take", () => {
+    // A repo set that changes in the open→welcome window must not be lost:
+    // the hub's record is only ever overwritten wholesale by this frame, so a
+    // dropped one leaves the hub routing to a repo the machine no longer has
+    // until the next reconnect.
+    const fake = fakeSocket();
+    let repos = [decl()];
+    const relay = relayWith(fake, { repos: () => repos });
+    relay.start();
+    fake.open();
+
+    relay.sendRepos();
+    expect(fake.sent.filter((f) => f.t === "repos")).toEqual([]);
+    fake.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    expect(fake.sent.filter((f) => f.t === "repos")).toEqual([{ t: "repos", repos: [decl()] }]);
+
+    // ...and live, once handshaken, reading the getter again each time.
+    repos = [decl(), decl({ key: "github.com/acme/web", label: "web" })];
+    relay.sendRepos();
+    expect(fake.sent.at(-1)).toEqual({ t: "repos", repos });
+    relay.stop();
+  });
+
+  it("logs a hub refusal (1008) distinctly from an ordinary drop", () => {
+    // spec §12.3. A hub that cannot parse this laptop's frames closes with
+    // 1008, and the relay's reconnect loop then retries every 2s forever —
+    // silently. The operator sees a machine that never appears in the project
+    // and no error anywhere. One line, on the close code, names the cause;
+    // guarding on 1008 keeps every ordinary reconnect quiet.
+    vi.useFakeTimers();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fake = fakeSocket();
+    const relay = relayWith(fake, { reconnectDelayMs: 500 });
+    relay.start();
+    fake.sockets[0]!.open();
+    fake.sockets[0]!.drop(1006);
+    expect(logged.mock.calls).toEqual([]);
+
+    vi.advanceTimersByTime(500);
+    fake.sockets[1]!.open();
+    fake.sockets[1]!.drop(1008);
+    expect(logged.mock.calls.map((c) => String(c[0]))).toEqual([
+      "hub rejected this uplink (protocol violation) — laptop and hub versions may not match",
+    ]);
+
+    logged.mockRestore();
+    relay.stop();
+    vi.useRealTimers();
+  });
+
+  it("latches the 1008 log to once per connection-loss episode, not once per reconnect (Finding 1b)", () => {
+    // Without a latch, a real version mismatch never resolves on its own —
+    // the reconnect loop above retries every `reconnectDelayMs` forever, and
+    // WITHOUT this fix that one diagnostic line fires on every single retry,
+    // flooding the laptop's own console (`hub.ts:286`'s log-once precedent is
+    // for the identical reason). It must still fire again for a GENUINELY
+    // NEW episode — a later mismatch after a successful reconnect — so a
+    // hub upgrade that breaks compatibility after this laptop was fine is
+    // not silenced by a latch left over from an unrelated, already-resolved
+    // failure.
+    vi.useFakeTimers();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fake = fakeSocket();
+    const relay = relayWith(fake, { reconnectDelayMs: 500 });
+    relay.start();
+
+    // Episode 1: three consecutive 1008s across three reconnect attempts —
+    // only the first logs.
+    fake.sockets[0]!.open();
+    fake.sockets[0]!.drop(1008);
+    vi.advanceTimersByTime(500);
+    fake.sockets[1]!.open();
+    fake.sockets[1]!.drop(1008);
+    vi.advanceTimersByTime(500);
+    fake.sockets[2]!.open();
+    fake.sockets[2]!.drop(1008);
+    expect(logged.mock.calls).toHaveLength(1);
+
+    // The episode ends on a successful handshake...
+    vi.advanceTimersByTime(500);
+    fake.sockets[3]!.open();
+    fake.sockets[3]!.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    expect(logged.mock.calls).toHaveLength(1);
+
+    // ...so a LATER mismatch is a new episode and logs again.
+    fake.sockets[3]!.drop(1008);
+    expect(logged.mock.calls).toHaveLength(2);
+
+    logged.mockRestore();
+    relay.stop();
+    vi.useRealTimers();
   });
 
   it("replays only the gap the hub says it is missing", () => {
@@ -248,7 +383,7 @@ describe("Relay command plane", () => {
     const handled: unknown[] = [];
     const fake = fakeSocket();
     const relay = new Relay(
-      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: fake.connect },
+      { hubUrl: "ws://hub.test", projectId: "default", name: "lap", repos: () => [decl()], uplinkId: "lap-1", connect: fake.connect },
       {
         createConnection: (io) => ({
           handleMessage: (msg) => {
@@ -275,7 +410,7 @@ describe("Relay command plane", () => {
     const created: unknown[] = [];
     const fake = fakeSocket();
     const relay = new Relay(
-      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: fake.connect },
+      { hubUrl: "ws://hub.test", projectId: "default", name: "lap", repos: () => [decl()], uplinkId: "lap-1", connect: fake.connect },
       { createConnection: (io) => { created.push(io); return { handleMessage: () => {}, close: () => {} }; } },
     );
     relay.start();
@@ -290,7 +425,7 @@ describe("Relay command plane", () => {
     const ios: any[] = [];
     const fake = fakeSocket();
     const relay = new Relay(
-      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: fake.connect },
+      { hubUrl: "ws://hub.test", projectId: "default", name: "lap", repos: () => [decl()], uplinkId: "lap-1", connect: fake.connect },
       { createConnection: (io) => { ios.push(io); return { handleMessage: () => {}, close: () => {} }; } },
     );
     relay.start();
@@ -312,7 +447,7 @@ describe("Relay command plane", () => {
     const created: unknown[] = [];
     const fake = fakeSocket();
     const relay = new Relay(
-      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: fake.connect },
+      { hubUrl: "ws://hub.test", projectId: "default", name: "lap", repos: () => [decl()], uplinkId: "lap-1", connect: fake.connect },
       {
         createConnection: () => {
           created.push(1);
@@ -371,8 +506,9 @@ describe("Relay reconnect", () => {
       t: "hello",
       v: RELAY_PROTOCOL_VERSION,
       uplinkId: "lap-1",
+      name: "Ana's MacBook",
       projectId: "default",
-      repoKey: "github.com/acme/api",
+      repos: [decl()],
     });
     second.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
     const events = second.sent.filter((f) => f.t === "publish").flatMap((f: any) => f.events);
@@ -534,7 +670,7 @@ describe("Relay bounds", () => {
     const closed: string[] = [];
     const fake = fakeSocket();
     const relay = new Relay(
-      { hubUrl: "ws://hub.test", projectId: "default", repoKey: "k", uplinkId: "lap-1", connect: fake.connect },
+      { hubUrl: "ws://hub.test", projectId: "default", name: "lap", repos: () => [decl()], uplinkId: "lap-1", connect: fake.connect },
       {
         createConnection: (io) => ({
           handleMessage: () => {},

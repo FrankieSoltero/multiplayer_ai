@@ -77,31 +77,44 @@ Acceptable for a localhost POC, not for a public hub. Affects `/auth/*`, the Web
 and — once v7 lands — device-pairing code submission, which is brute-forceable by construction
 (v7 spec §10.5).
 
-### 1.5b `HubStore.uplinks` grows without bound — and the frame validation under it is shallow
+### 1.5b `HubStore.uplinks` grows without bound — and the frame validation under it is shallow — LARGELY DISSOLVED (PRD §8.3, 2026-07-29)
 
 Two v7b2 inputs that until now lived only in the v7b1 plan's Deviations (§D.9 and §B.3). They
 are recorded here because this is the file a v7b2 planner opens.
 
-**Unbounded `uplinks`.** `poc/hub/src/hubStore.ts` — `attach()` inserts a permanent `Uplink`
-per distinct `uplinkId` and `detach()` only flips `online = false`. Nothing ever deletes.
-**Same class as the `HubStore.projects` leak that was fixed during v7b1, surviving on the other
-plane.** The uplink plane is unauthenticated, so a connect/`hello`/disconnect loop with fresh
-ids leaks an entry per cycle, plus a session-map entry per `facts`/`publish`. Bounded in
-practice only by the "must not be exposed until v7b2" caveat, which is exactly the caveat v7b2
-removes. **Fixed looks like:** reclaim on close once no session references the uplink, or a
-TTL — noting that sessions surviving their laptop is the hub's whole point, so the uplink
-record cannot simply be dropped with its socket.
+**Unbounded `uplinks` — dissolved for the case that was actually happening; open for the
+adversarial one.** `poc/hub/src/hubStore.ts` — `attach()` inserts a permanent `Uplink` per
+distinct `uplinkId` and `detach()` only flips `online = false`; nothing ever deletes, unchanged
+code. What changed is what feeds it: the debt as written described "a connect/`hello`/disconnect
+loop with fresh ids" as the leak — and per §2.3 below, that loop was not a hypothetical, it was
+**every laptop restart**, because `uplinkId` was minted fresh (`randomUUID()`) each launch. With
+the machine identity work (spec `docs/superpowers/specs/2026-07-28-machines-repos-design.md`
+§3), `uplinkId` is now the persisted `machineId`, so `attach()`'s `uplinks.set(uplinkId, ...)`
+**overwrites the same entry** on every reconnect of a real machine instead of adding a new one —
+proven by `poc/hub/test/hubStore.test.ts:156` ("lets a machine that restarted under its
+persisted machineId reclaim its own sessions (debt §2.3)") and, across the wire, by
+`poc/hub/test/relayIntegration.test.ts:865` ("reclaims its own sessions across a relay restart,
+with no ownership collision"). **What remains open:** the uplink plane is still fully
+unauthenticated — nothing here stops an adversarial peer from sending a fresh `hello` with a new
+random `uplinkId` on every connect, which would still grow the map exactly as originally
+described. That is unchanged and is exactly what the exposure gate (§8.10/D12 of the PRD) is
+for — this entry is dissolved for every legitimate deployment's actual failure mode, not for an
+unauthenticated adversary, which was never in scope for this branch.
 
 **Shallow frame validation (v7b1 ruling B.3, a named input for v7b2's validation task — do not
-lose it).** `poc/server/src/relayProtocol.ts`: `parseUpFrame` checks `Array.isArray(f.events)`
-and then casts, so a malformed *element* reaches the hub inside a structurally "valid" frame;
-`isFacts` does the same for `participants`/`skills` and checks `pendingGate` is
-`object | null` with no deeper shape check. `repoKey`, `identity.userId` and `identity.name`
-are length-bounded but not charset-checked, which is weaker than v7 spec §10.3. Ruled
-deliberate for v7b1 (trusted-network target; the laptop is the only publisher; the hub never
-interprets events, it fans them out). **Anyone touching `hubStore`: do not assume a fully
-shaped `PendingGate`.** One element-level hole — an out-of-range `seq` that froze a session's
-history permanently — was closed by the whole-branch review; the rest stands.
+lose it) — one deep example now exists; the original shallow spots are untouched.**
+`poc/server/src/relayProtocol.ts`'s `isFacts` still checks `Array.isArray(f.events)` /
+`participants` / `skills` and casts, and `pendingGate` is still only checked `object | null` with
+no deeper shape check — **not touched by this branch**, and the standing warning still holds:
+**anyone touching `hubStore`: do not assume a fully shaped `PendingGate`.** What this branch adds
+is `repoList()` (`relayProtocol.ts:135-152`), the shared validator for `hello`'s and the `repos`
+frame's `RepoDecl[]`: it checks every element's `key`/`label`/`attached`/`defaultBranch` bounds
+and **rejects the whole list on any single malformed entry**, never silently drops one. It is the
+first deep, bounded, whole-reject validator in this file — a template for eventually closing
+`isFacts`'s remaining shallow spots, not a claim that they are closed. `repoKey`,
+`identity.userId` and `identity.name` remain length-bounded but not charset-checked, as before.
+One element-level hole — an out-of-range `seq` that froze a session's history permanently — was
+closed by the v7b1 whole-branch review; the rest of `isFacts` stands exactly as written.
 
 ### 1.6 UNEXAMINED: the plugin clone path
 
@@ -139,49 +152,69 @@ a bare `mkdir`: failing loudly beats an agent silently working in an empty direc
 Blocks A1b. Dissolved for the hub (which provisions nothing) but still live for standalone
 `mpai`.
 
-### 2.3 A hub-attached laptop cannot reclaim its own sessions after a restart
+### 2.3 A hub-attached laptop cannot reclaim its own sessions after a restart — RESOLVED (PRD §8.3, 2026-07-29)
 
-`poc/server/src/cli.ts` passes no `uplinkId`, so `poc/server/src/server.ts`'s relay construction
-mints a fresh `randomUUID()` on **every** launch. The hub keys session ownership on `uplinkId`
-(`poc/hub/src/hubStore.ts` — `HubSession.uplinkId`, `ownerOf`, and `snapshot`'s
-`presence` lookup), so after `mpai --hub` is restarted:
+**Was:** `poc/server/src/cli.ts` passed no `uplinkId`, so `poc/server/src/server.ts`'s relay
+construction minted a fresh `randomUUID()` on **every** launch. The hub keys session ownership on
+`uplinkId` (`poc/hub/src/hubStore.ts` — `HubSession.uplinkId`, `ownerOf`, and `snapshot`'s
+`presence` lookup), so after `mpai --hub` was restarted, every session the previous run owned
+stayed bound to the now-`online:false` uplink and read `offline` forever with no machine able to
+adopt it, and a same-machine restart was indistinguishable from the two-laptop collision that
+`setFacts`'s `already owned by another machine` refusal was written for. Observed live during
+v7b1 Task 8's two-process walk (2026-07-28). **Consequence at the time:** Task 6's entire resume
+machinery (`hubStore.resumeOffsets`) was dead code in every real deployment, and the plan's
+central promise — sessions survive on the hub when a laptop goes away — was false after any
+laptop restart.
 
-- every session the previous run owned stays bound to the now-`online:false` uplink and reads
-  `offline` forever, with no machine able to adopt it; and
-- if the restarted laptop re-creates a session with the same id, `setFacts` returns
-  `session "<id>" ... is already owned by another machine` and `hub.ts`'s `facts` handler closes
-  the uplink with 1008 — a same-machine restart is indistinguishable from the two-laptop
-  collision that error was written for.
+**What closed it — the grain decision this entry left open.** This entry itself had already
+identified that no new protocol was needed, only a stable-and-per-machine uplink id (the "grain"
+question). `docs/superpowers/specs/2026-07-28-machines-repos-design.md` §3 answered it: a new
+`poc/server/src/machineIdentity.ts` mints and persists `{ machineId, name }` in
+`$MPAI_HOME/machine.json` (default `~/.mpai`) on first run, refusing launch on a corrupt file
+rather than silently regenerating (which would orphan the very sessions this fix is for).
+`cli.ts:246-250` passes that persisted `identity.machineId` as both `machine.machineId` and
+`hub.uplinkId`, replacing the per-process mint (commit `64c27cf`). `hubStore.setFacts`'s existing
+same-`uplinkId` takeover rule and `hub.ts`'s same-id supersede logic needed **no change** — they
+simply start working the moment the id is stable, exactly as this entry predicted.
 
-Observed live during v7b1 Task 8's two-process walk (2026-07-28); the hub logged the refusal
-once per project push and the laptop reconnected into it each time.
+**Named tests:**
+- `poc/hub/test/hubStore.test.ts:156` — `"lets a machine that restarted under its persisted
+  machineId reclaim its own sessions (debt §2.3)"` — unit-level: `detach()` then re-`attach()`
+  under the same id, and a `setFacts` call afterward for the same session (with a new `runId`)
+  returns `{ ok: true }` rather than the ownership refusal, with the reconnected repo list
+  visible on the machine record.
+- `poc/hub/test/relayIntegration.test.ts:865` — `"reclaims its own sessions across a relay
+  restart, with no ownership collision"`, in the `"machines and repos, across the wire"` block
+  (commit `695bafa`) — a real `Relay` stopped and restarted with the same `uplinkId` against a
+  real `startHub`, asserting no `already owned by another machine` line is logged at all and the
+  reclaimed session carries the post-restart facts.
+- Live walk (spec §11 / this plan's Task 13): `.superpowers/sdd/2026-07-29-machines-repos/task-walk-brief.md`
+  kills and relaunches a daemon under the same `MPAI_HOME` and reads the hub's own log for the
+  absence of the refusal line — the one check no unit test can stand in for, since it is the
+  live reconnect timing this entry's "no protocol needed" claim depended on.
 
-**Consequence, stated plainly because it is the part that matters.** Task 6's entire resume
-machinery is dead code in every real deployment: `hubStore.resumeOffsets`
-(`poc/hub/src/hubStore.ts:79-88`) skips any session whose `uplinkId` differs, and the `have` map
-it feeds (`poc/hub/src/hub.ts:181`) exists *solely* to serve a laptop returning under the same id
-— which no laptop ever does. And the plan's central promise, that sessions survive on the hub
-when a laptop goes away, **is false after any laptop restart**: they survive as unreachable
-`offline` rows that no machine can adopt.
+**What remains, honestly.** Spec §3.2's "runId trap" can now actually be exercised — a laptop
+that restarts re-adopts its sessions instead of never returning, so a second run genuinely gets
+appended — but no test drives that specific trap end-to-end yet, only the reclaim scenarios
+above. A closed laptop lid still fires no graceful shutdown (PRD §8.7), so an abrupt kill and a
+clean restart are not distinguished by anything; harmless here because reconnect works either
+way, but worth knowing before this dissolution is cited to close anything about shutdown
+ordering. Neither blocks this section.
 
-**No new protocol is needed — the takeover rule already ships.** `hubStore.setFacts`
-(`hubStore.ts:100`) refuses ownership only when `existing.uplinkId !== uplinkId`, so a
-reconnecting *same* identity silently re-owns its sessions; `hub.ts:227-230` already handles a
-same-`uplinkId` socket superseding a stale one. Everything downstream of a stable id works today.
-
-**What is actually open is narrow: the grain.** An uplink identity must be stable across restarts
-*and* distinct per machine. `WorkspaceManager.repoKey()` (`poc/server/src/workspace.ts:79-86`)
-supplies the stable-per-repo half and is already in hand at `poc/server/src/server.ts:1006` as
-`repo?.key` — but note it is **deliberately shared across machines** when the repo has an
-`origin` (that is its entire purpose, grouping teammates by repo, spec §3.3), so it cannot be the
-uplink id on its own. The machine-scoping ingredient already exists beside it: `localRepoKey`'s
-`hostname` + hashed `repoRoot` (`poc/server/src/repoKey.ts`). So the decision is "is one uplink
-per repo-per-machine the right grain, and what should a *second* `mpai` on the same repo do —
-refuse, or share?", plus close to a one-line default at `server.ts:1007`. A grain decision, not a
-protocol project.
-
-Also the reason spec §3.2's "runId trap" could not be exercised at all: the laptop never
-re-adopts the session, so a second run is never appended.
+**Walk finding W4 — resolved alongside this.** `.superpowers/sdd/2026-07-28-projects/progress.md:588`
+recorded, from the prior (projects-branch) live walk: *"machine labels in session rows are raw
+per-launch uplink UUIDs (debt §2.3's grain)"* — a direct symptom of the identity problem above: no
+stable id meant no stable name to show, so the client fell back to printing the raw id. Dissolved
+by the same machine-identity work plus `poc/client/src/components/SessionPicker.tsx` (commit
+`8665591`, `feat(client): repo labels and machine names replace raw keys (W4)`): the repo group
+head (`SessionPicker.tsx:213`) and the session-row `spwho` line (`:228-229`) now look every
+`repoKey`/`machineId` up in `labels`/`machineNames` maps built off the live `machines` list
+(`:118-119`, via `repoLabels`/`poc/client/src/repoChoices.ts`) before falling back to the raw id
+— which also closes the sibling gap the same walk observed one line above it ("two repo groups
+headed by repo key," i.e. raw keys, not just machine UUIDs), per the machines-repos spec §8's
+broader "names everywhere UUIDs render" framing. **No client component-test infrastructure
+exists** (§3 below), so this is asserted by live walk only, not a unit test — see the walk
+brief's visual-confirmation step.
 
 ### 2.4 The hub refuses a `join` to an offline session, so its stored history is unreachable
 
@@ -233,9 +266,46 @@ patch. **TRAP for whoever picks this up:** having the server report a machine wi
 `repoKey: ""` makes it worse — `chosenRepo` becomes `""` and CREATE re-enables onto a server
 that cannot provision (recorded in the projects ledger, Fix wave 1, I3).
 
+**Cite refreshed 2026-07-29 (branch `feature/machines-repos` whole-branch review) — the
+paragraph above is now stale, not current behavior.** `chosenRepo` no longer exists:
+`SessionPicker.tsx`'s repo selection is `chosen` (`chooseRepo(choices, picked)`, `:113`), built
+off `repoChoices(machines)` — a list of real `(machine, repo)` pairs — rather than a bare
+`repoKey` string a machine could report as `""`. And the mechanism the TRAP warned about has
+flipped direction: `canCreate` (`:128`) requires `chosen !== null`, so a machine reporting zero
+usable repos now means `choices` is empty, `chosen` is `null`, and CREATE stays **disabled** —
+not re-enabled onto a server that cannot provision. The question this section asks — what a
+session-incapable deployment should say — is still open; only the old TRAP's code shape is gone.
+
 **Fixed looks like:** a deliberate "this deployment can't host sessions" state with truthful
 copy (and no hub advice when there is no hub), or restoring the quiet disabled state — chosen by
 spec, with a component-level test once §3's infrastructure exists.
+
+### 2.7 Attach/detach state is in-memory only — a daemon restart silently reverts every attached repo to candidate
+
+`poc/server/src/server.ts:677-742` (the `attach_repo`/`detach_repo` handler) mutates the
+in-process `repos` Map — flips `attached`, sets/clears `workspace` and `defaultBranch` — and
+writes nothing to disk. Attach a candidate repo from the MACHINES panel, then restart the daemon
+for any reason (crash, deploy, `mpai` relaunched by hand), and that repo is back to an unattached
+candidate exactly as the launch-time scan (`machineRepos.ts`) found it, with no record anywhere
+that anyone ever attached it. **User-visible composite behavior:** a repo a teammate attached
+yesterday can silently vanish from the create form's repo picker today — no error, no log line,
+nothing distinguishing "never attached" from "attached, then reverted by a restart nobody
+connected to this." Found during the 2026-07-29 whole-branch review of `feature/machines-repos`;
+not a regression against prior behavior — attach/detach are new this branch (Task 6, spec §6) and
+were never durable.
+
+**Why deferred:** no spec section asks for durability
+(`docs/superpowers/specs/2026-07-28-machines-repos-design.md` §5–§6 describe the wire protocol
+and the in-memory repo set; surviving a restart is out of scope as written), and today an `mpai`
+restart is still a manual, operator-driven event rather than the kind of always-on daemon a
+silent revert would ambush someone on.
+
+**Fixed looks like:** persist the attached set (or just its delta from the launch-time scan)
+alongside `machine.json` in `$MPAI_HOME`, restored when `startServer` builds its repo map — before
+the scan's candidates are merged in — so a scanned candidate matching a persisted-attached key
+starts attached instead of starting as a candidate the operator has to re-attach by hand. Needs a
+design call on ordering (persisted state vs. a candidate the scan no longer finds, or a candidate
+whose root moved) before it is a patch rather than a decision.
 
 ---
 

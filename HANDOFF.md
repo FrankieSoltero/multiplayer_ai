@@ -1,14 +1,99 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-28 (session #18).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-29 (session #20, §8.3 shipped).*
 
 ---
 
-## 🚀 START HERE — `docs/PRD.md` IS THE PLAN OF RECORD. PRD §8.2 ("projects") IS SHIPPED: **PR #22 IS OPEN — DO NOT MERGE IT YOURSELF.** Next: pick the next §8 section and run its brainstorm → spec → plan.
+## 🚀 START HERE — §8.3 "MACHINES & REPOS" IS COMPLETE AND SHIPPED AS **PR #23**. Nothing is in flight. The next move is the USER'S (merge decisions), then the next PRD §8 section.
+
+**What happened (session #19 wrote the spec/plan + Tasks 1-6; session #20 executed Tasks 7-13,
+the final review, the fix wave, the live walk, and opened the PR):** all 13 tasks of
+`docs/superpowers/plans/2026-07-29-machines-repos.md` executed via
+superpowers:subagent-driven-development on branch **`feature/machines-repos`** (pushed; cut from
+`feature/projects` @ 5f92009). Spec of record:
+`docs/superpowers/specs/2026-07-28-machines-repos-design.md` (D1-D10 rulings; spec beats plan
+code — applied once at branch scope: the fix wave's RepoDecl clamp).
+
+**Status:** branch tip **`455a922`**, suites there: **server 499 / hub 104 / client 271**, tsc ×3
+clean. Final whole-branch review (opus): 0 Critical, 3 Important — all fixed in the one fix wave
+(`11ca00f..455a922`: RepoDecl bounds clamped at the `repoDecls()` choke point + ≤100 cap counting
+cwd; `.mpai/` git-exclusion on attach; attach-volatility recorded as debt §2.7) and verified by
+the one scoped re-review. Live walk executed by the controller against real daemons + hub +
+browser: **every step passed** (attach round-trip, 3 sessions in 3 repos on 2 machines with
+worktrees in the correct repos, detach refusal text exact, restart reclaim with 0 ownership
+refusals — debt §2.3 live-proven, W4 labels visually confirmed, solo one-item entrance intact).
+Walk record + screenshot: ledger + `walk-step8-labels.png` (repo root, untracked).
+
+**PRs — BOTH MERGES ARE THE USER'S, NEVER YOURS:**
+- **PR #22** (`feature/projects` → main): open, untouched.
+- **PR #23** (`feature/machines-repos` → main): open, carries 7 disclosures (spec §12's six + the
+  attach-volatility discovery) and the parked residuals in its body. #23 builds on #22 — its
+  GitHub diff includes #22's commits until #22 merges. Sensible order: merge #22 first, then #23.
+
+**THE LEDGER:** `.superpowers/sdd/2026-07-29-machines-repos/progress.md` — every task's commits,
+deferred minors with rulings and the final review's triage of them (all DEFER; two DISCHARGED),
+fix-wave record, walk record. Git-ignored — `git clean -fdx` destroys it. **Retained until #23
+merges** (PR feedback may need it); after merge, `rm -rf .superpowers/sdd/2026-07-29-machines-repos`
+— git + the PR body are the durable record.
+
+**Parked residuals (real, trivial, disclosed in #23's body — fix only if the user asks or a next
+branch touches these files):** `docs/tech-debt.md` §2.7 cites `server.ts:677-742`, actual handler
+is `:707-787` at HEAD; `poc/server/test/relayProtocol.test.ts:4` imports `MAX_REPOS` but tests
+hardcode 101.
+
+**Decisions locked (why):** (1) model directive (fable orchestrates + gates; opus 3/5/6/9/12;
+sonnet the rest; haiku tiny reviews) — worked, keep for the next section. (2) Spec-of-record beats
+plan code (the RepoDecl clamp was exactly this: plan's Task 8 block omitted the slice the spec's
+§5.1-5.2 bounds require — resolved and logged, not escalated, per the standing ruling).
+(3) Minors → ledger, never the fix loop; ONE final fix wave, one scoped re-review, residuals
+parked with rulings. (4) NEVER merge PRs; the user does.
+
+### ➡️ NEXT STEPS (nothing to resume — these are the options)
+
+1. **User merges #22 then #23** (their call, their order). After #23 merges: delete this plan's
+   workspace (see above).
+2. **Next §8 section:** PRD §8 has ten named sections; §8.2 (projects) and §8.3 (machines/repos)
+   are done. The next section starts with its own brainstorm → spec → plan (superpowers flow),
+   fresh ledger in its own `.superpowers/sdd/<plan>/` dir. Spec §13 + PRD §10 list what's open at
+   product level (see Open questions below).
+3. **If PR feedback arrives on #23:** the ledger + `final-fix-report.md` +
+   `task-N-report.md` files in the workspace carry every decision's evidence.
+
+### Resume & verify — run this first, expect exactly this
+
+```bash
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
+git status -sb            # feature/machines-repos, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png, walk-step8-labels.png (NEVER commit these)
+git log --oneline -2      # HANDOFF docs commit atop 455a922 fix(server): clearer refusal when no repo is attached
+head -5 .superpowers/sdd/2026-07-29-machines-repos/progress.md   # ledger names THIS plan
+gh pr view 22 --json state --jq .state   # OPEN — never merge it
+gh pr view 23 --json state --jq .state   # OPEN — never merge it
+for p in 3001 3002 3003 4000 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY — walk cleaned up
+cd poc/server && npx tsc --noEmit && npx vitest run   # 499 passed, 24 files
+cd ../hub    && npx tsc --noEmit && npx vitest run    # 104 passed, 4 files
+cd ../client && npx tsc -b && npx vitest run          # 271 passed, 30 files
+```
+
+**Gotchas (unchanged, still true):** client typecheck is `npx tsc -b` (`--noEmit` is a NO-OP);
+rebuild `poc/server` (`npm run build`) after exported-type changes or hub/client typecheck stale
+dist; `poc/server/.env` holds a placeholder key — never source it; never `git add -A` (diff-tree
+verify every commit); never predict suite totals; launch laptops only via the `mpai` CLI (symlink
+`~/.local/bin/mpai` → this checkout's `poc/server/bin/mpai.js`, runs `src/cli.ts` via tsx); the
+hub reads `PORT` + `CLIENT_DIST` env, not flags (W1).
+
+**Open questions (product-level, not blocking):** PRD §10 Q2/Q3 (entrance at hundreds of
+projects; per-project `intent` line); spec §8.4 sub-session worktrees; spec §13's §8.3 leftovers
+(attach-state persistence — now debt §2.7; candidate rescan without restart — disclosure 5).
+
+---
+
+## 🟡 HISTORICAL — §8.2 state below (shipped as PR #22). Everything from here down predates the §8.3 execution and is superseded where it conflicts with the block above.
 
 The `v7a → v7b1 → … → v7e` chain is **dead**; PRD §8 has ten named sections, each getting its own
 brainstorm → spec → plan. Session #16 wrote the PRD. **Session #17 executed all 13 tasks of the
 first section**, `docs/superpowers/plans/2026-07-28-projects.md`, via subagent-driven-development.
+Session #18 closed §8.2 (fix wave 2 + PR #22) and locked the §8.3 rulings. Session #19 wrote the
+§8.3 spec + plan and executed Tasks 1-6 (see the block above).
 
 ### ✅ SOLO-MODE DECISION MADE (user, session #17): **option 1+, and the entrance STAYS**
 
@@ -81,20 +166,12 @@ Important + two minors are fixed in `2efe6a2`.
   the §5.2/§4.1 gap, I3, debt §2.4, spec §10 Q1 and the create_session bound disclosed.
   **Merging is the user's call, never yours.**
 
-### ➡️ ORDERED NEXT STEPS — do these in this order
+### ➡️ (SUPERSEDED — was the §8.3 brainstorm queue; ALL DONE in session #19)
 
-1. ✅ **SECTION CHOSEN (user): §8.3 Machines & repos. BRAINSTORM MID-FLIGHT — six rulings are
-   locked (scope=full D4 one spec; machine=daemon w/ persisted ~/.mpai id; attach=daemon-
-   enumerated list; session ids stay project-unique; detach refused while live; Approach A =
-   protocol v2, one uplink per machine, repos as a set).**
-   **READ `.superpowers/sdd/2026-07-28-machines-repos/brainstorm-state.md` FIRST** — it has all
-   rulings verbatim, the scout's four structural blockers with file:line, and the next action:
-   present the design section-by-section for approval, then spec → writing-plans. Do NOT
-   re-ask the settled questions.
-2. **Run the cycle for the chosen section**: superpowers:brainstorming → spec → writing-plans,
-   as §8.2 was done. Reuse `.superpowers/sdd/<date>-<section>/` for the ledger.
-3. PRD §8.4's "Today" was refreshed in this session (hub create now works); sweep the other
-   section "Today" paragraphs against reality when §8.3 (or whichever) is specced.
+The §8.3 brainstorm completed (7 sections user-approved), the spec shipped (`75141b7`), the plan
+shipped (`5f92009`), and execution is mid-flight — see START HERE above. The brainstorm state
+file (`.superpowers/sdd/2026-07-28-machines-repos/brainstorm-state.md`, note: 07-28 dir) is now
+historical; the EXECUTION ledger lives in the 07-29 dir. PRD "Today" sweep = plan Task 13.
 
 ### What is done — `feature/projects` = `origin/feature/projects`, last code commit `2efe6a2`
 
@@ -253,9 +330,11 @@ from the very end of the fix wave:
 2. **Spec §8.4** — does a sub-session get its own worktree or share its parent's? Needed before §8.4.
 3. **Spec §8.3** — how a headless machine offers a filesystem path picker to a browser it does not
    serve, without becoming an arbitrary-path read primitive.
-4. **Three v7b1 residuals, still unanswered:** the uplink fails silently so a wrong hub URL looks like
-   a working one; a relay join emits no success signal; `uplinkId` is minted per launch so sessions do
-   not survive a laptop restart.
+4. **v7b1 residuals:** the uplink fails silently so a wrong hub URL looks like a working one
+   (partially improved: a v1-vs-v2 protocol refusal now logs distinctly, latched once per episode);
+   a relay join emits no success signal. ~~`uplinkId` is minted per launch so sessions do not
+   survive a laptop restart~~ — **RESOLVED by §8.3/PR #23** (persistent `machine.json` identity;
+   debt §2.3 discharged, live-proven in the walk).
    ⚠️ **TRAP: `repoKey` is NOT a usable machine identity** — with an `origin` present it is
    byte-identical across every clone by design, so two teammates would silently take over each other's
    sessions. Machine scoping must come from `localRepoKey`'s hostname + hashed repo root.

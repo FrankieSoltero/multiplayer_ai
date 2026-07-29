@@ -3,15 +3,24 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseArgs, findRepoRoot, localUrlFor, sessionUrlFor } from "../src/cli.js";
+import {
+  parseArgs,
+  findRepoRoot,
+  localUrlFor,
+  sessionUrlFor,
+  resolveRoots,
+  finalizeCandidates,
+} from "../src/cli.js";
+import type { RepoCandidate } from "../src/machineRepos.js";
 
 describe("parseArgs", () => {
-  it("defaults to launch on port 3001, project default, open", () => {
+  it("defaults to launch on port 3001, project default, open, no roots", () => {
     expect(parseArgs([])).toEqual({
       cmd: "launch",
       port: 3001,
       project: "default",
       open: true,
+      roots: [],
     });
   });
 
@@ -50,6 +59,78 @@ describe("parseArgs", () => {
   it("errors on unknown flags and bad ports", () => {
     expect(parseArgs(["--bogus"]).error).toMatch(/unknown argument/);
     expect(parseArgs(["--port", "nope"]).error).toMatch(/--port/);
+  });
+
+  it("accumulates repeated --root flags in order", () => {
+    const args = parseArgs(["--root", "/repos/a", "--root", "/repos/b"]);
+    expect(args.roots).toEqual(["/repos/a", "/repos/b"]);
+    expect(args.error).toBeUndefined();
+  });
+
+  it("--root requires a path", () => {
+    expect(parseArgs(["--root"]).error).toBe("--root requires a path");
+  });
+
+  it("slices --machine-name to 40 chars", () => {
+    const long = "m".repeat(50);
+    expect(parseArgs(["--machine-name", long]).machineName).toBe("m".repeat(40));
+    expect(parseArgs(["--machine-name", "franks-mbp"]).machineName).toBe("franks-mbp");
+  });
+
+  it("--machine-name requires a value", () => {
+    expect(parseArgs(["--machine-name"]).error).toBe("--machine-name requires a name");
+  });
+});
+
+describe("resolveRoots", () => {
+  // Spec §4: "allowlisted roots via repeatable --root flag or roots in
+  // machine.json; flag wins." This is the precedence rule cli.ts's launch()
+  // relies on — pinned here as a pure function so it doesn't need a real
+  // identity file on disk.
+  it("prefers the --root flag's roots over machine.json's persisted roots", () => {
+    expect(resolveRoots({ roots: ["/flag-root"] }, { roots: ["/config-root"] })).toEqual([
+      "/flag-root",
+    ]);
+  });
+
+  it("falls back to identity.roots when no --root flag was passed", () => {
+    expect(resolveRoots({ roots: [] }, { roots: ["/config-root"] })).toEqual(["/config-root"]);
+  });
+});
+
+describe("finalizeCandidates", () => {
+  const candidate = (key: string): RepoCandidate => ({
+    key,
+    label: key,
+    root: `/repos/${key}`,
+  });
+
+  it("drops the scanned candidate that collides with the cwd repo's key", () => {
+    const scanned = [candidate("a"), candidate("cwd-key"), candidate("b")];
+    const result = finalizeCandidates(scanned, "cwd-key");
+    expect(result).toEqual({ candidates: [candidate("a"), candidate("b")] });
+  });
+
+  it("allows exactly 100 total repo declarations (99 candidates + the cwd repo)", () => {
+    const scanned = Array.from({ length: 99 }, (_, i) => candidate(`repo-${i}`));
+    const result = finalizeCandidates(scanned, "cwd-key-not-in-list");
+    expect("candidates" in result).toBe(true);
+    expect((result as { candidates: RepoCandidate[] }).candidates).toHaveLength(99);
+  });
+
+  it("refuses launch when candidates-after-filter + the cwd repo exceeds the 100 cap", () => {
+    // scanRepoRoots's own >100 throw only covers the scan itself, keyed on
+    // byKey.size. The cwd repo enters pre-attached inside startServer on TOP
+    // of the scan, so the machine's final repo declarations are
+    // candidates.length + 1. A scan of exactly 100 (none colliding with the
+    // cwd key) slips past scanRepoRoots's own cap and would produce a 101-repo
+    // hello, which the hub's parseUpFrame rejects with a misleading "versions
+    // may not match" diagnosis while the relay reconnects forever. This must
+    // be refused here instead, before startServer is ever called.
+    const scanned = Array.from({ length: 100 }, (_, i) => candidate(`repo-${i}`));
+    const result = finalizeCandidates(scanned, "cwd-key-not-in-list");
+    expect("error" in result).toBe(true);
+    expect((result as { error: string }).error).toMatch(/100/);
   });
 });
 

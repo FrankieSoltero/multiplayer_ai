@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { startHub } from "../src/hub.js";
-import { RELAY_PROTOCOL_VERSION } from "multiplayer-ai-server/relayProtocol";
+import { RELAY_PROTOCOL_VERSION, type RepoDecl } from "multiplayer-ai-server/relayProtocol";
+
+const decl = (key: string, over: Partial<RepoDecl> = {}): RepoDecl => ({
+  key,
+  label: key.split("/").pop() ?? key,
+  attached: true,
+  defaultBranch: "origin/main",
+  ...over,
+});
 
 let close: (() => Promise<void>) | undefined;
 afterEach(async () => {
@@ -31,14 +39,34 @@ const facts = (id: string, over: Record<string, unknown> = {}) => ({
 
 /** An attached laptop with one declared session — the precondition of most
  *  tests below. */
-async function attachedUplink(port: number, sessionId = "auth", uplinkId = "lap-1") {
+async function attachedUplink(
+  port: number,
+  sessionId = "auth",
+  uplinkId = "lap-1",
+  repos: RepoDecl[] = [decl("k")],
+) {
   const up = await connect(`ws://127.0.0.1:${port}/uplink`);
   const seen: any[] = [];
   collect(up, seen);
-  up.send(JSON.stringify({ t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId, projectId: "default", repoKey: "k" }));
+  up.send(JSON.stringify({
+    t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId, name: uplinkId, projectId: "default", repos,
+  }));
   up.send(JSON.stringify({ t: "facts", sessionId, runId: "run-a", facts: facts(sessionId) }));
   await wait(40);
   return { up, seen };
+}
+
+/** A browser that has identified and joined a project — the precondition for
+ *  every `create_session` below. */
+async function member(port: number, projectId: string, userId = "ana") {
+  const ws = await connect(`ws://127.0.0.1:${port}`);
+  const seen: any[] = [];
+  collect(ws, seen);
+  ws.send(JSON.stringify({ type: "identify", userId, name: userId }));
+  ws.send(JSON.stringify({ type: "join_project", projectId }));
+  await wait(40);
+  seen.length = 0;
+  return { ws, seen };
 }
 
 const join = (over: Record<string, unknown> = {}) =>
@@ -51,7 +79,10 @@ describe("hub uplink handshake", () => {
     const up = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
     const seen: any[] = [];
     collect(up, seen);
-    up.send(JSON.stringify({ t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-1", projectId: "default", repoKey: "github.com/acme/api" }));
+    up.send(JSON.stringify({
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-1", name: "lap-1",
+      projectId: "default", repos: [decl("github.com/acme/api")],
+    }));
     await wait(50);
     expect(seen[0]).toEqual({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
     up.close();
@@ -62,8 +93,80 @@ describe("hub uplink handshake", () => {
     close = hub.close;
     const up = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
     const closed = new Promise<number>((r) => up.on("close", (code) => r(code)));
-    up.send(JSON.stringify({ t: "hello", v: 99, uplinkId: "lap-1", projectId: "default", repoKey: "k" }));
+    up.send(JSON.stringify({
+      t: "hello", v: 99, uplinkId: "lap-1", name: "lap-1", projectId: "default", repos: [decl("k")],
+    }));
     expect(await closed).toBe(1008);
+  });
+
+  it("replaces a machine's repo set wholesale when it sends a repos frame", async () => {
+    // The frame a daemon emits after an attach or detach lands (spec §5.2).
+    // Asserting BOTH directions is what makes this discriminate: the newly
+    // attached repo becomes routable, and the dropped one stops being — a
+    // merge would pass the first assertion and fail the second.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port, "auth", "lap-1", [decl("github.com/acme/api")]);
+    const { ws, seen } = await member(hub.port, "default");
+
+    up.send(JSON.stringify({ t: "repos", repos: [decl("github.com/acme/infra")] }));
+    await wait(40);
+
+    ws.send(JSON.stringify({
+      type: "create_session", projectId: "default", name: "infra-work",
+      repoKey: "github.com/acme/infra",
+    }));
+    await wait(40);
+    expect(seen.filter((m) => m.type === "error")).toEqual([]);
+
+    ws.send(JSON.stringify({
+      type: "create_session", projectId: "default", name: "api-work",
+      repoKey: "github.com/acme/api",
+    }));
+    await wait(40);
+    expect(seen.at(-1).message).toBe('no machine is offering repo "github.com/acme/api" right now');
+    up.close();
+    ws.close();
+  });
+
+  it("logs when a second daemon claims a machineId an open uplink already holds", async () => {
+    // spec §12.2. Two daemons sharing one MPAI_HOME read the SAME persisted
+    // machineId, so the second silently evicts the first and the two flap
+    // forever. The eviction itself is correct — a reconnecting laptop MUST be
+    // able to replace its own stale socket — which is exactly why it needs a
+    // line: the two cases are indistinguishable from the hub's side, and this
+    // names the one cause an operator can act on.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const first = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    const helloFrame = JSON.stringify({
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-1", name: "lap-1",
+      projectId: "default", repos: [decl("k")],
+    });
+    first.send(helloFrame);
+    await wait(40);
+    // A plain reconnect — the first socket is CLOSED before the second says
+    // hello — must stay silent, or the line fires on every ordinary 2s
+    // reconnect and means nothing.
+    first.close();
+    await wait(60);
+    const reconnect = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    reconnect.send(helloFrame);
+    await wait(40);
+    expect(logged.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("superseded"))).toEqual([]);
+
+    // The real trap: a SECOND, still-open socket under the same id.
+    const second = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    second.send(helloFrame);
+    await wait(40);
+    expect(logged.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("superseded"))).toEqual([
+      "uplink lap-1: superseded by a new connection (same machineId from two daemons? check MPAI_HOME)",
+    ]);
+    logged.mockRestore();
+    reconnect.close();
+    second.close();
   });
 });
 
@@ -241,7 +344,10 @@ describe("hub protocol faults", () => {
     close = hub.close;
     const up = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
     const closed = new Promise<number>((r) => up.on("close", (code) => r(code)));
-    const hello = JSON.stringify({ t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-1", projectId: "default", repoKey: "k" });
+    const hello = JSON.stringify({
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-1", name: "lap-1",
+      projectId: "default", repos: [decl("k")],
+    });
     up.send(hello);
     up.send(hello);
     expect(await closed).toBe(1008);
@@ -543,7 +649,10 @@ describe("hub session-name collisions", () => {
     const loser = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
     let closedCode: number | null = null;
     loser.on("close", (code) => void (closedCode = code));
-    loser.send(JSON.stringify({ t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-2", projectId: "default", repoKey: "k2" }));
+    loser.send(JSON.stringify({
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-2", name: "lap-2",
+      projectId: "default", repos: [decl("k2")],
+    }));
     const collide = JSON.stringify({ t: "facts", sessionId: "auth", runId: "run-z", facts: facts("auth") });
     // TWICE, because the cadence is the whole problem. `server.ts` republishes
     // facts for every session on every throttled push, so a real losing laptop
@@ -806,17 +915,6 @@ describe("hub project registry", () => {
 });
 
 describe("hub routed create_session", () => {
-  async function member(port: number, projectId: string, userId = "ana") {
-    const ws = await connect(`ws://127.0.0.1:${port}`);
-    const seen: any[] = [];
-    collect(ws, seen);
-    ws.send(JSON.stringify({ type: "identify", userId, name: userId }));
-    ws.send(JSON.stringify({ type: "join_project", projectId }));
-    await wait(40);
-    seen.length = 0;
-    return { ws, seen };
-  }
-
   it("forwards the create to the machine offering that repo, byte-identical", async () => {
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
@@ -834,6 +932,116 @@ describe("hub routed create_session", () => {
     expect(tunnelled.payload).toEqual(create);
     expect(tunnelled.identity).toEqual({ userId: "ana", name: "ana" });
     up.close();
+    ws.close();
+  });
+
+  it("matches a repo anywhere in the machine's declared list, and never a candidate", async () => {
+    // The match runs over the whole `repos` list (hello v2), not one scalar:
+    // the third repo a machine offers must route as readily as the first. A
+    // CANDIDATE — discovered by the scan, not attached — must NOT count: it
+    // has no workspace, so nothing can be hosted in it yet, and routing there
+    // would hand the browser a failure the machine alone could explain.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [
+      decl("github.com/acme/api"),
+      decl("github.com/acme/web", { attached: false, defaultBranch: null }),
+      decl("github.com/acme/infra"),
+    ]);
+    const { ws, seen } = await member(hub.port, "default");
+    upSeen.length = 0;
+
+    ws.send(JSON.stringify({
+      type: "create_session", projectId: "default", name: "infra-work",
+      repoKey: "github.com/acme/infra",
+    }));
+    await wait(50);
+    expect(upSeen.find((f) => f.t === "tunnel")?.payload.repoKey).toBe("github.com/acme/infra");
+
+    seen.length = 0;
+    ws.send(JSON.stringify({
+      type: "create_session", projectId: "default", name: "web-work",
+      repoKey: "github.com/acme/web",
+    }));
+    await wait(50);
+    expect(seen[0].message).toBe('no machine is offering repo "github.com/acme/web" right now');
+    up.close();
+    ws.close();
+  });
+
+  it("routes to the machine the browser named", async () => {
+    // Two machines offer the SAME repo, so first-online-match would be a coin
+    // toss — naming one is the only way a user can say "run it over there"
+    // (spec §5.2). Asserting the OTHER machine got nothing is what makes this
+    // discriminate: an implementation that ignored `machineId` entirely would
+    // still have tunnelled to somebody.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up: a, seen: aSeen } = await attachedUplink(hub.port, "auth", "lap-a", [
+      decl("github.com/acme/api"),
+    ]);
+    const { up: b, seen: bSeen } = await attachedUplink(hub.port, "ui", "lap-b", [
+      decl("github.com/acme/api"),
+    ]);
+    const { ws } = await member(hub.port, "default");
+    aSeen.length = 0;
+    bSeen.length = 0;
+
+    ws.send(JSON.stringify({
+      type: "create_session", projectId: "default", name: "billing",
+      repoKey: "github.com/acme/api", machineId: "lap-b",
+    }));
+    await wait(50);
+    expect(bSeen.filter((f) => f.t === "tunnel")).toHaveLength(1);
+    expect(aSeen.filter((f) => f.t === "tunnel")).toEqual([]);
+    a.close();
+    b.close();
+    ws.close();
+  });
+
+  it("refuses a named machine that does not offer the requested repo", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up: a } = await attachedUplink(hub.port, "auth", "lap-a", [decl("github.com/acme/api")]);
+    const { up: b } = await attachedUplink(hub.port, "ui", "lap-b", [decl("github.com/acme/web")]);
+    const { ws, seen } = await member(hub.port, "default");
+
+    ws.send(JSON.stringify({
+      type: "create_session", projectId: "default", name: "billing",
+      repoKey: "github.com/acme/api", machineId: "lap-b",
+    }));
+    await wait(50);
+    // Distinct from the no-machine-at-all text on purpose: another machine
+    // DOES offer this repo, and telling the user "nobody has it" would send
+    // them looking for a problem that is not there.
+    expect(seen[0].message).toBe('that machine is not offering repo "github.com/acme/api"');
+    a.close();
+    b.close();
+    ws.close();
+  });
+
+  it("refuses a named machine that is offline or unknown", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port, "auth", "lap-a", [decl("github.com/acme/api")]);
+    const { ws, seen } = await member(hub.port, "default");
+
+    ws.send(JSON.stringify({
+      type: "create_session", projectId: "default", name: "billing",
+      repoKey: "github.com/acme/api", machineId: "lap-ghost",
+    }));
+    await wait(40);
+    expect(seen[0].message).toBe('machine "lap-ghost" is not online right now');
+
+    seen.length = 0;
+    up.close();
+    await wait(60);
+    ws.send(JSON.stringify({
+      type: "create_session", projectId: "default", name: "billing",
+      repoKey: "github.com/acme/api", machineId: "lap-a",
+    }));
+    await wait(40);
+    expect(seen[0].message).toBe('machine "lap-a" is not online right now');
     ws.close();
   });
 
@@ -901,7 +1109,8 @@ describe("hub routed create_session", () => {
     const { up } = await attachedUplink(hub.port, "auth", "lap-1");
     const second = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
     second.send(JSON.stringify({
-      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-2", projectId: "default", repoKey: "k2",
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-2", name: "lap-2",
+      projectId: "default", repos: [decl("k2")],
     }));
     await wait(40);
     const { ws, seen } = await member(hub.port, "default");
@@ -913,6 +1122,134 @@ describe("hub routed create_session", () => {
     expect(seen[0].message).toContain("auth");
     up.close();
     second.close();
+    ws.close();
+  });
+});
+
+describe("hub routed attach_repo/detach_repo", () => {
+  it("tunnels attach_repo and detach_repo to the named machine with identity stamped and the grant set", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")]);
+    const { ws } = await member(hub.port, "default");
+    upSeen.length = 0;
+
+    const attach = { type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "k" };
+    ws.send(JSON.stringify(attach));
+    await wait(50);
+    const tunnelled1 = upSeen.find((f) => f.t === "tunnel");
+    expect(tunnelled1).toBeTruthy();
+    expect(tunnelled1.payload).toEqual(attach);
+    expect(tunnelled1.identity).toEqual({ userId: "ana", name: "ana" });
+
+    upSeen.length = 0;
+    const detach = { type: "detach_repo", projectId: "default", machineId: "lap-1", repoKey: "k" };
+    ws.send(JSON.stringify(detach));
+    await wait(50);
+    const tunnelled2 = upSeen.find((f) => f.t === "tunnel");
+    expect(tunnelled2).toBeTruthy();
+    expect(tunnelled2.payload).toEqual(detach);
+    expect(tunnelled2.identity).toEqual({ userId: "ana", name: "ana" });
+
+    up.close();
+    ws.close();
+  });
+
+  it("refuses a non-member — participation is membership-scoped", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")]);
+    const ws = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId: "bo", name: "bo" }));
+    await wait(30);
+    seen.length = 0;
+    ws.send(JSON.stringify({
+      type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "k",
+    }));
+    await wait(40);
+    // Message text, not just type: bo is identified but has joined no
+    // session, so the fallthrough to tunnel()'s "join a session first" also
+    // produces `{ type: "error" }` and would pass a type-only check even
+    // without an isMember guard.
+    expect(seen[0].message).toBe("join this project before changing its machines");
+    up.close();
+    ws.close();
+  });
+
+  it("refuses attach_repo/detach_repo to a machine that is offline", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")]);
+    up.close();
+    await wait(60);
+
+    const { ws, seen } = await member(hub.port, "default");
+    ws.send(JSON.stringify({
+      type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "k",
+    }));
+    await wait(40);
+    expect(seen[0].message).toBe('machine "lap-1" is not online right now');
+    ws.close();
+  });
+
+  it("refuses a repo key the machine never advertised", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")]);
+    const { ws, seen } = await member(hub.port, "default");
+    ws.send(JSON.stringify({
+      type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "ghost",
+    }));
+    await wait(40);
+    expect(seen[0].message).toBe('machine "lap-1" does not list repo "ghost"');
+    up.close();
+    ws.close();
+  });
+
+  it("routes attach_repo to a not-yet-attached candidate — the hub gate does not require `attached`", async () => {
+    // Deliberately coarser than create_session's `attached && key` offer
+    // check: attach targets a candidate that is NOT attached yet, so
+    // requiring `attached` here would make attach_repo permanently
+    // unroutable. Only a key the machine never advertised at all is refused
+    // at the hub; the laptop (Task 6) enforces candidate/blocker semantics.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [
+      decl("k", { attached: false, defaultBranch: null }),
+    ]);
+    const { ws } = await member(hub.port, "default");
+    upSeen.length = 0;
+    ws.send(JSON.stringify({
+      type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "k",
+    }));
+    await wait(50);
+    expect(upSeen.find((f) => f.t === "tunnel")?.payload).toEqual({
+      type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "k",
+    });
+    up.close();
+    ws.close();
+  });
+
+  it("routes the machine's reply back to the asking browser, grant spent on use", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")]);
+    const { ws, seen } = await member(hub.port, "default");
+    ws.send(JSON.stringify({
+      type: "attach_repo", projectId: "default", machineId: "lap-1", repoKey: "k",
+    }));
+    await wait(50);
+    const channelId = upSeen.find((f) => f.t === "tunnel").channelId;
+    seen.length = 0;
+
+    up.send(JSON.stringify({
+      t: "reply", channelId, payload: { type: "repo_attached", repoKey: "k" },
+    }));
+    await wait(50);
+    expect(seen).toEqual([{ type: "repo_attached", repoKey: "k" }]);
+    up.close();
     ws.close();
   });
 });

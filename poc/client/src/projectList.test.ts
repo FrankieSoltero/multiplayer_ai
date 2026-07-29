@@ -43,8 +43,8 @@ describe("projectSummaryLine", () => {
     expect(projectSummaryLine(p({
       sessionCount: 3, liveSessionCount: 2,
       machines: [
-        { machineId: "a", repoKey: "x", online: true },
-        { machineId: "b", repoKey: "y", online: false },
+        { machineId: "a", name: "franks-mbp", repos: [], online: true },
+        { machineId: "b", name: "build-box", repos: [], online: false },
       ],
     }))).toBe("2 of 3 sessions live · 1 of 2 machines online");
   });

@@ -6,7 +6,7 @@ import type { LoggedEvent, SkillInfo } from "./events.js";
 import type { PluginInfo } from "./pluginStore.js";
 import type { OversightSummary } from "./overseer.js";
 import { lifecycleOf, type Lifecycle } from "./lifecycle.js";
-import type { SessionFacts } from "./relayProtocol.js";
+import type { RepoDecl, SessionFacts } from "./relayProtocol.js";
 
 export const SLUG = /^[a-z0-9-]{1,40}$/;
 
@@ -18,6 +18,14 @@ export interface ProjectSessionEntry {
   /** One-shot flag: the driver pulled the team summary; inject <oversight>
    *  into the next prompt only (spec §5). */
   pendingOversight: boolean;
+  /** Which repo this session's worktree lives in (spec §6). Bound once, at
+   *  creation, on EVERY creation path — a session's worktree cannot move, so
+   *  neither can its key. Required rather than optional precisely because a
+   *  path that forgot to bind it would otherwise compile and then report the
+   *  wrong repo for the rest of the session's life; `null` is the one honest
+   *  answer (no repo was attached when it was created) and has to be written
+   *  down deliberately. */
+  repoKey: string | null;
 }
 
 /** Minimal structural type so tests don't need real sockets. */
@@ -158,26 +166,32 @@ export interface ProjectMessage {
   arcade: ArcadeRecord[];
   plugins: PluginInfo[];
   pluginsEnabled: boolean;
-  repo: { defaultBranch: string; key: string } | null;
   oversight: { enabled: boolean; latest: OversightSummary | null };
-  /** Which machines are in this project, and which repo each offers. A hub
-   *  reports every machine that has attached; a standalone server reports
-   *  exactly one — itself (solo-mode fix, spec: entrance stays reachable in
-   *  solo) — using its own `repoKey` for both `machineId` and `repoKey`, since
-   *  it has no other machine identity to offer. Omitted (not an empty array)
-   *  only when the standalone server was launched with no workspace, which
-   *  the field being optional accommodates. */
-  machines?: { machineId: string; repoKey: string; online: boolean }[];
+  /** Which machines are in this project, and which repos each one offers
+   *  (spec §8.3, D10). A hub reports every machine that has attached; a
+   *  standalone server reports exactly one — itself (solo-mode fix, spec:
+   *  entrance stays reachable in solo). The single `repo` field this replaced
+   *  is DELETED (D10): a machine can offer several repos, so there is no
+   *  longer one repo for the snapshot to hold at the top level — each
+   *  session's own `repoKey` says which repo it lives in, and `machines[].repos`
+   *  says what each machine offers. Omitted (not an empty array) only when the
+   *  standalone server was launched with no workspace, which the field being
+   *  optional accommodates. */
+  machines?: { machineId: string; name: string; repos: RepoDecl[]; online: boolean }[];
 }
 
 export function projectSnapshot(
   project: Project,
   pluginState?: { plugins: PluginInfo[]; enabled: boolean },
-  repo?: { defaultBranch: string; key: string } | null,
+  machine?: { machineId: string; name: string; repos: RepoDecl[] } | null,
   oversight?: { enabled: boolean; latest: OversightSummary | null },
 ): ProjectMessage {
   const sessions = [...project.sessions.entries()].map(([id, entry]) => ({
-    ...sessionFactsOf(id, entry, repo?.key ?? null),
+    // Each entry carries its OWN repoKey, bound at creation (spec §6) — never
+    // a machine-wide global. A hub-attached project can hold sessions from
+    // several repos on several machines at once; feeding every row the same
+    // key here would silently relabel every session but the first.
+    ...sessionFactsOf(id, entry, entry.repoKey),
     // A standalone server owns every session it reports, so its uplink is
     // trivially reachable (spec §3.4). The hub replaces this with the real
     // uplink state; the field exists on both paths so the client has one shape.
@@ -189,21 +203,23 @@ export function projectSnapshot(
     arcade: arcadeRecords(project),
     plugins: pluginState?.plugins ?? [],
     pluginsEnabled: pluginState?.enabled ?? false,
-    repo: repo ?? null,
     oversight: oversight ?? { enabled: false, latest: null },
     // The solo-mode fix (spec: entrance stays reachable in solo). A standalone
     // server has exactly one machine — itself — so it reports that machine
     // honestly rather than omitting `machines` and leaving the project screen
-    // to read `0 MACHINES` and grey out its repo <select>. `repo` is the only
-    // identity this machine has; with no workspace there is nothing truthful
-    // to report, so the field stays undefined exactly as it always has.
-    machines: repo ? [{ machineId: repo.key, repoKey: repo.key, online: true }] : undefined,
+    // to read `0 MACHINES` and grey out its repo <select>. With no workspace
+    // there is no machine identity to report, so the field stays undefined
+    // exactly as it always has.
+    machines: machine
+      ? [{ machineId: machine.machineId, name: machine.name, repos: machine.repos, online: true }]
+      : undefined,
   };
 }
 
 export interface MachineSummary {
   machineId: string;
-  repoKey: string;
+  name: string;
+  repos: RepoDecl[];
   online: boolean;
 }
 
@@ -232,14 +248,14 @@ export interface ProjectSummary {
  *  `lifecycle` is always "active": closing a project is a hub-only concept
  *  (`set_project_lifecycle`) this server does not implement, so there is
  *  nothing else it could honestly report. `machines` mirrors `projectSnapshot`
- *  above: exactly one machine, this one, keyed by its own `repoKey` for both
- *  `machineId` and `repoKey` — a standalone server has no separate machine
- *  identity to report — omitted when the server has no workspace (a
- *  test-only path; the CLI always requires a repo to launch). */
+ *  above: exactly one machine, this one, carrying its own name and repo list
+ *  (D10) — a standalone server has no separate machine identity to report —
+ *  omitted (empty array) when the server has no workspace (a test-only path;
+ *  the CLI always requires a repo to launch). */
 export function projectSummaryOf(
   project: Project,
   memberUserId: string | null,
-  repoKey: string | null,
+  machine: { machineId: string; name: string; repos: RepoDecl[] } | null,
 ): ProjectSummary {
   const sessions = [...project.sessions.values()];
   return {
@@ -251,6 +267,8 @@ export function projectSummaryOf(
     liveSessionCount: sessions.filter(
       (entry) => lifecycleOf(entry.session.eventsFrom(0)) === "open",
     ).length,
-    machines: repoKey ? [{ machineId: repoKey, repoKey, online: true }] : [],
+    machines: machine
+      ? [{ machineId: machine.machineId, name: machine.name, repos: machine.repos, online: true }]
+      : [],
   };
 }

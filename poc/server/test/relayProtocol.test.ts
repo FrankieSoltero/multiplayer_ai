@@ -1,10 +1,32 @@
 import { describe, expect, test } from "vitest";
 import {
   MAX_FRAME_BYTES,
+  MAX_REPOS,
   RELAY_PROTOCOL_VERSION,
+  clampRepoDecl,
   parseDownFrame,
   parseUpFrame,
+  type RepoDecl,
 } from "../src/relayProtocol.js";
+
+const decl = (over: Partial<RepoDecl> = {}): RepoDecl => ({
+  key: "github.com/acme/api",
+  label: "api",
+  attached: true,
+  defaultBranch: "origin/main",
+  ...over,
+});
+
+/** A hello with everything valid, so each test below varies exactly one field. */
+const hello = (over: Record<string, unknown> = {}) => ({
+  t: "hello",
+  v: RELAY_PROTOCOL_VERSION,
+  uplinkId: "lap-1",
+  name: "Ana's MacBook",
+  projectId: "default",
+  repos: [decl()],
+  ...over,
+});
 
 const facts = {
   id: "auth",
@@ -19,29 +41,153 @@ const facts = {
   lifecycle: "open" as const,
 };
 
+describe("clampRepoDecl", () => {
+  // Finding 1: a laptop's real label/key/branch is unbounded upstream (a repo
+  // directory name, a git remote path, a branch name), while this file's own
+  // `repoList` REJECTS the whole hello on one out-of-bounds entry. Without a
+  // clamp at the choke point that builds every outgoing decl, a single
+  // 101-char repo directory name takes the machine off the hub with a
+  // misleading "versions may not match" loop (relay.ts's 1008 log).
+
+  test("slices an over-long label to 100 chars", () => {
+    const clamped = clampRepoDecl(decl({ label: "l".repeat(150) }));
+    expect(clamped.label).toBe("l".repeat(100));
+    expect(parseUpFrame(hello({ repos: [clamped] }))).not.toBeNull();
+  });
+
+  test("falls back to the key when the label would be empty (root-path repo)", () => {
+    const clamped = clampRepoDecl(decl({ key: "local:host:abc123456789", label: "" }));
+    expect(clamped.label).toBe("local:host:abc123456789");
+    expect(clamped.label.length).toBeGreaterThan(0);
+    expect(parseUpFrame(hello({ repos: [clamped] }))).not.toBeNull();
+  });
+
+  test("slices an over-long key to 200 chars", () => {
+    const clamped = clampRepoDecl(decl({ key: "k".repeat(250) }));
+    expect(clamped.key).toBe("k".repeat(200));
+    expect(parseUpFrame(hello({ repos: [clamped] }))).not.toBeNull();
+  });
+
+  test("slices an over-long defaultBranch to 100 chars, and leaves null alone", () => {
+    const clamped = clampRepoDecl(decl({ defaultBranch: "b".repeat(150) }));
+    expect(clamped.defaultBranch).toBe("b".repeat(100));
+    expect(parseUpFrame(hello({ repos: [clamped] }))).not.toBeNull();
+
+    const candidate = clampRepoDecl(decl({ attached: false, defaultBranch: null }));
+    expect(candidate.defaultBranch).toBeNull();
+  });
+
+  test("is a no-op on an already-valid decl", () => {
+    expect(clampRepoDecl(decl())).toEqual(decl());
+  });
+});
+
 describe("parseUpFrame", () => {
-  test("accepts a hello and preserves every declared field", () => {
-    const frame = parseUpFrame({
-      t: "hello",
-      v: RELAY_PROTOCOL_VERSION,
-      uplinkId: "lap-1",
-      projectId: "default",
-      repoKey: "github.com/acme/api",
+  test("accepts a hello v2 and preserves every declared field", () => {
+    const candidate = decl({
+      key: "github.com/acme/web",
+      label: "web",
+      attached: false,
+      defaultBranch: null,
     });
+    const frame = parseUpFrame(hello({ repos: [decl(), candidate] }));
     expect(frame).toEqual({
       t: "hello",
-      v: 1,
+      v: 2,
       uplinkId: "lap-1",
+      name: "Ana's MacBook",
       projectId: "default",
-      repoKey: "github.com/acme/api",
+      repos: [decl(), candidate],
     });
+  });
+
+  test("rejects a v1 hello — there is no compatibility shim, by design (D6)", () => {
+    // The version boundary IS the compatibility story. A v1 laptop carries a
+    // scalar `repoKey` and no machine name; admitting it would leave the hub
+    // holding a machine record it invented, and the mismatch would only
+    // surface later, somewhere with no context to explain it.
+    expect(
+      parseUpFrame({ t: "hello", v: 1, uplinkId: "lap-1", projectId: "default", repoKey: "k" }),
+    ).toBeNull();
   });
 
   test("rejects a hello from a different protocol version", () => {
     // A version mismatch must fail loudly at the frame boundary rather than
     // producing a half-understood uplink that misbehaves later.
+    expect(parseUpFrame(hello({ v: 99 }))).toBeNull();
+  });
+
+  test("rejects a repos list over the 100-entry cap, and accepts one exactly at it", () => {
+    // A machine offering more than 100 repos is a config error, not a big
+    // machine (spec §5.1) — and truncating would misrepresent it silently.
+    // Both ends of the bound are asserted, or "rejects everything" passes.
+    const many = (n: number) =>
+      Array.from({ length: n }, (_, i) => decl({ key: `github.com/acme/r${i}`, label: `r${i}` }));
+    expect(parseUpFrame(hello({ repos: many(101) }))).toBeNull();
+    expect(parseUpFrame(hello({ repos: many(100) }))).not.toBeNull();
+  });
+
+  test("rejects a hello whose repos is not an array", () => {
+    expect(parseUpFrame(hello({ repos: "github.com/acme/api" }))).toBeNull();
+    expect(parseUpFrame(hello({ repos: { key: "github.com/acme/api" } }))).toBeNull();
+    expect(parseUpFrame(hello({ repos: undefined }))).toBeNull();
+  });
+
+  test("rejects a hello carrying a malformed RepoDecl", () => {
+    const bad: unknown[] = [
+      null,
+      "github.com/acme/api",
+      decl({ key: "" }),
+      decl({ key: "k".repeat(201) }),
+      decl({ key: 7 as unknown as string }),
+      decl({ label: "" }),
+      decl({ label: "l".repeat(101) }),
+      decl({ attached: "yes" as unknown as boolean }),
+      decl({ defaultBranch: 7 as unknown as string }),
+      decl({ defaultBranch: "b".repeat(101) }),
+    ];
+    for (const entry of bad) {
+      expect(parseUpFrame(hello({ repos: [entry] }))).toBeNull();
+    }
+    // Every bound is inclusive, so a decl sitting exactly on all three passes.
     expect(
-      parseUpFrame({ t: "hello", v: 99, uplinkId: "lap-1", projectId: "default", repoKey: "k" }),
+      parseUpFrame(
+        hello({
+          repos: [decl({ key: "k".repeat(200), label: "l".repeat(100), defaultBranch: "b".repeat(100) })],
+        }),
+      ),
+    ).not.toBeNull();
+    // ...and a candidate's null defaultBranch is the ordinary case, not a fault.
+    expect(parseUpFrame(hello({ repos: [decl({ attached: false, defaultBranch: null })] }))).not.toBeNull();
+  });
+
+  test("rejects a non-string machine name and truncates a long one to 40 chars", () => {
+    // Identity parity with the browser's `name` (hub.ts's identify/join, 40).
+    expect(parseUpFrame(hello({ name: 7 }))).toBeNull();
+    expect(parseUpFrame(hello({ name: undefined }))).toBeNull();
+    const frame = parseUpFrame(hello({ name: "x".repeat(60) }));
+    expect(frame && "name" in frame && frame.name).toBe("x".repeat(40));
+  });
+
+  test("accepts a repos frame — the full list a machine re-declares when its set changes", () => {
+    // Always the whole authoritative list, never a diff (spec §5.2): the hub
+    // only ever overwrites its record wholesale, so there is no single-key
+    // rewrite path a re-attach could corrupt.
+    expect(parseUpFrame({ t: "repos", repos: [decl(), decl({ key: "b", label: "b" })] })).toEqual({
+      t: "repos",
+      repos: [decl(), decl({ key: "b", label: "b" })],
+    });
+    expect(parseUpFrame({ t: "repos", repos: [] })).toEqual({ t: "repos", repos: [] });
+  });
+
+  test("holds a repos frame to the same bounds as a hello's list", () => {
+    expect(parseUpFrame({ t: "repos", repos: "nope" })).toBeNull();
+    expect(parseUpFrame({ t: "repos", repos: [decl({ label: "" })] })).toBeNull();
+    expect(
+      parseUpFrame({
+        t: "repos",
+        repos: Array.from({ length: 101 }, (_, i) => decl({ key: `r${i}`, label: `r${i}` })),
+      }),
     ).toBeNull();
   });
 
@@ -90,7 +236,7 @@ describe("parseDownFrame", () => {
       v: RELAY_PROTOCOL_VERSION,
       have: { auth: { runId: "run-a", lastSeq: 41 } },
     });
-    expect(frame).toEqual({ t: "welcome", v: 1, have: { auth: { runId: "run-a", lastSeq: 41 } } });
+    expect(frame).toEqual({ t: "welcome", v: 2, have: { auth: { runId: "run-a", lastSeq: 41 } } });
   });
 
   test("accepts a tunnel and keeps the payload untouched", () => {
