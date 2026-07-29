@@ -1,14 +1,94 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-28 (session #18).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-29 (session #19, mid-execution hand-off).*
 
 ---
 
-## 🚀 START HERE — `docs/PRD.md` IS THE PLAN OF RECORD. PRD §8.2 ("projects") IS SHIPPED: **PR #22 IS OPEN — DO NOT MERGE IT YOURSELF.** Next: pick the next §8 section and run its brainstorm → spec → plan.
+## 🚀 START HERE — §8.3 "MACHINES & REPOS" IS MID-EXECUTION. Resume the SDD task loop; do NOT re-plan, re-brainstorm, or merge anything.
+
+**Goal:** execute `docs/superpowers/plans/2026-07-29-machines-repos.md` (13 tasks) via
+superpowers:subagent-driven-development on branch **`feature/machines-repos`** (pushed, tracks
+origin; cut from `feature/projects` @ 5f92009). Spec of record:
+`docs/superpowers/specs/2026-07-28-machines-repos-design.md` (user-approved; D1-D10 rulings
+inside — where plan code disagrees, the SPEC governs).
+
+**Status (exactly where it stopped):** Tasks 1-5 complete + reviewed (ledger has commits).
+Task 6 implemented + reviewed; its ONE Important finding was fixed in fix-round 1
+(commit `e6504af`, comment labeling the attach-failure catch injection-only) — **the scoped
+re-review of that fix has NOT run yet; that is the very next action.** Tasks 7-13 not started.
+Branch tip = `e6504af`, all three suites green there (server 478 / hub 93 / client 247).
+
+**THE LEDGER IS THE AUTHORITY:** `.superpowers/sdd/2026-07-29-machines-repos/progress.md` —
+per-task commits, deferred minors with rulings, and two items ROUTED TO TASK 8 (the launch cap
+must count the cwd repo so repoDecls() can never exceed 100 — otherwise hello is rejected with a
+misleading "versions may not match" loop; and verify/temper server.ts ~:1283's debt-§2.3 comment
+once the CLI passes `machine`). Briefs (`task-N-brief.md`), reports (`task-N-report.md`), and
+review packages live beside it. Git-ignored — `git clean -fdx` destroys it.
+
+**Decisions locked (why):** (1) User model directive: fable orchestrates + gates every review;
+opus implements tasks 3/5/6/9/12; sonnet 1/2/4/7/8/10/11/13; haiku for summaries/light first-pass
+reviews — reviewer tier scales with diff risk (haiku tiny, sonnet mid, opus for Task 5-class).
+(2) "All three packages green at every commit" OUTRANKS task scoping — Task 4 precedent: hub got
+a labeled TEMPORARY shim rather than staying red (Task 5 then removed it; grep "Task-4 shim" is
+empty). (3) Findings conflicting with plan text go to the user; minors go to the ledger, never
+into the fix loop. (4) NEVER merge: PR #22 (feature/projects) stays untouched and open; §8.3 gets
+its own PR only after Task 13's walk.
+
+### ➡️ ORDERED NEXT STEPS (fresh session starts at step 1)
+
+1. **Finish Task 6's fix round:** run
+   `<skill>/scripts/review-package docs/superpowers/plans/2026-07-29-machines-repos.md e15a966 e6504af`
+   (skill dir: `/Users/franciscosoltero/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development`),
+   dispatch its `re-review-prompt.md` on **haiku** with the finding ("attach-failure catch at
+   server.ts:691-706 framed as live coverage; actually injection-only — fix = comment + report
+   §7 correction"), brief `task-6-brief.md`, report `task-6-report.md`, FIX_BASE e15a966, HEAD
+   e6504af. On ADDRESSED: append `Task 6: fix round 1/5 (1 addressed, 0 open)` and
+   `Task 6: complete (commits aa1144b..e6504af, review clean)` to the ledger.
+2. **Tasks 7-13, the standard loop per task N:** record BASE=`git rev-parse --short HEAD` →
+   `scripts/task-brief PLAN 7` → dispatch implementer (model per directive above; prompt shape =
+   prior dispatches: brief path + interfaces from earlier tasks + global constraints + report
+   path `task-N-report.md`; NEVER paste plan history) → on DONE run `scripts/review-package PLAN
+   BASE HEAD` → dispatch task-reviewer (haiku/sonnet by risk) → fix loop if needed (resume same
+   implementer via SendMessage rounds 1-3) → ledger completion. Task 8's dispatch MUST carry the
+   two ROUTED items from the ledger. Task 12 (opus) and 13 (sonnet) close it out.
+3. **After Task 13:** final whole-branch review on **opus** (`scripts/review-package PLAN
+   5f92009 HEAD` — merge-base is 5f92009), point it at the ledger's deferred-minor lines; ONE
+   fix wave max, one scoped re-review; then the controller (not a subagent) runs the live walk
+   from the walk brief Task 13 writes, opens the PR feature/machines-repos → main with spec §12
+   disclosures, and hands the merge to the user.
+
+### Resume & verify — run this first, expect exactly this
+
+```bash
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
+git status -sb            # feature/machines-repos, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
+git log --oneline -1      # e6504af docs(server): label the attach-failure catch as injection-reachable today
+head -5 .superpowers/sdd/2026-07-29-machines-repos/progress.md   # ledger names THIS plan
+gh pr view 22 --json state --jq .state   # OPEN — never merge it
+cd poc/server && npx tsc --noEmit && npx vitest run   # 478 passed, 22 files
+cd ../hub    && npx tsc --noEmit && npx vitest run    # 93 passed, 4 files
+cd ../client && npx tsc -b && npx vitest run          # 247 passed, 28 files
+```
+
+**Gotchas for the execution loop:** client typecheck is `npx tsc -b` (`--noEmit` is a NO-OP);
+rebuild `poc/server` (`npm run build`) after exported-type changes or hub/client typecheck stale
+dist; `poc/server/.env` holds a placeholder key — never source it; never `git add -A` (diff-tree
+verify every commit); never predict suite totals; implementers are told to SKIP any brief Step 0
+branch commands (branch exists); one implementer at a time, reviews via fresh subagents, fixes
+via SendMessage to the implementer's agentId (in the ledger context each dispatch records).
+
+**Open questions:** none blocking — all parked/deferred items live in the ledger with rulings;
+spec §13 lists what stays open at PRD level.
+
+---
+
+## 🟡 HISTORICAL — §8.2 state below (shipped as PR #22). Everything from here down predates the §8.3 execution and is superseded where it conflicts with the block above.
 
 The `v7a → v7b1 → … → v7e` chain is **dead**; PRD §8 has ten named sections, each getting its own
 brainstorm → spec → plan. Session #16 wrote the PRD. **Session #17 executed all 13 tasks of the
 first section**, `docs/superpowers/plans/2026-07-28-projects.md`, via subagent-driven-development.
+Session #18 closed §8.2 (fix wave 2 + PR #22) and locked the §8.3 rulings. Session #19 wrote the
+§8.3 spec + plan and executed Tasks 1-6 (see the block above).
 
 ### ✅ SOLO-MODE DECISION MADE (user, session #17): **option 1+, and the entrance STAYS**
 
@@ -81,20 +161,12 @@ Important + two minors are fixed in `2efe6a2`.
   the §5.2/§4.1 gap, I3, debt §2.4, spec §10 Q1 and the create_session bound disclosed.
   **Merging is the user's call, never yours.**
 
-### ➡️ ORDERED NEXT STEPS — do these in this order
+### ➡️ (SUPERSEDED — was the §8.3 brainstorm queue; ALL DONE in session #19)
 
-1. ✅ **SECTION CHOSEN (user): §8.3 Machines & repos. BRAINSTORM MID-FLIGHT — six rulings are
-   locked (scope=full D4 one spec; machine=daemon w/ persisted ~/.mpai id; attach=daemon-
-   enumerated list; session ids stay project-unique; detach refused while live; Approach A =
-   protocol v2, one uplink per machine, repos as a set).**
-   **READ `.superpowers/sdd/2026-07-28-machines-repos/brainstorm-state.md` FIRST** — it has all
-   rulings verbatim, the scout's four structural blockers with file:line, and the next action:
-   present the design section-by-section for approval, then spec → writing-plans. Do NOT
-   re-ask the settled questions.
-2. **Run the cycle for the chosen section**: superpowers:brainstorming → spec → writing-plans,
-   as §8.2 was done. Reuse `.superpowers/sdd/<date>-<section>/` for the ledger.
-3. PRD §8.4's "Today" was refreshed in this session (hub create now works); sweep the other
-   section "Today" paragraphs against reality when §8.3 (or whichever) is specced.
+The §8.3 brainstorm completed (7 sections user-approved), the spec shipped (`75141b7`), the plan
+shipped (`5f92009`), and execution is mid-flight — see START HERE above. The brainstorm state
+file (`.superpowers/sdd/2026-07-28-machines-repos/brainstorm-state.md`, note: 07-28 dir) is now
+historical; the EXECUTION ledger lives in the 07-29 dir. PRD "Today" sweep = plan Task 13.
 
 ### What is done — `feature/projects` = `origin/feature/projects`, last code commit `2efe6a2`
 
