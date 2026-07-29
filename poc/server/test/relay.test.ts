@@ -191,6 +191,49 @@ describe("Relay handshake", () => {
     vi.useRealTimers();
   });
 
+  it("latches the 1008 log to once per connection-loss episode, not once per reconnect (Finding 1b)", () => {
+    // Without a latch, a real version mismatch never resolves on its own —
+    // the reconnect loop above retries every `reconnectDelayMs` forever, and
+    // WITHOUT this fix that one diagnostic line fires on every single retry,
+    // flooding the laptop's own console (`hub.ts:286`'s log-once precedent is
+    // for the identical reason). It must still fire again for a GENUINELY
+    // NEW episode — a later mismatch after a successful reconnect — so a
+    // hub upgrade that breaks compatibility after this laptop was fine is
+    // not silenced by a latch left over from an unrelated, already-resolved
+    // failure.
+    vi.useFakeTimers();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fake = fakeSocket();
+    const relay = relayWith(fake, { reconnectDelayMs: 500 });
+    relay.start();
+
+    // Episode 1: three consecutive 1008s across three reconnect attempts —
+    // only the first logs.
+    fake.sockets[0]!.open();
+    fake.sockets[0]!.drop(1008);
+    vi.advanceTimersByTime(500);
+    fake.sockets[1]!.open();
+    fake.sockets[1]!.drop(1008);
+    vi.advanceTimersByTime(500);
+    fake.sockets[2]!.open();
+    fake.sockets[2]!.drop(1008);
+    expect(logged.mock.calls).toHaveLength(1);
+
+    // The episode ends on a successful handshake...
+    vi.advanceTimersByTime(500);
+    fake.sockets[3]!.open();
+    fake.sockets[3]!.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    expect(logged.mock.calls).toHaveLength(1);
+
+    // ...so a LATER mismatch is a new episode and logs again.
+    fake.sockets[3]!.drop(1008);
+    expect(logged.mock.calls).toHaveLength(2);
+
+    logged.mockRestore();
+    relay.stop();
+    vi.useRealTimers();
+  });
+
   it("replays only the gap the hub says it is missing", () => {
     // The payoff of the append-only design (spec §3.2): the hub reports what
     // it holds and the laptop replays from there. No diffing, no reconciling.

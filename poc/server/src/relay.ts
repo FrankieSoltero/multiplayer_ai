@@ -88,6 +88,16 @@ export class Relay {
    *  the size rides along so eviction never has to re-stringify. */
   private pending: { frame: UpFrame; size: number }[] = [];
   private pendingBytes = 0;
+  /** Latches the 1008 refusal log to once per connection-loss episode
+   *  (`hub.ts:286`'s log-once precedent for the same reason: the reconnect
+   *  loop below retries every `reconnectDelayMs`, and with no shim (D6) a
+   *  version mismatch refuses on EVERY attempt — without this, one line
+   *  becomes an unbounded stream that floods the laptop's own console, the
+   *  exact symptom the line exists to diagnose rather than bury. Cleared on a
+   *  successful handshake (`welcome`, below) so a LATER mismatch — a hub
+   *  upgrade after this laptop reconnected fine, for instance — still gets
+   *  reported instead of staying silenced by an episode that already ended. */
+  private loggedProtocolMismatch = false;
 
   constructor(
     private opts: RelayOptions,
@@ -121,6 +131,10 @@ export class Relay {
     // replies belonging to a session state that has since moved on.
     this.pending = [];
     this.pendingBytes = 0;
+    // A deliberate stop/start is a new episode too — a fresh mismatch after
+    // an explicit restart should still be reported, not silenced by a latch
+    // left over from before the restart.
+    this.loggedProtocolMismatch = false;
   }
 
   /** Register a session so it takes part in the handshake replay. Called for
@@ -206,7 +220,8 @@ export class Relay {
       // nothing logged on either side. Guarded on the code so an ordinary
       // reconnect stays silent; the code is the `ws` close code, which the
       // socket adapter passes straight through (`defaultConnect`, below).
-      if (code === 1008) {
+      if (code === 1008 && !this.loggedProtocolMismatch) {
+        this.loggedProtocolMismatch = true;
         console.error(
           "hub rejected this uplink (protocol violation) — laptop and hub versions may not match",
         );
@@ -244,6 +259,11 @@ export class Relay {
     if (!frame) return;
 
     if (frame.t === "welcome") {
+      // A successful handshake ends the episode the latch above was guarding:
+      // a LATER 1008 (e.g. a hub upgrade after this laptop reconnected fine)
+      // is a new problem and must be reported again, not silenced by a latch
+      // left over from a mismatch that already resolved.
+      this.loggedProtocolMismatch = false;
       // The replay below reads the live log and is therefore authoritative:
       // anything buffered while the socket was down is already contained in
       // it. Dropping buffered publishes avoids re-sending events the hub
