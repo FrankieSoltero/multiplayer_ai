@@ -17,7 +17,7 @@ import {
 } from "./project.js";
 import { Relay, type ConnectFn } from "./relay.js";
 import { defaultBaseRefFor, type RepoCandidate } from "./machineRepos.js";
-import type { RepoDecl } from "./relayProtocol.js";
+import { clampRepoDecl, MAX_REPOS, type RepoDecl } from "./relayProtocol.js";
 import { Session } from "./session.js";
 import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
@@ -233,6 +233,21 @@ export async function startServer(opts: {
     });
   }
 
+  // Spec §5.1/§5.2's 100-repo cap, enforced here too — not just by `cli.ts`'s
+  // `finalizeCandidates` (launch path) and `relayProtocol.ts`'s `repoList`
+  // (frame boundary). A direct-API caller (tests, or any future embedder) can
+  // hand `startServer` a `workspace` plus 100 `repoCandidates` and reproduce
+  // the exact 101-decl hello `finalizeCandidates` exists to prevent — that
+  // refusal only runs inside `cli.ts`'s `launch()`, never inside `startServer`
+  // itself. Refuse at construction, matching `finalizeCandidates`'s refusal
+  // spirit: a truncated list would misrepresent the machine, so this throws
+  // rather than trims.
+  if (repos.size > MAX_REPOS) {
+    throw new Error(
+      `startServer: ${repos.size} repos (cwd + candidates) exceeds the ${MAX_REPOS} cap (spec §5.1/§5.2)`,
+    );
+  }
+
   const attachedRepos = (): AttachedRepo[] => [...repos.values()].filter(isAttached);
 
   /** The first attached repo, when there is one. `machineView()` below is the
@@ -242,14 +257,23 @@ export async function startServer(opts: {
    *  instead of one scalar key. */
   const firstAttached = (): AttachedRepo | null => attachedRepos()[0] ?? null;
 
-  /** What this machine offers, for the repo picker (spec §5.1). */
+  /** What this machine offers, for the repo picker (spec §5.1). The single
+   *  choke point every outgoing `RepoDecl` passes through — the cwd entry, every
+   *  scanned candidate, and every post-attach re-declare alike — so `clampRepoDecl`
+   *  here is the one place Finding 1's bound has to be applied, not one per
+   *  producer. A machine's real label/key/branch is unbounded upstream (a repo
+   *  directory name, a git remote path, a branch name), while the hub's parser
+   *  (`relayProtocol.ts`'s `repoList`) rejects the WHOLE hello on a single
+   *  out-of-bounds entry — clamping here is what keeps that from ever happening. */
   const repoDecls = (): RepoDecl[] =>
-    [...repos.values()].map((entry) => ({
-      key: entry.key,
-      label: entry.label,
-      attached: entry.attached,
-      defaultBranch: entry.defaultBranch,
-    }));
+    [...repos.values()].map((entry) =>
+      clampRepoDecl({
+        key: entry.key,
+        label: entry.label,
+        attached: entry.attached,
+        defaultBranch: entry.defaultBranch,
+      }),
+    );
 
   /** This machine as the project screen sees it (spec §6/§7). With a persisted
    *  identity it reports the real one. Without — the direct-API tests, and any

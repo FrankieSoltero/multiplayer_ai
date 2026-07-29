@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
 import {
   MAX_FRAME_BYTES,
+  MAX_REPOS,
   RELAY_PROTOCOL_VERSION,
+  clampRepoDecl,
   parseDownFrame,
   parseUpFrame,
   type RepoDecl,
@@ -38,6 +40,47 @@ const facts = {
   repoKey: "github.com/acme/api",
   lifecycle: "open" as const,
 };
+
+describe("clampRepoDecl", () => {
+  // Finding 1: a laptop's real label/key/branch is unbounded upstream (a repo
+  // directory name, a git remote path, a branch name), while this file's own
+  // `repoList` REJECTS the whole hello on one out-of-bounds entry. Without a
+  // clamp at the choke point that builds every outgoing decl, a single
+  // 101-char repo directory name takes the machine off the hub with a
+  // misleading "versions may not match" loop (relay.ts's 1008 log).
+
+  test("slices an over-long label to 100 chars", () => {
+    const clamped = clampRepoDecl(decl({ label: "l".repeat(150) }));
+    expect(clamped.label).toBe("l".repeat(100));
+    expect(parseUpFrame(hello({ repos: [clamped] }))).not.toBeNull();
+  });
+
+  test("falls back to the key when the label would be empty (root-path repo)", () => {
+    const clamped = clampRepoDecl(decl({ key: "local:host:abc123456789", label: "" }));
+    expect(clamped.label).toBe("local:host:abc123456789");
+    expect(clamped.label.length).toBeGreaterThan(0);
+    expect(parseUpFrame(hello({ repos: [clamped] }))).not.toBeNull();
+  });
+
+  test("slices an over-long key to 200 chars", () => {
+    const clamped = clampRepoDecl(decl({ key: "k".repeat(250) }));
+    expect(clamped.key).toBe("k".repeat(200));
+    expect(parseUpFrame(hello({ repos: [clamped] }))).not.toBeNull();
+  });
+
+  test("slices an over-long defaultBranch to 100 chars, and leaves null alone", () => {
+    const clamped = clampRepoDecl(decl({ defaultBranch: "b".repeat(150) }));
+    expect(clamped.defaultBranch).toBe("b".repeat(100));
+    expect(parseUpFrame(hello({ repos: [clamped] }))).not.toBeNull();
+
+    const candidate = clampRepoDecl(decl({ attached: false, defaultBranch: null }));
+    expect(candidate.defaultBranch).toBeNull();
+  });
+
+  test("is a no-op on an already-valid decl", () => {
+    expect(clampRepoDecl(decl())).toEqual(decl());
+  });
+});
 
 describe("parseUpFrame", () => {
   test("accepts a hello v2 and preserves every declared field", () => {

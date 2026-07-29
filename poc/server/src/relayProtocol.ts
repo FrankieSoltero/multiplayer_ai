@@ -53,12 +53,15 @@ export interface RepoDecl {
   defaultBranch: string | null;
 }
 
-/** How many repos one machine may declare (spec §5.1). Enforced twice and
- *  never silently: here, at the frame boundary, and at launch by the scan that
- *  builds the list. Truncating instead would misrepresent the machine — the
- *  browser would offer a repo picker missing entries nobody can see are
- *  missing — and a set this large is a config error, not a big machine. */
-const MAX_REPOS = 100;
+/** How many repos one machine may declare (spec §5.1). Enforced three times and
+ *  never silently: here at the frame boundary, at launch by the scan that
+ *  builds the list (`cli.ts`'s `finalizeCandidates`), and at `startServer`'s
+ *  own construction (a direct-API caller bypasses both of those). Truncating
+ *  instead would misrepresent the machine — the browser would offer a repo
+ *  picker missing entries nobody can see are missing — and a set this large is
+ *  a config error, not a big machine. Exported so `server.ts` enforces the
+ *  identical number rather than a second magic constant that could drift. */
+export const MAX_REPOS = 100;
 
 /** Laptop → hub. */
 export type UpFrame =
@@ -149,6 +152,24 @@ function repoList(raw: unknown): RepoDecl[] | null {
     out.push({ key: d.key, label: d.label, attached: d.attached, defaultBranch: branch });
   }
   return out;
+}
+
+/** Bounds a single `RepoDecl` to what `repoList` above accepts, so the ONE
+ *  choke point that builds every outgoing decl (`server.ts`'s `repoDecls()`)
+ *  can never produce a hello or `repos` frame this same file's own parser
+ *  rejects. A laptop's real label/key/branch is not bounded anywhere upstream
+ *  — a repo directory name, a git remote path, a branch name can all be
+ *  arbitrarily long, and a root-path repo's basename can be empty — so this
+ *  is the last line before the wire, not a redundant check.
+ *
+ *  Total: every input maps to SOME valid `RepoDecl`, never throws. An empty
+ *  label (root-path repo) falls back to the key rather than shipping a decl
+ *  `repoList` would itself reject on the receiving end. */
+export function clampRepoDecl(d: RepoDecl): RepoDecl {
+  const key = d.key.slice(0, 200);
+  const label = d.label.slice(0, 100) || key.slice(0, 100) || "repo";
+  const defaultBranch = d.defaultBranch === null ? null : d.defaultBranch.slice(0, 100);
+  return { key, label, attached: d.attached, defaultBranch };
 }
 
 export function parseUpFrame(raw: unknown): UpFrame | null {

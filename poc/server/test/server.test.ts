@@ -7,7 +7,7 @@ import { startServer } from "../src/server.js";
 import type { RunQuery, SdkMessage } from "../src/agentDriver.js";
 import { PluginStore, type CloneFn } from "../src/pluginStore.js";
 import { signSession, SESSION_COOKIE } from "../src/auth.js";
-import { RELAY_PROTOCOL_VERSION } from "../src/relayProtocol.js";
+import { RELAY_PROTOCOL_VERSION, parseUpFrame } from "../src/relayProtocol.js";
 
 const echoRun: RunQuery = async function* (prompts) {
   for await (const prompt of prompts) {
@@ -3519,5 +3519,106 @@ describe("attach and detach repos", () => {
     expect(f.built).toEqual(["/tmp/web"]);
     ws.close();
     anaWs.close();
+  });
+
+  describe("RepoDecl bounds (Finding 1)", () => {
+    // A machine's real label/key/branch is unbounded upstream (a repo
+    // directory name, a git remote path, a branch name), while the hub's
+    // parser (relayProtocol.ts's repoList) rejects the WHOLE hello or repos
+    // frame on a single out-of-bounds entry. Without a clamp, a 101-char repo
+    // directory name takes the machine off the hub with a misleading
+    // "versions may not match" loop (relay.ts's 1008 log) — forever, since
+    // the reconnect just resends the same oversized decl. Each case here
+    // pins the fix by feeding the REAL frame the uplink would have sent
+    // through `parseUpFrame`, so a regression fails here, not just on
+    // `clampRepoDecl` in isolation.
+
+    it("clamps an over-long cwd label so the uplink's hello stays parseable", async () => {
+      const cwd = keyedWorkspace("github.com/acme/api");
+      const hub = fakeHub();
+      const server = await startServer({
+        port: 0,
+        runQuery: echoRun,
+        workspace: cwd,
+        workspaceLabel: "x".repeat(101),
+        hub: { url: "ws://hub.test", projectId: "default", connect: hub.connect },
+      });
+      close = server.close;
+      hub.open();
+
+      expect(hub.sent).toHaveLength(1);
+      const helloFrame = hub.sent[0];
+      expect(helloFrame.t).toBe("hello");
+      const decl = declOf(helloFrame.repos, "github.com/acme/api");
+      expect(decl.label.length).toBeLessThanOrEqual(100);
+      // The whole point: the hub's own parser has to accept this frame.
+      expect(parseUpFrame(helloFrame)).not.toBeNull();
+    });
+
+    it("falls back to the key when a candidate's label is empty (a root-path repo), so the hello stays parseable", async () => {
+      const cwd = keyedWorkspace("github.com/acme/api");
+      const hub = fakeHub();
+      const server = await startServer({
+        port: 0,
+        runQuery: echoRun,
+        workspace: cwd,
+        repoCandidates: [{ key: "local:host:deadbeefcafe", label: "", root: "/" }],
+        hub: { url: "ws://hub.test", projectId: "default", connect: hub.connect },
+      });
+      close = server.close;
+      hub.open();
+
+      const helloFrame = hub.sent[0];
+      const decl = declOf(helloFrame.repos, "local:host:deadbeefcafe");
+      expect(decl.label).toBe("local:host:deadbeefcafe");
+      expect(decl.label.length).toBeGreaterThan(0);
+      expect(parseUpFrame(helloFrame)).not.toBeNull();
+    });
+
+    it("clamps an over-long defaultBranch after attach so the repos frame stays parseable", async () => {
+      const f = twoRepoFixture();
+      const hub = fakeHub();
+      const server = await startServer({
+        ...f.opts,
+        defaultBaseRef: () => `origin/${"b".repeat(150)}`,
+        hub: { url: "ws://hub.test", projectId: "default", connect: hub.connect },
+      });
+      close = server.close;
+      hub.open();
+      hub.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+
+      const ws = await connect(server.port);
+      collect(ws, []);
+      ws.send(JSON.stringify({ type: "attach_repo", repoKey: "github.com/acme/web" }));
+      await wait(100);
+
+      const frame = reposFrames(hub).at(-1);
+      const decl = declOf(frame.repos, "github.com/acme/web");
+      expect(decl.defaultBranch.length).toBeLessThanOrEqual(100);
+      expect(parseUpFrame(frame)).not.toBeNull();
+      ws.close();
+    });
+
+    it("refuses to construct when the repo set exceeds spec §5.1's 100 cap — a direct-API caller bypassing cli.ts's finalizeCandidates", async () => {
+      // finalizeCandidates (cli.ts) only guards the `mpai` launch path. A
+      // direct-API caller — this test stands in for one — can hand
+      // startServer a workspace plus 100 repoCandidates and reproduce the
+      // exact 101-decl hello finalizeCandidates exists to prevent, unless
+      // startServer enforces the cap itself.
+      const cwd = keyedWorkspace("cwd-key");
+      const many = Array.from({ length: 100 }, (_, i) => ({
+        key: `github.com/acme/r${i}`,
+        label: `r${i}`,
+        root: `/tmp/r${i}`,
+      }));
+      await expect(
+        startServer({
+          port: 0,
+          runQuery: echoRun,
+          workspace: cwd,
+          repoCandidates: many,
+        }),
+      ).rejects.toThrow(/100/);
+    });
   });
 });
