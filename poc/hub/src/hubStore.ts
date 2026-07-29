@@ -1,6 +1,6 @@
 import type { LoggedEvent } from "multiplayer-ai-server/events";
 import { arcadeRecordsFrom, type ProjectMessage } from "multiplayer-ai-server/project";
-import type { SessionFacts } from "multiplayer-ai-server/relayProtocol";
+import type { RepoDecl, SessionFacts } from "multiplayer-ai-server/relayProtocol";
 
 export interface StoredEvent {
   /** The hub's own monotonic id, per session. Browsers resume from this, NOT
@@ -344,7 +344,19 @@ export class HubStore {
         presence: this.uplinks.get(session.uplinkId)?.online ? ("online" as const) : ("offline" as const),
         machineId: session.uplinkId,
       })),
-      machines: this.machinesIn(projectId),
+      // TEMPORARY Task-4 shim: the store still only tracks a scalar `repoKey`
+      // per machine (MachineInfo/machinesIn, unchanged here). Task 5 replaces
+      // that with the machine's real name + repo list from hello v2 — until
+      // then this inline map is the only thing that knows how to translate
+      // the store's old shape into the new `ProjectMessage.machines` shape,
+      // so it stays a lossy stand-in (name = machineId, one synthetic
+      // RepoDecl) rather than a real aggregation.
+      machines: this.machinesIn(projectId).map((m) => ({
+        machineId: m.machineId,
+        name: m.machineId,
+        repos: [{ key: m.repoKey, label: m.repoKey, attached: true, defaultBranch: null }] as RepoDecl[],
+        online: m.online,
+      })),
       arcade: arcadeRecordsFrom(sessions.map((s) => s.events.map((e) => e.event))),
       // Plugins are laptop-local files the agent loads (spec §4) and the hub
       // does not aggregate them in v7b1. The panel reads empty when

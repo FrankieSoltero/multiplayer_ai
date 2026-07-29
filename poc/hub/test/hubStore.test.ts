@@ -198,7 +198,6 @@ describe("HubStore snapshot assembly", () => {
       arcade: [],
       plugins: [],
       pluginsEnabled: false,
-      repo: null,
       oversight: { enabled: false, latest: null },
     });
   });
@@ -383,15 +382,27 @@ describe("HubStore snapshot machines", () => {
     store.attach("lap-1", "acme", "github.com/acme/api", T);
     store.setFacts("lap-1", "auth", "run-a", facts({ id: "auth" }));
     const snap = store.snapshot("acme");
+    // TEMPORARY Task-4 shim shape (hubStore.ts's snapshot()): the store still
+    // only tracks a scalar repoKey per machine, so `name` is the machineId and
+    // `repos` is a single synthetic RepoDecl built from it. Task 5 replaces
+    // this with the machine's real name + repo list from hello v2.
     expect(snap.machines).toEqual([
-      { machineId: "lap-1", repoKey: "github.com/acme/api", online: true },
+      {
+        machineId: "lap-1",
+        name: "lap-1",
+        repos: [{ key: "github.com/acme/api", label: "github.com/acme/api", attached: true, defaultBranch: null }],
+        online: true,
+      },
     ]);
     expect(snap.sessions[0].machineId).toBe("lap-1");
   });
 
-  it("keeps repo null — a hub spans repos and has no single one", () => {
+  it("has no top-level repo property — a hub spans repos and has no single one (D10)", () => {
     const store = new HubStore();
     store.attach("lap-1", "acme", "github.com/acme/api", T);
-    expect(store.snapshot("acme").repo).toBe(null);
+    const snap = store.snapshot("acme");
+    expect(snap).not.toHaveProperty("repo");
+    expect(snap.machines?.[0].name).toBe("lap-1");
+    expect(snap.machines?.[0].repos[0].key).toBe("github.com/acme/api");
   });
 });
