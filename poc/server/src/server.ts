@@ -495,7 +495,13 @@ export async function startServer(opts: {
       return found;
     }
     const attached = attachedRepos();
-    if (attached.length === 0) return { error: "server not launched in a repo" };
+    // Reachable two ways: never launched in a repo AND never attached one
+    // (today's original case), or launched/attached, then detached — "not
+    // launched in a repo" reads as false in the second case, so the copy
+    // names the actual state and the recovery path instead.
+    if (attached.length === 0) {
+      return { error: "no repo is attached on this machine — attach one from the MACHINES panel" };
+    }
     if (attached.length > 1) return { error: "several repos are attached — specify a repo" };
     return attached[0];
   }

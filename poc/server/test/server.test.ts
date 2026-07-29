@@ -1133,7 +1133,7 @@ describe("session initiation", () => {
     collect(ws, seen);
     ws.send(JSON.stringify({ type: "create_session", name: "x" }));
     await wait(50);
-    expect(seen.some((m) => m.type === "error" && /not launched in a repo/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "error" && /no repo is attached on this machine/.test(m.message))).toBe(true);
     expect(seen.some((m) => m.type === "session_created")).toBe(false);
     ws.close();
   });
@@ -3043,7 +3043,11 @@ describe("repo set", () => {
     ws.close();
   });
 
-  it("create_session with zero repos keeps the legacy refusal verbatim (Constraint 9)", async () => {
+  it("create_session with zero repos gives an actionable refusal naming the MACHINES panel (was: legacy verbatim, Constraint 9; copy updated per whole-branch review's optional fold-in)", async () => {
+    // "server not launched in a repo" was accurate for the original,
+    // never-attached case but misleading for a server that WAS launched in a
+    // repo and then had it detached — the recovery path (MACHINES panel) also
+    // did not exist when the old copy was written.
     const server = await startServer({ port: 0, runQuery: echoRun });
     close = server.close;
     const ws = await connect(server.port);
@@ -3051,7 +3055,13 @@ describe("repo set", () => {
     collect(ws, seen);
     ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1" }));
     await wait(200);
-    expect(seen.some((m) => m.type === "error" && m.message === "server not launched in a repo")).toBe(true);
+    expect(
+      seen.some(
+        (m) =>
+          m.type === "error" &&
+          m.message === "no repo is attached on this machine — attach one from the MACHINES panel",
+      ),
+    ).toBe(true);
     ws.close();
   });
 
