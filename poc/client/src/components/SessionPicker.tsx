@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SERVER_URL } from "../types";
-import type { MachineInfo, ProjectSessionInfo, ProjectSummary, RepoInfo } from "../types";
+import type { MachineInfo, ProjectSessionInfo, ProjectSummary } from "../types";
 import { slugPreview, sortSessions } from "../sessionRow";
 import { sessionBadgeLabel, sessionStateClass } from "../sessionState";
 import { groupByRepo } from "../repoGroups";
+import { choiceValue, chooseRepo, parseChoiceValue, repoChoices } from "../repoChoices";
 import { canAct, refusalText } from "../projectAccess";
 import { freeSessionName } from "../sessionNames";
 import { entranceUrl, sessionUrlFrom } from "../pickerUrl";
@@ -27,11 +28,12 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   const [sessions, setSessions] = useState<ProjectSessionInfo[]>([]);
   const [machines, setMachines] = useState<MachineInfo[]>([]);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [repo, setRepo] = useState<RepoInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [name, setName] = useState("");
-  const [repoKey, setRepoKey] = useState<string | null>(null);
+  // The unit of choice is the (machine, repo) PAIR: one repo key can be
+  // attached on two machines at once, so a key alone names no destination.
+  const [picked, setPicked] = useState<{ machineId: string; repoKey: string } | null>(null);
   const [baseRef, setBaseRef] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const createTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -56,7 +58,6 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
         if (msg.type === "project") {
           setSessions(msg.sessions ?? []);
           setMachines(msg.machines ?? []);
-          setRepo(msg.repo ?? null);
         }
         if (msg.type === "projects") setProjects(msg.projects ?? []);
         if (msg.type === "session_created") {
@@ -86,30 +87,29 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   // rather than as an unknown project, or the screen flashes a refusal.
   const refusal = projects.length === 0 ? null : canAct(project, props.userId);
   const online = machines.filter((m) => m.online);
-  // Fallback order matters: an explicit choice always wins, then a hub
-  // machine offering a repo, and only then the standalone server's own repo
-  // (`repo.key`) — the one field a standalone server DOES send, and which
-  // the hub-shaped `machines`/`online` path can never populate for it. Without
-  // this last fallback, a standalone deployment (no `machines` message ever
-  // arrives) has `online` permanently empty and could never create a session.
-  const chosenRepo = repoKey ?? online[0]?.repoKey ?? repo?.key ?? null;
+  // Every reachable destination, standalone included: a solo server reports
+  // itself as one real machine with a real repo list, so the old `repo.key`
+  // special case it used to need is gone (spec §8).
+  const choices = repoChoices(machines);
+  const chosen = chooseRepo(choices, picked);
   const groups = groupByRepo(sortSessions(sessions));
   const showRepoHeads = groups.length > 1;
 
-  const baseValue = baseRef ?? repo?.defaultBranch ?? "";
+  // Per-repo prefill (D9): the chosen repo's own default branch, until the
+  // user types over it. Changing the repo clears `baseRef` so this re-prefills.
+  const baseValue = baseRef ?? chosen?.defaultBranch ?? "";
   const desired = slugPreview(name);
   const finalName = desired ? freeSessionName(sessions.map((s) => s.id), desired) : "";
-  const canCreate = refusal === null && chosenRepo !== null && finalName.length > 0 && !pending;
+  const canCreate = refusal === null && chosen !== null && finalName.length > 0 && !pending;
 
   const create = () => {
-    if (!canCreate) return;
+    if (!canCreate || chosen === null) return;
     setError(null);
     setPending(true);
-    // `create_session` is ROUTED: the hub picks an online machine and forwards
-    // it, answering itself only when it refuses. That adds a hop the
-    // pre-hub code never had — if the machine dies between being picked
-    // (hub.ts's `machinesIn().find(m => m.online)`) and its reply, nothing
-    // arrives at all. `pending` was cleared only by an incoming `error`, so
+    // `create_session` is ROUTED: the hub forwards it to the machine named
+    // here, answering itself only when it refuses. That adds a hop the
+    // pre-hub code never had — if the machine dies between being picked and
+    // its reply, nothing arrives at all. `pending` was cleared only by an incoming `error`, so
     // CREATE stayed disabled forever with no message and no way out but a
     // reload. Armed BEFORE the send so a send that throws on a closed socket
     // recovers the same way. Cleared by a reply, by an error, and on unmount.
@@ -124,7 +124,8 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
         type: "create_session",
         projectId: props.projectId,
         name: finalName,
-        repoKey: chosenRepo,
+        repoKey: chosen.repoKey,
+        machineId: chosen.machineId,
         ...(baseValue.trim() ? { baseRef: baseValue.trim() } : {}),
       }),
     );
@@ -201,12 +202,17 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
                 <span className="spinput" style={{ padding: 0 }}>
                   <select
                     aria-label="repo"
-                    value={chosenRepo ?? ""}
-                    onChange={(e) => setRepoKey(e.target.value)}
+                    value={chosen ? choiceValue(chosen) : ""}
+                    onChange={(e) => {
+                      setPicked(parseChoiceValue(e.target.value));
+                      // D9: drop the typed/prefilled base ref so `baseValue`
+                      // re-prefills from the newly chosen repo's default branch.
+                      setBaseRef(null);
+                    }}
                   >
-                    {online.map((m) => (
-                      <option key={m.machineId} value={m.repoKey}>
-                        {m.repoKey}
+                    {choices.map((c) => (
+                      <option key={choiceValue(c)} value={choiceValue(c)}>
+                        {c.label}
                       </option>
                     ))}
                   </select>

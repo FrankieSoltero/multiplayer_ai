@@ -5,7 +5,7 @@ import type { ProjectSummary } from "./types";
 const project = (over: Partial<ProjectSummary> = {}): ProjectSummary => ({
   id: "acme", name: "Acme", lifecycle: "active", members: ["ana"],
   sessionCount: 0, liveSessionCount: 0,
-  machines: [{ machineId: "lap-1", repoKey: "k", online: true }],
+  machines: [{ machineId: "lap-1", name: "franks-mbp", repos: [], online: true }],
   ...over,
 });
 
@@ -27,7 +27,7 @@ describe("canAct", () => {
     // and must say so rather than offering a control that cannot succeed.
     expect(canAct(project({ machines: [] }), "ana")).toBe("no-machine");
     expect(canAct(project({
-      machines: [{ machineId: "lap-1", repoKey: "k", online: false }],
+      machines: [{ machineId: "lap-1", name: "franks-mbp", repos: [], online: false }],
     }), "ana")).toBe("no-machine");
   });
 
