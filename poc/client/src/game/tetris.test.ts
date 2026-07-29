@@ -28,6 +28,12 @@ const shape = (s: TetrisState) => {
   for (const r of rows) expect(r).toHaveLength(LANE_WIDTH);
 };
 
+/** absolute occupied cells of the active piece, sorted for stable compares */
+const abs = (s: TetrisState) =>
+  s.active!.cells
+    .map(([cx, cy]) => [s.active!.x + cx, s.active!.y + cy])
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+
 describe("tetris", () => {
   it("renders exactly `rows` rows of LANE_WIDTH chars — fresh, mid-run, and dead", () => {
     shape(initialState());
@@ -50,13 +56,54 @@ describe("tetris", () => {
     expect(tick(dead, 0.05)).toBe(dead);
   });
 
-  it("rotates, but rejects a rotation that would leave the well", () => {
+  it("rotates in place, but rejects a rotation that cannot fit even kicked", () => {
     const free = st({ active: { ...spawn("T"), x: 4, y: 5 } });
-    expect(input(free, "ArrowUp").active!.cells).toEqual(rotate(free.active!.cells));
-    // a flat I-piece resting on the floor has no room to stand up
-    const iCells = normalize(SHAPES.I);
-    const onFloor = st({ active: { kind: "I", cells: iCells, x: 3, y: WELL_H - 1 } });
-    expect(input(onFloor, "ArrowUp").active!.cells).toEqual(iCells); // unchanged
+    expect(input(free, "ArrowUp").active!.cells).toEqual(rotate(free.active!.cells, 3));
+    // a flat I resting on the floor has no room to stand up — kicks are lateral
+    const onFloor = st({ active: { ...spawn("I"), y: WELL_H - 2 } });
+    expect(input(onFloor, "ArrowUp").active!.cells).toEqual(spawn("I").cells); // unchanged
+  });
+
+  it("rotation pivots in place — no sideways or upward jump (bug 1)", () => {
+    // S spawns on cols 3-5; SRS keeps its first rotation on cols 4-5, same rows+1
+    const s = st({ active: { ...spawn("S"), x: 3, y: 5 } });
+    expect(abs(input(s, "ArrowUp"))).toEqual([[4, 5], [4, 6], [5, 6], [5, 7]]);
+    // vertical I stands up through the column of its own box — x never drifts
+    const i = st({ active: { ...spawn("I"), y: 3 } });
+    expect(abs(input(i, "ArrowUp"))).toEqual([[5, 3], [5, 4], [5, 5], [5, 6]]);
+    // four quarter turns are the identity
+    let cur = st({ active: { ...spawn("T"), x: 4, y: 5 } });
+    const before = cur.active!.cells;
+    for (let k = 0; k < 4; k++) cur = input(cur, "ArrowUp");
+    expect(cur.active!.cells).toEqual(before);
+  });
+
+  it("kicks off the wall instead of refusing to rotate (bug 2)", () => {
+    let s = st({ active: { ...spawn("I"), y: 3 } });
+    s = input(s, "ArrowUp"); // vertical, box column 2
+    s = { ...s, active: { ...s.active!, x: WELL_W - 3 } }; // hugging the right wall (col 9)
+    const r = input(s, "ArrowUp"); // plain rotation would need cols 7-10
+    expect(r.active!.x).toBe(WELL_W - 4); // kicked one cell left
+    expect(abs(r)).toEqual([[6, 5], [7, 5], [8, 5], [9, 5]]);
+  });
+
+  it("locking partly above the well is a lock-out, not a silent erasure (bug 3)", () => {
+    const well = emptyWell();
+    well[3][5] = "I"; // stack right under the spawn column
+    let s = st({ well, active: spawn("I") });
+    s = input(s, "ArrowUp"); // vertical I: col 5, rows -1..2
+    const after = stepDown(s); // cannot fall — locks with a cell above the well
+    expect(after.alive).toBe(false);
+    expect(tetrisEngine.over(after)).toBe(true);
+    expect([0, 1, 2].every((y) => after.well[y][5] === "I")).toBe(true); // in-well part shown
+  });
+
+  it("a lag spike locks at most one piece; the fresh piece keeps its full interval (bug 4)", () => {
+    const s = st({ active: { ...spawn("O"), y: WELL_H - 2 } }); // resting on the floor
+    const after = tick(s, 5); // ~6 gravity intervals of lag in one frame
+    expect(after.active!.kind).toBe("T"); // exactly one lock happened
+    expect(after.active!.y).toBe(0); // fresh piece has not been stepped…
+    expect(after.dropAcc).toBe(0); // …and starts with a full gravity interval
   });
 
   it("locks on failed gravity and clears a completed row with the level multiplier", () => {

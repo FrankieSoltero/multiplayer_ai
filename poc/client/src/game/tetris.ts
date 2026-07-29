@@ -17,8 +17,9 @@ const LINE_SCORES = [0, 40, 100, 300, 1200] as const;
 
 export type Piece = "I" | "O" | "T" | "S" | "Z" | "J" | "L";
 
-/** Spawn rotation of each tetromino as cells in a 4×4 box. Rotations are
- *  computed, not tabulated — see `rotate`. */
+/** Spawn rotation of each tetromino. These are the SRS spawn states drawn in
+ *  each piece's rotation box (I in its 4×4, the rest in a 3×3; O's entry is
+ *  centered in a 4-wide box for the HUD preview and realigned by `spawn`). */
 export const SHAPES: Record<Piece, [number, number][]> = {
   I: [[0, 1], [1, 1], [2, 1], [3, 1]],
   O: [[1, 0], [2, 0], [1, 1], [2, 1]],
@@ -29,11 +30,21 @@ export const SHAPES: Record<Piece, [number, number][]> = {
   L: [[2, 0], [0, 1], [1, 1], [2, 1]],
 };
 
+/** Side of the fixed square box each piece rotates inside (SRS): I spins in a
+ *  4×4, O in a 2×2 (which makes its rotation the identity), the rest in a 3×3. */
+export const BOX: Record<Piece, 2 | 3 | 4> = { I: 4, O: 2, T: 3, S: 3, Z: 3, J: 3, L: 3 };
+
+/** Horizontal nudges tried, in order, when a rotation collides ("wall kicks").
+ *  ±2 only ever fires for the I piece; everything else fits within ±1. */
+const KICKS = [0, -1, 1, -2, 2] as const;
+
 export interface ActivePiece {
   kind: Piece;
-  /** cells relative to the piece origin, normalized to min x = min y = 0 */
+  /** cells in the piece's BOX[kind]×BOX[kind] rotation box — NOT normalized;
+   *  keeping box coordinates is what makes rotation pivot in place */
   cells: [number, number][];
   x: number;
+  /** box origin row; may be negative while part of the piece is above the well */
   y: number;
 }
 
@@ -55,11 +66,12 @@ export function normalize(cells: [number, number][]): [number, number][] {
   return cells.map(([x, y]) => [x - minX, y - minY] as [number, number]);
 }
 
-/** Clockwise quarter turn inside the piece's own bounding box. No wall kicks:
- *  a rotation that would not fit is simply rejected by `input`. */
-export function rotate(cells: [number, number][]): [number, number][] {
-  const maxY = Math.max(...cells.map((c) => c[1]));
-  return normalize(cells.map(([x, y]) => [maxY - y, x] as [number, number]));
+/** Clockwise quarter turn inside the piece's fixed `size`×`size` box. The box
+ *  itself never moves, so the piece pivots in place. (The old version
+ *  normalized after rotating, which slid every rotation to the top-left corner
+ *  of its bounding box — the source of the sideways/upward jumps.) */
+export function rotate(cells: [number, number][], size: number): [number, number][] {
+  return cells.map(([x, y]) => [size - 1 - y, x] as [number, number]);
 }
 
 const ALL: Piece[] = ["I", "O", "T", "S", "Z", "J", "L"];
@@ -82,9 +94,16 @@ function draw(bag: Piece[]): { kind: Piece; bag: Piece[] } {
 }
 
 export function spawn(kind: Piece): ActivePiece {
-  const cells = normalize(SHAPES[kind]);
-  const w = Math.max(...cells.map((c) => c[0])) + 1;
-  return { kind, cells, x: Math.floor((WELL_W - w) / 2), y: 0 };
+  // O's SHAPES entry sits in a 4-wide box for the preview; realign it to its
+  // 2×2 rotation box. Every other entry already lives in its rotation box.
+  const cells =
+    kind === "O"
+      ? normalize(SHAPES.O)
+      : SHAPES[kind].map(([x, y]) => [x, y] as [number, number]);
+  const minY = Math.min(...cells.map((c) => c[1]));
+  // Center the box; the top occupied row spawns on well row 0 (for I that
+  // means the box origin starts one row above the well, which is fine).
+  return { kind, cells, x: Math.floor((WELL_W - BOX[kind]) / 2), y: minY ? -minY : 0 };
 }
 
 export function collides(
@@ -106,14 +125,21 @@ export function collides(
 export const level = (s: TetrisState): number => Math.floor(s.lines / 10);
 
 /** Freeze the active piece into the well, clear full rows, and spawn the next
- *  piece. A spawn that collides ends the run. */
+ *  piece. Two deaths live here: a piece that locks with any cell still above
+ *  the well is a lock-out and ends the run on the spot (cells are never
+ *  silently discarded), and a spawn that collides ends the run. */
 export function lockPiece(s: TetrisState): TetrisState {
   if (!s.active) return s;
+  const lockedOut = s.active.cells.some(([, cy]) => s.active!.y + cy < 0);
   const well = s.well.map((r) => [...r]);
   for (const [cx, cy] of s.active.cells) {
-    const x = s.active.x + cx;
     const y = s.active.y + cy;
-    if (y >= 0 && y < WELL_H && x >= 0 && x < WELL_W) well[y][x] = s.active.kind;
+    // x and y < WELL_H are guaranteed in bounds: every move, rotation, and
+    // drop is collision-checked. y < 0 happens only on lock-out, above.
+    if (y >= 0) well[y][s.active.x + cx] = s.active.kind;
+  }
+  if (lockedOut) {
+    return { ...s, well, active: null, dropAcc: 0, alive: false };
   }
   const kept = well.filter((r) => r.some((c) => c === null));
   const cleared = WELL_H - kept.length;
@@ -151,7 +177,13 @@ export function tick(s: TetrisState, dt: number): TetrisState {
   let acc = s.dropAcc + dt;
   while (acc >= interval && cur.alive && cur.active) {
     acc -= interval;
-    cur = stepDown(cur);
+    if (!collides(cur.well, cur.active, 0, 1)) {
+      cur = { ...cur, active: { ...cur.active, y: cur.active.y + 1 } };
+    } else {
+      cur = lockPiece(cur);
+      acc = 0; // a lock ends the frame's gravity: the fresh piece always gets
+      //          a full interval — leftover lag never carries over to it
+    }
   }
   return { ...cur, dropAcc: acc };
 }
@@ -167,8 +199,13 @@ export function input(s: TetrisState, key: string): TetrisState {
   }
   if (key === "ArrowDown") return stepDown({ ...s, dropAcc: 0 });
   if (key === "ArrowUp" || key === "click") {
-    const cells = rotate(a.cells);
-    return collides(s.well, a, 0, 0, cells) ? s : { ...s, active: { ...a, cells } };
+    const cells = rotate(a.cells, BOX[a.kind]);
+    for (const dx of KICKS) {
+      if (!collides(s.well, a, dx, 0, cells)) {
+        return { ...s, active: { ...a, x: a.x + dx, cells } };
+      }
+    }
+    return s; // nothing fits, even kicked — rotation rejected
   }
   if (key === " ") {
     let cur = s;
