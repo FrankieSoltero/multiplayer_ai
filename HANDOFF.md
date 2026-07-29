@@ -1,6 +1,6 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-28 (bg session #17).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-28 (session #18).*
 
 ---
 
@@ -32,82 +32,73 @@ either way.** That is what collapsed the choice.
    `<select>` rendering zero options, both because `machines` is hub-only.
 
 ✅ **That sub-question is ANSWERED and implemented:** `server.ts` does key sessions by `projectId`
-(`getOrCreateProject`, `server.ts:226-231`), so `create_project` genuinely creates a reachable
-project rather than being refused. NEW PROJECT works in solo. See the open Criticals below —
-the *creation* is real; its **auth gate** and the **test that claims to prove it** are not.
+(`getOrCreateProject`, `server.ts:227-234`), so `create_project` genuinely creates a reachable
+project rather than being refused. NEW PROJECT works in solo. Fix wave 2 (session #18) closed
+the auth gate and made the reachability test discriminate — see below.
 
-### ⛔ RESUME HERE — the solo fix is IMPLEMENTED but has 2 CRITICALs open, and 1 decision for you
+### ✅ FIX WAVE 2 COMPLETE (session #18) — C1, C2, I4, C5 ALL CLOSED, REVIEWED, PUSHED
 
-Solo mode "1+" is built and committed (`9749d53`, `76a99fb`; server 429 / hub 83 / client 247, all
-green). Its opus review confirmed the **central trap is closed** — the standalone server's emitted
-`ProjectSummary` drives `canAct` to `null`, so the project screen is genuinely usable in solo, and
-both cosmetics dissolved. Hub/laptop message parity is verbatim. **But the review found four things,
-and none are fixed yet.** Full detail in the ledger; summary:
+Five commits, `0c1ff70..2efe6a2`, TDD-first (RED watched for every behavior change); full entry in
+the ledger ("Fix wave 2"). Suites after: **server 436 / hub 83 / client 247**, `tsc` clean ×3,
+server `dist/` rebuilt, client build clean. The scoped opus re-review returned **zero Criticals**
+and independently re-verified every fix by revert-and-rerun in a throwaway worktree; its one
+Important + two minors are fixed in `2efe6a2`.
 
-- **C1 (Critical) — `create_project` is an unauthenticated write** (`server.ts:468-482`), against the
-  policy comment 30 lines above it (`:403-419`). With AUTH on (the `deploy/` config) anyone can loop
-  `identify` + `create_project` and grow the projects Map unbounded, pre-auth. **Fix: one
-  `if (denyUnauthed()) return;` in `create_project` and in `list_projects`** — free on the solo path,
-  since `requireAuth` admits everything when `opts.auth` is undefined. The implementer's report
-  claims this "would violate hub/laptop parity"; **that claim is wrong** — `denyUnauthed` is a
-  laptop-only transport gate already applied to four handlers the hub has no equivalent for.
-- **C2 (Critical) — `test/server.test.ts:1392` cannot fail for its stated reason.** It proves
-  "creates a real, reachable project" via `watch_project`, which itself calls `getOrCreateProject`.
-  Delete the create path's write and the test still passes. **Fix: assert via `list_projects`** (the
-  non-creating read) after the ack.
-- **I4 (Important) — the ruling's "one-item entrance" is only half met.** On a *fresh* solo server the
-  entrance lists **zero** projects: nothing materializes the launch project at boot
-  (`cli.ts:147-160` passes `args.project` to `startServer` only on the hub branch). **Fix: seed
-  `getOrCreateProject(args.project)` at boot.**
-- **I3 — NEEDS YOUR DECISION, do not guess.** `main.ts`'s deployed no-workspace mode now returns
-  `"no-machine"` where it used to return `null`, so the deployed box hides NEW SESSION, turns every
-  JOIN into WATCH, and advises *"run `mpai --hub <url> --project <id>`"* — the exact dead-end this
-  ruling set out to kill, in a mode with no hub either. Net change: disabled-button → misleading
-  refusal. **TRAP: reporting a machine with `repoKey: ""` makes it worse** — `chosenRepo` becomes
-  `""` and CREATE re-enables onto a server that cannot provision. `deploy/RUNBOOK.md` has never been
-  executed, so this is not urgent — but it is a design call, not a one-liner.
+- **C1 → `0c1ff70`** — `denyUnauthed()` is the first line of `create_project` AND `list_projects`;
+  `identify` deliberately stays open (bounded per-connection state only, like `peek_invite`).
+  Three new tests pin refusal, non-disclosure, and the signed-in pass-through.
+  ⚠️ **RULING WORDING CORRECTED (do not re-import the old phrasing):** the standing rationale said
+  the gate is "applied to four handlers the hub has no equivalent for" — **that fact is FALSE**
+  (`HUB_HANDLED`, `hub.ts:19`, mirrors `peek`/`watch_project`; `hub.ts:520` handles
+  `create_session`; only `set_oversight` has no hub handler). The *conclusion* stands via the
+  stronger true argument, now in the code comment (`server.ts:439-450`): the gate is orthogonal to
+  parity because hub-mediated traffic arrives on the relay arm, where it no-ops
+  (`io.mode === "relay"`).
+- **C2 → `12a2a8d`** — reachability proven via `list_projects` (the non-creating read).
+  Revert-and-rerun done: write deleted → test fails; restored → green.
+- **I4 → `d33aba0`** — `startServer` takes `projectId?` (SLUG-guarded throw, pinned by a test) and
+  seeds `getOrCreateProject` at boot; the CLI passes `--project` on BOTH branches. A fresh solo
+  entrance is the promised one-item list.
+- **C5 → `4236eb1`** — `sessionUrlFor()` extracted beside `localUrlFor` (`cli.ts:117-129`), always
+  appends `&project=`; `createSession` prints through it.
+- **Parked (reviewer observation, pre-existing from `9749d53`, NOT this wave):** the laptop's
+  `create_project` only acks the creator — no broadcast to other locally-connected entrance
+  viewers (the hub broadcasts via `pushProjects()`, `hub.ts:392`). Harmless solo (one browser);
+  recorded so it isn't rediscovered as a regression.
 
-**Then, and only then: Task 13** (walk it, open the PR) — see below.
+### ⛔ RESUME HERE — ONE DECISION (I3), then Task 13
 
-- **C5 (found during the hand-off audit, NOT by any reviewer) — the last surviving instance of the
-  pattern that caused the branch's Critical.** `poc/server/src/cli.ts:213` still builds
-  `` `http://localhost:${args.port}/?session=${msg.sessionId}${project}` `` where
-  `const project = args.project !== "default" ? \`&project=${args.project}\` : ""` — i.e. it omits
-  `project` exactly when it is `default`. That is the same special-case the F1 fix removed from
-  `joinSession`/`pickerUrlFrom` on the client. It is **not broken today** only because F1's legacy
-  fallback (`pickerUrl.ts:45-48`, `params.get("project") ?? (params.get("session") ? "default" : null)`)
-  catches it — and the fix-wave re-review explicitly flagged that fallback as "true by convention,
-  not enforced anywhere". **Fix: always append `&project=`, matching the client's builders.**
+- **I3 — NEEDS THE USER'S DECISION, do not guess.** `main.ts`'s deployed no-workspace mode now
+  returns `"no-machine"` where it used to return `null`, so the deployed box hides NEW SESSION,
+  turns every JOIN into WATCH, and advises *"run `mpai --hub <url> --project <id>`"* — the exact
+  dead-end this ruling set out to kill, in a mode with no hub either. Net change: disabled-button →
+  misleading refusal. **TRAP: reporting a machine with `repoKey: ""` makes it worse** — `chosenRepo`
+  becomes `""` and CREATE re-enables onto a server that cannot provision. `deploy/RUNBOOK.md` has
+  never been executed, so this is not urgent — but it is a design call, not a one-liner.
+  The user was asked at the end of session #18 — check the conversation for their answer before
+  asking again.
 
 ### ➡️ ORDERED NEXT STEPS — do these in this order
 
-1. **Fix C1** — add `if (denyUnauthed()) return;` as the first line of both `create_project`
-   (`poc/server/src/server.ts:468`) and `list_projects` (`:453`). `denyUnauthed` is defined at
-   `:418` and already used at `:598`, `:634`, `:650`, `:667`.
-   **You must ALSO rewrite the comment at `poc/server/src/server.ts:432-435`**, which states the
-   refuted rationale *in the code*: "Unguarded by `denyUnauthed` for the same reason the hub's
-   versions are unguarded…". Leaving it will talk the next reader out of the fix.
-2. **Fix C2** — rewrite `poc/server/test/server.test.ts:1392` ("creates a real, reachable project —
-   not just an ack") to prove reachability with `list_projects` (the non-creating read) instead of
-   `watch_project` (which calls `getOrCreateProject` at `server.ts:639` and so passes either way).
-   Then **revert `create_project`'s `getOrCreateProject` call (`server.ts:479`) and confirm the test
-   now fails** — that is the whole point of the rewrite.
-3. **Fix I4** — seed the launch project at boot so the entrance is the promised one-item list.
-   `poc/server/src/cli.ts:155` passes `projectId` to `startServer` only inside the
-   `args.hub ? … : {}` ternary; the non-hub branch passes nothing. Add a seed and assert the
-   entrance lists exactly one project on a fresh server.
-4. **Fix C5** — `poc/server/src/cli.ts:213`, always append `&project=`.
-5. **Re-review** the fix round (scoped, `review-package` over the fix range).
-6. **Ask the user about I3** (the deployed no-workspace mode) — do NOT guess; the naive fix is a trap.
-7. **Task 13**: amend the walkthrough to run Step 2 twice (once `--project acme`, once with no
+1. **Get the I3 ruling from the user** (above). Implement or log it per their call.
+2. **Task 13**: amend the walkthrough to run Step 2 twice (once `--project acme`, once with no
    `--project`), walk it, then open the PR with the §5.2/§4.1 surface gap disclosed in the body.
 
-### What is done — `feature/projects` = `origin/feature/projects` = `80037ec` (29 commits off `main` `0ffeaa3`)
+### What is done — `feature/projects` = `origin/feature/projects`, last code commit `2efe6a2`
 
-All 13 tasks complete and reviewed. Base is `main` `0ffeaa3`. **No PR is open yet** — deliberately
-held for your ruling above.
+All 13 tasks complete and reviewed, plus fix wave 2. Base is `main` `0ffeaa3`; `git rev-list
+--count 0ffeaa3..2efe6a2` = 43 (an earlier "29 commits" note here was never measured — 80037ec is
+37; trust rev-list). **No PR is open yet** — deliberately held for the I3 ruling above.
 
 ```
+2efe6a2  fix(server): review follow-ups — comment fact, seed guard        ← fix wave 2
+4236eb1  fix(cli): always append project to the printed session URL       ← fix wave 2 (C5)
+d33aba0  fix(cli): seed the launch project at boot — one-item entrance    ← fix wave 2 (I4)
+12a2a8d  test(server): prove create_project write via non-creating read   ← fix wave 2 (C2)
+0c1ff70  fix(server): auth-gate create_project and list_projects pre-join ← fix wave 2 (C1)
+d4ef49a / 80037ec / c02574f  docs: HANDOFF                                ← session #17 wrap
+76a99fb  fix(cli): open the project directly on a non-hub launch          ← solo mode "1+"
+9749d53  feat(server): answer identify/list_projects/create_project       ← solo mode "1+"
 c302dce  docs(prd): the hub is on main — drop the unmerged-branch caveat   ← fix wave (F7)
 5a68dd3  test(client): cover refusalText, including the CLI command        ← fix wave (F5)
 7d771cd  fix(client): the entrance notices when the hub goes away          ← fix wave (F4)
@@ -139,10 +130,10 @@ a134bfb  test(hub): make the identify rejection test discriminate          ← T
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
 git status -sb                        # feature/projects, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
-git log --oneline -1                  # c302dce docs(prd): the hub is on main …
+git log --oneline -2                  # a docs: HANDOFF/ledger commit, directly atop 2efe6a2 fix(server): review follow-ups …
 git ls-remote origin refs/heads/main  # 0ffeaa3… — authoritative; the tracking ref has been observed stale in this repo
 for p in 3001 4000 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY
-cd poc/server && npx tsc --noEmit && npx vitest run   # 429 passed, 20 files  (was 412 before the solo-mode commits)
+cd poc/server && npx tsc --noEmit && npx vitest run   # 436 passed, 20 files  (was 429 before fix wave 2)
 cd ../hub     && npx tsc --noEmit && npx vitest run   # 83 passed, 4 files
 cd ../client  && npx tsc -b && npx vitest run && npm run build  # 247 passed, 28 files; build clean
 ```
@@ -151,12 +142,11 @@ cd ../client  && npx tsc -b && npx vitest run && npm run build  # 247 passed, 28
 `"files": []`. Use **`npx tsc -b`**. Every "client tsc clean" claim made before session #17 found
 this was weaker evidence than it looked.
 
-### Task 13 — walk it, then open the PR (LAST, after steps 1-6 above)
+### Task 13 — walk it, then open the PR (after the I3 ruling)
 
 `.superpowers/sdd/2026-07-28-projects/task-13-brief.md`. Four steps; Step 4's doc corrections are
 **partly done** (`docs/PRD.md`'s stale caveat is fixed in `c302dce`; this file is now current).
-**This is NOT the next thing to do** — the two open Criticals and C5 come first; see ORDERED NEXT
-STEPS above.
+**Next after the I3 ruling** — see ORDERED NEXT STEPS above.
 
 **Amend the walkthrough before running it — the plan's script has a hole.** Step 2 uses
 `--project acme` throughout, so it **never exercises the `default` project**. That is exactly where
@@ -171,7 +161,7 @@ imply the registry shipped whole):
   So a project can never be closed, archived or left from the UI, and archived state is unreachable
   in both directions (`projectList.ts:7` filters archived out with no toggle). **Plan gap, not an
   implementation defect** — Tasks 9-11 never scoped the controls.
-- Whatever you decide about solo mode.
+- Whatever the user rules on I3 (the deployed no-workspace mode).
 
 ### Decisions locked in during session #17 — do NOT re-litigate
 
