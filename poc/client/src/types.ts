@@ -73,9 +73,27 @@ export type ProjectSessionInfo = {
   /** Stable cross-machine repo identity. Optional so a snapshot from an older
    *  server does not break the client — same posture as pendingGate. */
   repoKey?: string | null;
+  /** Which machine runs this session. Optional so a snapshot from a
+   *  standalone server, which has exactly one machine and never sends it,
+   *  still parses. */
+  machineId?: string;
   /** Spec §3.4. Optional so an older server's snapshot still renders. */
   presence?: "online" | "offline";
   lifecycle?: "open" | "closed";
+};
+
+export type ProjectLifecycle = "active" | "closed" | "archived";
+
+export type MachineInfo = { machineId: string; repoKey: string; online: boolean };
+
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  lifecycle: ProjectLifecycle;
+  members: string[];
+  sessionCount: number;
+  liveSessionCount: number;
+  machines: MachineInfo[];
 };
 
 export type ArcadeRecord = {

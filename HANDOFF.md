@@ -1,15 +1,286 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-28 (bg session #15).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-28 (session #18).*
 
 ---
 
-## 🚀 START HERE — v7b1 IS CODE-COMPLETE. PR #20 IS OPEN AND UNMERGED. THE NEXT REAL WORK IS A PRODUCT QUESTION, NOT A TASK.
+## 🚀 START HERE — `docs/PRD.md` IS THE PLAN OF RECORD. PRD §8.2 ("projects") IS SHIPPED: **PR #22 IS OPEN — DO NOT MERGE IT YOURSELF.** Next: pick the next §8 section and run its brainstorm → spec → plan.
 
-**Branch `feature/v7b1-hub-relay-spine` at `acd5a3b`, pushed, in sync with origin. All 8 tasks done,
-whole-branch reviewed, fix wave applied and re-reviewed clean. PR #20 →
-https://github.com/FrankieSoltero/multiplayer_ai/pull/20 (base `main` at `c1f3661`, 19 commits).
-DO NOT MERGE IT — that is the user's call. Nothing is half-done. Nothing is running.**
+The `v7a → v7b1 → … → v7e` chain is **dead**; PRD §8 has ten named sections, each getting its own
+brainstorm → spec → plan. Session #16 wrote the PRD. **Session #17 executed all 13 tasks of the
+first section**, `docs/superpowers/plans/2026-07-28-projects.md`, via subagent-driven-development.
+
+### ✅ SOLO-MODE DECISION MADE (user, session #17): **option 1+, and the entrance STAYS**
+
+The problem it resolves: `cli.ts:142,153` auto-opens `http://localhost:PORT/` (no `?project=`) for
+every non-hub launch; that URL routes to `ProjectPicker`, which sends `identify` /
+`list_projects` / `create_project` — and `poc/server/src/server.ts` implements none of them, so all
+three hit its `unknown message type` catch-all at `server.ts:986`. The **project screen has the same
+problem**: `SessionPicker.tsx:31,33` sends `identify`/`list_projects` unconditionally too, so
+routing alone could never have fixed this — **the standalone server had to tolerate these messages
+either way.** That is what collapsed the choice.
+
+**The ruling — "1+":**
+1. `cli.ts` opens `?project=default` for non-hub launches, so the normal solo path never depends on
+   the entrance.
+2. The standalone server **tolerates and answers** the entrance messages rather than erroring:
+   `identify` sets identity exactly as the hub does (keeps the two servers' protocols from diverging
+   further), and `list_projects` answers with its single project.
+3. **The entrance stays reachable and functional in solo** — a bare `localhost:PORT/` lands on a
+   one-item entrance, not a dead end. This was the user's explicit call.
+4. Clean up the two solo cosmetics in the same pass: the head reading `0 MACHINES` and the repo
+   `<select>` rendering zero options, both because `machines` is hub-only.
+
+✅ **That sub-question is ANSWERED and implemented:** `server.ts` does key sessions by `projectId`
+(`getOrCreateProject`, `server.ts:227-234`), so `create_project` genuinely creates a reachable
+project rather than being refused. NEW PROJECT works in solo. Fix wave 2 (session #18) closed
+the auth gate and made the reachability test discriminate — see below.
+
+### ✅ FIX WAVE 2 COMPLETE (session #18) — C1, C2, I4, C5 ALL CLOSED, REVIEWED, PUSHED
+
+Five commits, `0c1ff70..2efe6a2`, TDD-first (RED watched for every behavior change); full entry in
+the ledger ("Fix wave 2"). Suites after: **server 436 / hub 83 / client 247**, `tsc` clean ×3,
+server `dist/` rebuilt, client build clean. The scoped opus re-review returned **zero Criticals**
+and independently re-verified every fix by revert-and-rerun in a throwaway worktree; its one
+Important + two minors are fixed in `2efe6a2`.
+
+- **C1 → `0c1ff70`** — `denyUnauthed()` is the first line of `create_project` AND `list_projects`;
+  `identify` deliberately stays open (bounded per-connection state only, like `peek_invite`).
+  Three new tests pin refusal, non-disclosure, and the signed-in pass-through.
+  ⚠️ **RULING WORDING CORRECTED (do not re-import the old phrasing):** the standing rationale said
+  the gate is "applied to four handlers the hub has no equivalent for" — **that fact is FALSE**
+  (`HUB_HANDLED`, `hub.ts:19`, mirrors `peek`/`watch_project`; `hub.ts:520` handles
+  `create_session`; only `set_oversight` has no hub handler). The *conclusion* stands via the
+  stronger true argument, now in the code comment (`server.ts:439-450`): the gate is orthogonal to
+  parity because hub-mediated traffic arrives on the relay arm, where it no-ops
+  (`io.mode === "relay"`).
+- **C2 → `12a2a8d`** — reachability proven via `list_projects` (the non-creating read).
+  Revert-and-rerun done: write deleted → test fails; restored → green.
+- **I4 → `d33aba0`** — `startServer` takes `projectId?` (SLUG-guarded throw, pinned by a test) and
+  seeds `getOrCreateProject` at boot; the CLI passes `--project` on BOTH branches. A fresh solo
+  entrance is the promised one-item list.
+- **C5 → `4236eb1`** — `sessionUrlFor()` extracted beside `localUrlFor` (`cli.ts:117-129`), always
+  appends `&project=`; `createSession` prints through it.
+- **Parked (reviewer observation, pre-existing from `9749d53`, NOT this wave):** the laptop's
+  `create_project` only acks the creator — no broadcast to other locally-connected entrance
+  viewers (the hub broadcasts via `pushProjects()`, `hub.ts:392`). Harmless solo (one browser);
+  recorded so it isn't rediscovered as a regression.
+
+### ✅ I3 RESOLVED (user ruling, session #18) + ✅ TASK 13 DONE — PR #22 OPEN
+
+- **I3:** the user ruled **option 1 — ship as-is**. Recorded with the `repoKey:""` trap in
+  `docs/tech-debt.md` §2.6, disclosed in PR #22's body. Do not re-open; a future fix starts from
+  that debt entry.
+- **Task 13:** walked THREE ways (ledger has the full record): `--project acme` (all 8 items),
+  no `--project` at all (F1's whole surface verified live against `default`), and solo
+  (I4's one-item entrance, C5's printed URL, JOIN landing in-session). New walk findings W1-W4
+  in the ledger; W1 matters for docs: **the brief's hub command needs
+  `CLIENT_DIST=<poc/client/dist>` and the hub reads `PORT`, not `--port`** — as written the hub
+  serves a 404 and no browser walk is possible.
+- **PR #22** (`feat: projects — the container (PRD §8.2 + §5.1)`) is open against `main` with
+  the §5.2/§4.1 gap, I3, debt §2.4, spec §10 Q1 and the create_session bound disclosed.
+  **Merging is the user's call, never yours.**
+
+### ➡️ ORDERED NEXT STEPS — do these in this order
+
+1. ✅ **SECTION CHOSEN (user): §8.3 Machines & repos. BRAINSTORM MID-FLIGHT — six rulings are
+   locked (scope=full D4 one spec; machine=daemon w/ persisted ~/.mpai id; attach=daemon-
+   enumerated list; session ids stay project-unique; detach refused while live; Approach A =
+   protocol v2, one uplink per machine, repos as a set).**
+   **READ `.superpowers/sdd/2026-07-28-machines-repos/brainstorm-state.md` FIRST** — it has all
+   rulings verbatim, the scout's four structural blockers with file:line, and the next action:
+   present the design section-by-section for approval, then spec → writing-plans. Do NOT
+   re-ask the settled questions.
+2. **Run the cycle for the chosen section**: superpowers:brainstorming → spec → writing-plans,
+   as §8.2 was done. Reuse `.superpowers/sdd/<date>-<section>/` for the ledger.
+3. PRD §8.4's "Today" was refreshed in this session (hub create now works); sweep the other
+   section "Today" paragraphs against reality when §8.3 (or whichever) is specced.
+
+### What is done — `feature/projects` = `origin/feature/projects`, last code commit `2efe6a2`
+
+All 13 tasks complete and reviewed, plus fix wave 2, plus the three-way walk. Base is `main`
+`0ffeaa3`; `git rev-list --count 0ffeaa3..2efe6a2` = 43 (an earlier "29 commits" note here was
+never measured — 80037ec is 37; trust rev-list). **PR #22 is OPEN — the merge is the user's.**
+
+```
+2efe6a2  fix(server): review follow-ups — comment fact, seed guard        ← fix wave 2
+4236eb1  fix(cli): always append project to the printed session URL       ← fix wave 2 (C5)
+d33aba0  fix(cli): seed the launch project at boot — one-item entrance    ← fix wave 2 (I4)
+12a2a8d  test(server): prove create_project write via non-creating read   ← fix wave 2 (C2)
+0c1ff70  fix(server): auth-gate create_project and list_projects pre-join ← fix wave 2 (C1)
+d4ef49a / 80037ec / c02574f  docs: HANDOFF                                ← session #17 wrap
+76a99fb  fix(cli): open the project directly on a non-hub launch          ← solo mode "1+"
+9749d53  feat(server): answer identify/list_projects/create_project       ← solo mode "1+"
+c302dce  docs(prd): the hub is on main — drop the unmerged-branch caveat   ← fix wave (F7)
+5a68dd3  test(client): cover refusalText, including the CLI command        ← fix wave (F5)
+7d771cd  fix(client): the entrance notices when the hub goes away          ← fix wave (F4)
+48ff718  fix(client): a routed create that is never answered … CREATE      ← fix wave (F3)
+fe6cf1c  fix(hub): refuse an identify on a channel that has already joined ← fix wave (F2+F6)
+1593a2c  fix(client): a session in the `default` project is reachable      ← fix wave (F1, CRITICAL)
+d3d6857  fix(hub): clear a stale create_session reply grant on join        ← Task 12
+fc354e3  test(hub): creating a session through the hub, end to end         ← Task 12
+a520cd8  fix(hub): route a routed command's reply back to the asking channel
+7990196  fix(client): solo-mode CREATE regression + non-discriminating test
+2944832  feat(client): route to the hub entrance when no project selected  ← Task 11
+92852fb  feat(client): project screen with repo, machine and grouping      ← Task 10
+edeaad5  feat(client): show member count on the entrance list              ← Task 9
+f9d0e95  feat(client): the hub entrance screen                             ← Task 9
+0aa750e  fix(server): declare machineId on a snapshot's sessions           ← Task 8
+9b41a8e  feat(hub): carry machines and machineId in the project snapshot   ← Task 8
+34df48f  feat(client): pure modules for projects, access, grouping, naming ← Task 7
+4fe1cf2  fix(hub): SLUG-validate the derived session id before the store   ← Task 6
+5965df3  feat(hub): route create_session to the machine offering the repo  ← Task 6
+86ab85c  feat(hub): project registry messages                              ← Task 5
+a134bfb  test(hub): make the identify rejection test discriminate          ← Task 4
+44f7466  feat(hub): identify — per-connection identity                     ← Task 4
+892e3d0  feat(hub): project summaries and per-project machine lists        ← Task 3
+2d40a0d / 624d9f7 / 8653327 / 977423c / ee08b57 / 9c428bc / 1448635        ← Tasks 1-2 + spec/plan
+```
+
+### Resume & verify — run this first, expect exactly this
+
+```bash
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
+git status -sb                        # feature/projects, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
+git log --oneline -3                  # docs commits only above 2efe6a2 fix(server): review follow-ups … (the last CODE commit)
+git ls-remote origin refs/heads/main  # 0ffeaa3… — authoritative; the tracking ref has been observed stale in this repo
+gh pr view 22 --json state --jq .state # OPEN — do not merge without being asked
+for p in 3001 3002 4000 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY — session #18 stopped everything
+cd poc/server && npx tsc --noEmit && npx vitest run   # 436 passed, 20 files  (was 429 before fix wave 2)
+cd ../hub     && npx tsc --noEmit && npx vitest run   # 83 passed, 4 files
+cd ../client  && npx tsc -b && npx vitest run && npm run build  # 247 passed, 28 files; build clean
+```
+
+⚠️ **`npx tsc --noEmit` in `poc/client` is a NO-OP** — its `tsconfig.json` is solution-style with
+`"files": []`. Use **`npx tsc -b`**. Every "client tsc clean" claim made before session #17 found
+this was weaker evidence than it looked.
+
+### Task 13 — ✅ DONE (session #18). Kept for the amendments' rationale
+
+`.superpowers/sdd/2026-07-28-projects/task-13-brief.md` (now carries Steps 2b/2c, the amended
+default-project and solo walks). All steps executed; results in the ledger's "Task 13 walk"
+entry; PR #22 opened with the disclosures below.
+
+**Amend the walkthrough before running it — the plan's script has a hole.** Step 2 uses
+`--project acme` throughout, so it **never exercises the `default` project**. That is exactly where
+the branch's one Critical hid. **Run Step 2 twice: once as written, once with no `--project` at
+all.** This is the third time on this branch that a defect lived precisely where nobody set up a
+fixture.
+
+**When you open the PR, disclose these in the body** (the plan's coverage table would otherwise
+imply the registry shipped whole):
+- **Spec §5.2's `close_project`/`archive_project` and §4.1's archived toggle have NO client surface.**
+  The hub messages exist and are tested (`hub.ts:388-418`); nothing in `poc/client/src` sends them.
+  So a project can never be closed, archived or left from the UI, and archived state is unreachable
+  in both directions (`projectList.ts:7` filters archived out with no toggle). **Plan gap, not an
+  implementation defect** — Tasks 9-11 never scoped the controls.
+- Whatever the user rules on I3 (the deployed no-workspace mode).
+
+### Decisions locked in during session #17 — do NOT re-litigate
+
+1. **A plan-mandated test proven non-discriminating gets its ASSERTIONS STRENGTHENED**, never the
+   plan's intent weakened (your standing ruling). The plan's Global Constraint "revert-and-rerun /
+   confirm the test fails" outranks any single task's verbatim test code.
+2. **Where the plan's code is silent or wrong and the spec is explicit, the SPEC OF RECORD GOVERNS.**
+   Applied three times: member count on the entrance (spec §4.1), the reply-routing fix (spec §5.3
+   step 4), and the `default`-project routing Critical.
+3. **`pendingReplyFrom` — no timer, no `expiresAt`.** An opus reviewer proposed `{uplinkId,
+   expiresAt}`; rejected, because it puts time-based state in the hub for an edge this plan does not
+   need. Clear-on-join + clear-on-close covers every reachable path; the residual (routed machine
+   never answers AND the browser never joins AND the socket stays open) is **documented in the field
+   comment at `hub.ts:27-44`** rather than papered over.
+4. **Task 4's `identify`/`join` validation duplication STAYS duplicated.** The binding constraint is
+   "the hub must reject precisely what a laptop rejects"; a shared helper would make a future edit to
+   one path silently change the other. The final review ruled explicitly on this.
+5. **Two in-flight `create_session`s on one channel is a KNOWN BOUND, pinned by a named test**, not a
+   bug to fix. A single scalar holds one slot; the first machine's late reply is dropped.
+
+### The findings that matter most from this session
+
+**1. The end-to-end harness found a Critical that seven task reviews missed.** `hub.ts`'s reply
+narrowcast required `channel.sessionId`, but `create_session` tunnels on a channel that has **never
+joined a session** — so `store.ownerOf()` could never authorize it and `session_created` was dropped
+**every single time**. Creating a session through the hub could not have worked. Not a test artifact:
+the real `SessionPicker` uses the same connect-without-join pattern. **This is the second time in
+this project's history that a real-relay-against-real-hub harness surfaced a Critical seam defect on
+the first scenario tried.** Fixed by `pendingReplyFrom` (see decision 3).
+
+**2. The final whole-branch review found a Critical that no per-task review structurally could**,
+because it lived only in the interaction of three separately-correct pieces: `authRoute.ts` checked
+project before session, `joinSession` and `pickerUrlFrom` both omitted `project=default`, and Task 11
+had removed `App.tsx`'s `?? "default"`. Net effect: **in the `default` project, clicking JOIN went to
+the entrance** — in hub mode too — and so did creating a session and leaving one. Every legacy
+`?session=X` bookmark was dead. `default` is `cli.ts:23`'s default and `hub.ts:442`'s join fallback.
+
+**3. This project's chronic failure mode is now measured: 13+ tests that could not fail for the
+reason they were named, most written into the plan itself.** Session #17 caught and strengthened
+them at Tasks 4, 5, 6, 7, 9, 11 — and the countermeasure fired *inside the fix wave itself*, where
+the implementer's own first attempt at the Critical's regression tests asserted through a helper
+whose new fallback masked the defect. **Keep making every dispatch carry the revert-and-rerun rule.**
+
+### Gotchas specific to THIS work
+
+- **`laptop()` in `relayIntegration.test.ts` injects a NO-OP command plane** — a tunnelled command is
+  swallowed and nothing replies. Use `laptopThatAnswers()` for anything exercising a reply.
+- **`poc/server/.env` holds a PLACEHOLDER API key — do not source it.** Launch laptops with the
+  `mpai` CLI, never `tsx src/main.ts` (no `workspace` → the SDK reports a confidently wrong
+  *"native binary … failed to launch … libc"*).
+- **Never `git add -A`.** Verify every commit with `git diff-tree --no-commit-id --name-only -r HEAD`.
+- **The plan's predicted suite totals were wrong FOUR times** (229/230/232 and one more). Verify
+  against the brief's actual `it()` count; never invent tests to hit a number.
+- `poc/hub` and `poc/client` both consume `poc/server`'s **built `dist/`** — rebuild the server after
+  changing a type in it, or the other packages typecheck against stale declarations.
+
+### Parked minors — all one-line, none load-bearing, rulings recorded
+
+Full list with reasoning: `.superpowers/sdd/2026-07-28-projects/progress.md` (the ledger). The three
+from the very end of the fix wave:
+1. `?session=` with an **empty value** falls through to lobby/session with `sessionId === ""` instead
+   of the entrance, producing a join the hub rejects at `hub.ts:451`'s SLUG check. Hand-edited URLs
+   only. Fix if touched: `params.get("session") || null`. **This also means `App.tsx:143/158`'s
+   `activeProjectId ?? "default"` is reachable, not dead code** — the fix-wave implementer claimed it
+   was dead and the re-reviewer corrected them.
+2. `pickerUrl.ts:55-57` claims it is "the only builder that yields the empty query" — false for a
+   legacy `?session=ana` or an invite-resolved session, which still land on the entrance when left.
+3. `hub.ts:513-515`'s "`sessionOwned` authorizes only its OWN session's replies" overstates;
+   `sessionOwned` is a channel-and-uplink right with no per-reply scoping. The operative conclusion
+   (don't delete `pendingReplyFrom`) stands.
+
+### Open questions
+
+1. **PRD §10 Q2/Q3** — whether the entrance lists every project at hundreds (measure, don't guess),
+   and whether a project deserves a one-line `intent` (violates P1's name-and-nothing-else).
+2. **Spec §8.4** — does a sub-session get its own worktree or share its parent's? Needed before §8.4.
+3. **Spec §8.3** — how a headless machine offers a filesystem path picker to a browser it does not
+   serve, without becoming an arbitrary-path read primitive.
+4. **Three v7b1 residuals, still unanswered:** the uplink fails silently so a wrong hub URL looks like
+   a working one; a relay join emits no success signal; `uplinkId` is minted per launch so sessions do
+   not survive a laptop restart.
+   ⚠️ **TRAP: `repoKey` is NOT a usable machine identity** — with an `origin` present it is
+   byte-identical across every clone by design, so two teammates would silently take over each other's
+   sessions. Machine scoping must come from `localRepoKey`'s hostname + hashed repo root.
+
+### Files that matter, with line refs
+
+- **Ledger (read this for any detail below): `.superpowers/sdd/2026-07-28-projects/progress.md`** —
+  every task, finding, ruling and parked minor. Git-ignored scratch; `git clean -fdx` destroys it.
+- Plan: `docs/superpowers/plans/2026-07-28-projects.md` · Spec: `docs/superpowers/specs/2026-07-28-projects-design.md` · PRD: `docs/PRD.md`
+- `poc/hub/src/hub.ts` — `SLUG` `:13`; `identify` + already-joined guard `:352-364`; reply
+  authorization `:267-290`; `create_session` route + grant `:494-546`; join clears the grant `:470`.
+- `poc/hub/src/hubStore.ts` — project records, `listProjects`/`machinesIn` `:153-177`.
+- `poc/hub/test/relayIntegration.test.ts` — **the regression net for the relay↔hub seam. Keep it.**
+- `poc/client/src/authRoute.ts:54` — entrance requires BOTH ids absent. `pickerUrl.ts` — URL builders.
+- `poc/client/src/components/ProjectPicker.tsx` (entrance) · `SessionPicker.tsx` (project screen).
+- Pure modules: `projectList.ts`, `projectAccess.ts`, `repoGroups.ts`, `sessionNames.ts`.
+
+---
+
+**🟡 EVERYTHING BELOW THIS LINE PREDATES THE session #16 REFRAME.** It remains the authority on why
+shipped v7a/v7a2/v7b1 code looks the way it does, but every "next step", "unmerged", "waiting on a
+decision" and vN-ordering framing in it is **superseded by `docs/PRD.md`**. PR #20 is merged; the
+"next step is a product question" framing was answered by the PRD.
+
+---
 
 ### ⛔ READ THIS BEFORE PROPOSING ANY NEXT TASK — the user rejected the demo, and they were right
 

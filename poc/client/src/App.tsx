@@ -14,6 +14,7 @@ import { ThinkingStrip } from "./components/ThinkingStrip";
 import type { PartyBest } from "./components/ThinkingStrip";
 import { Lobby } from "./components/Lobby";
 import { SessionPicker } from "./components/SessionPicker";
+import { ProjectPicker } from "./components/ProjectPicker";
 import { useArrowNav } from "./useArrowNav";
 import { Cabinet, Crt } from "./components/Crt";
 import { SkillsPanel } from "./components/SkillsPanel";
@@ -29,7 +30,7 @@ import { InviteSignIn } from "./components/InviteSignIn";
 import { Denied } from "./components/Denied";
 import { authStateFrom, type AuthState } from "./authState";
 import { ExitConfirm } from "./components/ExitConfirm";
-import { pickerUrlFrom } from "./pickerUrl";
+import { activeProjectIdFrom, pickerUrlFrom } from "./pickerUrl";
 import { pullsFrom, thresholdFromStorage, PULL_STORAGE_KEY } from "./pulls";
 import { screenFor, selfIdFor } from "./authRoute";
 
@@ -42,7 +43,10 @@ export default function App() {
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   // No param → session picker (spec §4). Deep links keep exact old behavior.
   const sessionId = params.get("session");
-  const projectId = params.get("project") ?? "default";
+  // No `project` param AND no session → the hub entrance. The conditional
+  // `default` fallback lives in pickerUrl.ts so it can be tested; see the
+  // comment there for why it is neither unconditional nor absent.
+  const projectId = activeProjectIdFrom(window.location.search);
   // v6a: screen is state seeded by ?screen= — deep links keep working, but
   // SKILLS is reachable in-app without a reload. ?screen=status stays a
   // URL-only design surface (no nav points at it).
@@ -106,7 +110,7 @@ export default function App() {
 
   // The precedence itself lives in authRoute.ts so it can be tested (spec
   // §3.5); this switch only maps the decision onto a component.
-  const route = screenFor({ auth, inviteToken, inviteTarget, activeSessionId, profile });
+  const route = screenFor({ auth, inviteToken, inviteTarget, activeSessionId, activeProjectId, profile });
 
   function screenBody() {
     switch (route) {
@@ -122,13 +126,21 @@ export default function App() {
         return <Denied login={auth?.status === "denied" ? auth.login : ""} />;
       case "invite-landing":
         return <InviteLanding token={inviteToken!} onAccept={setInviteTarget} />;
+      case "entrance":
+        return <ProjectPicker userId={selfId} name={profile?.name ?? "anon"} />;
       case "picker":
-        return <SessionPicker projectId={activeProjectId} />;
+        return (
+          <SessionPicker
+            projectId={activeProjectId!}
+            userId={selfId}
+            name={profile?.name ?? "anon"}
+          />
+        );
       case "lobby":
         // `!`: screenFor only returns lobby/session once a session id exists.
         return (
           <Lobby
-            projectId={activeProjectId}
+            projectId={activeProjectId ?? "default"}
             sessionId={activeSessionId!}
             defaultName={auth?.status === "signed-in" ? auth.login : `user-${localUserId.slice(0, 4)}`}
             lockedName={auth?.status === "signed-in" ? auth.login : undefined}
@@ -143,7 +155,7 @@ export default function App() {
           <SessionView
             userId={selfId}
             sessionId={activeSessionId!}
-            projectId={activeProjectId}
+            projectId={activeProjectId ?? "default"}
             profile={profile!}
             screen={screen}
             onScreenChange={setScreen}

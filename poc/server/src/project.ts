@@ -150,12 +150,24 @@ export interface ProjectMessage {
      *  v7b derives it from the hub uplink and it becomes a real signal — the
      *  field exists now so the client learns the shape before the hub does. */
     presence: "online" | "offline";
+    /** Which machine owns this session. Only a hub can answer this — a
+     *  standalone server has exactly one machine and omits the field, just
+     *  like `machines` above. */
+    machineId?: string;
   }[];
   arcade: ArcadeRecord[];
   plugins: PluginInfo[];
   pluginsEnabled: boolean;
   repo: { defaultBranch: string; key: string } | null;
   oversight: { enabled: boolean; latest: OversightSummary | null };
+  /** Which machines are in this project, and which repo each offers. A hub
+   *  reports every machine that has attached; a standalone server reports
+   *  exactly one — itself (solo-mode fix, spec: entrance stays reachable in
+   *  solo) — using its own `repoKey` for both `machineId` and `repoKey`, since
+   *  it has no other machine identity to offer. Omitted (not an empty array)
+   *  only when the standalone server was launched with no workspace, which
+   *  the field being optional accommodates. */
+  machines?: { machineId: string; repoKey: string; online: boolean }[];
 }
 
 export function projectSnapshot(
@@ -179,5 +191,66 @@ export function projectSnapshot(
     pluginsEnabled: pluginState?.enabled ?? false,
     repo: repo ?? null,
     oversight: oversight ?? { enabled: false, latest: null },
+    // The solo-mode fix (spec: entrance stays reachable in solo). A standalone
+    // server has exactly one machine — itself — so it reports that machine
+    // honestly rather than omitting `machines` and leaving the project screen
+    // to read `0 MACHINES` and grey out its repo <select>. `repo` is the only
+    // identity this machine has; with no workspace there is nothing truthful
+    // to report, so the field stays undefined exactly as it always has.
+    machines: repo ? [{ machineId: repo.key, repoKey: repo.key, online: true }] : undefined,
+  };
+}
+
+export interface MachineSummary {
+  machineId: string;
+  repoKey: string;
+  online: boolean;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  lifecycle: "active" | "closed" | "archived";
+  members: string[];
+  sessionCount: number;
+  liveSessionCount: number;
+  machines: MachineSummary[];
+}
+
+/** The entrance/project-screen row for one project on a STANDALONE server
+ *  (solo-mode fix). A standalone server has no cross-machine project registry
+ *  — that is the hub's `HubStore` — and no membership concept at all: anyone
+ *  who can reach this server may already join any session in any project with
+ *  no membership check (see `join` above). Reporting the requesting
+ *  connection's own identity as this project's sole member is therefore not a
+ *  fiction; it makes the server's existing security model explicit in the new
+ *  wire shape, which is exactly what stops
+ *  `poc/client/src/projectAccess.ts`'s `canAct` from telling a solo user
+ *  "you are spectating" or "run: mpai --hub <url> --project <id>" — there is
+ *  no hub to attach to in this mode.
+ *
+ *  `lifecycle` is always "active": closing a project is a hub-only concept
+ *  (`set_project_lifecycle`) this server does not implement, so there is
+ *  nothing else it could honestly report. `machines` mirrors `projectSnapshot`
+ *  above: exactly one machine, this one, keyed by its own `repoKey` for both
+ *  `machineId` and `repoKey` — a standalone server has no separate machine
+ *  identity to report — omitted when the server has no workspace (a
+ *  test-only path; the CLI always requires a repo to launch). */
+export function projectSummaryOf(
+  project: Project,
+  memberUserId: string | null,
+  repoKey: string | null,
+): ProjectSummary {
+  const sessions = [...project.sessions.values()];
+  return {
+    id: project.id,
+    name: project.id,
+    lifecycle: "active",
+    members: memberUserId ? [memberUserId] : [],
+    sessionCount: sessions.length,
+    liveSessionCount: sessions.filter(
+      (entry) => lifecycleOf(entry.session.eventsFrom(0)) === "open",
+    ).length,
+    machines: repoKey ? [{ machineId: repoKey, repoKey, online: true }] : [],
   };
 }

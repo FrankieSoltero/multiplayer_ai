@@ -9,6 +9,7 @@ import { isModelKey } from "./models.js";
 import {
   Project,
   projectSnapshot,
+  projectSummaryOf,
   sessionFactsOf,
   SLUG,
   type ProjectSessionEntry,
@@ -125,6 +126,10 @@ export async function startServer(opts: {
   inviteTtlMs?: number;
   inviteMaxUses?: number;
   auth?: AuthConfig;
+  /** Seeded into the project registry at boot, so a fresh server's entrance
+   *  (list_projects) offers the launch project instead of an empty list. The
+   *  CLI passes its --project value here. */
+  projectId?: string;
   /** When set, this process also dials the hub and relays its sessions
    *  (spec §3.1). Absent, `mpai` behaves exactly as it always has — the hub
    *  is strictly additive (spec §6). */
@@ -149,6 +154,16 @@ export async function startServer(opts: {
       }
     : null;
   const projects = new Map<string, Project>();
+  // Boot seed: the launch project exists before anyone asks, so a bare
+  // localhost:PORT/ lands on a one-item entrance rather than an empty one.
+  // Shape-checked like every id that reaches the registry — a non-slug seed
+  // would list a project every SLUG-gated handler then refuses.
+  if (opts.projectId) {
+    if (!SLUG.test(opts.projectId)) {
+      throw new Error(`startServer: projectId must be a slug, got "${opts.projectId}"`);
+    }
+    getOrCreateProject(opts.projectId);
+  }
   const lastPush = new Map<Project, number>();
   const pushTimers = new Map<Project, NodeJS.Timeout>();
   const invites = new InviteStore({
@@ -375,6 +390,15 @@ export async function startServer(opts: {
   } {
     let ctx: ClientContext | null = null;
     let watching: Project | null = null;
+    // Set by `identify`, read by `list_projects` / `create_project` — the
+    // solo-mode entrance protocol (spec: standalone server answers these
+    // instead of erroring). Deliberately separate from `ctx.userId`: `join`
+    // still establishes its own identity for a session exactly as before;
+    // this is only the per-connection claim the project/entrance screens make
+    // before any session exists, mirroring the hub's `channel.identity`
+    // (hub.ts's per-connection identity comment explains why `join`-time and
+    // pre-join identity cannot share one field).
+    let identity: { userId: string; name: string } | null = null;
 
     // Derived once from the single discriminator: only a direct socket can be
     // a project watcher, and the union makes that structural rather than a
@@ -414,6 +438,71 @@ export async function startServer(opts: {
         sendError(check.error);
         return true;
       };
+
+      // The three messages the entrance (ProjectPicker) and the project
+      // screen (SessionPicker) send before any session exists, mirrored from
+      // the hub (hub.ts's `identify` / `list_projects` / `create_project`) so
+      // the hub rejects precisely what this server rejects, and vice versa.
+      // `identify` alone stays unguarded, like `peek_invite`: it sets
+      // per-connection state and echoes it back, provisioning and disclosing
+      // nothing. `list_projects` (reads the project roster) and
+      // `create_project` (grows `projects`) sit behind `denyUnauthed` like
+      // every other pre-join read/write — without it, one cookie-less
+      // connection could loop identify + create_project and grow the Map
+      // unbounded. Hub parity is not at stake: `denyUnauthed` is this
+      // laptop's cookie-transport gate — hub-mediated traffic arrives on the
+      // relay arm, where it no-ops because the hub already verified the
+      // browser — and it guards `peek`/`watch_project`/`create_session`,
+      // which the hub DOES mirror, without breaking parity.
+      if (msg.type === "identify") {
+        // Mirrors `join`'s "already joined" guard (hub.ts:360 has the same
+        // one, for the same reason): a joined connection's identity is
+        // locked, so a later `identify` cannot silently rebind who `ctx`
+        // attributes future actions to.
+        if (ctx) return sendError("already joined");
+        if (typeof msg.userId !== "string" || typeof msg.name !== "string") {
+          return sendError("identify requires userId, name");
+        }
+        const userId = msg.userId.slice(0, 64);
+        const name = msg.name.slice(0, 40);
+        if (!userId) return sendError("identify requires userId");
+        identity = { userId, name };
+        io.send({ type: "identified", userId, name });
+        return;
+      }
+
+      if (msg.type === "list_projects") {
+        if (denyUnauthed()) return;
+        // Non-creating READ, deliberately: `projects.values()` never calls
+        // `getOrCreateProject`. A creating read here would let unauthenticated
+        // input grow `projects` without bound — the hub's `readSessionsOf` vs
+        // `sessionsOf` split (hubStore.ts) guards the identical failure and
+        // this mirrors it.
+        io.send({
+          type: "projects",
+          projects: [...projects.values()].map((p) =>
+            projectSummaryOf(p, identity?.userId ?? null, repo?.key ?? null),
+          ),
+        });
+        return;
+      }
+
+      if (msg.type === "create_project") {
+        if (denyUnauthed()) return;
+        if (!identity) return sendError("identify first");
+        if (typeof msg.name !== "string") return sendError("create_project requires name");
+        const projectId = slugify(msg.name.slice(0, 200));
+        if (!SLUG.test(projectId)) return sendError("create_project requires a usable name");
+        if (projects.has(projectId)) {
+          return sendError(`project "${projectId}" already exists`);
+        }
+        // Creating here IS the point — unlike list_projects, this is a
+        // deliberate write gated by `identify first` above, not an
+        // unauthenticated read.
+        getOrCreateProject(projectId);
+        io.send({ type: "project_created", projectId });
+        return;
+      }
 
       if (msg.type === "join") {
         if (ctx) {

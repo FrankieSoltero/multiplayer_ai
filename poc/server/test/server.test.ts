@@ -1201,6 +1201,295 @@ describe("session initiation", () => {
   });
 });
 
+describe("solo-mode entrance protocol", () => {
+  // ProjectPicker and SessionPicker (poc/client) send identify / list_projects
+  // / create_project unconditionally, hub-shaped or not. Before this these all
+  // fell through to server.ts's `unknown message type` catch-all, which also
+  // replies `{ type: "error", ... }` — so every assertion below pins the exact
+  // message text or payload shape, not merely `type`, to discriminate a real
+  // guard from that fallthrough (see hub's routing.test.ts for the identical
+  // concern against the hub's own `tunnel()` fallthrough).
+
+  describe("identify", () => {
+    it("answers with the identity it was given", async () => {
+      const server = await startServer({ port: 0, runQuery: echoRun });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "identify", userId: "u1", name: "Ana" }));
+      await wait(40);
+      expect(seen).toEqual([{ type: "identified", userId: "u1", name: "Ana" }]);
+      ws.close();
+    });
+
+    it("rejects a non-string field and an empty userId, distinctly", async () => {
+      const server = await startServer({ port: 0, runQuery: echoRun });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "identify", userId: 7, name: "Ana" }));
+      ws.send(JSON.stringify({ type: "identify", userId: "", name: "Ana" }));
+      await wait(40);
+      expect(seen.map((m) => m.message)).toEqual([
+        "identify requires userId, name",
+        "identify requires userId",
+      ]);
+      ws.close();
+    });
+
+    it("truncates an over-long userId and name", async () => {
+      const server = await startServer({ port: 0, runQuery: echoRun });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "identify", userId: "u".repeat(80), name: "n".repeat(60) }));
+      await wait(40);
+      expect(seen[0].userId).toHaveLength(64);
+      expect(seen[0].name).toHaveLength(40);
+      ws.close();
+    });
+
+    it("refuses to rebind identity on a connection that has already joined", async () => {
+      const server = await startServer({ port: 0, runQuery: echoRun });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "join", sessionId: "s1", userId: "ana", name: "Ana" }));
+      await wait(40);
+      seen.length = 0;
+      ws.send(JSON.stringify({ type: "identify", userId: "mal", name: "Mal" }));
+      await wait(40);
+      // Text, not type: an already-joined connection sending an unrecognized
+      // type also gets `{ type: "error" }` from the catch-all, just with a
+      // different message ("unknown message type: ..."). Only the text
+      // proves THIS guard fired.
+      expect(seen).toEqual([{ type: "error", message: "already joined" }]);
+      ws.close();
+    });
+  });
+
+  describe("list_projects", () => {
+    it("answers an empty list on a fresh server, rather than erroring", async () => {
+      const server = await startServer({ port: 0, runQuery: echoRun });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "list_projects" }));
+      await wait(40);
+      expect(seen).toEqual([{ type: "projects", projects: [] }]);
+      ws.close();
+    });
+
+    it("never creates the project it is asked to list — a read, not a write", async () => {
+      // Regression guard for the explicit ruling: list_projects must use a
+      // non-creating read. A creating implementation would let this exact
+      // message (with an attacker-chosen projectId riding along, which
+      // list_projects does not even accept) grow the project map. Proven here
+      // by calling list_projects first and only THEN creating a session in
+      // "ghost" — if list_projects had already (wrongly) materialized it,
+      // this create_session would see a pre-existing empty project rather
+      // than provisioning fresh.
+      const workspace = fakeWorkspace();
+      const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "list_projects", projectId: "ghost" }));
+      await wait(40);
+      expect(seen).toEqual([{ type: "projects", projects: [] }]);
+      seen.length = 0;
+      ws.send(JSON.stringify({ type: "create_session", projectId: "ghost", name: "s1" }));
+      await vi.waitFor(() => {
+        expect(seen.some((m) => m.type === "session_created")).toBe(true);
+      });
+      expect(workspace.calls).toEqual([{ slug: "s1", baseRef: "main" }]);
+      ws.close();
+    });
+
+    it("reports the connecting user as a member and itself as the one online machine", async () => {
+      const workspace = { ...fakeWorkspace(), repoKey: () => "github.com/acme/api" };
+      const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      // watch_project provisions "default" (getOrCreateProject) before
+      // list_projects is asked to read it back — the same order SessionPicker
+      // sends them in.
+      ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "Ana" }));
+      ws.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+      ws.send(JSON.stringify({ type: "list_projects" }));
+      await wait(60);
+      const projectsMsg = seen.find((m) => m.type === "projects");
+      expect(projectsMsg.projects).toEqual([
+        {
+          id: "default",
+          name: "default",
+          lifecycle: "active",
+          members: ["ana"],
+          sessionCount: 0,
+          liveSessionCount: 0,
+          machines: [{ machineId: "github.com/acme/api", repoKey: "github.com/acme/api", online: true }],
+        },
+      ]);
+      ws.close();
+    });
+
+    it("reports no members before identify has ever run on this connection", async () => {
+      const workspace = fakeWorkspace();
+      const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+      ws.send(JSON.stringify({ type: "list_projects" }));
+      await wait(50);
+      const projectsMsg = seen.find((m) => m.type === "projects");
+      expect(projectsMsg.projects[0].members).toEqual([]);
+      ws.close();
+    });
+
+    it("lists the launch project on a fresh server, seeded at boot", async () => {
+      const workspace = fakeWorkspace();
+      const server = await startServer({ port: 0, runQuery: echoRun, workspace, projectId: "acme" });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "list_projects" }));
+      await wait(40);
+      const projectsMsg = seen.find((m) => m.type === "projects");
+      expect(projectsMsg).toBeTruthy();
+      // Exactly one — a fresh solo server's entrance is the promised one-item
+      // list, not an empty page with only a NEW PROJECT button.
+      expect(projectsMsg.projects.map((p: any) => p.id)).toEqual(["acme"]);
+      ws.close();
+    });
+
+    it("refuses a malformed boot-seed projectId instead of seeding a phantom", async () => {
+      // A non-slug seed would list a project that join / watch_project /
+      // create_session (all SLUG-gated) then refuse — a phantom entrance
+      // entry reachable by nothing.
+      await expect(
+        startServer({ port: 0, runQuery: echoRun, projectId: "Not A Slug!" }),
+      ).rejects.toThrow(/projectId/);
+    });
+  });
+
+  describe("create_project", () => {
+    it("requires identify first, distinctly from the catch-all", async () => {
+      const server = await startServer({ port: 0, runQuery: echoRun });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+      await wait(40);
+      expect(seen).toEqual([{ type: "error", message: "identify first" }]);
+      ws.close();
+    });
+
+    it("rejects a non-string name and a name that slugifies to nothing", async () => {
+      const server = await startServer({ port: 0, runQuery: echoRun });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "Ana" }));
+      await wait(30);
+      seen.length = 0;
+      ws.send(JSON.stringify({ type: "create_project" }));
+      ws.send(JSON.stringify({ type: "create_project", name: "!!!" }));
+      await wait(40);
+      expect(seen.map((m) => m.message)).toEqual([
+        "create_project requires name",
+        "create_project requires a usable name",
+      ]);
+      ws.close();
+    });
+
+    it("creates a real, reachable project — not just an ack", async () => {
+      const workspace = fakeWorkspace();
+      const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "Ana" }));
+      ws.send(JSON.stringify({ type: "create_project", name: "My Cool Project" }));
+      await wait(40);
+      expect(seen.at(-1)).toEqual({ type: "project_created", projectId: "my-cool-project" });
+      seen.length = 0;
+      // Reachable: list_projects is the NON-CREATING read (`projects.values()`
+      // never calls getOrCreateProject), so the slug appears here only if
+      // create_project actually wrote it. watch_project would not
+      // discriminate — it creates the project itself on the way in.
+      ws.send(JSON.stringify({ type: "list_projects" }));
+      await wait(40);
+      const projectsMsg = seen.find((m) => m.type === "projects");
+      const created = projectsMsg.projects.find((p: any) => p.id === "my-cool-project");
+      expect(created).toBeTruthy();
+      expect(created.lifecycle).toBe("active");
+      expect(created.sessionCount).toBe(0);
+      ws.close();
+    });
+
+    it("refuses to create a project whose slug already exists", async () => {
+      const server = await startServer({ port: 0, runQuery: echoRun });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "Ana" }));
+      ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+      await wait(40);
+      seen.length = 0;
+      ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+      await wait(40);
+      expect(seen).toEqual([{ type: "error", message: 'project "acme" already exists' }]);
+      ws.close();
+    });
+  });
+});
+
+describe("machines on the project snapshot (solo-mode fix)", () => {
+  it("reports itself as the one online machine when launched with a repo", async () => {
+    const workspace = { ...fakeWorkspace(), repoKey: () => "github.com/acme/api" };
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(40);
+    const snap = seen.find((m) => m.type === "project");
+    expect(snap.machines).toEqual([
+      { machineId: "github.com/acme/api", repoKey: "github.com/acme/api", online: true },
+    ]);
+    ws.close();
+  });
+
+  it("omits machines when the server has no workspace, same as repo", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(40);
+    const snap = seen.find((m) => m.type === "project");
+    expect(snap.machines).toBeUndefined();
+    ws.close();
+  });
+});
+
 describe("oversight wire", () => {
   const instantSummarize = async () => "team is busy";
 
@@ -1842,6 +2131,72 @@ describe("auth gate on the pre-join message types", () => {
 
     expect(seen.some((m) => m.type === "error" && /authentication required/.test(m.message))).toBe(true);
     expect(seen.some((m) => m.type === "project")).toBe(false);
+    ws.close();
+  });
+
+  it("rejects create_project with no cookie and grows the registry by nothing", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    // identify stays reachable (per-connection state only) — the attack the
+    // gate exists to stop is looping identify + create_project pre-auth.
+    ws.send(JSON.stringify({ type: "identify", userId: "mallory", name: "M" }));
+    ws.send(JSON.stringify({ type: "create_project", name: "free lunch" }));
+    await wait(60);
+
+    expect(seen.some((m) => m.type === "error" && /authentication required/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "project_created")).toBe(false);
+
+    // The side-effect assertion: a signed-in user's list_projects (the
+    // non-creating read) shows the write never landed.
+    const cookie = `${SESSION_COOKIE}=${signSession("ana", AUTH.sessionSecret)}`;
+    const anaWs = await connectWithCookie(server.port, cookie);
+    const anaSeen: any[] = [];
+    collect(anaWs, anaSeen);
+    anaWs.send(JSON.stringify({ type: "list_projects" }));
+    await wait(60);
+    const projectsMsg = anaSeen.find((m) => m.type === "projects");
+    expect(projectsMsg).toBeTruthy();
+    expect(projectsMsg.projects.map((p: any) => p.id)).not.toContain("free-lunch");
+    ws.close();
+    anaWs.close();
+  });
+
+  it("rejects list_projects with no cookie and discloses no project list", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "list_projects" }));
+    await wait(60);
+
+    expect(seen.some((m) => m.type === "error" && /authentication required/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "projects")).toBe(false);
+    ws.close();
+  });
+
+  it("still lets a signed-in allowlisted user identify, list and create projects", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const cookie = `${SESSION_COOKIE}=${signSession("ana", AUTH.sessionSecret)}`;
+    const ws = await connectWithCookie(server.port, cookie);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "create_project", name: "Real Work" }));
+    ws.send(JSON.stringify({ type: "list_projects" }));
+    await wait(80);
+
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+    expect(seen.some((m) => m.type === "project_created" && m.projectId === "real-work")).toBe(true);
+    const projectsMsg = seen.find((m) => m.type === "projects");
+    expect(projectsMsg.projects.map((p: any) => p.id)).toContain("real-work");
     ws.close();
   });
 

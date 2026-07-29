@@ -29,6 +29,36 @@ interface Uplink {
 
 export type SetFactsResult = { ok: true } | { ok: false; error: string };
 
+export type ProjectLifecycle = "active" | "closed" | "archived";
+
+interface ProjectRecord {
+  id: string;
+  /** What the user typed. Equal to `id` for a project auto-created by a
+   *  machine attaching, because nobody has named it yet. */
+  name: string;
+  /** null = auto-created by an attaching machine, not by a person. */
+  createdBy: string | null;
+  createdAt: string;
+  members: Set<string>;
+  lifecycle: ProjectLifecycle;
+}
+
+export interface MachineInfo {
+  machineId: string;
+  repoKey: string;
+  online: boolean;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  lifecycle: ProjectLifecycle;
+  members: string[];
+  sessionCount: number;
+  liveSessionCount: number;
+  machines: MachineInfo[];
+}
+
 /** Everything the hub knows, with no sockets. Kept a plain class over pure
  *  data so the whole of Task 7's routing is testable without a network.
  *
@@ -39,9 +69,111 @@ export class HubStore {
   private uplinks = new Map<string, Uplink>();
   /** projectId → sessionId → session */
   private projects = new Map<string, Map<string, HubSession>>();
+  private projectMeta = new Map<string, ProjectRecord>();
 
-  attach(uplinkId: string, projectId: string, repoKey: string): void {
+  createProject(
+    id: string,
+    name: string,
+    createdBy: string,
+    createdAt: string,
+  ): { ok: true } | { ok: false; error: string } {
+    if (this.projectMeta.has(id)) {
+      return { ok: false, error: `project "${id}" already exists` };
+    }
+    this.projectMeta.set(id, {
+      id,
+      name,
+      createdBy,
+      createdAt,
+      members: new Set([createdBy]),
+      lifecycle: "active",
+    });
+    return { ok: true };
+  }
+
+  /** A machine may name a project that nobody has created — the launch-time
+   *  seam of spec §9. It must appear rather than vanish, but it gains no
+   *  members: attaching a laptop is not joining a project. Deliberately does
+   *  NOT touch an existing record, so a re-attach cannot resurrect membership
+   *  somebody deliberately left. */
+  ensureProject(id: string, createdAt: string): void {
+    if (this.projectMeta.has(id)) return;
+    this.projectMeta.set(id, {
+      id,
+      name: id,
+      createdBy: null,
+      createdAt,
+      members: new Set(),
+      lifecycle: "active",
+    });
+  }
+
+  lifecycleOf(id: string): ProjectLifecycle | null {
+    return this.projectMeta.get(id)?.lifecycle ?? null;
+  }
+
+  setLifecycle(
+    id: string,
+    lifecycle: ProjectLifecycle,
+  ): { ok: true } | { ok: false; error: string } {
+    const record = this.projectMeta.get(id);
+    if (!record) return { ok: false, error: `no project "${id}"` };
+    record.lifecycle = lifecycle;
+    return { ok: true };
+  }
+
+  /** Returns whether this call changed anything, so a caller can decide
+   *  whether a push is warranted. */
+  joinProject(id: string, userId: string): boolean {
+    const record = this.projectMeta.get(id);
+    if (!record || record.members.has(userId)) return false;
+    record.members.add(userId);
+    return true;
+  }
+
+  leaveProject(id: string, userId: string): boolean {
+    const record = this.projectMeta.get(id);
+    if (!record) return false;
+    return record.members.delete(userId);
+  }
+
+  isMember(id: string, userId: string): boolean {
+    return this.projectMeta.get(id)?.members.has(userId) ?? false;
+  }
+
+  attach(uplinkId: string, projectId: string, repoKey: string, attachedAt: string): void {
+    this.ensureProject(projectId, attachedAt);
     this.uplinks.set(uplinkId, { uplinkId, projectId, repoKey, online: true });
+  }
+
+  /** Every machine that has ever attached to this project this hub run,
+   *  online or not. An offline machine is kept deliberately: its sessions are
+   *  still listed and still readable, so hiding the machine would make them
+   *  look ownerless. */
+  machinesIn(projectId: string): MachineInfo[] {
+    const out: MachineInfo[] = [];
+    for (const uplink of this.uplinks.values()) {
+      if (uplink.projectId !== projectId) continue;
+      out.push({ machineId: uplink.uplinkId, repoKey: uplink.repoKey, online: uplink.online });
+    }
+    return out;
+  }
+
+  listProjects(): ProjectSummary[] {
+    const out: ProjectSummary[] = [];
+    for (const record of this.projectMeta.values()) {
+      const sessions = [...(this.readSessionsOf(record.id)?.values() ?? [])];
+      out.push({
+        id: record.id,
+        name: record.name,
+        lifecycle: record.lifecycle,
+        members: [...record.members],
+        sessionCount: sessions.length,
+        liveSessionCount: sessions.filter((s) => s.facts.lifecycle === "open").length,
+        machines: this.machinesIn(record.id),
+      });
+    }
+    return out;
   }
 
   /** The laptop is gone. Its sessions stay — that is the point of the hub —
@@ -210,7 +342,9 @@ export class HubStore {
         skills: session.facts.skills.map((skill) => ({ ...skill })),
         pendingGate: session.facts.pendingGate ? { ...session.facts.pendingGate } : null,
         presence: this.uplinks.get(session.uplinkId)?.online ? ("online" as const) : ("offline" as const),
+        machineId: session.uplinkId,
       })),
+      machines: this.machinesIn(projectId),
       arcade: arcadeRecordsFrom(sessions.map((s) => s.events.map((e) => e.event))),
       // Plugins are laptop-local files the agent loads (spec §4) and the hub
       // does not aggregate them in v7b1. The panel reads empty when

@@ -9,6 +9,7 @@ export type Screen =
   | "landing"
   | "denied"
   | "invite-landing"
+  | "entrance"
   | "picker"
   | "lobby"
   | "session";
@@ -19,6 +20,11 @@ export interface RouteInput {
   inviteToken: string | null;
   inviteTarget: { projectId: string; sessionId: string } | null;
   activeSessionId: string | null;
+  /** null when the URL names no project at all — the hub entrance, not a hidden
+   *  default project (spec §4.1/§4.3). A legacy `?session=X` link with no
+   *  `?project=` is NOT null: App.tsx resolves it to `default`, the project
+   *  such links have always meant. */
+  activeProjectId: string | null;
   profile: Profile | null;
 }
 
@@ -32,13 +38,20 @@ export interface RouteInput {
  *  With auth off every state is `anonymous`, which matches none of the auth
  *  arms and falls through to the pre-auth chain unchanged. */
 export function screenFor(input: RouteInput): Screen {
-  const { auth, inviteToken, inviteTarget, activeSessionId, profile } = input;
+  const { auth, inviteToken, inviteTarget, activeSessionId, activeProjectId, profile } = input;
 
   if (auth === null) return "checking";
   if (auth.status === "signed-out") return inviteToken ? "invite-signin" : "landing";
   if (auth.status === "denied") return "denied";
 
   if (inviteToken && !inviteTarget) return "invite-landing";
+  // BOTH must be absent for the entrance. Testing the project alone sent every
+  // `?session=X` link with no `?project=` — every pre-existing bookmark, and
+  // every link built while the project was `default` — to the entrance instead
+  // of the session. A session id is itself evidence of somewhere to be; App.tsx
+  // resolves the project it belongs to (defaulting, for such a link, to
+  // `default`), so this arm is reached only when the URL names neither.
+  if (activeProjectId === null && activeSessionId === null) return "entrance";
   if (activeSessionId === null) return "picker";
   if (profile === null) return "lobby";
   return "session";
