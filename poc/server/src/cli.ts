@@ -105,6 +105,21 @@ function ensureExcluded(repoRoot: string): void {
   }
 }
 
+/** The URL a non-hub launch opens and prints (solo-mode fix). A bare
+ *  `http://localhost:PORT/` routes to the hub-shaped entrance
+ *  (`ProjectPicker`), which the standalone server can now answer but which
+ *  most solo users never need to see — the normal path should not depend on
+ *  it. Carrying `?project=<args.project>` (`default` unless `--project` was
+ *  passed) lands directly on the project screen instead, exactly like every
+ *  other pre-entrance deep link. A hub-attached launch keeps the bare URL:
+ *  it is a fallback single-machine view, not the primary experience, and
+ *  is never auto-opened anyway (see the `!args.hub` guard below). */
+export function localUrlFor(port: number, args: Pick<CliArgs, "project" | "hub">): string {
+  const base = `http://localhost:${port}/`;
+  if (args.hub) return base;
+  return `${base}?project=${encodeURIComponent(args.project)}`;
+}
+
 function openBrowser(url: string): void {
   const opener =
     process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
@@ -139,7 +154,7 @@ async function launch(args: CliArgs): Promise<number | null> {
       staticDir: distDir,
       ...(args.hub ? { hub: { url: args.hub, projectId: args.project } } : {}),
     });
-    const url = `http://localhost:${port}/`;
+    const url = localUrlFor(port, args);
     if (args.hub) {
       // The local URL still works and is still served; it is just not where
       // the team is. Printing the hub first is the honest ordering, and not

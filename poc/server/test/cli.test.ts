@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseArgs, findRepoRoot } from "../src/cli.js";
+import { parseArgs, findRepoRoot, localUrlFor } from "../src/cli.js";
 
 describe("parseArgs", () => {
   it("defaults to launch on port 3001, project default, open", () => {
@@ -50,6 +50,28 @@ describe("parseArgs", () => {
   it("errors on unknown flags and bad ports", () => {
     expect(parseArgs(["--bogus"]).error).toMatch(/unknown argument/);
     expect(parseArgs(["--port", "nope"]).error).toMatch(/--port/);
+  });
+});
+
+describe("localUrlFor", () => {
+  // Solo-mode fix: a non-hub launch must not depend on the hub-shaped
+  // entrance (ProjectPicker) to reach a working session picker.
+  it("carries the launch's own project for a non-hub launch, so it never lands on the entrance", () => {
+    expect(localUrlFor(3001, { project: "default", hub: undefined })).toBe(
+      "http://localhost:3001/?project=default",
+    );
+  });
+
+  it("carries a custom --project value, not a hardcoded 'default'", () => {
+    expect(localUrlFor(3001, { project: "team-api-2", hub: undefined })).toBe(
+      "http://localhost:3001/?project=team-api-2",
+    );
+  });
+
+  it("omits the project param for a hub-attached launch — the hub is where the team is", () => {
+    expect(localUrlFor(3001, { project: "default", hub: "ws://hub.test" })).toBe(
+      "http://localhost:3001/",
+    );
   });
 });
 
