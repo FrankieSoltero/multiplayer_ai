@@ -584,6 +584,7 @@ function SessionView(props: {
         partyBests={partyBests}
         onScore={(game, score) => send({ type: "game_score", game, score })}
         onPlayingChange={setArcadeCapturing}
+        sessionKey={sessionId ? `${projectId ?? ""}/${sessionId}` : undefined}
       />
 
       {errors.length > 0 && <div className="line red">⚠ {errors.at(-1)}</div>}
