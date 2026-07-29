@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseArgs, findRepoRoot, localUrlFor } from "../src/cli.js";
+import { parseArgs, findRepoRoot, localUrlFor, sessionUrlFor } from "../src/cli.js";
 
 describe("parseArgs", () => {
   it("defaults to launch on port 3001, project default, open", () => {
@@ -71,6 +71,24 @@ describe("localUrlFor", () => {
   it("omits the project param for a hub-attached launch — the hub is where the team is", () => {
     expect(localUrlFor(3001, { project: "default", hub: "ws://hub.test" })).toBe(
       "http://localhost:3001/",
+    );
+  });
+});
+
+describe("sessionUrlFor", () => {
+  // Omitting project exactly when it is "default" is the same special-case
+  // the client's builders (joinSession/pickerUrlFrom) had to shed: it holds
+  // up only through pickerUrl.ts's legacy `?session=` fallback, which is a
+  // convention, not a contract.
+  it("always appends project, including for 'default'", () => {
+    expect(sessionUrlFor(3001, "fix-login", "default")).toBe(
+      "http://localhost:3001/?session=fix-login&project=default",
+    );
+  });
+
+  it("carries a custom project", () => {
+    expect(sessionUrlFor(3001, "fix-login", "team-api-2")).toBe(
+      "http://localhost:3001/?session=fix-login&project=team-api-2",
     );
   });
 });

@@ -120,6 +120,13 @@ export function localUrlFor(port: number, args: Pick<CliArgs, "project" | "hub">
   return `${base}?project=${encodeURIComponent(args.project)}`;
 }
 
+/** The URL `mpai new` prints. `project` is always appended — omitting it for
+ *  "default" would lean on the client's legacy `?session=`-implies-default
+ *  fallback, which is a convention, not a contract. */
+export function sessionUrlFor(port: number, sessionId: string, project: string): string {
+  return `http://localhost:${port}/?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(project)}`;
+}
+
 function openBrowser(url: string): void {
   const opener =
     process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
@@ -211,8 +218,7 @@ function createSession(args: CliArgs): Promise<number> {
         return;
       }
       if (msg.type === "session_created") {
-        const project = args.project !== "default" ? `&project=${args.project}` : "";
-        console.log(`http://localhost:${args.port}/?session=${msg.sessionId}${project}`);
+        console.log(sessionUrlFor(args.port, msg.sessionId, args.project));
         done(0);
       } else if (msg.type === "error") {
         console.error(msg.message);
