@@ -5,6 +5,7 @@ import {
   MAX_FRAME_BYTES,
   RELAY_PROTOCOL_VERSION,
   parseDownFrame,
+  type RepoDecl,
   type SessionFacts,
   type UpFrame,
 } from "./relayProtocol.js";
@@ -24,7 +25,15 @@ export type ConnectFn = (url: string) => RelaySocket;
 export interface RelayOptions {
   hubUrl: string;
   projectId: string;
-  repoKey: string;
+  /** What a person reads on the project screen for this machine. Truncated to
+   *  40 by the hub's parser, same as a browser identity. */
+  name: string;
+  /** A GETTER, not a value, and that is load-bearing: the set changes while
+   *  the process runs (an attach lands, a repo is dropped), and every `hello`
+   *  after a reconnect must carry the CURRENT list. A snapshot taken at
+   *  construction would re-declare a stale set on every reconnect for the
+   *  whole life of the daemon, with nothing on either side to show why. */
+  repos: () => RepoDecl[];
   uplinkId: string;
   connect?: ConnectFn;
   reconnectDelayMs?: number;
@@ -144,6 +153,17 @@ export class Relay {
     this.emit({ t: "facts", sessionId, runId: tracked.runId, facts });
   }
 
+  /** Re-declare what this machine offers, after an attach or detach lands.
+   *  Always the full list (spec §5.2) — the hub replaces its record wholesale
+   *  — and always through `emit`, so a set that changes inside the
+   *  open→welcome window is buffered exactly as facts are rather than written
+   *  into a socket that has not handshaken. Dropping one would leave the hub
+   *  routing `create_session` to a repo this machine no longer has, until
+   *  whenever the next reconnect happens to correct it. */
+  sendRepos(): void {
+    this.emit({ t: "repos", repos: this.opts.repos() });
+  }
+
   private connect(): void {
     // Belt and braces: every path into `connect()` already cleared this, but a
     // new socket is unambiguously not handshaken and nothing may be written
@@ -168,15 +188,29 @@ export class Relay {
         t: "hello",
         v: RELAY_PROTOCOL_VERSION,
         uplinkId: this.opts.uplinkId,
+        name: this.opts.name,
         projectId: this.opts.projectId,
-        repoKey: this.opts.repoKey,
+        // Read HERE, not at construction: see `RelayOptions.repos`.
+        repos: this.opts.repos(),
       });
     });
     socket.on("message", (data) => {
       if (isCurrent()) this.onMessage(data);
     });
-    socket.on("close", () => {
+    socket.on("close", (code) => {
       if (!isCurrent()) return;
+      // 1008 is the hub refusing this uplink at the frame boundary — almost
+      // always a version mismatch, since there is no compatibility shim (D6).
+      // Without this line the symptom is a laptop that simply never appears in
+      // the project while `scheduleReconnect` retries every 2s, forever, with
+      // nothing logged on either side. Guarded on the code so an ordinary
+      // reconnect stays silent; the code is the `ws` close code, which the
+      // socket adapter passes straight through (`defaultConnect`, below).
+      if (code === 1008) {
+        console.error(
+          "hub rejected this uplink (protocol violation) — laptop and hub versions may not match",
+        );
+      }
       this.ready = false;
       this.socket = null;
       // Every channel's browser is now unreachable from here. Dropping them

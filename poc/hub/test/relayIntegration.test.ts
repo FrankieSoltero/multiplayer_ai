@@ -1,7 +1,19 @@
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { Relay, type RelaySocket } from "multiplayer-ai-server/relay";
-import { MAX_FRAME_BYTES, RELAY_PROTOCOL_VERSION } from "multiplayer-ai-server/relayProtocol";
+import {
+  MAX_FRAME_BYTES,
+  RELAY_PROTOCOL_VERSION,
+  type RepoDecl,
+} from "multiplayer-ai-server/relayProtocol";
+
+const decl = (key: string, over: Partial<RepoDecl> = {}): RepoDecl => ({
+  key,
+  label: key.split("/").pop() ?? key,
+  attached: true,
+  defaultBranch: "origin/main",
+  ...over,
+});
 import { Session } from "multiplayer-ai-server/session";
 import { startHub } from "../src/hub.js";
 
@@ -96,7 +108,8 @@ function laptop(
     {
       hubUrl: `ws://127.0.0.1:${hubPort}/uplink`,
       projectId: "default",
-      repoKey: "github.com/acme/api",
+      name: "lap",
+      repos: () => [decl("github.com/acme/api")],
       uplinkId: "lap-1",
       connect: wire.connect,
       newRunId: () => "run-1",
@@ -120,7 +133,8 @@ function laptopThatAnswers(hubPort: number, over: Record<string, unknown> = {}) 
     {
       hubUrl: `ws://127.0.0.1:${hubPort}/uplink`,
       projectId: "default",
-      repoKey: "github.com/acme/api",
+      name: "lap",
+      repos: () => [decl("github.com/acme/api")],
       uplinkId: "lap-1",
       connect: wire.connect,
       newRunId: () => "run-1",
@@ -404,16 +418,16 @@ describe("creating a session through the hub", () => {
     const aSeen: any[] = [];
     collect(a, aSeen);
     a.send(JSON.stringify({
-      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-a",
-      projectId: "default", repoKey: "github.com/acme/api",
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-a", name: "lap-a",
+      projectId: "default", repos: [decl("github.com/acme/api")],
     }));
 
     // Machine B: a live, attached uplink in the same project — just not the
     // one offering this repo, so the hub never routes this request to it.
     const b = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
     b.send(JSON.stringify({
-      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-b",
-      projectId: "default", repoKey: "github.com/acme/other",
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-b", name: "lap-b",
+      projectId: "default", repos: [decl("github.com/acme/other")],
     }));
     await wait(40);
 
@@ -473,15 +487,15 @@ describe("creating a session through the hub", () => {
     const aSeen: any[] = [];
     collect(a, aSeen);
     a.send(JSON.stringify({
-      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-a",
-      projectId: "default", repoKey: "github.com/acme/api",
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-a", name: "lap-a",
+      projectId: "default", repos: [decl("github.com/acme/api")],
     }));
 
     // Machine B: genuinely owns a session the browser will join afterward.
     const b = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
     b.send(JSON.stringify({
-      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-b",
-      projectId: "default", repoKey: "github.com/acme/other",
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-b", name: "lap-b",
+      projectId: "default", repos: [decl("github.com/acme/other")],
     }));
     b.send(JSON.stringify({
       t: "facts", sessionId: "auth", runId: "run-b",
@@ -547,14 +561,14 @@ describe("creating a session through the hub", () => {
     const aSeen: any[] = [];
     collect(a, aSeen);
     a.send(JSON.stringify({
-      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-a",
-      projectId: "default", repoKey: "github.com/acme/api",
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-a", name: "lap-a",
+      projectId: "default", repos: [decl("github.com/acme/api")],
     }));
 
     const b = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
     b.send(JSON.stringify({
-      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-b",
-      projectId: "default", repoKey: "github.com/acme/other",
+      t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId: "lap-b", name: "lap-b",
+      projectId: "default", repos: [decl("github.com/acme/other")],
     }));
     await wait(40);
 

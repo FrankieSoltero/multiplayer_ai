@@ -9,7 +9,7 @@ import {
   parseUpFrame,
   type DownFrame,
 } from "multiplayer-ai-server/relayProtocol";
-import { HubStore } from "./hubStore.js";
+import { HubStore, type MachineInfo } from "./hubStore.js";
 
 const SLUG = /^[a-z0-9-]{1,40}$/;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
@@ -205,10 +205,29 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
           socket.close(1008, "already identified");
           return;
         }
+        // Replacing a live socket under the same id is CORRECT — a laptop
+        // whose connection died must be able to reconnect before the hub has
+        // noticed the old one is gone. It is also indistinguishable, from
+        // here, from two daemons sharing one MPAI_HOME: both read the same
+        // persisted machineId, so each hello evicts the other and the two flap
+        // forever, with every browser watching a machine blink. Nothing else
+        // in the system can name that cause, so this line does (spec §12.2).
+        const superseded = uplinks.get(frame.uplinkId);
+        if (superseded && superseded !== socket && superseded.readyState === WebSocket.OPEN) {
+          console.error(
+            `uplink ${frame.uplinkId}: superseded by a new connection (same machineId from two daemons? check MPAI_HOME)`,
+          );
+        }
         uplinkId = frame.uplinkId;
         projectId = frame.projectId;
         uplinks.set(frame.uplinkId, socket);
-        store.attach(frame.uplinkId, frame.projectId, frame.repoKey, new Date().toISOString());
+        store.attach(
+          frame.uplinkId,
+          frame.projectId,
+          frame.name,
+          frame.repos,
+          new Date().toISOString(),
+        );
         down(socket, {
           t: "welcome",
           v: RELAY_PROTOCOL_VERSION,
@@ -219,6 +238,16 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       }
       if (!uplinkId || !projectId) {
         socket.close(1008, "hello first");
+        return;
+      }
+      if (frame.t === "repos") {
+        // Wholesale replacement, never a merge — the frame is the machine's
+        // full authoritative list (spec §5.2). The push matters as much as the
+        // store write: the repo picker in every open browser is built from
+        // this, so an attach that lands and is never pushed is an attach
+        // nobody can use until something else happens to trigger a snapshot.
+        store.setRepos(uplinkId, frame.repos);
+        schedulePush(projectId);
         return;
       }
       if (frame.t === "publish") {
@@ -532,9 +561,33 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         }
         const repoKey = typeof msg.repoKey === "string" ? msg.repoKey : "";
         if (!repoKey) return error("create_session requires repoKey");
-        const target = store
-          .machinesIn(projectId)
-          .find((m) => m.online && m.repoKey === repoKey);
+        // `machineId` is OPTIONAL (spec §5.2). Two machines can offer the same
+        // repo, so first-online-match is a coin toss between them; naming one
+        // is how a user says "run it over there". Absent, the old behaviour
+        // stands — which is what keeps a one-machine project a two-field form.
+        const requestedMachine =
+          typeof msg.machineId === "string" && msg.machineId ? msg.machineId : null;
+        // ATTACHED only: a candidate is a repo this machine could work in, not
+        // one it can host a session in yet — it has no workspace, so routing
+        // there produces a refusal the browser cannot explain.
+        const offers = (m: MachineInfo) => m.repos.some((r) => r.attached && r.key === repoKey);
+        const machines = store.machinesIn(projectId);
+        let target: MachineInfo | undefined;
+        if (requestedMachine) {
+          const named = machines.find((m) => m.machineId === requestedMachine);
+          // Three distinct refusals, deliberately: "that machine is gone" and
+          // "that machine does not have this repo" send a user to completely
+          // different fixes, and collapsing either into the generic "nobody is
+          // offering it" would send them looking for a problem elsewhere while
+          // another machine sits there holding the repo.
+          if (!named || !named.online || !uplinks.get(named.machineId)) {
+            return error(`machine "${requestedMachine}" is not online right now`);
+          }
+          if (!offers(named)) return error(`that machine is not offering repo "${repoKey}"`);
+          target = named;
+        } else {
+          target = machines.find((m) => m.online && offers(m));
+        }
         const uplink = target ? uplinks.get(target.machineId) : undefined;
         if (!target || !uplink) {
           return error(`no machine is offering repo "${repoKey}" right now`);

@@ -235,12 +235,11 @@ export async function startServer(opts: {
 
   const attachedRepos = (): AttachedRepo[] => [...repos.values()].filter(isAttached);
 
-  /** The first attached repo, when there is one. `machineView()` below uses
-   *  this permanently — its no-persisted-identity fallback names itself after
-   *  whatever repo happens to be attached, same as day one. The relay's
-   *  `repoKey` (Relay ctor, below) is the one remaining TEMPORARY caller: it
-   *  still assumes a single repo per machine and is reshaped in the task that
-   *  wires the wire-level protocol (relay.ts, hub aggregation). */
+  /** The first attached repo, when there is one. `machineView()` below is the
+   *  only caller: its no-persisted-identity fallback names itself after
+   *  whatever repo happens to be attached, same as day one. Nothing on the
+   *  wire uses it any more — protocol v2 carries the whole `repoDecls()` list
+   *  instead of one scalar key. */
   const firstAttached = (): AttachedRepo | null => attachedRepos()[0] ?? null;
 
   /** What this machine offers, for the repo picker (spec §5.1). */
@@ -1279,8 +1278,14 @@ export async function startServer(opts: {
         {
           hubUrl: opts.hub.url,
           projectId: opts.hub.projectId,
-          repoKey: firstAttached()?.key ?? "",
-          uplinkId: opts.hub.uplinkId ?? randomUUID(),
+          name: opts.machine?.name ?? "machine",
+          repos: () => repoDecls(),
+          // The persisted `machineId` ahead of a fresh uuid, which is what
+          // dissolves debt §2.3: an uplink id minted per launch made a
+          // restarted laptop arrive as a stranger, leaving every session it
+          // had owned bound to a dead uplink and permanently `offline`. Under
+          // a stable id the store's takeover rule re-owns them silently.
+          uplinkId: opts.hub.uplinkId ?? opts.machine?.machineId ?? randomUUID(),
           connect: opts.hub.connect,
         },
         { createConnection },

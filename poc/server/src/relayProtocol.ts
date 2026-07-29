@@ -9,7 +9,7 @@ import { SLUG } from "./project.js";
 /** Bumped whenever a frame's meaning changes. A mismatch is rejected at the
  *  frame boundary (see parseUpFrame/parseDownFrame) rather than tolerated:
  *  a half-understood uplink misbehaves later, in a place with no context. */
-export const RELAY_PROTOCOL_VERSION = 1;
+export const RELAY_PROTOCOL_VERSION = 2;
 
 /** Applied as `maxPayload` on both the hub's browser-facing and uplink-facing
  *  sockets, and on the laptop's uplink. `ws` defaults to 100MB, which lets a
@@ -44,9 +44,8 @@ export interface SessionFacts {
  *  from yet, and inventing "main" would seed the create form with a branch the
  *  repo may not have.
  *
- *  Type only, deliberately: nothing puts a `RepoDecl` on the wire yet, so
- *  `RELAY_PROTOCOL_VERSION` is NOT bumped here. The frame that carries it bumps
- *  it, at which point a version mismatch means something real. */
+ *  On the wire as of v2, in `hello` and in the `repos` frame. Every bound
+ *  below is enforced by `repoList` at the frame boundary, not trusted. */
 export interface RepoDecl {
   key: string;
   label: string;
@@ -54,9 +53,25 @@ export interface RepoDecl {
   defaultBranch: string | null;
 }
 
+/** How many repos one machine may declare (spec §5.1). Enforced twice and
+ *  never silently: here, at the frame boundary, and at launch by the scan that
+ *  builds the list. Truncating instead would misrepresent the machine — the
+ *  browser would offer a repo picker missing entries nobody can see are
+ *  missing — and a set this large is a config error, not a big machine. */
+const MAX_REPOS = 100;
+
 /** Laptop → hub. */
 export type UpFrame =
-  | { t: "hello"; v: number; uplinkId: string; projectId: string; repoKey: string }
+  /** `uplinkId` IS the machine id (spec §5.2), and `name` is what a person
+   *  reads on the project screen. `repos` is everything this machine offers,
+   *  attached and candidate alike — the picker needs both. */
+  | { t: "hello"; v: number; uplinkId: string; name: string; projectId: string; repos: RepoDecl[] }
+  /** The machine's repo set changed (an attach or detach landed). Always the
+   *  FULL authoritative list, replacing the hub's record — never a diff. That
+   *  is what makes a re-attach safe: the hub's record is only ever overwritten
+   *  wholesale from the machine's own view, so there is no single-key rewrite
+   *  path for the two to drift through. */
+  | { t: "repos"; repos: RepoDecl[] }
   /** Events for ONE session, published once regardless of how many browsers are
    *  watching (spec §3.2). `runId` changes every time the laptop starts the
    *  session process, so the hub appends a new run instead of letting a
@@ -111,6 +126,31 @@ function isFacts(raw: unknown): raw is SessionFacts {
   );
 }
 
+/** The one validator for a declared repo set, shared by `hello` and `repos` so
+ *  the two can never drift apart. Returns null — never a partial list — for
+ *  anything out of bounds: a machine that declares one malformed entry has a
+ *  bug or is not what it claims to be, and silently dropping the entry would
+ *  leave the hub and the machine disagreeing about what is on offer, which is
+ *  precisely the disagreement `attached` exists to prevent. */
+function repoList(raw: unknown): RepoDecl[] | null {
+  if (!Array.isArray(raw) || raw.length > MAX_REPOS) return null;
+  const out: RepoDecl[] = [];
+  for (const item of raw) {
+    const d = obj(item);
+    if (!d) return null;
+    if (typeof d.key !== "string" || d.key.length < 1 || d.key.length > 200) return null;
+    if (typeof d.label !== "string" || d.label.length < 1 || d.label.length > 100) return null;
+    if (typeof d.attached !== "boolean") return null;
+    // Null is the ORDINARY case, not a fault: a candidate has no workspace to
+    // read a branch from, and inventing "main" would seed the create form with
+    // a branch the repo may not have.
+    const branch = d.defaultBranch;
+    if (branch !== null && (typeof branch !== "string" || branch.length > 100)) return null;
+    out.push({ key: d.key, label: d.label, attached: d.attached, defaultBranch: branch });
+  }
+  return out;
+}
+
 export function parseUpFrame(raw: unknown): UpFrame | null {
   const f = obj(raw);
   if (!f) return null;
@@ -118,10 +158,24 @@ export function parseUpFrame(raw: unknown): UpFrame | null {
     if (f.v !== RELAY_PROTOCOL_VERSION) return null;
     const uplinkId = str(f.uplinkId, ID);
     const projectId = str(f.projectId, SLUG);
-    if (!uplinkId || !projectId || typeof f.repoKey !== "string" || f.repoKey.length > 200) {
-      return null;
-    }
-    return { t: "hello", v: RELAY_PROTOCOL_VERSION, uplinkId, projectId, repoKey: f.repoKey };
+    // `name` is truncated rather than refused, matching the browser identity
+    // the hub already stamps (hub.ts's identify/join both `slice(0, 40)`) —
+    // an over-long machine name is a display problem, not a protocol fault.
+    if (!uplinkId || !projectId || typeof f.name !== "string") return null;
+    const repos = repoList(f.repos);
+    if (!repos) return null;
+    return {
+      t: "hello",
+      v: RELAY_PROTOCOL_VERSION,
+      uplinkId,
+      name: f.name.slice(0, 40),
+      projectId,
+      repos,
+    };
+  }
+  if (f.t === "repos") {
+    const repos = repoList(f.repos);
+    return repos ? { t: "repos", repos } : null;
   }
   if (f.t === "publish") {
     const sessionId = str(f.sessionId, SLUG);
