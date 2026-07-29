@@ -696,6 +696,16 @@ export async function startServer(opts: {
               );
               entry.attached = true;
             } catch (err) {
+              // REACHABLE TODAY ONLY THROUGH THE INJECTED SEAMS above: the
+              // real `defaultBaseRefFor` swallows git failures and falls back
+              // to "main" rather than throwing, `WorkspaceManager`'s
+              // constructor is assignment-only, and no non-test caller passes
+              // `workspaceFor`/`defaultBaseRef`. Kept for spec §9 parity, so
+              // that the day a real throw site appears (Task 8's CLI wiring, a
+              // workspace factory that validates its root) the no-partial-
+              // state semantics below are already pinned by test rather than
+              // written under pressure.
+              //
               // Stay unattached; reply the git error (spec §9). The default
               // branch is computed first, so it has to be rolled back too —
               // an unattached entry advertising a base ref would put a repo
