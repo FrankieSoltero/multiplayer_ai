@@ -83,11 +83,12 @@ Important + two minors are fixed in `2efe6a2`.
 
 ### ➡️ ORDERED NEXT STEPS — do these in this order
 
-1. **Pick the next PRD §8 section WITH THE USER** (PRD §8 preamble: listing order is not build
-   order; ordering is a deliberate per-section decision). Session #18's recommendation, put to
-   the user: **§8.3 Machines & repos** — debt §2.3 makes the hub's central promise false after
-   any laptop restart, the walk's UUID machine labels (W4) are the same missing grain, and §8.7's
-   durable record and §8.8's collision grouping would otherwise be built on per-launch UUIDs.
+1. ✅ **SECTION CHOSEN (user, session #18): §8.3 Machines & repos.** Rationale that carried:
+   debt §2.3 makes the hub's central promise false after any laptop restart, the walk's UUID
+   machine labels (W4) are the same missing grain, and §8.7/§8.8 would otherwise be built on
+   per-launch UUIDs. Brainstorm is OPEN — first scoping question (full D4: one daemon per
+   machine + hub-UI repo attach, vs the identity-grain slice first) was put to the user;
+   check the conversation for their answer before re-asking.
 2. **Run the cycle for the chosen section**: superpowers:brainstorming → spec → writing-plans,
    as §8.2 was done. Reuse `.superpowers/sdd/<date>-<section>/` for the ledger.
 3. PRD §8.4's "Today" was refreshed in this session (hub create now works); sweep the other
