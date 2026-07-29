@@ -130,7 +130,7 @@ a134bfb  test(hub): make the identify rejection test discriminate          ← T
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
 git status -sb                        # feature/projects, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png (NEVER commit these)
-git log --oneline -2                  # a docs: HANDOFF/ledger commit, directly atop 2efe6a2 fix(server): review follow-ups …
+git log --oneline -3                  # docs commits only above 2efe6a2 fix(server): review follow-ups … (the last CODE commit)
 git ls-remote origin refs/heads/main  # 0ffeaa3… — authoritative; the tracking ref has been observed stale in this repo
 for p in 3001 4000 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY
 cd poc/server && npx tsc --noEmit && npx vitest run   # 436 passed, 20 files  (was 429 before fix wave 2)
