@@ -1366,10 +1366,20 @@ describe("solo-mode entrance protocol", () => {
       ws.send(JSON.stringify({ type: "list_projects" }));
       await wait(40);
       const projectsMsg = seen.find((m) => m.type === "projects");
+      expect(projectsMsg).toBeTruthy();
       // Exactly one — a fresh solo server's entrance is the promised one-item
       // list, not an empty page with only a NEW PROJECT button.
       expect(projectsMsg.projects.map((p: any) => p.id)).toEqual(["acme"]);
       ws.close();
+    });
+
+    it("refuses a malformed boot-seed projectId instead of seeding a phantom", async () => {
+      // A non-slug seed would list a project that join / watch_project /
+      // create_session (all SLUG-gated) then refuse — a phantom entrance
+      // entry reachable by nothing.
+      await expect(
+        startServer({ port: 0, runQuery: echoRun, projectId: "Not A Slug!" }),
+      ).rejects.toThrow(/projectId/);
     });
   });
 

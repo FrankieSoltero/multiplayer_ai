@@ -156,7 +156,14 @@ export async function startServer(opts: {
   const projects = new Map<string, Project>();
   // Boot seed: the launch project exists before anyone asks, so a bare
   // localhost:PORT/ lands on a one-item entrance rather than an empty one.
-  if (opts.projectId) getOrCreateProject(opts.projectId);
+  // Shape-checked like every id that reaches the registry — a non-slug seed
+  // would list a project every SLUG-gated handler then refuses.
+  if (opts.projectId) {
+    if (!SLUG.test(opts.projectId)) {
+      throw new Error(`startServer: projectId must be a slug, got "${opts.projectId}"`);
+    }
+    getOrCreateProject(opts.projectId);
+  }
   const lastPush = new Map<Project, number>();
   const pushTimers = new Map<Project, NodeJS.Timeout>();
   const invites = new InviteStore({
@@ -443,9 +450,10 @@ export async function startServer(opts: {
       // every other pre-join read/write — without it, one cookie-less
       // connection could loop identify + create_project and grow the Map
       // unbounded. Hub parity is not at stake: `denyUnauthed` is this
-      // laptop's transport gate (relay-mode traffic skips it because the hub
-      // verified the browser), already applied to four handlers the hub has
-      // no equivalent of.
+      // laptop's cookie-transport gate — hub-mediated traffic arrives on the
+      // relay arm, where it no-ops because the hub already verified the
+      // browser — and it guards `peek`/`watch_project`/`create_session`,
+      // which the hub DOES mirror, without breaking parity.
       if (msg.type === "identify") {
         // Mirrors `join`'s "already joined" guard (hub.ts:360 has the same
         // one, for the same reason): a joined connection's identity is
