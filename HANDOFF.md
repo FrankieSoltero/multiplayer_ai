@@ -31,10 +31,10 @@ either way.** That is what collapsed the choice.
 4. Clean up the two solo cosmetics in the same pass: the head reading `0 MACHINES` and the repo
    `<select>` rendering zero options, both because `machines` is hub-only.
 
-⚠️ **Open sub-question for whoever implements it:** what `create_project` does on a standalone
-server. If `server.ts` already keys sessions by `projectId` (the `--project` flag suggests it does),
-creating one is nearly free and the entrance is genuinely functional. If it does not, **refuse it
-with a legible message** — never ship a NEW PROJECT button that silently does nothing.
+✅ **That sub-question is ANSWERED and implemented:** `server.ts` does key sessions by `projectId`
+(`getOrCreateProject`, `server.ts:226-231`), so `create_project` genuinely creates a reachable
+project rather than being refused. NEW PROJECT works in solo. See the open Criticals below —
+the *creation* is real; its **auth gate** and the **test that claims to prove it** are not.
 
 ### ⛔ RESUME HERE — the solo fix is IMPLEMENTED but has 2 CRITICALs open, and 1 decision for you
 
@@ -102,7 +102,7 @@ and none are fixed yet.** Full detail in the ledger; summary:
 7. **Task 13**: amend the walkthrough to run Step 2 twice (once `--project acme`, once with no
    `--project`), walk it, then open the PR with the §5.2/§4.1 surface gap disclosed in the body.
 
-### What is done — 25 commits, pushed, `feature/projects` = `origin/feature/projects` = `c302dce`
+### What is done — `feature/projects` = `origin/feature/projects` = `80037ec` (29 commits off `main` `0ffeaa3`)
 
 All 13 tasks complete and reviewed. Base is `main` `0ffeaa3`. **No PR is open yet** — deliberately
 held for your ruling above.
@@ -151,10 +151,12 @@ cd ../client  && npx tsc -b && npx vitest run && npm run build  # 247 passed, 28
 `"files": []`. Use **`npx tsc -b`**. Every "client tsc clean" claim made before session #17 found
 this was weaker evidence than it looked.
 
-### ➡️ ALL THAT REMAINS: Task 13 — walk it, then open the PR
+### Task 13 — walk it, then open the PR (LAST, after steps 1-6 above)
 
 `.superpowers/sdd/2026-07-28-projects/task-13-brief.md`. Four steps; Step 4's doc corrections are
 **partly done** (`docs/PRD.md`'s stale caveat is fixed in `c302dce`; this file is now current).
+**This is NOT the next thing to do** — the two open Criticals and C5 come first; see ORDERED NEXT
+STEPS above.
 
 **Amend the walkthrough before running it — the plan's script has a hole.** Step 2 uses
 `--project acme` throughout, so it **never exercises the `default` project**. That is exactly where
