@@ -4,7 +4,7 @@ import type { MachineInfo, ProjectSessionInfo, ProjectSummary } from "../types";
 import { slugPreview, sortSessions } from "../sessionRow";
 import { sessionBadgeLabel, sessionStateClass } from "../sessionState";
 import { groupByRepo } from "../repoGroups";
-import { choiceValue, chooseRepo, parseChoiceValue, repoChoices } from "../repoChoices";
+import { choiceValue, chooseRepo, parseChoiceValue, repoChoices, repoLabels } from "../repoChoices";
 import { canAct, refusalText } from "../projectAccess";
 import { freeSessionName } from "../sessionNames";
 import { entranceUrl, sessionUrlFrom } from "../pickerUrl";
@@ -111,6 +111,12 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   // special case it used to need is gone (spec §8).
   const choices = repoChoices(machines);
   const chosen = chooseRepo(choices, picked);
+  // repoKey/machineId are stable identity, not something to show a human
+  // (walk finding W4): every render site below looks a UUID up in one of
+  // these two maps first. Built off `machines` (spec §8), so a repo's label
+  // survives its own detach and a machine's name survives it going offline.
+  const labels = repoLabels(machines);
+  const machineNames = new Map(machines.map((m) => [m.machineId, m.name]));
   const groups = groupByRepo(sortSessions(sessions));
   const showRepoHeads = groups.length > 1;
 
@@ -196,7 +202,16 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
           {groups.map((group) => (
             <div key={group.repoKey || "unknown"}>
               {showRepoHeads && (
-                <div className="line pix sm dim">{group.repoKey || "unknown repo"}</div>
+                <div className="line pix sm dim">
+                  {/* `group.repoKey` is a plain `string` (never null/undefined) that
+                   *  `groupByRepo` sets to "" for a session with no repo key at all —
+                   *  a distinct case from "a real key no machine currently offers"
+                   *  (spec §8's raw-key fallback). A bare `labels.get(...) ?? group.repoKey
+                   *  ?? "unknown repo"` would print blank, not "unknown repo", for the ""
+                   *  case, since `??` does not treat "" as nullish. `||` on the terminal
+                   *  fallback keeps that case reading "unknown repo" as it always has. */}
+                  {labels.get(group.repoKey) ?? (group.repoKey || "unknown repo")}
+                </div>
               )}
               {group.sessions.map((s) => (
                 <div className="sprow" key={s.id}>
@@ -210,8 +225,8 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
                     {s.intent && <div className="spintent dim">{s.intent}</div>}
                     <div className="spwho pix sm">
                       {[
-                        s.repoKey ?? "unknown repo",
-                        s.machineId ?? "unknown machine",
+                        labels.get(s.repoKey ?? "") ?? s.repoKey ?? "unknown repo",
+                        machineNames.get(s.machineId ?? "") ?? s.machineId ?? "unknown machine",
                         s.participants.length > 0 ? s.participants.join(" · ") : "empty",
                       ].join("  ·  ")}
                     </div>
