@@ -671,6 +671,12 @@ function emptyFacts(sessionId: string): SessionFacts {
     pendingGate: null,
     skills: [],
     repoKey: null,
+    // Never measured, exactly like `repoKey` above and for the same reason: the
+    // hub cannot know which paths a session has touched until the owning laptop
+    // says so in a `facts` frame (spec §3.3). `[]` would be a confident claim
+    // that the session has changed nothing, which is not what "no facts yet"
+    // means and would render as a clean session on the project screen.
+    touched: null,
     lifecycle: "open",
   };
 }

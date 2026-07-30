@@ -33,6 +33,9 @@ const facts = (over: Partial<SessionFacts> = {}): SessionFacts => ({
   pendingGate: null,
   skills: [],
   repoKey: "github.com/acme/api",
+  // NON-NULL on purpose: these facts flow through snapshot assembly and the
+  // persister seam, so a real list discriminates pass-through from a drop.
+  touched: ["src/auth.ts"],
   lifecycle: "open",
   ...over,
 });
@@ -631,6 +634,9 @@ describe("HubStore persister seam", () => {
     pendingGate: null,
     skills: [],
     repoKey: null,
+    // Null, not []: this fixture stands for a session the hub has no facts for
+    // yet, matching `emptyFacts` in hubStore.ts.
+    touched: null,
     lifecycle: "open",
   };
 

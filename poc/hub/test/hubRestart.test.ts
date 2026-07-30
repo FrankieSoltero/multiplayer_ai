@@ -69,6 +69,9 @@ const factsFor = (intent: string): SessionFacts => ({
   pendingGate: null,
   skills: [],
   repoKey: "github.com/acme/api",
+  // NON-NULL on purpose: asserted in `expectOfflineContinuity` below, so this
+  // list is what proves `touched` survives persistence and rehydration.
+  touched: ["src/auth.ts"],
   lifecycle: "open",
 });
 
@@ -275,6 +278,10 @@ async function expectOfflineContinuity(port: number): Promise<void> {
     presence: "offline",
     machineId: "lap-1",
     repoKey: "github.com/acme/api",
+    // Survives the whole path the restart exercises — real uplink, the hub's
+    // validator, `facts_json`, hub death, and rehydration through an unchecked
+    // cast — and comes back out the watch snapshot as the laptop sent it.
+    touched: ["src/auth.ts"],
     lifecycle: "open",
     participants: ["ana"],
     driverName: "ana",
