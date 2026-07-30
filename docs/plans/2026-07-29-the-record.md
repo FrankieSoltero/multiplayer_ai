@@ -313,7 +313,9 @@ task edits the shared live `hubStore.ts`).
 **First step (before any test is written):**
 `npm --prefix poc/hub install better-sqlite3@^13.0.2 && npm --prefix poc/hub install -D @types/better-sqlite3@^7.6.13`
 — better-sqlite3 is a NATIVE module; confirm it builds on the target Node before investing in
-tests.
+tests. **Abort branch:** if the native build fails on the target Node, STOP the branch at this
+task and escalate to the owner with the named alternatives (pin a different better-sqlite3
+major / switch to `node:sqlite` / defer §8.7) — never improvise a dependency swap.
 
 **Dependency blast radius (recorded):** Task 7 imports `HubDb` unconditionally into `hub.ts`,
 so a failed native build / ABI mismatch breaks hub boot even with `HUB_DB` unset — the
@@ -688,7 +690,9 @@ live walk)*
 **Ledgering:** each numbered step is INDEPENDENTLY ledgered — a later step's failure does not
 invalidate earlier steps' recorded results (a step-6 contrast failure leaves the step-2/3 hub
 walk record standing; the fix routes to the owning task via the executor's fix loop and only
-the failed step re-runs).
+the failed step re-runs). The single-task packaging (hub walk + styling/a11y audit + solo walk
+in one task) is DELIBERATE: one launch/teardown cycle, one ledger record, and the walk runs
+last anyway — independent ledgering above already prevents cross-step contamination.
 
 **Interfaces:**
 - Consumes: Task 7's hub wiring (`HUB_DB`, `poc/hub/dist/main.js`), Task 10's solo handler,

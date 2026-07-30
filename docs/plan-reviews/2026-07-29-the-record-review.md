@@ -166,3 +166,22 @@ RecordPanel props final; Task 12 rendering row named assertion; Task 14 citation
 "§6 non-goals 2–3" and the tech-debt grep matched to the file's real `### N.M` format.
 
 → cycle 2 round 2 convened on the revised plan.
+
+## Cycle 2, Round 2 — BLOCKED at **86** (highest yet; zero floor breaches) → **OWNER OVERRIDE: EXECUTE**
+
+Run `wf_0e1a61b8-ad9` (0.19.0 council). D1 84 · D2 88 · D3 87 · D4 88 · D5 84 · D6 84.
+**27 violations — every one minor severity; 0 blocking fixes; 0 floor breaches.** Grader scores
+84–91; skeptic deductions on confirmed minors held the weighted overall at 86 vs the ≥95 gate.
+
+**Owner ruling (2026-07-29, given in advance of the verdict):** if round 2 is BLOCKED with only
+minors, override and execute. Condition met exactly — override invoked; execution proceeds via
+soltero-skills:lean-sdd. The gate-calibration issue (minors-only rounds can BLOCK forever) is
+ledgered as `docs/corrections-ledger.md` CC-001 for the end-of-month skill-patcher pass.
+
+Two owner-decision minors resolved into the plan at override time, both per the council's own
+suggested default: Task 13's single-task packaging declared deliberate; Task 4 gains a
+native-build abort branch (STOP + escalate, never an improvised dependency swap). The remaining
+25 mechanical minors are accepted as residual polish — recorded here, not applied; the executor
+schedules Tasks 4 and 6 non-concurrently regardless of the table (the round's D1 finding about
+package-wide typecheck/npm-install overlap). Full findings:
+`/private/tmp/claude-501/-Users-franciscosoltero-Desktop-Code-multiplayer-ai/4026c7bb-3d54-433a-9b0e-ced8f4edb2fd/tasks/wwxfwdxll.output`.
