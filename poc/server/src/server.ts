@@ -631,12 +631,25 @@ export async function startServer(opts: {
   /** Which of THIS session's contested paths each peer shares with it, ready
    *  for `summarizeSession`'s `contested` argument.
    *
-   *  Performance, load-bearing: both Task 7a accessors recompute local
+   *  WHAT THIS MAP COSTS, EXACTLY. Both Task 7a accessors recompute local
    *  collisions over every session on this laptop on EVERY call (see
    *  `contested.ts` — nothing derived there is stored, which is what stops it
-   *  going stale). So `contestedFor` runs exactly ONCE per digest build, and
-   *  the per-path peer lookup runs once per contested path — never once per
-   *  (peer, path), which is the N+1 this map exists to collapse. */
+   *  going stale). This map collapses the (peer × path) blow-up: without it,
+   *  `digestFor` would ask about every path once per PEER, so the lookup below
+   *  runs once per contested path instead of once per (peer, path).
+   *
+   *  It does NOT make the digest one pass. The true cost is `1 + P`
+   *  `localCollisions` passes for P contested paths — one inside `contestedFor`
+   *  and one more inside EACH `contestedSessionsFor` — each pass being O(sessions
+   *  on this laptop × their touched sets). That per-path recompute is the N+1
+   *  this map does not collapse, and it is accepted, not overlooked: it is the
+   *  deferred minor logged against Task 7a in the execution ledger
+   *  (`.soltero/lean-sdd/2026-07-30-awareness-collisions/progress.md`, "Task 7a:
+   *  minor (deferred): localCollisions recomputes per accessor call"), alongside
+   *  the sibling pass `agentDriver`'s pre-sweep recompute pays. Collapsing it
+   *  means hoisting one `localCollisions` result across both accessors, which
+   *  means giving `contested.ts` a cache and an invalidation rule — the very
+   *  thing "nothing derived here is stored" buys the freedom from. */
   function contestedByPeer(project: Project, sessionId: string): Map<string, string[]> {
     const byPeer = new Map<string, string[]>();
     // Ascending, code-unit order — the order `TeammateSummary.contested`

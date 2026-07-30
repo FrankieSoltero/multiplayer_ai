@@ -49,7 +49,13 @@ function usablePath(path: unknown): path is string {
 
 /** `collisionsFrom` over this laptop's own sessions — the local half of both
  *  accessors. Recomputed per call from `entry.touched`, which is the point:
- *  nothing derived here is stored, so nothing here can be stale. */
+ *  nothing derived here is stored, so nothing here can be stale.
+ *
+ *  PER CALL means per call: a caller that asks `contestedFor` once and then
+ *  `contestedSessionsFor` once per contested path pays `1 + P` full passes over
+ *  every session on this laptop, not one. That cost is accepted rather than
+ *  cached — see `server.ts`'s `contestedByPeer`, which spells it out and names
+ *  the ledger entry it was deferred under. */
 function localCollisions(project: Project): Collision[] {
   const inputs: CollisionInput[] = [];
   for (const [sessionId, entry] of project.sessions) {

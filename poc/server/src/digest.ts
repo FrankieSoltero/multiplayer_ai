@@ -27,21 +27,37 @@ export interface TeammateSummary {
  *  that row sits in a narrow fixed-width rail. */
 const CONTESTED_PATH_CAP = 5;
 
+/** C0 controls plus DEL — the SAME class `relayProtocol.ts`'s `CONTROL_CHARS`
+ *  rejects paths and gate reasons on. Spelled here rather than imported to keep
+ *  this module a leaf (it value-imports nothing), and applied as a STRIP rather
+ *  than a rejection: this is a render boundary, and a digest that threw or
+ *  vanished because a teammate typed a tab into their name would be worse than
+ *  one that shows the name without it. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+
 /** The spec §6a line: `session X (driven by Y) has also changed: a, b`.
  *
- *  Peer ids, paths and driver names are interpolated VERBATIM and never
- *  re-parsed, re-split or escaped. That is safe only because the validators
- *  bound the characters upstream — the frame validator rejects control
- *  characters and newlines in paths, and every peer id is bounded by `SLUG` —
- *  so no wire-sourced string can break out of its line and forge a second
- *  `<teammates>` entry. Adding escaping here would corrupt real paths without
- *  buying anything those validators do not already guarantee. */
+ *  WHAT IS BOUNDED, AND WHERE. Peer ids and paths are interpolated VERBATIM and
+ *  never re-parsed, re-split or escaped, because the validators already bound
+ *  their characters upstream: `relayProtocol`'s frame check rejects any path
+ *  carrying a control character or newline, and every peer id is `SLUG`-bounded
+ *  (`str(f.sessionId, SLUG)`). Escaping either here would corrupt a real path
+ *  without buying anything those validators do not already guarantee.
+ *
+ *  The driver NAME is the exception, which is why it alone is filtered on the
+ *  way in. Every producer of it truncates LENGTH and nothing else —
+ *  `server.ts`'s `join` (`msg.name.slice(0, 40)`), `relayProtocol`'s `hello`
+ *  name and its facts `driverName` (`typeof === "string"`, no character class).
+ *  A newline therefore reaches this line intact, and one is all it takes to
+ *  forge a second `<teammates>` entry in the agent's prompt. */
 function contestedLineFor(o: TeammateSummary): string {
+  const driverName = o.driverName?.replace(CONTROL_CHARS, "");
   // Falsy, not `=== null`: an empty participant name must degrade to the bare
-  // form too, and a caller reaching this from untyped JS must never render the
-  // word `undefined` at a teammate's name.
-  const who = o.driverName
-    ? `session ${o.id} (driven by ${o.driverName})`
+  // form too, a name left as nothing but control characters degrades with it,
+  // and a caller reaching this from untyped JS must never render the word
+  // `undefined` at a teammate's name.
+  const who = driverName
+    ? `session ${o.id} (driven by ${driverName})`
     : `session ${o.id}`;
   const first = o.contested.slice(0, CONTESTED_PATH_CAP);
   const rest = o.contested.length - first.length;

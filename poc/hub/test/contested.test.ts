@@ -155,6 +155,15 @@ const expectedFrame = (sessionId: string): ContestedFrame => ({
   collisions: [{ path: SHARED, sessionIds: ["auth", "billing"] }],
 });
 
+/** The CLEAR signal: an empty frame. Shared by the two rows that assert one,
+ *  so neither can drift into asserting a different shape of "nothing". */
+const cleared = (sessionId: string): ContestedFrame => ({
+  t: "contested",
+  sessionId,
+  paths: [],
+  collisions: [],
+});
+
 describe("the hub's contested producer", () => {
   it("tells each owning laptop which of ITS session's paths another machine is also touching", async () => {
     const hub = await hubOn();
@@ -192,12 +201,6 @@ describe("the hub's contested producer", () => {
     lapA.relay.publishFacts("auth", factsFor("auth", ["src/auth.ts"]));
     await until(() => Math.min(lapA.contested.length, lapB.contested.length), (n) => n > 1);
 
-    const cleared = (sessionId: string): ContestedFrame => ({
-      t: "contested",
-      sessionId,
-      paths: [],
-      collisions: [],
-    });
     expect(lapA.contested).toEqual([expectedFrame("auth"), cleared("auth")]);
     expect(lapB.contested).toEqual([expectedFrame("billing"), cleared("billing")]);
 
@@ -288,6 +291,55 @@ describe("the hub's contested producer", () => {
     // so purging its change-detection state too would be a frame storm on
     // every unrelated laptop each time one machine reconnects.
     expect(lapB.contested).toEqual([expectedFrame("billing")]);
+  }, TIMEOUT);
+
+  it("delivers the clear a laptop missed while its uplink was down, exactly once", async () => {
+    const hub = await hubOn();
+    const { lapA, lapB } = await twoContestingLaptops(hub.port);
+
+    lapA.relay.stop();
+    await snapshotUntil(hub.port, (s) => sessionIn(s, "auth")?.presence === "offline");
+
+    // The overlap goes away WHILE `auth`'s uplink is down: `billing` stops
+    // touching the shared file. `lap-2` is online and is told; `lap-1` cannot
+    // be told anything at all, and the hub writes nothing down for it.
+    lapB.relay.publishFacts(
+      "billing",
+      factsFor("billing", ["src/billing.ts"], { intent: "cleared-while-down" }),
+    );
+    await snapshotUntil(hub.port, (s) => sessionIn(s, "billing")?.intent === "cleared-while-down");
+    await until(() => lapB.contested.length, (n) => n > 1);
+    expect(lapB.contested).toEqual([expectedFrame("billing"), cleared("billing")]);
+    expect(lapA.contested).toEqual([expectedFrame("auth")]);
+
+    lapA.relay.start();
+    await snapshotUntil(hub.port, (s) => sessionIn(s, "auth")?.presence === "online");
+
+    // The clear this laptop never received. A purge that merely FORGETS the
+    // last frame cannot deliver it: the producer's "never contested and still
+    // not" shortcut then reads the forgotten session as never-contested and
+    // swallows the empty frame forever, leaving the laptop rendering a
+    // collision that ended while it was away.
+    const frames = await until(() => lapA.contested, (f) => f.length > 1);
+    expect(frames).toEqual([expectedFrame("auth"), cleared("auth")]);
+
+    // ONCE, like every other clear — the reconnect buys one unconditional
+    // frame, not a permanent exemption from change detection.
+    await pushWithoutChangingCollisions(
+      hub.port,
+      lapA,
+      "auth",
+      ["src/auth.ts", SHARED],
+      "after-reconnect-clear",
+    );
+    await pushWithoutChangingCollisions(
+      hub.port,
+      lapA,
+      "auth",
+      ["src/auth.ts", SHARED],
+      "after-reconnect-clear-2",
+    );
+    expect(lapA.contested).toHaveLength(2);
   }, TIMEOUT);
 
   it("re-sends after a re-registration that supersedes a live socket, without waiting for the old one to close", async () => {

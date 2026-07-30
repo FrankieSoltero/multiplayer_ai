@@ -147,10 +147,21 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
    *  duplicate frame per contested session: the record holds `touched`, and the
    *  first post-restart push recomputes from it with nothing to compare against
    *  (`hubRestart.test.ts`). One duplicate is acceptable; a silently missing
-   *  frame is not. */
+   *  frame is not.
+   *
+   *  THREE states, not two — the absent/present pair is not enough:
+   *    absent  — nothing has ever been sent for this session. The producer's
+   *              "still nothing contested" shortcut applies.
+   *    `null`  — something WAS sent, and `forgetContested` has since purged
+   *              what the laptop is believed to know. The next push must send
+   *              unconditionally, INCLUDING an empty frame.
+   *    a frame — the exact frame the laptop last received; compare by value.
+   *  A purge that simply deleted the key would collapse `null` into `absent`
+   *  and hand a purged session the shortcut, so a collision that cleared while
+   *  the uplink was down would never be cleared on the laptop. */
   const lastContestedSent = new Map<
     string,
-    { paths: string[]; collisions: { path: string; sessionIds: string[] }[] }
+    { paths: string[]; collisions: { path: string; sessionIds: string[] }[] } | null
   >();
   const channels = new Map<string, BrowserChannel>();
   const lastPush = new Map<string, number>();
@@ -262,7 +273,9 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       const previous = lastContestedSent.get(key);
       // Never contested and still not: say nothing. An empty frame is the
       // CLEAR signal, and a clear that nothing preceded is noise on every
-      // uplink for every session on every push.
+      // uplink for every session on every push. `null` is deliberately NOT
+      // this case — a purged session has been told something, so its clear is
+      // owed (see `lastContestedSent`'s three states).
       if (previous === undefined && next.paths.length === 0) continue;
       if (previous && sameContested(previous, next)) continue;
       down(uplink, {
@@ -294,13 +307,25 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
    *  until the collision set happened to change on its own. One redundant frame
    *  after a reconnect is acceptable; a silently missing one is not.
    *
+   *  MARKED, never deleted. Deleting would make a purged session indistinguish-
+   *  able from one that was never contested, and the producer's "still nothing
+   *  contested" shortcut would then swallow the CLEAR frame for a collision
+   *  that ended while the uplink was down — leaving that laptop showing a dead
+   *  collision until the set happened to change again. `null` says "this laptop
+   *  was told something; send the next state whatever it is, empty included".
+   *
+   *  Only keys that EXIST are marked, which keeps the shortcut intact for its
+   *  real case: a session that was never contested was never sent a frame, so
+   *  it has no key, so a reconnect owes it nothing and emits nothing.
+   *
    *  Called from the disconnect handler BEFORE `store.detach` and from the
    *  hello/supersede path — the second is not redundant: a superseded socket's
    *  late close is guarded out of the disconnect handler entirely. */
   function forgetContested(projectId: string, uplinkId: string): void {
     for (const session of store.snapshot(projectId).sessions) {
       if (store.ownerOf(projectId, session.id) === uplinkId) {
-        lastContestedSent.delete(contestedKey(projectId, session.id));
+        const key = contestedKey(projectId, session.id);
+        if (lastContestedSent.has(key)) lastContestedSent.set(key, null);
       }
     }
   }
