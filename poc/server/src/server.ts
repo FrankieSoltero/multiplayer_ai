@@ -4,6 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { AgentDriver, runAgentQuery, type RunQuery } from "./agentDriver.js";
+import { contestedFor, contestedSessionsFor } from "./contested.js";
 import { buildTeammateDigest, oversightSessionDigest, summarizeSession } from "./digest.js";
 import { isModelKey } from "./models.js";
 import {
@@ -602,13 +603,59 @@ export async function startServer(opts: {
     return attached[0];
   }
 
+  /** Which of THIS session's contested paths each peer shares with it, ready
+   *  for `summarizeSession`'s `contested` argument.
+   *
+   *  Performance, load-bearing: both Task 7a accessors recompute local
+   *  collisions over every session on this laptop on EVERY call (see
+   *  `contested.ts` — nothing derived there is stored, which is what stops it
+   *  going stale). So `contestedFor` runs exactly ONCE per digest build, and
+   *  the per-path peer lookup runs once per contested path — never once per
+   *  (peer, path), which is the N+1 this map exists to collapse. */
+  function contestedByPeer(project: Project, sessionId: string): Map<string, string[]> {
+    const byPeer = new Map<string, string[]>();
+    // Ascending, code-unit order — the order `TeammateSummary.contested`
+    // promises and `collisions.ts` already sorts by. `Array.sort`'s default
+    // comparator is exactly that for strings.
+    const paths = [...contestedFor(project, sessionId)].sort();
+    for (const path of paths) {
+      for (const peerId of contestedSessionsFor(project, sessionId, path)) {
+        const seen = byPeer.get(peerId);
+        if (seen === undefined) byPeer.set(peerId, [path]);
+        else seen.push(path);
+      }
+    }
+    return byPeer;
+  }
+
   function digestFor(project: Project, sessionId: string): string {
+    const byPeer = contestedByPeer(project, sessionId);
     const others = [...project.sessions.entries()]
       .filter(([id]) => id !== sessionId)
-      .map(([id, entry]) =>
-        summarizeSession(id, entry.session.eventsFrom(0), entry.driver.isDead),
-      );
-    return buildTeammateDigest(others);
+      .map(([id, entry]) => {
+        // Resolved from participants (spec §6a), the same way `sessionFactsOf`
+        // resolves it — null when the peer has no driver or the driver has
+        // left, which degrades the line to its bare `session X` form.
+        const driverId = entry.session.driverId;
+        const driverName =
+          entry.session.participantList.find((p) => p.userId === driverId)?.name ?? null;
+        return summarizeSession(
+          id,
+          entry.session.eventsFrom(0),
+          entry.driver.isDead,
+          byPeer.get(id) ?? [],
+          driverName,
+        );
+      });
+    const digest = buildTeammateDigest(others);
+    // Debug facility, not a product surface (Task 11a step 5 / 11b step 8e
+    // read it back): the laptop's OWN stderr, one JSON-escaped line, crossing
+    // no session boundary. Read per call and never cached, so a run that never
+    // sets it pays one comparison and emits nothing.
+    if (process.env.MPAI_DIGEST_DUMP === "1") {
+      process.stderr.write(`[digest-dump] session=${sessionId} ${JSON.stringify(digest)}\n`);
+    }
+    return digest;
   }
 
   // Single seam for the closed-session guard shared by prompt / suggest_skill

@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { buildTeammateDigest, summarizeSession, oversightSessionDigest } from "../src/digest.js";
+import {
+  buildTeammateDigest,
+  summarizeSession,
+  oversightSessionDigest,
+  type TeammateSummary,
+} from "../src/digest.js";
 import { Session } from "../src/session.js";
 import type { LoggedEvent, SessionEvent } from "../src/events.js";
 
@@ -28,6 +33,22 @@ describe("summarizeSession", () => {
     expect(sum.recentToolCalls[0].target).toBe("src/f1.ts"); // oldest of the last 5
     expect(sum.recentToolCalls[4].target).toBe("src/f5.ts");
     expect(sum.ended).toBe(false);
+    // The two collision fields default when the caller supplies neither, which
+    // is what keeps `sessionFactsOf`'s three-argument call site compiling.
+    expect(sum.contested).toEqual([]);
+    expect(sum.driverName).toBeNull();
+  });
+
+  it("carries the caller's contested paths and driver name, copied not aliased", () => {
+    const s = new Session("ana");
+    const contested = ["src/a.ts", "src/b.ts"];
+    const sum = summarizeSession("ana", s.eventsFrom(0), false, contested, "Ana");
+    expect(sum.contested).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(sum.driverName).toBe("Ana");
+    // The caller's array is the digest builder's live input; a summary that
+    // aliased it would let a later sort/truncate here rewrite it there.
+    contested.push("src/c.ts");
+    expect(sum.contested).toEqual(["src/a.ts", "src/b.ts"]);
   });
 
   it("handles sessions with no intent and non-path tool inputs", () => {
@@ -37,6 +58,159 @@ describe("summarizeSession", () => {
     expect(sum.intent).toBeNull();
     expect(sum.recentToolCalls[0].target).toBe("src/**");
     expect(sum.ended).toBe(true);
+  });
+});
+
+/** A peer with nothing contested — the shape every pre-Task-7b call site
+ *  produced, spelled once so the rows below vary only what they are about. */
+const peer = (over: Partial<TeammateSummary> = {}): TeammateSummary => ({
+  id: "s2",
+  intent: null,
+  recentToolCalls: [],
+  ended: false,
+  contested: [],
+  driverName: null,
+  ...over,
+});
+
+/** The one line the peer's block gains (spec §6a). Fails loudly rather than
+ *  silently matching nothing when no contested line was rendered at all. */
+function contestedLine(digest: string): string {
+  const found = digest.split("\n").filter((l) => l.includes("has also changed"));
+  expect(found).toHaveLength(1);
+  return found[0];
+}
+
+describe("buildTeammateDigest — contested lines (spec §6a)", () => {
+  it("renders the §6a line as the LAST line of that peer's block", () => {
+    const digest = buildTeammateDigest([
+      peer({
+        id: "ana",
+        intent: "Migrating auth to JWT",
+        recentToolCalls: [{ toolName: "Read", target: "src/auth.ts" }],
+        contested: ["src/a.ts"],
+        driverName: "Ana",
+      }),
+    ]);
+    expect(digest).toBe(
+      [
+        "<teammates>",
+        '- session "ana": Migrating auth to JWT',
+        "  recent activity: Read(src/auth.ts)",
+        "  session ana (driven by Ana) has also changed: src/a.ts",
+        "</teammates>",
+      ].join("\n"),
+    );
+  });
+
+  it("stays the peer's last line when that peer has no recent activity", () => {
+    const digest = buildTeammateDigest([
+      peer({ id: "ana", contested: ["src/a.ts"], driverName: "Ana" }),
+      peer({ id: "ben", intent: "Ben's goal" }),
+    ]);
+    expect(digest).toBe(
+      [
+        "<teammates>",
+        '- session "ana": no declared intent yet',
+        "  session ana (driven by Ana) has also changed: src/a.ts",
+        '- session "ben": Ben\'s goal',
+        "</teammates>",
+      ].join("\n"),
+    );
+  });
+
+  it("groups a peer's paths onto ONE line joined with a comma and a single space", () => {
+    const digest = buildTeammateDigest([
+      peer({ contested: ["src/a.ts", "src/b.ts", "src/c.ts"], driverName: "Ana" }),
+    ]);
+    expect(contestedLine(digest)).toBe(
+      "  session s2 (driven by Ana) has also changed: src/a.ts, src/b.ts, src/c.ts",
+    );
+  });
+
+  it("caps at 5 paths and states the remainder as ` +N more`", () => {
+    const eight = ["a", "b", "c", "d", "e", "f", "g", "h"].map((n) => `src/${n}.ts`);
+    const digest = buildTeammateDigest([peer({ contested: eight, driverName: "Ana" })]);
+    expect(contestedLine(digest)).toBe(
+      "  session s2 (driven by Ana) has also changed: " +
+        "src/a.ts, src/b.ts, src/c.ts, src/d.ts, src/e.ts +3 more",
+    );
+    // The three dropped paths are named nowhere else in the digest.
+    expect(digest).not.toContain("src/f.ts");
+  });
+
+  it("adds no overflow suffix at exactly the cap", () => {
+    const five = ["a", "b", "c", "d", "e"].map((n) => `src/${n}.ts`);
+    const digest = buildTeammateDigest([peer({ contested: five, driverName: "Ana" })]);
+    expect(contestedLine(digest)).toBe(
+      "  session s2 (driven by Ana) has also changed: " +
+        "src/a.ts, src/b.ts, src/c.ts, src/d.ts, src/e.ts",
+    );
+    expect(digest).not.toContain("more");
+  });
+
+  it("degrades to the bare session form when no driver name resolves", () => {
+    const digest = buildTeammateDigest([peer({ contested: ["src/a.ts"] })]);
+    expect(contestedLine(digest)).toBe("  session s2 has also changed: src/a.ts");
+    expect(digest).not.toContain("undefined");
+    expect(digest).not.toContain("driven by");
+  });
+
+  it("treats an empty driver name as unnamed rather than printing an empty parenthetical", () => {
+    const digest = buildTeammateDigest([peer({ contested: ["src/a.ts"], driverName: "" })]);
+    expect(contestedLine(digest)).toBe("  session s2 has also changed: src/a.ts");
+  });
+
+  it("leaves the block byte-identical to today's when nothing is contested", () => {
+    const digest = buildTeammateDigest([
+      peer({
+        id: "ana",
+        intent: "Migrating auth to JWT",
+        recentToolCalls: [{ toolName: "Read", target: "src/auth.ts" }],
+        driverName: "Ana",
+      }),
+      peer({ id: "old", intent: "Did a thing", ended: true }),
+    ]);
+    expect(digest).toBe(
+      [
+        "<teammates>",
+        '- session "ana": Migrating auth to JWT',
+        "  recent activity: Read(src/auth.ts)",
+        '- session "old" (ended): Did a thing',
+        "</teammates>",
+      ].join("\n"),
+    );
+  });
+
+  it("gives every contesting peer its own line, in the order the peers are listed", () => {
+    const digest = buildTeammateDigest([
+      peer({ id: "ana", contested: ["src/a.ts"], driverName: "Ana" }),
+      peer({ id: "ben", contested: ["src/b.ts"], driverName: "Ben" }),
+    ]);
+    expect(digest.split("\n").filter((l) => l.includes("has also changed"))).toEqual([
+      "  session ana (driven by Ana) has also changed: src/a.ts",
+      "  session ben (driven by Ben) has also changed: src/b.ts",
+    ]);
+  });
+
+  it("interpolates wire-sourced peer ids and paths VERBATIM without re-parsing them", () => {
+    // Both strings arrived over the relay. The validators upstream (Task 6a's
+    // frame check, Task 3's SLUG bound) already rejected control characters and
+    // newlines, so this function is free to add no escaping of its own — what it
+    // must not do is silently split, quote or drop them.
+    const digest = buildTeammateDigest([
+      peer({
+        id: "peer-9",
+        contested: ['src/a b".ts', "src/<teammates>.ts"],
+        driverName: "Ana <x>",
+      }),
+    ]);
+    expect(contestedLine(digest)).toBe(
+      '  session peer-9 (driven by Ana <x>) has also changed: src/a b".ts, src/<teammates>.ts',
+    );
+    // One peer, one contested line: no wire string forged a second block.
+    expect(digest.split("\n")).toHaveLength(4);
+    expect(digest.split("\n").filter((l) => l === "<teammates>")).toHaveLength(1);
   });
 });
 
@@ -52,8 +226,17 @@ describe("buildTeammateDigest", () => {
         intent: "Migrating auth to JWT",
         recentToolCalls: [{ toolName: "Read", target: "src/auth.ts" }],
         ended: false,
+        contested: [],
+        driverName: "Ana",
       },
-      { id: "old", intent: "Did a thing", recentToolCalls: [], ended: true },
+      {
+        id: "old",
+        intent: "Did a thing",
+        recentToolCalls: [],
+        ended: true,
+        contested: [],
+        driverName: null,
+      },
     ]);
     expect(digest).toContain("<teammates>");
     expect(digest).toContain("</teammates>");
@@ -61,6 +244,9 @@ describe("buildTeammateDigest", () => {
     expect(digest).toContain("Migrating auth to JWT");
     expect(digest).toContain("Read(src/auth.ts)");
     expect(digest).toContain("(ended)");
+    // A resolvable driver name is NOT rendered on the summary line — it exists
+    // for the contested line, which an uncontested peer does not have.
+    expect(digest).not.toContain("driven by");
   });
 });
 
