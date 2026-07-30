@@ -31,7 +31,9 @@ repo edit the same files and nobody learns until merge time. The agent's system 
 
 `touchedFiles(workdir, baseRef): string[]` — union of:
 - committed divergence: `git diff --name-only <merge-base(baseRef, HEAD)>..HEAD`
-- uncommitted work: `git status --porcelain` paths (agents frequently never commit)
+- uncommitted work: `git status --porcelain --untracked-files=all` paths (agents frequently
+  never commit; `-uall` so new files inside new directories stay visible — plain porcelain
+  collapses them into `dir/`, which can never collide)
 
 Paths are **repo-relative** (as git emits them), deduped, sorted, capped at `TOUCH_CAP = 500`
 (over-cap sets are truncated after sort and flagged with a final literal entry `"…"`). Rename
@@ -149,7 +151,9 @@ derivation then never needs same-working-copy dedup.
    members (and into the hub journal, journal retention policy applying) is ACCEPTED — same
    exposure class as the record's filesChanged; sweep together with v7b2 auth.
 6. **§6a frame shape (amends §6a):** the down-frame is
-   `{ type: "contested", sessionId, paths: string[], collisions: { path: string; sessionIds: string[] }[] }`
+   `{ t: "contested", sessionId, paths: string[], collisions: { path: string; sessionIds: string[] }[] }`
+   *(discriminator key amended `type`→`t` at execution time — every existing down-frame keys on
+   `t`; consistency ruling under delegated authority, 2026-07-30, before any consumer existed)*
    so hub-mode gate reasons and digest lines can NAME the colliding session, as §6 requires.
 7. **§7 old-scheme orphaning:** pre-branch flat-scheme sessions do NOT survive a daemon
    restart under project-scoped provisioning — their worktrees/branches sit unreferenced on

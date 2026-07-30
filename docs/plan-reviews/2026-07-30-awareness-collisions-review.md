@@ -68,3 +68,25 @@ Run `wf_9a96a2b6-d35`. D1 86 · D2 85 · D3 80 · D4 84 · D5 84 · D6 83. Block
 at all; (3) walk step-1/8a env inconsistency. Controller checkpoint given the 6-round plateau
 (82.3→84.2→83.6→83.9→83.6): one more fix pass + round 3 (cycle cap); if round 3 still blocks,
 adjudicate-and-execute (lean-sdd's per-task + final reviews remain the deeper net).
+
+## Cycle 2, Round 3 — **BLOCKED** (overall 85.2 — first over threshold; D6 78 floor breach; 2 blockings) → **CONTROLLER ADJUDICATION: FINAL FIX PASS + EXECUTE**
+
+Run `wf_8135b9ab-9a0`. D1 87 · D2 87 · D3 87 · D4 86 · D5 85 · D6 78. Seven rounds total
+(~140 findings). The 2 blockings share one root — the pre-gate recompute hung off the
+permission_request event, leaving the contained-write auto-allow site (buildCanUseTool) judging
+stale data — fixed by pinning recompute at the decision sites. D6's catches included two
+execution-savers (bare `git init` in the walk = unborn HEAD; peer sessionIds unvalidated in the
+reason line). Per the checkpoint recorded at cycle-2 round-2 (announced to the owner, no
+objection): the review loop ends here — ALL round-3 findings closed in a final pass,
+then lean-sdd executes. lean-sdd's per-task reviews + final whole-branch review are the
+remaining net. No further council rounds for this plan.
+
+## Execution record (2026-07-30, lean-sdd)
+
+All 21 tasks executed and independently reviewed; ~10 fix rounds all re-reviewed clean. The two
+live walks passed in both modes and caught one real defect (turn_end had no facts push — the
+signal was one-event-stale; fixed in 1e717a3, confirmed live by the solo walk). Final
+whole-branch review: 0 Critical / 1 Important (reconnect-clear hole, fixed in 7402eab) / 4
+minors (3 fixed, 1 skipped-disclosed). Fresh suites at the PR tree: server 709 · hub 195 ·
+client 361, tsc ×3 clean. Execution ledger (gitignored scratch):
+.soltero/lean-sdd/2026-07-30-awareness-collisions/progress.md until post-merge cleanup.

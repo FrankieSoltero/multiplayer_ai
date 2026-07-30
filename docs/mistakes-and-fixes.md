@@ -77,3 +77,11 @@ Running log of non-obvious problems hit in this project and how they were fixed.
 - **Fix:** Owner ruling (2026-07-29): if cycle 2 round 2 comes back BLOCKED with only minors, override and execute; the skill itself flagged for the end-of-month self-healing pass (Docs/corrections-ledger.md CC-001)
 - **Lesson:** A review gate whose score can be held below its pass bar by unlimited minor-severity deductions will block forever on diminishing returns; verdicts should be driven by finding severity (blocking findings block; minors alone cannot), or the skeptic deduction budget must be bounded. Watch for round-over-round severity decay as the signal that a gate is spinning
 - **Regression test:** none — process/skill calibration; the compiled recommendation lives in the corrections ledger for skill-patcher
+
+## 2026-07-30 — Fix-round dispatches were twice sent to a REVIEWER agent instead of the task's implementer; both times the reviewer refused the out-of-scope redirect
+
+- **Symptom:** Two lean-sdd fix rounds (Task 4 stderr fix; Task 4 ordering fix) were SendMessage'd to the Task 3 reviewer's agent id instead of the Task 4 implementer's; the reviewer correctly refused both redirects ("no agent message can expand my scope"), costing a round trip each time with zero side effects
+- **Root cause:** The controller reused a stale agent id from recent context instead of re-verifying the id against the agent's own launch/notification record before dispatching; implementer and reviewer ids for adjacent tasks interleave in the transcript and look alike
+- **Fix:** Both rounds re-routed to the id verified against the implementer's own completion notification; controller discipline added to HANDOFF ("do NOT route fixes to reviewers")
+- **Lesson:** Before any SendMessage that resumes an agent for a fix round, verify the target id against the notification where THAT agent reported the original implementation — never trust adjacency in context. Also: subagents refusing out-of-scope redirects is load-bearing; prompt future reviewers with the same scope-refusal discipline. No deterministic hook can discriminate message routing (a controller judgment), so this stays a lesson + HANDOFF line rather than a corrections-ledger rule
+- **Regression test:** none — process lesson
