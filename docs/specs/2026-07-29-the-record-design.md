@@ -36,8 +36,14 @@ accepted event — nothing waits for session close.
 
 - `better-sqlite3` (+ `@types/better-sqlite3`), WAL mode. Synchronous API matches `HubStore`'s
   synchronous design. (`node:sqlite` rejected: still experimental on Node 22.)
-- DB path from env `HUB_DB`; default `.mpai-hub/hub.db` relative to the hub's cwd (directory
-  created if missing). `HUB_DB=:memory:` gives an ephemeral hub (tests, throwaway dev).
+- DB path from env `HUB_DB`; default **`~/.mpai/hub.db`** — home-anchored under the same
+  `MPAI_HOME`-overridable dotdir §8.3 uses for machine identity, so the launch directory never
+  decides where the record lives *(owner ruling 2026-07-29; replaces the earlier cwd-relative
+  `.mpai-hub/hub.db` draft)*. Directory created `0700` if missing. `HUB_DB=:memory:` gives an
+  ephemeral hub (tests, throwaway dev).
+- **Single-writer guard** *(owner ruling 2026-07-29)*: a PID lockfile beside the DB
+  (`<dbPath>.lock`); a second hub on the same file refuses to start naming the running PID;
+  stale locks (dead PID) are reclaimed. No lock for `:memory:`.
 - `startHub` opts gain `dbPath?: string` so tests inject temp files / `:memory:` directly.
 
 ### 3.2 Schema (v1)
@@ -150,9 +156,11 @@ Exact TypeScript types live in `record.ts` and are the contract; the plan pins t
 - Browser → hub: `{ type: "get_record", projectId }`.
 - Hub → browser: `{ type: "record", projectId, record: ProjectRecord }` (or the standard error
   shape on refusal).
-- **Access rule: `get_record` is allowed exactly where `watch_project` is allowed** — the record
-  exposes nothing `watch_project`'s event stream doesn't already stream. Unauthenticated access
-  follows whatever gate `watch_project` has today; no new gate class is invented.
+- **Access rule** *(amended by owner ruling 2026-07-29; supersedes the earlier watch_project-
+  parity draft)*: hub-side `get_record` **requires `identify`** (self-asserted in v7b1; the gate
+  line exists for v7b2's real auth to harden); membership is not required. Standalone-side it
+  follows `watch_project`'s existing `denyUnauthed()` gate. v7b2's auth work must sweep
+  `get_record` together with `watch_project`/`join`.
 - **Standalone-server parity** (standing ruling from §8.2): the solo server answers `get_record`
   from its own in-memory log via the same pure module. No SQLite on the laptop server — PRD §8.7
   places durability hub-side only.
@@ -201,6 +209,19 @@ Exact TypeScript types live in `record.ts` and are the contract; the plan pins t
 - **UI**: `recordView.ts` pure tests; render test for the panel toggle.
 - All game/turn/derivation tests follow house rules: revert-and-rerun (every new test must fail on
   the old code), no predicted suite totals.
+
+## 8a. Owner rulings (2026-07-29, during plan review — each amends the section it names)
+
+1. **§4.3 access:** hub `get_record` requires `identify`; membership not required.
+2. **§3.1 location:** default DB path is `~/.mpai/hub.db` (MPAI_HOME-overridable), not
+   cwd-relative.
+3. **§3.1 concurrency:** single-writer PID lockfile beside the DB; double-start refused loudly.
+4. **§4.1 approvals:** `requestId` is a join key used only to resolve `toolName`; it is NOT
+   surfaced in the record's `TurnApproval` type. Ratified drop, not an omission.
+5. **§3.1 lock reclaim:** a lockfile with a dead or unparsable PID is silently reclaimed at
+   boot. Blast radius accepted and documented: a fooled liveness check (PID reuse) would admit
+   a second writer; the dual failure (false-alive → boot refused though nobody holds the DB)
+   recovers by deleting `<dbPath>.lock`.
 
 ## 8. Open questions (not blocking this branch)
 
