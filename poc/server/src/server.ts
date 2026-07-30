@@ -15,6 +15,7 @@ import {
   type ProjectSessionEntry,
   type ProjectWatcher,
 } from "./project.js";
+import { projectRecordFrom, type RecordSessionInput } from "./record.js";
 import { Relay, type ConnectFn } from "./relay.js";
 import { defaultBaseRefFor, type RepoCandidate } from "./machineRepos.js";
 import { clampRepoDecl, MAX_REPOS, type RepoDecl } from "./relayProtocol.js";
@@ -957,6 +958,42 @@ export async function startServer(opts: {
         }
         watching = project;
         io.send(snapshotFor(project));
+        return;
+      }
+
+      // Unreachable on the RELAY arm, for the same reason as `peek` and
+      // `watch_project` above: the hub answers `get_record` from its own store
+      // (`poc/hub/src/hub.ts`) and never tunnels it, because only the hub sees
+      // every laptop's sessions. Parity is achieved by answering the SAME
+      // message the same way here, from this laptop's own log (spec §4.3) — it
+      // must never be "fixed" by tunnelling this branch's reply up an uplink,
+      // which would answer a multi-machine project with one machine's view.
+      if (msg.type === "get_record") {
+        if (denyUnauthed()) return;
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) {
+          return sendError("get_record requires a valid projectId");
+        }
+        // Non-creating read, exactly like `peek` above: an unknown project
+        // answers with an empty record rather than growing `projects`, so a
+        // caller cannot fill the Map by asking for records that don't exist.
+        const project = projects.get(projectId);
+        // One standalone server is one machine, so every session it owns
+        // carries the same id — the one `machineView()` reports to the project
+        // screen, or null when this server has no identity to report.
+        const machineId = machineView()?.machineId ?? null;
+        const sessions: RecordSessionInput[] = project
+          ? [...project.sessions.entries()].map(([id, entry]) => ({
+              facts: sessionFactsOf(id, entry, entry.repoKey),
+              machineId,
+              events: entry.session.eventsFrom(0),
+            }))
+          : [];
+        io.send({
+          type: "record",
+          projectId,
+          record: projectRecordFrom(projectId, sessions),
+        });
         return;
       }
 
