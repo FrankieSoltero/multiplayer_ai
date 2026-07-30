@@ -488,7 +488,17 @@ product requirements of the record, not infrastructure to be deferred indefinite
 
 *What:* the shared signal that keeps people and agents from colliding — the thesis in §1.1.
 
-*Today:* presence, the roster, pull notifications, and an oversight summarizer.
+*Today:* presence, the roster, pull notifications, an oversight summarizer, and cross-session
+collision awareness: git-derived `touched` facts recomputed at turn boundaries (`turn_end`, now in
+`INTERESTING`) and at all three auto-approve decision sites, grouped by project `repoKey` through
+the pure `collisionsFrom` (shared server/client) into a hub-computed `contested` down-frame naming
+the colliding peers. Surfaces as a `⚠ CONTESTED ▸ N` header badge, per-session contested markers,
+and `⚠ shares:` party rows (calm gold, never amber); agents get a tier (a) digest line plus a tier
+(b) auto-approve withdrawal with gate reason `contested with session X`, asked once per (file,
+session). On by default, advisory only — never blocks a write — and disabled wholesale with
+`MPAI_CONTESTED_GATE=0`, which restores today's auto-approve path unchanged. Fork grouping remains
+out of scope (known bound below); oversight configured hub-side is still open — split ruling, spec
+§8a.1, tracked on its own branch.
 
 *Final state:* file-collision detection across sessions grouped by repo — meaningful only once a
 project holds more than one repo, which is why it waited. Oversight configured hub-side.
