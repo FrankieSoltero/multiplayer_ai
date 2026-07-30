@@ -28,3 +28,12 @@ discriminating row missing; baseRef source unpinned; Task 2 had no risk/rollback
 hub-mode colliding-session identity absent from the wire (×2, resolved by ruling 6).
 
 All 33 findings dispatched to a fix pass; revision + round 2 on the 0.19.1 council follow.
+
+## Round 2 — **BLOCKED** (overall 84.2; zero floor breaches; 2 blocking violations) — first round on the 0.19.1 severity-driven gate
+
+Run `wf_5f058297-406`. D1 82 · D2 85 · (others in the findings file). The two blockings are one
+real defect: client tasks' `pretest` BUILDS poc/server, so rows 9a/9b/10 are dist WRITERS and
+the conflict-free client cells could race two builds over one dist — the exact hazard the §8.7
+execution dodged by hand. Fixes (controller): client rows join the mutual-exclusion group;
+Task 2 → 2a/2b (provisioning vs session-entry binding); Task 8 → 8a/8b (wire reason carrier vs
+policy); all minors applied. → round 3 (cycle cap).

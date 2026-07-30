@@ -23,9 +23,11 @@ existing 1s project push. Worktree provisioning becomes project-scoped first (ki
 
 - Rebuild `poc/server` (`npm --prefix poc/server run build`) after changing anything it
   exports — hub and client typecheck/bundle against its built `dist/`. **Carve-out:** Task 5
-  deliberately does NOT build (see its Verify and the Conflicts rationale below); the first
-  downstream consumer to run (Task 6, Task 7a, or Task 9a) performs the build that publishes
-  `dist/collisions.js`.
+  deliberately does NOT build (see its Verify and the Conflicts rationale below); whichever
+  task runs next publishes `dist/collisions.js` as part of its own `npm run build` — every
+  server/hub task after 5 builds, and so does every client task (its `pretest` builds
+  `../server`). Since no two of those tasks may be in flight together (all of 1–10 are one
+  exclusion group), the publish is never concurrent with a consumer's read.
 - TDD is the implementer's standing discipline (soltero-skills:lean-tdd): every new test shown
   RED on pre-task code (revert-and-rerun). Never predict suite totals.
 - Never `git add -A`; stage explicit paths; verify each commit with
@@ -42,12 +44,25 @@ existing 1s project push. Worktree provisioning becomes project-scoped first (ki
   collision; tier (b) downgrades an AUTO approval to a HUMAN question, nothing more.
 - Exact values used across tasks:
   - `TOUCH_CAP = 500`; truncation sentinel literal `"…"` (single U+2026 char); per-path wire
-    cap 512 chars.
+    cap 512 chars. **Canonical home:** both constants are DECLARED in
+    `poc/server/src/collisions.ts` (Task 5 — the isomorphic module) and re-exported unchanged
+    from `poc/server/src/touched.ts` (Task 1), so the isomorphic module never imports the
+    node-only one and no consumer sees two copies of the literal.
+  - **producer-side per-path rule (plan-authored; spec §3.1/§3.3 set the wire cap but no
+    producer rule — resolved here so the two do not contradict):** `touchedFiles` DROPS any
+    path longer than the 512-char wire cap before the cap/sentinel step. A single pathological
+    path therefore costs that path, never the session's whole facts frame (Task 3's validator
+    rejects the entire frame on one over-long path). Truncating instead was rejected: a
+    truncated path is a *different* path and would false-collide. Owner may override.
   - facts field `touched: string[] | null`.
   - down-frame (spec §8a ruling 6, amends §6a):
     `{ type: "contested", sessionId: string, paths: string[], collisions: { path: string; sessionIds: string[] }[] }`
     — `paths` bound identically to `facts.touched`: length ≤ `TOUCH_CAP + 1`, each ≤ 512 chars.
-  - header badge label `⚠ CONTESTED ▸ ${n}`; gate reason line `contested with session ${otherSessionId}`.
+  - header badge label `⚠ CONTESTED ▸ ${n}`; session-list repo-group chip label
+    `⚠ ${n} contested`. In BOTH literals `n` is a **count**, never a path list — for the badge,
+    the distinct contested paths involving this session; for the chip, the distinct contested
+    paths in that repo group.
+  - gate reason line `contested with session ${otherSessionId}`.
   - calm CSS class literal `contested-calm` (chip, session-row marker, header badge — amber
     tokens at `poc/client/src/terminal.css:37-39` stay reserved for gates).
   - worktree path `<repoRoot>/.mpai/worktrees/<projectId>/<slug>`; worktree branch
@@ -76,45 +91,62 @@ existing 1s project push. Worktree provisioning becomes project-scoped first (ki
 
 | Task | Files touched | Depends on | Conflicts with (no concurrency) | Risk tier |
 |------|---------------|------------|---------------------------------|-----------|
-| 1. touchedFiles module | `poc/server/src/touched.ts`, `poc/server/test/touched.test.ts` | — | 2, 3, 4, 5, 6, 7a, 7b, 8 | standard |
-| 2. project-scoped worktrees (§2.1) | `poc/server/src/workspace.ts`, `poc/server/src/server.ts`, `poc/server/src/project.ts`, `poc/server/test/workspace.test.ts`, `poc/server/test/project.test.ts` | — | 1, 3, 4, 5, 6, 7a, 7b, 8 | judgment |
-| 3. facts field `touched` | `poc/server/src/relayProtocol.ts`, `poc/server/src/project.ts`, `poc/server/test/relayProtocol.test.ts`, `poc/server/test/project.test.ts` | — | 1, 2, 4, 5, 6, 7a, 7b, 8 | standard |
-| 4. laptop recompute triggers | `poc/server/src/server.ts`, `poc/server/test/serverTouched.test.ts` | 1, 2, 3 | 1, 2, 3, 5, 6, 7a, 7b, 8 | judgment |
-| 5. collisionsFrom module | `poc/server/src/collisions.ts`, `poc/server/test/collisions.test.ts`, `poc/server/package.json` | — | 1, 2, 3, 4, 6, 7a, 7b, 8 | standard |
-| 6. hub contested down-frame | `poc/hub/src/hub.ts`, `poc/server/src/relayProtocol.ts`, `poc/hub/test/contested.test.ts`, `poc/hub/test/hubRestart.test.ts`, `poc/server/test/relayProtocol.test.ts` | 3, 5 | 1, 2, 3, 4, 5, 7a, 7b, 8 | judgment |
-| 7a. laptop contested storage + local derivation | `poc/server/src/server.ts`, `poc/server/test/serverContested.test.ts` | 4, 5, 6 | 1, 2, 3, 4, 5, 6, 7b, 8 | judgment |
-| 7b. digest tier (a) lines | `poc/server/src/digest.ts`, `poc/server/test/digest.test.ts` | 7a | 1, 2, 3, 4, 5, 6, 7a, 8 | standard |
-| 8. auto-approve withdrawal | `poc/server/src/permissions.ts`, `poc/server/src/server.ts`, `poc/server/src/pendingGate.ts`, `poc/server/src/relayProtocol.ts`, `poc/server/src/project.ts`, `poc/server/test/permissions.test.ts`, `poc/server/test/serverGateContested.test.ts` | 4, 7a | 1, 2, 3, 4, 5, 6, 7a, 7b | judgment |
-| 9a. collisionView adapter | `poc/client/src/collisionView.ts`, `poc/client/src/collisionView.test.ts` | 3, 5 | — | standard |
-| 9b. client: session-list surfaces | `poc/client/src/components/SessionPicker.tsx`, `poc/client/src/terminal.css` | 9a | 10 | standard |
-| 10. client: badge + party rows | `poc/client/src/components/Header.tsx`, `poc/client/src/components/PartyPane.tsx`, `poc/client/src/App.tsx`, `poc/client/src/terminal.css`, `poc/client/src/components/PartyPane.test.tsx` | 5, 9a | 9b | standard |
-| 11. two-session browser walk | (no source files — execution-ledger record only) | 4, 6, 7b, 8, 9b, 10 | — | standard |
-| 12. docs sweep | `docs/PRD.md`, `docs/tech-debt.md` | 1–11 | — | mechanical |
+| 1. touchedFiles module | `poc/server/src/touched.ts`, `poc/server/test/touched.test.ts` | 5 | 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8b, 9a, 9b, 10 | standard |
+| 2a. project-scoped worktrees (§2.1) | `poc/server/src/workspace.ts`, `poc/server/src/server.ts` (provision call sites), `poc/server/test/workspace.test.ts` | — | 1, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8b, 9a, 9b, 10 | judgment |
+| 2b. session `workdir`/`baseRef` binding | `poc/server/src/project.ts`, `poc/server/src/server.ts` (session-creation paths), `poc/server/test/project.test.ts` | 2a | 1, 2a, 3, 4, 5, 6, 7a, 7b, 8a, 8b, 9a, 9b, 10 | judgment |
+| 3. facts field `touched` | `poc/server/src/relayProtocol.ts`, `poc/server/src/project.ts`, `poc/server/test/relayProtocol.test.ts`, `poc/server/test/project.test.ts` | — | 1, 2a, 2b, 4, 5, 6, 7a, 7b, 8a, 8b, 9a, 9b, 10 | standard |
+| 4. laptop recompute triggers | `poc/server/src/server.ts`, `poc/server/test/serverTouched.test.ts` | 1, 2b, 3 | 1, 2a, 2b, 3, 5, 6, 7a, 7b, 8a, 8b, 9a, 9b, 10 | judgment |
+| 5. collisionsFrom module | `poc/server/src/collisions.ts`, `poc/server/test/collisions.test.ts`, `poc/server/package.json` | — | 1, 2a, 2b, 3, 4, 6, 7a, 7b, 8a, 8b, 9a, 9b, 10 | standard |
+| 6. hub contested down-frame | `poc/hub/src/hub.ts`, `poc/server/src/relayProtocol.ts`, `poc/hub/test/contested.test.ts`, `poc/hub/test/hubRestart.test.ts`, `poc/server/test/relayProtocol.test.ts` | 3, 5 | 1, 2a, 2b, 3, 4, 5, 7a, 7b, 8a, 8b, 9a, 9b, 10 | judgment |
+| 7a. laptop contested storage + local derivation | `poc/server/src/server.ts`, `poc/server/src/project.ts` (`contestedFrame`), `poc/server/test/serverContested.test.ts`, `poc/server/test/project.test.ts` | 4, 5, 6 | 1, 2a, 2b, 3, 4, 5, 6, 7b, 8a, 8b, 9a, 9b, 10 | judgment |
+| 7b. digest tier (a) lines | `poc/server/src/digest.ts`, `poc/server/test/digest.test.ts` | 7a | 1, 2a, 2b, 3, 4, 5, 6, 7a, 8a, 8b, 9a, 9b, 10 | standard |
+| 8a. gate reason carrier | `poc/server/src/pendingGate.ts`, `poc/server/src/relayProtocol.ts`, `poc/server/test/pendingGate.test.ts`, `poc/server/test/relayProtocol.test.ts` | — | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8b, 9a, 9b, 10 | standard |
+| 8b. auto-approve withdrawal | `poc/server/src/permissions.ts`, `poc/server/src/server.ts`, `poc/server/src/project.ts`, `poc/server/test/permissions.test.ts`, `poc/server/test/serverGateContested.test.ts` | 4, 7a, 8a | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 9a, 9b, 10 | judgment |
+| 9a. collisionView adapter | `poc/client/src/collisionView.ts`, `poc/client/src/collisionView.test.ts` | 3, 5 | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8b | standard |
+| 9b. client: session-list surfaces | `poc/client/src/components/SessionPicker.tsx`, `poc/client/src/components/SessionPicker.test.tsx`, `poc/client/src/terminal.css` | 9a | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8b, 10 | standard |
+| 10. client: badge + party rows | `poc/client/src/components/Header.tsx`, `poc/client/src/components/PartyPane.tsx`, `poc/client/src/App.tsx`, `poc/client/src/terminal.css`, `poc/client/src/components/Header.test.tsx`, `poc/client/src/components/PartyPane.test.tsx` | 5, 9a | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8b, 9b | standard |
+| 11. two-session browser walk | ledger record; `docs/tech-debt.md` ONLY on a step-5 FAIL (no source files) | 4, 6, 7b, 8b, 9b, 10 | — | standard |
+| 12. docs sweep | `docs/PRD.md`, `docs/tech-debt.md` | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8b, 9a, 9b, 10, 11 | — | mechanical |
 
 The table alone is the scheduling contract: a task may start when its Depends-on tasks are
 complete AND no Conflicts-with task is in flight (implementation OR verification — a
 whole-package-suite run, a whole-package `tsc --noEmit`, or an `npm run build` counts).
-Conflicts are symmetric, listed on BOTH rows — verified by inspection after every edit to this
-table.
+Conflicts are symmetric, listed on BOTH rows — re-verified after every edit to this table (last
+verified for this revision: all 14 implementing rows, every Conflicts entry present on both
+rows, no self-references, no unknown labels; 11 and 12 are serialized by their Depends-on cells
+and carry no conflicts). With the client group now inside the server/hub mutual-exclusion set
+(cross-group rationale below), this plan permits NO concurrent
+writers at all: rows 1–10 are a single exclusion group and 11/12 depend on all of it, so tasks
+execute serially. lean-sdd's pipelining still applies in its read-only form — a reviewer that
+only reads the diff and the tree (no suite run, no `tsc`, no build) may run concurrently with
+the next task's implementer; a reviewer that executes any verify command may not.
 
-**Rationale (server/hub group).** Tasks 1–8 are one mutually-exclusive group. Every one of them
-either writes `poc/server/src` (1, 2, 3, 4, 5, 6, 7a, 7b, 8), or verifies with a whole-package
-`tsc --noEmit` / whole suite / `npm run build` over `poc/server` — including Task 6, whose hub
-suite pretest builds `poc/server`. Shared files sharpen it further (`server.ts`: 2/4/7a/8;
-`relayProtocol.ts`: 3/6/8; `project.ts`: 2/3/8; `poc/server/dist/`: everything that builds).
-Tasks 1 and 5 create only new files but still typecheck the whole package, so they carry the
-full group's conflicts too — no "new-file-only means conflict-free" exemption survives in this
-plan.
+**Rationale (server/hub group).** Tasks 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a and 8b are one
+mutually-exclusive group. Every one of them writes `poc/server/src` and verifies with a
+whole-package `tsc --noEmit` / whole suite / `npm run build` over `poc/server` — including
+Task 6, whose hub suite pretest builds `poc/server`. Shared files sharpen it further
+(`server.ts`: 2a/2b/4/7a/8b; `relayProtocol.ts`: 3/6/8a; `project.ts`: 2b/3/7a/8b;
+`pendingGate.ts`: 8a; `poc/server/dist/`: everything that builds). Tasks 1 and 5 create only
+new source files but still typecheck the whole package, so they carry the full group's
+conflicts too — no "new-file-only means conflict-free" exemption survives in this plan.
 
 **Rationale (client group).** 9a is a pure new module and is upstream of BOTH client writers
-(9b depends 9a; 10 depends 9a), so it can never run concurrently with them — its Conflicts
-cell is legitimately empty. 9b and 10 both write client component files and both run the whole
-client suite, and they overlap on `terminal.css` (9b adds `contested-calm`, 10 consumes it), so
-they conflict with each other. Client work writes no server/hub file, so it carries no
-server-group conflicts. It does READ `poc/server/dist/` (typecheck + bundle): if a client
-verify fails with a missing or half-written server export while a server task's `npm run build`
-is in flight, re-run the client verify once after that build completes before recording it as a
-real failure — a read-only dependency, not a scheduling conflict.
+(9b depends 9a; 10 depends 9a), so it can never run concurrently with them. 9b and 10 both
+write client component files and both run the whole client suite, and they overlap on
+`terminal.css` (9b adds `contested-calm`, 10 consumes it), so they conflict with each other.
+
+**Rationale (cross-group — client tasks are `poc/server/dist/` WRITERS, not readers).** Client
+tasks write no server or hub *source* file, but every client verify in this plan BUILDS the
+server package: `poc/client/package.json` declares `"pretest": "npm --prefix ../server run
+build"`, and Task 9a's verify additionally runs the client `npm run build` (`tsc -b && vite
+build`) against that freshly built `dist/`. `poc/server/dist/` is exactly the shared artifact
+the server/hub group's own `npm run build` steps write, and this table's own conflict rule
+already counts "an `npm run build`" as an in-flight conflict. So 9a, 9b and 10 are WRITERS of
+`poc/server/dist/`: each of them carries the full server/hub group (1, 2a, 2b, 3, 4, 5, 6, 7a,
+7b, 8a, 8b) in its Conflicts cell, and 9a, 9b, 10 appear symmetrically on every server/hub row.
+There is no client/server parallelism in this plan, and no "re-run the client verify once and
+call it a read-only race" allowance — a client verify that fails against a half-written
+`dist/` is a scheduling violation to be fixed by serialising, not retried.
 
 ---
 
@@ -125,11 +157,18 @@ real failure — a read-only dependency, not a scheduling conflict.
 **Interfaces — produces (verbatim):**
 
 ```ts
-export const TOUCH_CAP = 500;
-export const TOUCH_SENTINEL = "…";
+// TOUCH_CAP / TOUCH_SENTINEL are DECLARED in collisions.ts (Task 5 — the isomorphic module)
+// and re-exported here unchanged, so the isomorphic module never imports this node-only one.
+// This is why Task 1 depends on Task 5 in the dependency table.
+export { TOUCH_CAP, TOUCH_SENTINEL } from "./collisions.js";
+
+export const PATH_WIRE_CAP = 512;   // producer-side drop threshold (Global Constraints)
 export function touchedFiles(workdir: string, baseRef: string): string[];
-// Synchronous; shells out to git in `workdir`. THROWS on git failure —
-// the caller (Task 4) owns keep-previous-value semantics.
+// Synchronous; shells out to git in `workdir` via execFileSync with `{ timeout: 5000 }` —
+// EXACTLY 5000 ms per git invocation, because Task 4 puts this call on the permission-gate
+// path and a hung git in a large repo must never stall gate handling.
+// THROWS on git failure, INCLUDING a timeout — the caller (Task 4) owns
+// keep-previous-value semantics.
 ```
 
 **Behavior:**
@@ -141,12 +180,16 @@ export function touchedFiles(workdir: string, baseRef: string): string[];
 | union + dedupe + sort | a path both committed and re-modified | appears once; output sorted ascending |
 | rename | `git mv a.ts b.ts` committed (or staged) | BOTH `a.ts` and `b.ts` present |
 | repo-relative | file in a subdirectory | path exactly as git emits (posix separators, no leading `./`, relative to repo root) |
-| cap + sentinel | > TOUCH_CAP distinct paths | first TOUCH_CAP after sort, then final element exactly `TOUCH_SENTINEL`; length = TOUCH_CAP + 1 |
+| over-long path (producer rule) | a changed path longer than `PATH_WIRE_CAP` (512) chars | DROPPED before the cap/sentinel step; every returned path is ≤ 512 chars, so this session's facts frame can never be rejected wholesale by Task 3's validator (paired with Task 3's "producer never emits a rejectable path" row). Not truncated — a truncated path is a different path and would false-collide |
+| cap + sentinel | > TOUCH_CAP distinct paths (after the over-long drop) | first TOUCH_CAP after sort, then final element exactly `TOUCH_SENTINEL`; length = TOUCH_CAP + 1 |
 | clean worktree | no divergence, nothing uncommitted | `[]` |
 | git failure | `workdir` is not a git repo / git exits non-zero | throws (Error carries git's stderr) |
+| git timeout | a git invocation exceeds the 5000 ms `execFileSync` timeout | throws, on the same path as any other git failure — Task 4 then keeps the previous `entry.touched` and the gate proceeds |
 
-**Exact values:** `TOUCH_CAP = 500`; `TOUCH_SENTINEL = "…"` (U+2026); status parsing must
-handle the porcelain rename format (`R  old -> new`, both sides contribute).
+**Exact values:** `TOUCH_CAP = 500`; `TOUCH_SENTINEL = "…"` (U+2026) — both DECLARED in
+`collisions.ts` (Task 5) and re-exported here; `PATH_WIRE_CAP = 512`; git timeout `5000` ms.
+Status parsing must handle the porcelain rename format (`R  old -> new`, both sides
+contribute).
 
 **Verify:** `cd poc/server && npx vitest run test/touched.test.ts && npx tsc --noEmit` → green
 (tests build real temp git repos; no mocking of git).
@@ -154,13 +197,11 @@ handle the porcelain rename format (`R  old -> new`, both sides contribute).
 
 ---
 
-## Task 2: project-scoped worktrees — debt §2.1 root fix *(spec §7, §8a.3)*
+## Task 2a: project-scoped worktrees — debt §2.1 root fix *(spec §7, §8a.3)*
 
 **Files:** modify `poc/server/src/workspace.ts`, `poc/server/src/server.ts` (provision call
-sites + session-creation binding), `poc/server/src/project.ts` (per-session `workdir` /
-`baseRef` fields); tests `poc/server/test/workspace.test.ts`, `poc/server/test/project.test.ts`
-(extend both — `project.test.ts` is shared with Task 3, which conflicts with this task, so the
-two never run concurrently).
+sites ONLY — the session-creation binding is Task 2b); test
+`poc/server/test/workspace.test.ts` (extend).
 
 **Risk / rollback — READ BEFORE THE FIRST NEW-SCHEME PROVISION:**
 
@@ -180,7 +221,37 @@ two never run concurrently).
 **Interfaces — produces:** `WorkspaceManager.provision(projectId: string, slug: string,
 baseRef: string)` (projectId is a new FIRST parameter; SLUG-validated like slug at point of
 use). Internal map key literal `${projectId}/${slug}`; path and branch as in Global Constraints.
-Also (spec §8a ruling 1, closing Task 4's input gap):
+
+**Behavior:**
+
+| Case | Input / state | Expected |
+|------|---------------|----------|
+| path scheme | provision("acme", "auth", base) | worktree at `<repoRoot>/.mpai/worktrees/acme/auth`, branch `mpai/acme/auth`, map key `acme/auth` |
+| cross-project isolation | provision("acme", "auth") then provision("beta", "auth") | two DISTINCT worktrees, two branches, two map keys; neither reuses the other (the debt §2.1 failure, now discriminated) |
+| same-project idempotence | provision("acme", "auth") twice | second call reuses the first worktree (existing idempotent-reuse semantics, keyed on `acme/auth`) |
+| branch-taken check ordering | branch `mpai/acme/auth` exists but worktree dir is gone | existing branch-taken behavior preserved, evaluated against the project-scoped branch name |
+| old flat scheme untouched | a legacy `<root>/.mpai/worktrees/<slug>` dir exists | never reused, never deleted, never migrated by any new-scheme call |
+| call sites | every `provision(` caller in server.ts | passes the session's projectId; no caller left on the old signature (compiler-enforced) |
+
+**Verify:** `cd poc/server && npx vitest run && npx tsc --noEmit` → WHOLE server suite green
+(live provisioning path). Then the mechanical scheme check:
+`command grep -n "path.join(this.worktreesRoot" poc/server/src/workspace.ts` → every hit
+includes a projectId argument (no single-segment `path.join(this.worktreesRoot, slug)` remains).
+**Commit:** `fix(server): project-scoped worktree provisioning — closes debt §2.1`
+
+---
+
+## Task 2b: bind `workdir` / `baseRef` to the session entry *(spec §8a ruling 1)*
+
+**Files:** modify `poc/server/src/project.ts` (the two new `ProjectSessionEntry` fields),
+`poc/server/src/server.ts` (session-creation paths only); test
+`poc/server/test/project.test.ts` (extend — shared with Task 3 and Task 7a, both of which
+conflict with this task, so the three never run concurrently).
+
+**Depends on Task 2a** — the binding stores exactly the baseRef handed to 2a's new
+`provision(projectId, slug, baseRef)` signature, so it cannot be written first.
+
+**Interfaces — produces** (spec §8a ruling 1, closing Task 4's input gap):
 
 ```ts
 // poc/server/src/project.ts — on ProjectSessionEntry
@@ -195,20 +266,15 @@ handler, `poc/server/src/server.ts:404-463`) — never re-derived, never default
 
 | Case | Input / state | Expected |
 |------|---------------|----------|
-| path scheme | provision("acme", "auth", base) | worktree at `<repoRoot>/.mpai/worktrees/acme/auth`, branch `mpai/acme/auth`, map key `acme/auth` |
-| cross-project isolation | provision("acme", "auth") then provision("beta", "auth") | two DISTINCT worktrees, two branches, two map keys; neither reuses the other (the debt §2.1 failure, now discriminated) |
-| same-project idempotence | provision("acme", "auth") twice | second call reuses the first worktree (existing idempotent-reuse semantics, keyed on `acme/auth`) |
-| branch-taken check ordering | branch `mpai/acme/auth` exists but worktree dir is gone | existing branch-taken behavior preserved, evaluated against the project-scoped branch name |
-| old flat scheme untouched | a legacy `<root>/.mpai/worktrees/<slug>` dir exists | never reused, never deleted, never migrated by any new-scheme call |
-| call sites | every `provision(` caller in server.ts | passes the session's projectId; no caller left on the old signature (compiler-enforced) |
-| baseRef bound | session created with a repo + baseRef `origin/main` | `entry.baseRef === "origin/main"` (character-identical to the string handed to provision) and `entry.workdir` is the provisioned worktree path |
+| baseRef bound | session created with a repo + baseRef `origin/main` | `entry.baseRef === "origin/main"` (character-identical to the string handed to `provision`) and `entry.workdir` is the provisioned worktree path |
 | no repo | session created without a repo | `entry.workdir === undefined`, `entry.baseRef === null` |
+| every creation path (discriminating) | a session made via `getOrCreateSession` AND one made via the `create_session` handler | both entries carry the same bound pair; neither path leaves `workdir`/`baseRef` unset while a worktree exists |
+| never re-derived | repo whose default branch is `main`, session provisioned from `origin/dev` | `entry.baseRef === "origin/dev"` — no call to `defaultBranch()`, no `"main"` literal on the binding path (compile-time: the fields are assigned only from the provision arguments) |
 
-**Verify:** `cd poc/server && npx vitest run && npx tsc --noEmit` → WHOLE server suite green
-(live provisioning path). Then the mechanical scheme check:
-`command grep -n "path.join(this.worktreesRoot" poc/server/src/workspace.ts` → every hit
-includes a projectId argument (no single-segment `path.join(this.worktreesRoot, slug)` remains).
-**Commit:** `fix(server): project-scoped worktree provisioning — closes debt §2.1`
+**Verify:** `cd poc/server && npx vitest run && npx tsc --noEmit` → WHOLE server suite green;
+`npm run build`. Mechanical check: `command grep -n "baseRef" poc/server/src/server.ts` → every
+session-creation hit assigns from the provision argument, none from a literal `"main"`.
+**Commit:** `feat(server): bind workdir and baseRef to the session entry`
 
 ---
 
@@ -216,7 +282,7 @@ includes a projectId argument (no single-segment `path.join(this.worktreesRoot, 
 
 **Files:** modify `poc/server/src/relayProtocol.ts`, `poc/server/src/project.ts`; tests
 `poc/server/test/relayProtocol.test.ts`, `poc/server/test/project.test.ts` (extend both;
-`project.test.ts` is shared with Task 2, which conflicts with this task).
+`project.test.ts` is shared with Tasks 2b and 7a, both of which conflict with this task).
 
 **Interfaces — produces:** `SessionFacts.touched: string[] | null` (relayProtocol.ts, beside
 `repoKey`); `ProjectSessionEntry.touched: string[] | null` storage field (project.ts, default
@@ -241,6 +307,7 @@ membership — asserted by the discriminating row below.
 | carried | entry.touched = ["a.ts","b.ts"] | sessionFactsOf output has exactly that array (copied, not aliased — mutation of the returned facts never mutates the entry) |
 | validation accepts | facts frame with touched: [] / ["a.ts"] / absent / null | accepted; absent normalizes to null |
 | validation rejects | touched: "x" / [1] / [513-char string] / TOUCH_CAP+2 entries | frame rejected with the existing malformed-facts error path |
+| producer never emits a rejectable path (paired with Task 1) | facts built by `sessionFactsOf` from a `touchedFiles` result computed in a repo that contains a path longer than 512 chars | the over-long path was already DROPPED producer-side (Task 1's over-long-path row), so the frame VALIDATES and the session's other paths survive — one pathological path never costs a session its whole facts frame |
 | project bound (exposure, discriminating) | two projects on one server, each with sessions carrying touched | a project push to project A's members contains touched for A's sessions ONLY — no session of project B appears in it at all |
 | protocol stability | RELAY_PROTOCOL_VERSION | UNCHANGED (additive optional field, spec §3.3); a v2 peer without the field still validates |
 
@@ -253,11 +320,11 @@ membership — asserted by the discriminating row below.
 ## Task 4: laptop recompute triggers *(spec §3.2)*
 
 **Files:** modify `poc/server/src/server.ts`; test `poc/server/test/serverTouched.test.ts`
-(new; real sessions over a real socket, real temp git worktrees via Task 2's provisioning).
+(new; real sessions over a real socket, real temp git worktrees via Task 2a's provisioning).
 
 **Interfaces — consumes:** `touchedFiles`/`TOUCH_CAP` (Task 1), `entry.touched` (Task 3),
-`entry.workdir` + `entry.baseRef` (Task 2 — the recompute call site reads baseRef from the
-persisted field and nowhere else), project-scoped provisioning (Task 2). Produces: no new
+`entry.workdir` + `entry.baseRef` (Task 2b — the recompute call site reads baseRef from the
+persisted field and nowhere else), project-scoped provisioning (Task 2a). Produces: no new
 exports — behavior only.
 
 **Behavior:**
@@ -268,8 +335,9 @@ exports — behavior only.
 | baseRef source (discriminating) | session provisioned with baseRef `origin/dev` while the repo's default branch is `main` | the git invocation uses `origin/dev` — the persisted `entry.baseRef`, never `defaultBranch()`, never a literal `"main"` |
 | null baseRef | `entry.baseRef === null` (session with no repo, or never provisioned) | touched stays null; NO git invocation, no error, no log spam |
 | no workdir | `entry.workdir === undefined` | touched stays null; no git invocation |
-| pre-gate | a `permission_request` for a write tool (Edit/Write/NotebookEdit) arrives | recompute BEFORE the gate is offered/answered, so Task 8 judges fresh data |
+| pre-gate | a `permission_request` for a write tool (Edit/Write/NotebookEdit) arrives | recompute BEFORE the gate is offered/answered, so Task 8b judges fresh data |
 | git failure | touchedFiles throws | previous `entry.touched` value KEPT (stale beats absent); logged once per session, not per event |
+| git hangs (bounded gate latency) | git exceeds `touchedFiles`' 5000 ms timeout (Task 1) during a PRE-GATE recompute | treated exactly as a git failure: previous `entry.touched` KEPT, the gate PROCEEDS (never blocked, never delayed past the timeout), logged once per session — a hung git in a large repo cannot stall gate handling |
 | no recompute storms | non-write tools, non-boundary events | no git invocation (discriminate: a `tool_call` Read appends → no recompute) |
 
 **Verify:** `cd poc/server && npx vitest run && npx tsc --noEmit` → WHOLE server suite green
@@ -287,6 +355,11 @@ modify `poc/server/package.json` (add `"./collisions"` export, same shape as `".
 
 ```ts
 export const COLLISIONS_MODULE_ID = "collisionsFrom/v1";
+// Canonical declaration site for both constants (Global Constraints). They live HERE, in the
+// isomorphic module, and touched.ts (Task 1) re-exports them — the reverse would drag a
+// node-only module into the client bundle through Task 5's own `sentinel inert` rule.
+export const TOUCH_CAP = 500;
+export const TOUCH_SENTINEL = "…";      // single U+2026 char
 export interface CollisionInput {
   sessionId: string;
   repoKey: string | null;
@@ -306,6 +379,7 @@ export function collisionsFrom(sessions: CollisionInput[]): Collision[];
 | Case | Input / state | Expected |
 |------|---------------|----------|
 | basic collision | two sessions, same repoKey, overlapping path | one Collision, sessionIds both, ascending |
+| single-session path (discriminating, spec §4 `sessionIds.length ≥ 2`) | one session touches `src/a.ts`; its peer in the SAME repoKey touches only `src/b.ts` | NO Collision emitted for either path, and across every case in this table every emitted Collision has `sessionIds.length ≥ 2` — an implementation that emitted single-sessionId Collisions must fail this row |
 | three-way | three sessions share a path | one Collision with 3 sessionIds |
 | grouping | same path, DIFFERENT repoKeys | no collision (fork bound, spec §2.7) |
 | null repoKey | sessions with repoKey null | excluded entirely |
@@ -316,11 +390,21 @@ export function collisionsFrom(sessions: CollisionInput[]): Collision[];
 | determinism + purity | same input twice, any order | deep-equal output sorted (repoKey, path, sessionIds asc); inputs not mutated |
 
 **Verify:** `cd poc/server && npx vitest run test/collisions.test.ts && npx tsc --noEmit` →
-green; `command grep -n "from \"node:" poc/server/src/collisions.ts` → empty (isomorphic).
-**No `npm run build` in this task** — building writes the shared `poc/server/dist/` that other
-in-flight tasks consume; the first downstream consumer (Task 6, 7a, or 9a) builds instead
-(Global Constraints carve-out). This task still typechecks the whole package, which is why its
-Conflicts cell lists every other server/hub task.
+green. Isomorphism check — **transitive, not direct-only** (a direct `node:` grep would pass
+while a relative import dragged a node-only module in behind it):
+
+- `command grep -n "from \"node:" poc/server/src/collisions.ts` → empty, AND
+- `command grep -nE "^\s*import " poc/server/src/collisions.ts` → every hit (if any) begins
+  `import type ` — type-only imports are erased at build, so nothing this module names can
+  reach the client bundle. A value import of ANY module, relative or not, fails this check.
+
+This is also why `TOUCH_CAP`/`TOUCH_SENTINEL` are declared in this file rather than imported
+from `touched.ts` (Task 1 re-exports them instead).
+**No `npm run build` in this task** — building writes the shared `poc/server/dist/`; whichever
+task runs next publishes `dist/collisions.js` with its own build (Global Constraints carve-out).
+This task still typechecks the whole package, which is why its Conflicts cell lists every other
+server/hub task AND every client task (client verifies build `../server` via `pretest` — see
+the cross-group rationale).
 **Commit:** `feat(server): collisionsFrom — pure per-repo intersection of touched sets`
 
 ---
@@ -344,8 +428,14 @@ validator); tests `poc/hub/test/contested.test.ts` (new, on the uplink harness),
 
 `paths` is exactly the distinct path set of `collisions`, sorted ascending; `sessionIds`
 excludes nothing — the recipient's own id IS present, matching `collisionsFrom`'s output shape.
-Bounds are **identical to `facts.touched`** (length ≤ `TOUCH_CAP + 1`, each path ≤ 512) so one
-validator shape serves both; the earlier "≤ TOUCH_CAP" phrasing is retired.
+**Note (deliberate harmonization, not a spec change).** Spec §6a's prose says the frame's paths
+are "capped at TOUCH_CAP", and §8a ruling 6 amends the frame's SHAPE only. This plan bounds
+`paths` **identically to `facts.touched`** — length ≤ `TOUCH_CAP + 1` (the +1 slot holds
+`TOUCH_SENTINEL`), each path ≤ 512 chars — so one validator shape serves both frames. That is a
+plan-authored harmonization to the bound spec §3.3 already pins for `touched`, recorded here
+(same treatment as Task 10's supersession note) so a reviewer does not read it as drift. It
+does not retire spec text: if the owner prefers, it can be banked as ruling 7 amending §6a. The
+spec remains the record; where it is explicit and this plan is wrong, the spec governs.
 
 Hub behavior: on each throttled project push, compute `collisionsFrom` over the project
 snapshot's sessions; for every session whose contested state CHANGED since last sent to its
@@ -364,6 +454,7 @@ stored/journaled by the hub for free).
 | validation rejects (relayProtocol) | inbound `contested` frame with `paths: "x"` / a 513-char path / TOUCH_CAP+2 entries / a `collisions` entry missing `sessionIds` / `sessionIds: [1]` | frame rejected with the existing malformed-frame error path — never partially applied |
 | offline uplink | collision involves a session whose uplink is offline | no send, no error; frame delivered on next change after reconnect (no replay obligation — the next push recomputes) |
 | restart preserves touched | hub restarts and hydrates from the journal (extends `poc/hub/test/hubRestart.test.ts`) | each hydrated `SessionFacts.touched` deep-equals what was journaled before the restart; the first post-restart push recomputes collisions from it and emits frames matching pre-restart state (change-detection state MAY reset — one duplicate frame after restart is acceptable and documented) |
+| old laptop / unknown down-frame (compat) | a laptop built before this task receives a `type: "contested"` frame | the frame is IGNORED by the unknown-frame path; the uplink is NOT disconnected and no error surfaces. `RELAY_PROTOCOL_VERSION` stays **UNCHANGED** (additive frame type — same posture as Task 3's additive optional field). Bumping the version instead would be an owner decision, not this task's |
 | thesis bound | frame contents | ONLY sessionId, paths and colliding session ids — no transcript data, no prompts, no names |
 
 **Verify:** `cd poc/hub && npx vitest run && npx tsc --noEmit` → WHOLE hub suite green;
@@ -375,11 +466,13 @@ server-side: `cd poc/server && npx vitest run test/relayProtocol.test.ts` → gr
 
 ## Task 7a: laptop contested storage + local derivation *(spec §6a)*
 
-**Files:** modify `poc/server/src/server.ts` (frame handler + storage + local derivation);
-test `poc/server/test/serverContested.test.ts` (new).
+**Files:** modify `poc/server/src/server.ts` (frame handler + local derivation),
+`poc/server/src/project.ts` (the `contestedFrame` field on `ProjectSessionEntry`); tests
+`poc/server/test/serverContested.test.ts` (new), `poc/server/test/project.test.ts` (extend —
+shared with Tasks 2b and 3, both of which conflict with this task).
 
 **Interfaces — consumes:** the `contested` frame (Task 6), `collisionsFrom` (Task 5), the
-laptop's own project session map. Produces (server-internal, exported for Task 7b and Task 8 —
+laptop's own project session map. Produces (server-internal, exported for Task 7b and Task 8b —
 these two names are the contract, character-exact):
 
 ```ts
@@ -391,8 +484,16 @@ export function contestedSessionsFor(sessionId: string, path: string): string[];
 // across both sources; [] when the path is not contested.
 ```
 
-Per-session storage: `contestedFrame: { paths: string[]; collisions: { path: string;
-sessionIds: string[] }[] } | null` (the last frame verbatim, null until one arrives). Local
+Per-session storage — named and homed like every other per-session field in this plan
+(`ProjectSessionEntry.contestedAsked`, `.workdir`, `.baseRef`):
+
+```ts
+// poc/server/src/project.ts — on ProjectSessionEntry
+contestedFrame: { paths: string[]; collisions: { path: string; sessionIds: string[] }[] } | null;
+// the last hub `contested` frame verbatim; null until one arrives
+```
+
+Local
 derivation is computed on read from live session state — never persisted, so it cannot go
 stale. `TOUCH_SENTINEL` is never a member of either accessor's output.
 
@@ -446,15 +547,52 @@ records that this ` +N more` phrasing supersedes spec §5's `+${rest}` example.
 
 ---
 
-## Task 8: auto-approve withdrawal — tier (b) *(spec §6b, §8a ruling 4)*
+## Task 8a: gate reason carrier — wire + state *(spec §6b's "the gate's UI line names why")*
+
+Pure carrier task: it adds the field and the wire slot, and NOTHING sets a non-null reason
+until Task 8b. Split out from the policy for the same reason Task 6's down-frame is its own
+task — a protocol change lands under its own commit.
+
+**Files:** modify `poc/server/src/pendingGate.ts` (the `reason` field),
+`poc/server/src/relayProtocol.ts` (the gate frame carries the reason to the client); tests
+`poc/server/test/pendingGate.test.ts` (extend), `poc/server/test/relayProtocol.test.ts` (extend).
+
+**Interfaces — produces:**
+
+```ts
+// poc/server/src/pendingGate.ts — PendingGate gains:
+reason: string | null;   // e.g. `contested with session alpha`; null for ordinary gates
+
+// poc/server/src/relayProtocol.ts — the permission-gate down-frame gains:
+reason?: string | null;  // additive OPTIONAL field; absent and null are the same thing
+```
+
+**Behavior:**
+
+| Case | Input / state | Expected |
+|------|---------------|----------|
+| default null | any gate opened by today's code paths | `PendingGate.reason === null`; the emitted gate frame is byte-identical to today's apart from the optional field being absent/null |
+| carried to the client | a gate whose `reason` is `contested with session alpha` | the gate frame carries that exact string, character-for-character, to the client |
+| validation accepts | inbound gate frame with `reason` absent / null / a string | accepted; absent normalizes to null |
+| validation rejects | `reason: 7` / `reason: {}` / a string longer than 512 chars | frame rejected with the existing malformed-frame error path — never partially applied |
+| protocol stability | `RELAY_PROTOCOL_VERSION` | UNCHANGED (additive optional field, same posture as Task 3); a peer that ignores `reason` still validates and still renders the gate |
+| no policy yet (discriminating) | the whole server suite on this commit | no gate anywhere sets a non-null reason — this task ships the carrier only; Task 8b supplies the first writer |
+
+**Verify:** `cd poc/server && npx vitest run test/pendingGate.test.ts test/relayProtocol.test.ts
+&& npx tsc --noEmit` → green; then `npx vitest run` → WHOLE server suite green; `npm run build`.
+**Commit:** `feat(server): permission gates carry a reason line`
+
+---
+
+## Task 8b: auto-approve withdrawal — tier (b) *(spec §6b, §8a ruling 4)*
 
 **Files:** modify `poc/server/src/permissions.ts`, `poc/server/src/server.ts`,
-`poc/server/src/pendingGate.ts` (reason field), `poc/server/src/relayProtocol.ts` (the gate
-frame carries the reason to the client), `poc/server/src/project.ts` (`contestedAsked`); tests
+`poc/server/src/project.ts` (`contestedAsked`); tests
 `poc/server/test/permissions.test.ts` (extend), `poc/server/test/serverGateContested.test.ts` (new).
 
 **Interfaces — consumes:** `contestedFor(sessionId)` and `contestedSessionsFor(sessionId, path)`
-(Task 7a — these exact names), pre-gate recompute (Task 4). Produces:
+(Task 7a — these exact names), pre-gate recompute (Task 4), `PendingGate.reason` and its gate
+frame (Task 8a — this task is the first writer of that field). Produces:
 
 ```ts
 // poc/server/src/permissions.ts (pure)
@@ -464,9 +602,6 @@ export function contestedWrite(
   workdir: string,
   contested: ReadonlySet<string>,
 ): string | null;   // returns the repo-relative contested path, else null
-
-// poc/server/src/pendingGate.ts — PendingGate gains:
-reason: string | null;   // e.g. `contested with session alpha`; null for ordinary gates
 ```
 
 (resolve `file_path ?? notebook_path` against workdir — the `isContainedWrite` pattern — then
@@ -480,7 +615,11 @@ the behavior rows.
 **Kill switch (spec §8a ruling 4):** env `MPAI_CONTESTED_GATE`; the exact value `"0"` disables
 this task's behavior entirely. Read once per gate decision (not cached at boot) so an operator
 can flip it without a restart. Tier (a) surfaces (Task 7b digest, client UI) are NOT gated by
-it. The switch also covers the accepted degenerate case: a session whose `touched` approaches
+it, and that absence is deliberate: tier (a) mutates no shared state and changes no control
+flow — it adds bounded advisory text (≤ 5 paths + ` +N more` per peer, Task 7b) and read-only
+DOM. Its disable path is therefore a `git revert` of the Task 7b / 9b / 10 commits, which touch
+no shared state and need no runtime switch. Extending `MPAI_CONTESTED_GATE` to cover the digest
+would be an owner call, not a mechanical addition. The switch also covers the accepted degenerate case: a session whose `touched` approaches
 `TOUCH_CAP = 500` makes nearly every write in a shared repo contested, so auto-approve is
 effectively off repo-wide until the human answers once per file — that is the accepted worst
 case, it still never blocks a write, and `MPAI_CONTESTED_GATE=0` is the escape hatch.
@@ -533,11 +672,18 @@ export function sharedWith(sessionId: string, otherSessionId: string, collisions
 
 **Verify:** `cd poc/client && npx tsc -b && npx vitest run src/collisionView.test.ts` → green.
 Then the bundle check (minification-stable anchor — esbuild mangles binding names but preserves
-string literals, so grepping for `collisionsFrom` as an identifier is NOT valid):
-`npm run build && command grep -c "collisionsFrom/v1" dist/assets/*.js` → ≥ 1, proving Task 5's
-runtime-reachable module-id literal actually bundled. If that returns 0, fall back to the
-equivalent smoke check before concluding a bundling failure:
-`node --input-type=module -e "import {collisionsFrom,COLLISIONS_MODULE_ID} from './poc/server/dist/collisions.js'; if(COLLISIONS_MODULE_ID!=='collisionsFrom/v1')process.exit(1); console.log(collisionsFrom([]))"`
+string literals, so grepping for `collisionsFrom` as an identifier is NOT valid). **Every
+command in this block runs from `poc/client`:**
+
+`npm run build && command grep -c "collisionsFrom/v1" dist/assets/*.js` → `command grep -c`
+prints one `file:count` line per matched file, so the expected result is **at least one line
+whose count is ≥ 1** (equivalently, `command grep -l "collisionsFrom/v1" dist/assets/*.js`
+prints at least one path) — proving Task 5's runtime-reachable module-id literal actually
+bundled. If NO line has a non-zero count, fall back to the equivalent smoke check before
+concluding a bundling failure — note the specifier is relative to `poc/client`, the cwd this
+block established:
+
+`node --input-type=module -e "import {collisionsFrom,COLLISIONS_MODULE_ID} from '../server/dist/collisions.js'; if(COLLISIONS_MODULE_ID!=='collisionsFrom/v1')process.exit(1); console.log(collisionsFrom([]))"`
 → prints `[]`, exit 0.
 **Commit:** `feat(client): collisionView — client adapter over collisionsFrom`
 
@@ -547,7 +693,10 @@ equivalent smoke check before concluding a bundling failure:
 
 **Files:** modify `poc/client/src/components/SessionPicker.tsx`,
 `poc/client/src/terminal.css` (adds the `contested-calm` class — it does not exist today; the
-amber gate tokens at `terminal.css:37-39` stay untouched).
+amber gate tokens at `terminal.css:37-39` stay untouched); create
+`poc/client/src/components/SessionPicker.test.tsx` (**new** — no SessionPicker test exists in
+the repo today; this file holds the render tests for the rows below, against `collisionsFrom`
+fixtures, spec §9 "UI: render tests …").
 
 **Interfaces — consumes:** Task 9a's `projectCollisions` / `contestedCountFor` / `sharedWith`.
 
@@ -555,12 +704,14 @@ amber gate tokens at `terminal.css:37-39` stay untouched).
 
 | Case | Input / state | Expected |
 |------|---------------|----------|
-| repo-group chip | a repo group with ≥1 collision | group head renders `⚠ ${paths} contested` (distinct path count); groups without collisions render exactly as today |
+| repo-group chip | a repo group with ≥1 collision | group head renders exactly `⚠ ${n} contested` where `n` = the distinct contested path COUNT for that repo group (a number, never a path list — e.g. `⚠ 2 contested`, never `⚠ src/a.ts,src/b.ts contested`); groups without collisions render exactly as today |
 | session-row marker | a session appearing in any Collision | a `contested` marker beside the state badge; CLOSED sessions show both (spec §2.6) |
 | calm styling | the chip/marker | carries class `contested-calm` (assert the class name, not a color); the class exists in `terminal.css` and no amber token is referenced |
 | none | no collisions | zero new DOM (discriminating row) |
 
-**Verify:** `cd poc/client && npx tsc -b && npx vitest run` → WHOLE client suite green;
+**Verify:** `cd poc/client && npx tsc -b && npx vitest run src/components/SessionPicker.test.tsx`
+→ the new file's cases green (each shown RED on pre-task code first, per the TDD constraint);
+then `npx vitest run` → WHOLE client suite green. Plus
 `command grep -n "contested-calm" poc/client/src/terminal.css` → the class is defined, not just
 referenced.
 **Commit:** `feat(client): contested chips on the session list`
@@ -570,8 +721,11 @@ referenced.
 ## Task 10: client badge + party rows *(spec §5)*
 
 **Files:** modify `poc/client/src/components/Header.tsx`, `poc/client/src/components/PartyPane.tsx`,
-`poc/client/src/App.tsx`, `poc/client/src/terminal.css` (badge use of `contested-calm`); test
-`poc/client/src/components/PartyPane.test.tsx` (new or extend existing pattern).
+`poc/client/src/App.tsx`, `poc/client/src/terminal.css` (badge use of `contested-calm`); create
+`poc/client/src/components/Header.test.tsx` (**new** — owns the header-badge row and the
+App.tsx `useMemo` wiring row) and `poc/client/src/components/PartyPane.test.tsx` (**new** —
+neither file exists in the repo today; follow the `ProjectPicker.test.tsx` /
+`RecordPanel.test.tsx` pattern). Both are render tests over `collisionsFrom` fixtures (spec §9).
 
 **Interfaces — consumes:** Task 9a's `projectCollisions`/`contestedCountFor`/`sharedWith`.
 
@@ -579,17 +733,20 @@ referenced.
 
 | Case | Input / state | Expected |
 |------|---------------|----------|
-| header badge | current session has N > 0 contested paths | badge exactly `⚠ CONTESTED ▸ ${N}` beside the PULLS badge; hidden at 0; class `contested-calm`, not the gate amber |
-| party row | an OTHER PARTIES row whose session shares paths with yours | one line `⚠ shares: ${first3.join(", ")}` + ` +${rest} more` when > 3 |
-| no collision | no overlap with your session | rows and header exactly as today |
-| wiring | App.tsx | collisions computed once per project push (useMemo over project sessions), passed down as props — no per-render recompute of git-scale arrays |
+| header badge (`Header.test.tsx`) | current session has N > 0 contested paths | badge exactly `⚠ CONTESTED ▸ ${N}` beside the PULLS badge; class `contested-calm`, not the gate amber |
+| badge hidden at 0 (`Header.test.tsx`, discriminating) | current session has 0 contested paths | NO badge node rendered at all — not an empty one |
+| party row (`PartyPane.test.tsx`) | an OTHER PARTIES row whose session shares paths with yours | one line `⚠ shares: ${first3.join(", ")}` + ` +${rest} more` when > 3 |
+| no collision (`PartyPane.test.tsx`) | no overlap with your session | rows and header exactly as today |
+| wiring (`Header.test.tsx`, via the App-level render) | App.tsx | collisions computed once per project push (useMemo over project sessions), passed down as props — assert the memo is not recomputed when unrelated props change; no per-render recompute of git-scale arrays |
 
 **Note (deliberate supersession):** spec §5's example prints bare `+2` (`⚠ shares: src/a.ts,
 src/b.ts +2`). This plan uses ` +${rest} more` instead, so the party row and Task 7b's digest
 overflow read identically. That is a plan-authored change to a spec *example*, not to a spec
 rule; recorded here so a reviewer does not read it as drift.
 
-**Verify:** `cd poc/client && npx tsc -b && npx vitest run` → WHOLE client suite green.
+**Verify:** `cd poc/client && npx tsc -b && npx vitest run src/components/Header.test.tsx
+src/components/PartyPane.test.tsx` → both new files' cases green (each shown RED on pre-task
+code first); then `npx vitest run` → WHOLE client suite green.
 **Commit:** `feat(client): contested badge and party-row shares — the awareness surfaces`
 
 ---
@@ -597,9 +754,26 @@ rule; recorded here so a reviewer does not read it as drift.
 ## Task 11: two-session browser walk *(verification only, no source changes; spec §9 walk row —
 steps beyond it are house verification convention)*
 
-**Files:** none (deliverable = walk record in the execution ledger). Each numbered step —
-including every lettered sub-step — is INDEPENDENTLY ledgered; a later failure does not
-invalidate earlier recorded results.
+**Files:** none in the normal case (deliverable = walk record in the execution ledger). The ONE
+exception is step 5: a FAIL there requires a follow-up entry in `docs/tech-debt.md` — that is
+the only file this task may write, and it is why the dependency table's Files cell reads
+"ledger record; `docs/tech-debt.md` ONLY on a step-5 FAIL". Task 12 also edits that file and
+depends on this task, so it must expect a step-5 entry to be present already.
+
+Each numbered step — including every lettered sub-step — is INDEPENDENTLY ledgered; a later
+failure does not invalidate earlier recorded results.
+
+**What this walk does and does NOT discriminate (read before recording a PASS).** Steps 1–7 run
+alpha and beta on a SINGLE laptop attached to the hub. Task 7a defines the contested set as the
+UNION of the hub frame and local derivation, so a PASS in steps 4/6/7 is satisfiable by local
+derivation ALONE: these steps prove **"hub attached, derivation source not discriminated"**,
+not "the hub down-frame works end to end". Task 6's hub suite (`poc/hub/test/contested.test.ts`,
+two uplinks in one repoKey) is the only end-to-end evidence for the down-frame, and it is where
+a down-frame regression must be caught. Ledger steps 1–7 under that label verbatim.
+*(Owner option, not required by this plan: launch a SECOND laptop — second clone, second port,
+its own PID file — so steps 4/6/7 exercise a genuine cross-uplink frame. That upgrade would
+make the hub-mode claim discriminating; it is out of scope here because it adds a second
+user-machine port to the walk.)*
 
 **Process hygiene (binding for every step):** launch each process in the background and record
 its PID; stop ONLY by recorded PID. **Never `pkill -f node`, never `pkill` by process name, never
@@ -607,17 +781,34 @@ kill by port owner** — the user's own servers share this machine.
 
 **Steps (verbatim):**
 
-1. Build all three packages. Launch the hub, recording its PID:
+0. **Port pre-flight (before anything is launched).** From the repo root run
+   `lsof -ti :4000; lsof -ti :3002`. PASS = BOTH commands print nothing (both ports free). A
+   non-empty result means the port belongs to someone else on this shared machine: pick another
+   free port, ledger the substitution, and use it for the rest of the walk — **never kill the
+   occupant** (the process-hygiene rule above is binding here). Port 3001 is out of scope and is
+   never probed or touched. (Ledgered; not a plan-level Done-criteria step.)
+1. Build all three packages, in this order (hub and client build against the server's `dist/`):
+   `npm --prefix poc/server run build && npm --prefix poc/hub run build && npm --prefix poc/client run build`.
+   Launch the hub, recording its PID:
    `HUB_DB=$(mktemp -d)/hub.db CLIENT_DIST=poc/client/dist PORT=4000 node poc/hub/dist/main.js &
    echo $! > /tmp/mpai-walk-hub.pid`. Launch ONE laptop from a scratch git repo, recording its
-   PID: `mpai --hub ws://127.0.0.1:4000/uplink --port 3002 --no-open & echo $! >
-   /tmp/mpai-walk-laptop.pid` (NOT port 3001 — may be user-occupied). Ledger both PIDs.
-2. Browser: join project, create session `alpha`, drive one turn that writes a file (e.g.
-   `create notes.txt with one line`), wait for turn end.
-3. Create session `beta` in the SAME repo, drive a turn editing the SAME file.
+   PID — invoke the CLI by path, do NOT assume a global binary is installed:
+   `node poc/server/bin/mpai.js --hub ws://127.0.0.1:4000/uplink --port 3002 --no-open & echo $! >
+   /tmp/mpai-walk-laptop.pid` (NOT port 3001 — may be user-occupied). *(If `mpai` is already on
+   PATH via `npm --prefix poc/server link`, `mpai …` is equivalent; ledger which form was used.)*
+   Ledger both PIDs. PASS = both PIDs recorded, the hub answering on :4000 and the laptop on
+   :3002. (Ledgered; not a plan-level Done-criteria step.)
+2. Browser: open `http://127.0.0.1:3002`, join the project, create session `alpha`, drive one
+   turn that writes the file `notes.txt` (prompt: `create notes.txt with one line`) — the file
+   name is load-bearing, steps 4/5/6 and 8d/8e/8f all assert on `notes.txt` literally — and wait
+   for turn end. PASS = the turn ends, `notes.txt` is present in alpha's worktree, and alpha is
+   listed in the session list. (Ledgered; not a plan-level Done-criteria step.)
+3. Create session `beta` in the SAME repo, drive a turn editing the SAME file (`notes.txt`).
+   PASS = the turn ends and `notes.txt` is modified in beta's worktree. (Ledgered; not a
+   plan-level Done-criteria step.)
 4. PASS = after beta's turn ends: header badge `⚠ CONTESTED ▸ 1` in beta's session view; the
-   project screen's repo group shows the chip; alpha's OTHER PARTIES row (from beta's view)
-   shows `⚠ shares: notes.txt`. (Required PASS for plan-level done.)
+   project screen's repo group head shows the chip `⚠ 1 contested`; alpha's OTHER PARTIES row
+   (from beta's view) shows `⚠ shares: notes.txt`. (Required PASS for plan-level done.)
 5. Agent tier (a): drive one more beta turn asking the agent `what files are contested right
    now?`. **Pin the input, not just the prose:** record in the ledger the `digestFor` output for
    that turn (server log / test hook dump) and confirm it contains `notes.txt`.
@@ -635,22 +826,26 @@ kill by port owner** — the user's own servers share this machine.
    the solo leg uses a FRESH scratch repo and FRESH session names `gamma` / `delta`):
    - **8a.** Stop the hub by recorded PID only: `kill $(cat /tmp/mpai-walk-hub.pid)`; stop the
      laptop the same way. Create a fresh scratch git repo (`mktemp -d` + `git init`) and launch
-     solo from it: `mpai --port 3002 --no-open & echo $! > /tmp/mpai-walk-solo.pid`. PASS =
-     both old PIDs gone, solo laptop serving on 3002, no hub process running.
-   - **8b.** Join the project, create session `gamma`, drive one turn that writes `notes.txt`.
-     PASS = turn ends, session listed.
+     solo from it, same invocation form as step 1:
+     `node <repoRoot>/poc/server/bin/mpai.js --port 3002 --no-open & echo $! >
+     /tmp/mpai-walk-solo.pid`. PASS = both old PIDs gone, solo laptop serving on 3002, no hub
+     process running.
+   - **8b.** Open `http://127.0.0.1:3002`, join the project, create session `gamma`, drive one
+     turn that writes `notes.txt`. PASS = turn ends, session listed.
    - **8c.** Create session `delta` in the SAME fresh repo, drive a turn editing `notes.txt`.
      PASS = turn ends.
    - **8d.** UI parity (solo repeat of step 4): PASS = badge `⚠ CONTESTED ▸ 1` in delta's view,
-     repo-group chip present, gamma's OTHER PARTIES row shows `⚠ shares: notes.txt` — all from
+     repo-group chip `⚠ 1 contested`, gamma's OTHER PARTIES row shows `⚠ shares: notes.txt` — all from
      LOCAL derivation, with no hub running. (Required PASS.)
    - **8e.** Tier (a) parity (solo repeat of step 5): the `digestFor` dump for a delta turn
      contains `notes.txt`. (Required PASS.)
    - **8f.** Tier (b) parity (solo repeat of step 6): PASS = the gate ASKS with reason text
      `contested with session gamma` observed verbatim — proving local derivation alone names
      the colliding session. (Required PASS.)
-9. Shutdown: `kill $(cat /tmp/mpai-walk-solo.pid)`; sweep = `lsof -ti :4000 -ti :3002` returns
-   EMPTY. Port 3001 is out of scope (may be user-occupied) and is never touched.
+9. Shutdown: `kill $(cat /tmp/mpai-walk-solo.pid)`; sweep = `lsof -ti :4000; lsof -ti :3002`
+   both return EMPTY — meaningful only because step 0 established that both were empty to begin
+   with (or ledgered the substituted ports, which are the ones swept here). Port 3001 is out of
+   scope (may be user-occupied) and is never touched.
 
 **Verify:** ledger contains both-mode records incl. the gate-reason text observed verbatim
 (steps 6 and 8f) and the step-5/8e `digestFor` evidence.
@@ -661,6 +856,11 @@ kill by port owner** — the user's own servers share this machine.
 ## Task 12: docs sweep *(spec §8 non-goal 1; PRD §8.8)*
 
 **Files:** modify `docs/PRD.md` (§8.8 Today), `docs/tech-debt.md` (§2.1).
+
+**Pre-condition (Task 11 overlap).** If Task 11's step 5 recorded a FAIL, a follow-up entry for
+it is ALREADY in `docs/tech-debt.md` when this task starts — leave it in place, do not fold it
+into §2.1, and do not treat it as an unexpected diff. It is a new OPEN entry, so it adds no
+`RESOLVED` occurrence and the count expectation below (exactly **2**) is unaffected either way.
 
 **Behavior:**
 
@@ -692,3 +892,20 @@ None. All 33 council violations from round 1 are closed in this revision (see
 owner ruling rather than mechanically, and are recorded here because they changed the spec of
 record: the `contested` down-frame now carries `collisions` (spec §8a ruling 6) and tier (b)
 gains the `MPAI_CONTESTED_GATE` kill switch (spec §8a ruling 4).
+
+## Round-2 residuals
+
+None. All 27 council violations from round 2 (2 blocking + 25 minor) are closed in this
+revision (per-violation mapping: `.soltero/plan-fix-round2-report.md`). Three closures are
+**plan-authored rulings the owner may override** rather than mechanical edits, and are flagged
+here because a reviewer should see them as decisions, not drift:
+
+1. **Over-long paths (D6/V23).** `touchedFiles` DROPS paths > 512 chars (Global Constraints +
+   Task 1/Task 3 rows). Truncating or raising the wire cap were the alternatives; dropping is
+   the only option that never emits a rejectable frame and never invents a false path.
+2. **Frame-bound harmonization (D3/V9).** Task 6 states the `paths` bound as a plan-authored
+   harmonization to spec §3.3 rather than "retiring" spec §6a's phrasing; the owner may instead
+   bank it as ruling 7 amending §6a.
+3. **Walk discrimination (D6/V25).** Task 11 steps 1–7 are relabelled "hub attached, derivation
+   source not discriminated" instead of adding a second laptop; Task 6's hub suite carries the
+   end-to-end down-frame evidence. Adding a second laptop remains an owner option.
