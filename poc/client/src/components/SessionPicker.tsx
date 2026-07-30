@@ -9,6 +9,8 @@ import { canAct, refusalText } from "../projectAccess";
 import { freeSessionName } from "../sessionNames";
 import { entranceUrl, sessionUrlFrom } from "../pickerUrl";
 import { MachinesPanel } from "./MachinesPanel";
+import { RECORD_CLOSED, RecordPanel, recordStep } from "./RecordPanel";
+import type { RecordEvent, RecordState } from "./RecordPanel";
 
 /** How long to wait for a routed command to be answered before giving the
  *  button back. Shared by `create_session`, `attach_repo`, and `detach_repo`
@@ -38,8 +40,13 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   // attached on two machines at once, so a key alone names no destination.
   const [picked, setPicked] = useState<{ machineId: string; repoKey: string } | null>(null);
   const [baseRef, setBaseRef] = useState<string | null>(null);
+  const [recordState, setRecordState] = useState<RecordState>(RECORD_CLOSED);
   const wsRef = useRef<WebSocket | null>(null);
   const createTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Mirrors `recordState` for the socket handler, which is installed once per
+  // effect run and would otherwise close over the state of the render that
+  // installed it. Read through the ref, never through the closure.
+  const recordRef = useRef<RecordState>(RECORD_CLOSED);
 
   const clearCreateTimer = () => {
     if (createTimer.current === null) return;
@@ -57,6 +64,24 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
       setPending(false);
       setError(CREATE_TIMEOUT_TEXT);
     }, CREATE_TIMEOUT_MS);
+  };
+
+  // The RECORD panel's single seam (spec §5): every decision about opening,
+  // fetching and refreshing lives in `recordStep` (tested there); this performs
+  // what it returns.
+  //
+  // The readyState guard is not decoration: `send` on a still-CONNECTING socket
+  // THROWS, and a click landing in the first frames after mount would take the
+  // fetch down from inside an event handler. Skipping the send instead leaves
+  // the panel open on its loading line, and the next `project` push — which by
+  // definition arrives on a live socket, and refetches while open — heals it.
+  const stepRecord = (event: RecordEvent) => {
+    const step = recordStep(recordRef.current, event, props.projectId);
+    recordRef.current = step.state;
+    setRecordState(step.state);
+    const socket = wsRef.current;
+    if (socket === null || socket.readyState !== WebSocket.OPEN) return;
+    for (const out of step.send) socket.send(JSON.stringify(out));
   };
 
   useEffect(() => {
@@ -88,6 +113,10 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
           setError(msg.message);
           setPending(false);
         }
+        // Last, and unconditionally: the RECORD panel reacts to `record` and
+        // `project` and ignores everything else, so it sees every message
+        // without the handlers above having to know it exists.
+        stepRecord({ kind: "message", msg });
       } catch {
         return;
       }
@@ -239,6 +268,25 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
             </div>
           ))}
         </div>
+        {/* RECORD (spec §5) — collapsed by default: the record is a read a
+         *  user asks for, not a wall of history the screen opens with. Outside
+         *  the refusal gates on purpose: `get_record` requires identity, NOT
+         *  membership (spec §4.3 / §8a.1), so a spectator reads the record on
+         *  the same screen where they can act on nothing. The ▾/▸ glyph is
+         *  text, and `aria-expanded` carries the same state programmatically —
+         *  nothing here is announced by decoration alone. */}
+        <div className="pix top">
+          <button
+            className="btn wide"
+            aria-expanded={recordState.open}
+            onClick={() => stepRecord({ kind: "toggle" })}
+          >
+            RECORD {recordState.open ? "▾" : "▸"}
+          </button>
+        </div>
+        {recordState.open && (
+          <RecordPanel record={recordState.record} machines={machines} />
+        )}
         {refusal === null && (
           <MachinesPanel
             machines={machines}
