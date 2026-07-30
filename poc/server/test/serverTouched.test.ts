@@ -32,6 +32,8 @@ import { execFileSync } from "node:child_process";
 import { startServer } from "../src/server.js";
 import { AgentDriver, type DriverHooks, type RunQuery } from "../src/agentDriver.js";
 import { buildCanUseTool } from "../src/permissions.js";
+import type { RelaySocket } from "../src/relay.js";
+import { RELAY_PROTOCOL_VERSION } from "../src/relayProtocol.js";
 import { Session } from "../src/session.js";
 import { WorkspaceManager } from "../src/workspace.js";
 
@@ -84,6 +86,26 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const lastProject = (seen: any[]) => [...seen].reverse().find((m) => m.type === "project");
 const rowOf = (seen: any[], id: string) =>
   lastProject(seen)?.sessions.find((s: any) => s.id === id);
+
+/** One fake hub end: every up-frame this laptop emitted, IN ORDER, plus the
+ *  levers to drive the handshake. Same shape as `relay.test.ts`'s fakeSocket —
+ *  the real `Relay` runs, only the wire is fake, so this exercises the actual
+ *  publish path (`publishEvent` / `publishFacts` → `emit`). */
+function fakeHub() {
+  const sent: any[] = [];
+  const handlers = new Map<string, (arg?: unknown) => void>();
+  const socket: RelaySocket = {
+    send: (data: string) => sent.push(JSON.parse(data)),
+    close: () => {},
+    on: (event, fn) => void handlers.set(event, fn),
+  };
+  return {
+    sent,
+    connect: () => socket,
+    open: () => handlers.get("open")?.(),
+    deliver: (frame: unknown) => handlers.get("message")?.(JSON.stringify(frame)),
+  };
+}
 
 /** A fake stream that ends the turn (`result` → `turn_end`) per prompt. */
 const turnRun: RunQuery = async function* (prompts) {
@@ -324,6 +346,96 @@ describe("turn-boundary recompute", () => {
 
     expect(touchedGitCalls()).toEqual([]);
   });
+});
+
+describe("hub uplink — touched ships with its own turn", () => {
+  it("emits the fresh touched to the hub for the turn_end itself, with no later event", async () => {
+    const repo = seedRepo();
+    tmpDirs.push(repo);
+    const hub = fakeHub();
+    const worktrees = path.join(repo, ".mpai", "worktrees");
+    const server = await startServer({
+      port: 0,
+      runQuery: turnRun,
+      workspace: new WorkspaceManager(repo, worktrees),
+      hub: {
+        url: "ws://hub.test",
+        projectId: "default",
+        uplinkId: "lap-1",
+        connect: hub.connect,
+      },
+    });
+    close = server.close;
+    hub.open();
+    hub.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+
+    const ws = await connect(server.port);
+    sockets.push(ws);
+    const seen: any[] = [];
+    collect(ws, seen);
+    send(ws, { type: "watch_project", projectId: "default" });
+    send(ws, { type: "create_session", name: "beta", baseRef: "main" });
+    await vi.waitFor(() => {
+      expect(seen.some((m) => m.type === "session_created")).toBe(true);
+    });
+    const sessionId = seen.find((m) => m.type === "session_created").sessionId;
+    send(ws, { type: "join", projectId: "default", sessionId, userId: "u1", name: "Ana" });
+    await vi.waitFor(() => {
+      expect(rowOf(seen, sessionId)).toBeTruthy();
+    });
+    // Quiesce until the uplink has been silent for a FULL throttle window.
+    // Load-bearing, and the reason a first draft of this test passed against
+    // the defect: a trailing push left over from the join fires ~1s later, and
+    // if it lands after turn_end it carries the fresh set and masks the bug
+    // exactly the way the walk's "a later trivial event flushed it" did. After
+    // this loop `lastPush` is >1s old, so the prompt below pushes IMMEDIATELY
+    // (stale facts) and leaves NO timer queued when the turn ends.
+    for (let n = -1; n !== hub.sent.length; ) {
+      n = hub.sent.length;
+      await wait(1200);
+    }
+
+    fs.writeFileSync(path.join(worktrees, "default", sessionId, "beta.ts"), "export const b = 2;\n");
+    hub.sent.length = 0;
+    send(ws, { type: "prompt", text: "go" });
+
+    await vi.waitFor(() => {
+      expect(
+        hub.sent.some(
+          (f) =>
+            f.t === "publish" && f.events?.some((e: any) => e.type === "turn_end"),
+        ),
+      ).toBe(true);
+    });
+
+    // From here the client sends NOTHING. The hub must still learn the new
+    // touched set from this turn's own facts frame. Before the fix the last
+    // facts frame the hub ever saw was the pre-recompute one and this timed
+    // out — the collision signal was one event stale.
+    await vi.waitFor(
+      () => {
+        const facts = hub.sent.filter((f) => f.t === "facts" && f.sessionId === sessionId);
+        expect(facts.at(-1)?.facts.touched).toEqual(["beta.ts"]);
+      },
+      { timeout: 3000 },
+    );
+
+    const turnAt = hub.sent.findIndex(
+      (f) => f.t === "publish" && f.events?.some((e: any) => e.type === "turn_end"),
+    );
+    const factsAt = hub.sent.findIndex(
+      (f) => f.t === "facts" && f.sessionId === sessionId && f.facts.touched?.includes("beta.ts"),
+    );
+    expect(factsAt).toBeGreaterThan(turnAt);
+    // The turn's own frame — not a later one. Nothing but this turn's push may
+    // sit between the turn_end and the facts that carry its touched set.
+    expect(
+      hub.sent
+        .slice(turnAt + 1, factsAt)
+        .filter((f) => f.t === "publish").length,
+    ).toBe(0);
+    // 20s: the quiesce loop alone spends >2s waiting out the push throttle.
+  }, 20000);
 });
 
 describe("pre-gate recompute at the decision sites", () => {

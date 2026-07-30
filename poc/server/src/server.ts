@@ -109,6 +109,15 @@ const INTERESTING = new Set([
   "permission_mode_change",
   "game_score",
   "plugin_change",
+  // A turn boundary CHANGES what a push carries: the subscriber recomputes
+  // `entry.touched` on it (spec §3.2), so the facts snapshot built afterwards
+  // is materially different from the one before. Without this entry the
+  // recompute landed in memory and nothing shipped it — the hub kept the
+  // previous turn's touched set until some unrelated later event happened to
+  // trigger a push, which is a one-event-stale collision signal (walk-proven
+  // in hub mode). This is the SAME push every other interesting event uses,
+  // built after the recompute; it is not a second push and not an extra frame.
+  "turn_end",
 ]);
 
 const OVERSEER_EVENTS = new Set([
@@ -568,9 +577,11 @@ export async function startServer(opts: {
       entry = newEntry;
       project.sessions.set(sessionId, entry);
       session.subscribe((event) => {
-        // Turn boundary (spec §3.2): measure BEFORE the push this same event
-        // may schedule, so the push already carries the new set rather than
-        // the previous turn's.
+        // Turn boundary (spec §3.2). ORDER IS LOAD-BEARING: the recompute
+        // completes BEFORE the push for this same event is scheduled below —
+        // `turn_end` is in INTERESTING precisely so that push exists — so the
+        // facts frame this turn_end sends to watchers and to the hub is built
+        // from the set that just changed, not the previous turn's.
         if (event.type === "turn_end") recomputeTouched(project, sessionId);
         if (INTERESTING.has(event.type)) schedulePush(project);
         if (OVERSEER_EVENTS.has(event.type)) overseer.notify(project.id);
