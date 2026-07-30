@@ -29,11 +29,15 @@ below builds `poc/server` with an EXPLICIT command of its own — **every hub ta
 - Rebuild `poc/server` (`npm --prefix poc/server run build`) after changing anything it
   exports — hub and client typecheck/bundle against its built `dist/`. **Every implementing
   task (all 18: 1, 2a, 2b, 3, 4, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b) builds:**
-  each server task's Verify ends in `npm run build`, **each hub task's
+  each server task's Verify runs `npm run build` **as the last step of its BUILD chain, before any
+  read-only check** (greps, `test -f`, `test -s`), and **no read-only check may run a suite, a
+  `tsc`, or a build**; **each hub task's
   Verify builds `poc/server` BEFORE any hub command runs** (the build is the last step of the
   Verify's server leg, which precedes `cd ../hub`), and each client task's Verify begins with
-  `npm --prefix ../server run build`. There is no build carve-out and no task whose artifact is
-  published by a later task's build. Since no two implementing tasks may be in flight together
+  `npm --prefix ../server run build`. (The BUILD-chain wording is exact on purpose: Tasks 2a, 2b,
+  3, 6a, 8a, 8p and 9a all continue past the build with read-only checks, so "ends in
+  `npm run build`" was literally false for seven of the eighteen — cycle-2 round-3 fix.) There is
+  no build carve-out and no task whose artifact is published by a later task's build. Since no two implementing tasks may be in flight together
   (all 18 are one exclusion group), no build is ever concurrent with a consumer's read.
 - TDD is the implementer's standing discipline (soltero-skills:lean-tdd): every new test shown
   RED on pre-task code (revert-and-rerun). Never predict suite totals.
@@ -60,11 +64,27 @@ below builds `poc/server` with an EXPLICIT command of its own — **every hub ta
     (`import { PATH_WIRE_CAP, TOUCH_CAP } from "./collisions.js"` in `relayProtocol.ts`) and
     neither may re-state `512` as a bare literal. (`relayProtocol.ts` cannot import it from
     `touched.ts` — that module is node-only; `collisions.ts` is the isomorphic home precisely so
-    both sides can import it.) The `sessionIds` bounds in Task 6a's frame validator (each id ≤ 128
-    chars, ≤ 100 ids per entry) are plan-authored inbound-array bounds with no cross-task
-    consumer, so they stay inline literals in `relayProtocol.ts` beside the existing
-    `MAX_REPOS = 100`. The gate-reason cap (512 chars, Task 8a) is likewise an inline literal —
-    a SEPARATE bound from `PATH_WIRE_CAP` that merely shares its number.
+    both sides can import it.) **Peer session ids inside `collisions[].sessionIds` are validated
+    with the SAME bound as the frame's own top-level `sessionId`: the existing `SLUG` regex
+    `/^[a-z0-9-]{1,40}$/` exported from `poc/server/src/project.ts:11`, applied through the same
+    `str(id, SLUG)` helper `relayProtocol.ts:202`/`:208` already use** (cycle-2 round-3 fix: peer
+    ids are session ids of the same universe as the top-level one, and Task 8b interpolates them
+    into the human-read reason line, so bounding them merely as "strings ≤ 128 chars" bounded the
+    same value class two ways in one frame; SLUG also makes the 512-char gate-reason cap
+    unreachable by construction). No new regex, no new length literal. The only plan-authored
+    inbound bound left on that field is the **≤ 100 ids per entry** count, which stays an inline
+    literal in `relayProtocol.ts` beside the existing `MAX_REPOS = 100`. The gate-reason cap
+    (512 chars, Task 8a) is likewise an inline literal — a SEPARATE bound from `PATH_WIRE_CAP`
+    that merely shares its number.
+  - **Inbound peer strings are UNTRUSTED text (cycle-2 round-3 fix).** Everything a `contested`
+    frame carries is written by the hub and ends up (a) inside the agent's `<teammates>` prompt
+    block (Task 7b) and (b) inside a gate reason a human reads (Task 8b). Validators therefore
+    bound the CHARACTERS, not only the lengths: **every `paths[]` entry and every
+    `collisions[].path` must contain no control characters and no newline** (reject the frame
+    otherwise, on the existing malformed-frame path) — same rule on Task 3's `facts.touched`
+    validator, since that field feeds the same surfaces. Peer ids are covered by `SLUG` above.
+    Tasks 7b and 8b treat these strings as untrusted text: they interpolate them verbatim and
+    never re-parse, re-split or execute them.
   - **producer-side per-path rule (plan-authored; spec §3.1/§3.3 set the wire cap but no
     producer rule — resolved here so the two do not contradict):** `touchedFiles` DROPS any
     path longer than `PATH_WIRE_CAP` (512 chars) before the cap/sentinel step. A single pathological
@@ -80,20 +100,44 @@ below builds `poc/server` with an EXPLICIT command of its own — **every hub ta
     (rare) class of paths. The alternatives are raising `PATH_WIRE_CAP` or truncating, both
     rejected above. Recorded in the residuals register so the owner's override decision is made
     against this cost, not against the frame-size framing alone.
+    **The exemption is no longer SILENT (cycle-2 round-3 fix — this closes the plan's own stated
+    objection mechanically).** Task 1 emits ONE stderr line per `touchedFiles` call that dropped
+    anything, exactly: ``process.stderr.write(`[touched] dropped ${n} path(s) over ${PATH_WIRE_CAP}
+    chars in ${workdir}\n`)`` — a count and the worktree, never the path itself (a >512-char path
+    in a log line is the same wire-size problem one layer down). Asserted verbatim by Task 1's
+    over-long-path row. A dropped collision is still invisible to `collisionsFrom`, but it is now
+    attributable from the laptop's own stderr rather than undetectable.
+    **Escalation filed, execution NOT gated:** because this narrows LOCKED banked decision 1
+    (spec §2.1) on the plan's own authority, it is filed for the owner as a **proposed spec §8a
+    ruling 9 — "over-long paths: drop (current), truncate, or raise `PATH_WIRE_CAP`"** (see
+    `## Final-pass notes`). The plan executes on the drop-and-log behavior meanwhile: it is the
+    only option that never emits a rejectable frame and never invents a false path, so a later
+    ruling either confirms it or changes two behavior rows (Task 1's over-long-path row and Task
+    3's producer-never-emits-a-rejectable-path row) and one constant.
   - facts field `touched: string[] | null`.
   - down-frame (spec §8a ruling 6, amends §6a):
     `{ type: "contested", sessionId: string, paths: string[], collisions: { path: string; sessionIds: string[] }[] }`
     — `paths` bound identically to `facts.touched`: length ≤ `TOUCH_CAP + 1`, each ≤
-    `PATH_WIRE_CAP`; `collisions` length ≤ `TOUCH_CAP + 1` (one entry per retained path, so it can
-    never exceed `paths`), each entry's `path` ≤ `PATH_WIRE_CAP`, each `sessionIds` a NON-EMPTY array of strings,
-    each ≤ 128 chars, **at most 100 ids per entry** — plan-authored bound, same posture and
-    same number as `relayProtocol.ts`'s existing `MAX_REPOS = 100` inbound-array cap. These are
+    `PATH_WIRE_CAP` and free of control characters/newlines; `collisions` length ≤ `TOUCH_CAP + 1`
+    (one entry per retained path, plus the sentinel slot `paths` may carry — see the invariant in
+    Task 6a), each entry's `path` ≤ `PATH_WIRE_CAP` and likewise control-character-free, each
+    `sessionIds` a NON-EMPTY array of strings **each matching `SLUG`**, **at most 100 ids per
+    entry** — the count is the one plan-authored bound here, same posture and same number as
+    `relayProtocol.ts`'s existing `MAX_REPOS = 100` inbound-array cap. These are
     the validator's bounds, and Task 6a's validator rows assert each one.
   - header badge label `⚠ CONTESTED ▸ ${n}`; session-list repo-group chip label
     `⚠ ${n} contested`. In BOTH literals `n` is a **count**, never a path list — for the badge,
     the distinct contested paths involving this session; for the chip, the distinct contested
-    paths in that repo group. Session-row marker label: the exact literal **`⚠ contested`** (no
-    count — the row is one session; asserted verbatim by Task 9b's marker row).
+    paths in that repo group. Session-row marker label: the exact literal **`contested`** — **no
+    count and NO `⚠` glyph** (the row is one session; asserted verbatim by Task 9b's marker row).
+    **Cycle-2 round-3 fix — the earlier `⚠ contested` reading is WITHDRAWN.** Spec §5 gives two
+    different literals for the two session-list surfaces: the group chip carries the glyph
+    (`⚠ N contested`) but the per-session marker does not ("per-session rows involved get a
+    `contested` marker beside the state badge"). The plan had pinned `⚠ contested` and asserted it
+    verbatim, which put this plan's standing rule ("where this plan is silent or wrong and the
+    spec is explicit, the spec governs") in conflict with a task row — exactly the executor trap
+    the plan named and withdrew for the §6a `paths` bound. The spec literal wins; no new
+    plan-authored decision is created, so the register below stays complete.
   - gate reason line `contested with session ${otherSessionId}`.
   - calm CSS class literal `contested-calm` (chip, session-row marker, header badge). Its
     declaration, added by Task 9b to `poc/client/src/terminal.css`, uses the EXISTING non-amber
@@ -154,13 +198,13 @@ below builds `poc/server` with an EXPLICIT command of its own — **every hub ta
 |------|---------------|------------|---------------------------------|-----------|
 | 5. collisionsFrom module | `poc/server/src/collisions.ts`, `poc/server/test/collisions.test.ts`, `poc/server/package.json` | — | 1, 2a, 2b, 3, 4, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | standard |
 | 1. touchedFiles module | `poc/server/src/touched.ts`, `poc/server/test/touched.test.ts` | 5 | 2a, 2b, 3, 4, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | standard |
-| 2a. project-scoped worktrees (§2.1) | `poc/server/src/workspace.ts`, `poc/server/src/server.ts` (provision call sites), `poc/server/test/workspace.test.ts` | — | 1, 2b, 3, 4, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | judgment |
+| 2a. project-scoped worktrees (debt §2.1; spec §7, §8a.3) | `poc/server/src/workspace.ts`, `poc/server/src/server.ts` (provision call sites), `poc/server/test/workspace.test.ts` | — | 1, 2b, 3, 4, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | judgment |
 | 2b. session `workdir`/`baseRef` binding | `poc/server/src/project.ts`, `poc/server/src/server.ts` (session-creation paths), `poc/server/test/project.test.ts` | 2a | 1, 2a, 3, 4, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | judgment |
 | 3. facts field `touched` | `poc/server/src/relayProtocol.ts`, `poc/server/src/project.ts`, `poc/server/test/relayProtocol.test.ts`, `poc/server/test/project.test.ts` | 5 | 1, 2a, 2b, 4, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | standard |
-| 4. laptop recompute triggers | `poc/server/src/server.ts`, `poc/server/test/serverTouched.test.ts` | 1, 2b, 3 | 1, 2a, 2b, 3, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | judgment |
+| 4. laptop recompute triggers | `poc/server/src/server.ts`, `poc/server/src/agentDriver.ts` (the `recomputeTouched` hook member + its two decision-site calls, `:294`, `:531`), `poc/server/src/permissions.ts` (the decision-site call in `buildCanUseTool`'s write-tool path, `:141`), `poc/server/test/serverTouched.test.ts` | 1, 2a, 2b, 3 | 1, 2a, 2b, 3, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | judgment |
 | 6a. `contested` frame type + validator (protocol) | `poc/server/src/relayProtocol.ts`, `poc/server/test/relayProtocol.test.ts` | 3, 5 | 1, 2a, 2b, 3, 4, 5, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | standard |
-| 6b. hub producer — push hook + change detection | `poc/hub/src/hub.ts`, `poc/hub/test/contested.test.ts`, `poc/hub/test/hubRestart.test.ts` | 6a | 1, 2a, 2b, 3, 4, 5, 6a, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | judgment |
 | 7a. laptop contested storage + local derivation | `poc/server/src/contested.ts` (new), `poc/server/src/server.ts` (frame handler), `poc/server/src/project.ts` (`contestedFrame`), `poc/server/test/serverContested.test.ts`, `poc/server/test/project.test.ts` | 4, 5, 6a | 1, 2a, 2b, 3, 4, 5, 6a, 6b, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | judgment |
+| 6b. hub producer — push hook + change detection | `poc/hub/src/hub.ts`, `poc/hub/test/contested.test.ts`, `poc/hub/test/hubRestart.test.ts` | 6a | 1, 2a, 2b, 3, 4, 5, 6a, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | judgment |
 | 7b. digest tier (a) lines | `poc/server/src/digest.ts`, `poc/server/src/server.ts` (`digestFor` call site + `MPAI_DIGEST_DUMP`), `poc/server/test/digest.test.ts`, `poc/server/test/serverDigestContested.test.ts` | 7a | 1, 2a, 2b, 3, 4, 5, 6a, 6b, 7a, 8a, 8p, 8b, 8c, 9a, 9b, 10a, 10b | judgment |
 | 8a. gate reason carrier | `poc/server/src/pendingGate.ts`, `poc/server/src/events.ts`, `poc/server/src/relayProtocol.ts`, `poc/server/test/pendingGate.test.ts`, `poc/server/test/relayProtocol.test.ts` | — | 1, 2a, 2b, 3, 4, 5, 6a, 6b, 7a, 7b, 8p, 8b, 8c, 9a, 9b, 10a, 10b | standard |
 | 8p. `contestedWrite` pure predicate | `poc/server/src/permissions.ts`, `poc/server/test/permissions.test.ts` | 7a | 1, 2a, 2b, 3, 4, 5, 6a, 6b, 7a, 7b, 8a, 8b, 8c, 9a, 9b, 10a, 10b | standard |
@@ -168,7 +212,7 @@ below builds `poc/server` with an EXPLICIT command of its own — **every hub ta
 | 8c. client: the gate names why | `poc/client/src/types.ts`, `poc/client/src/components/Transcript.tsx`, `poc/client/src/components/Transcript.test.tsx` | 8a, 8b | 1, 2a, 2b, 3, 4, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 9a, 9b, 10a, 10b | standard |
 | 9a. collisionView adapter | `poc/client/src/collisionView.ts`, `poc/client/src/collisionView.test.ts`, `poc/client/src/types.ts` | 3, 5 | 1, 2a, 2b, 3, 4, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9b, 10a, 10b | standard |
 | 9b. client: session-list surfaces | `poc/client/src/components/SessionPicker.tsx`, `poc/client/src/components/SessionPicker.test.tsx`, `poc/client/src/terminal.css` | 9a | 1, 2a, 2b, 3, 4, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 10a, 10b | standard |
-| 10a. client: header badge + App wiring | `poc/client/src/components/Header.tsx`, `poc/client/src/App.tsx`, `poc/client/src/components/Header.test.tsx` | 5, 9a | 1, 2a, 2b, 3, 4, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10b | standard |
+| 10a. client: header badge + App wiring | `poc/client/src/components/Header.tsx`, `poc/client/src/App.tsx`, `poc/client/src/components/Header.test.tsx` | 5, 9a, 9b | 1, 2a, 2b, 3, 4, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10b | standard |
 | 10b. client: party-pane share rows | `poc/client/src/components/PartyPane.tsx`, `poc/client/src/components/PartyPane.test.tsx` | 9a | 1, 2a, 2b, 3, 4, 5, 6a, 6b, 7a, 7b, 8a, 8p, 8b, 8c, 9a, 9b, 10a | standard |
 | 11a. browser walk — hub-attached leg (steps 0–7) | ledger record; `docs/tech-debt.md` ONLY on a step-5 FAIL (no source files) | 4, 6b, 7b, 8b, 8c, 9b, 10a, 10b | — | standard |
 | 11b. browser walk — solo parity leg (steps 8a–8f, shutdown 9) | ledger record (no source files, no docs writes) | 11a | — | standard |
@@ -189,7 +233,15 @@ again after the cycle-2 round-2 edits (which split Task 6 into 6a/6b and added t
 8c, taking the group from 16 to 18): **the table was regenerated from a single serial-order list
 and then re-checked by script — every implementing row has exactly 17 entries, every entry
 appears on both rows (symmetry holds in both directions), no self-reference, no unknown label**;
-11a, 11b and 12 are serialized by their Depends-on cells and carry no conflicts. This plan
+11a, 11b and 12 are serialized by their Depends-on cells and carry no conflicts.
+**Re-verified mechanically AGAIN after the cycle-2 round-3 edits, and the check is stated so it
+can be repeated:** round 3 changed only ORDER and Depends-on cells (7a moved ahead of 6b; Task 4
+gained `2a`; Task 10a gained `9b`) plus Task 4's Files cell (`agentDriver.ts`, `permissions.ts`) —
+**no row was added or removed and no Conflicts cell changed**, because all 18 implementing rows
+were already one total exclusion group, so any Files-cell widening inside the group is already
+covered. Re-checked row by row after the edit: still 18 implementing rows, each Conflicts cell
+still lists exactly the other 17, every pair still appears on both rows, no self-reference, no
+unknown label. This plan
 therefore permits NO concurrent writers at all, and 11a/11b/12 depend on the whole group, so
 tasks execute serially. lean-sdd's pipelining still applies in its read-only
 form — a reviewer that only reads the diff and the tree (no suite run, no `tsc`, no build) may
@@ -201,19 +253,36 @@ may not.
 laid out in this order, so reading either top-to-bottom is safe. Execute in exactly this
 sequence, which satisfies every Depends-on cell above:
 
-`5 → 1 → 2a → 2b → 3 → 4 → 6a → 6b → 7a → 7b → 8a → 8p → 8b → 8c → 9a → 9b → 10a → 10b → 11a → 11b → 12`
+`5 → 1 → 2a → 2b → 3 → 4 → 6a → 7a → 6b → 7b → 8a → 8p → 8b → 8c → 9a → 9b → 10a → 10b → 11a → 11b → 12`
 
 (Numbers were deliberately NOT reassigned: every cross-reference in this plan, in the spec's
 §8a rulings and in the three earlier residual reports cites the existing labels.)
+
+**Why 7a now runs BEFORE 6b (cycle-2 round-3 fix — consumer before producer).** 7a's Depends-on
+cell is `4, 5, 6a`, every one of which already precedes 6b, so this order satisfies every
+Depends-on cell in the table unchanged. It removes a real intermediate-commit gap: with 6b first,
+the commit that ships the hub PRODUCER would land while the only laptop-side HANDLER for the frame
+(7a's `poc/server/src/server.ts` frame-handler branch) does not exist yet, so a laptop built at
+that commit would receive a frame that VALIDATES into the down-frame union and then falls through
+with no handler — a state the plan never described. (Task 6a's `old laptop / unknown down-frame`
+compat row scopes itself to a DIFFERENT case: a laptop built before the frame TYPE existed, which
+ignores it on the unknown-frame path.) With 7a first, no commit in this plan ever ships a
+validated-but-unhandled `contested` frame: at 6a's commit nothing constructs one (6a's `no sender
+yet` row), at 7a's commit the handler exists and still nothing sends, and 6b's commit is the first
+that sends — into a laptop that already handles it. The re-ordering re-validated mechanically
+against every Depends-on cell (see the matrix note above).
 
 **Rationale (server/hub group).** Tasks 1, 2a, 2b, 3, 4, 5, 6a, 7a, 7b, 8a, 8p and 8b all write
 `poc/server/src` and verify with a whole-package `tsc --noEmit` / whole suite / `npm run build`
 over `poc/server`; Task 6b writes only `poc/hub`, but its Verify explicitly builds `poc/server`
 before the hub suite runs, which is itself an in-flight conflict under this table's own rule.
 Shared files sharpen it further (`server.ts`: 2a/2b/4/7a/7b/8b; `relayProtocol.ts`: 3/6a/8a;
-`project.ts`: 2b/3/7a/8b; `pendingGate.ts` + `events.ts`: 8a; `permissions.ts`: 8p **and 8b**
-(8p adds the pure predicate, 8b adds its first caller at `permissions.ts:141` — serialised by
-this group, never concurrent); `agentDriver.ts`: 8b;
+`project.ts`: 2b/3/7a/8b; `pendingGate.ts` + `events.ts`: 8a; `permissions.ts`: **4**, 8p **and
+8b** (4 adds the decision-site `recomputeTouched` call in `buildCanUseTool`'s write-tool path,
+8p adds the pure predicate, 8b adds its first caller at `permissions.ts:141` — all three
+serialised by this group, never concurrent); `agentDriver.ts`: **4 and 8b** (4 adds the
+`recomputeTouched` hook member and its two decision-site calls; 8b adds the contested hooks and
+the withdrawal at the same two sites — same serialisation);
 `poc/server/dist/`: every task, since every task builds). Tasks 1, 5 and 7a create new source
 files but still typecheck and build the whole package, so they carry the full group's conflicts
 too — no "new-file-only means conflict-free" exemption survives in this plan.
@@ -366,7 +435,8 @@ would re-sequence Task 4's gate path and is out of scope unless a freeze is actu
 | union + dedupe + sort | a path both committed and re-modified | appears once; output sorted ascending |
 | rename | `git mv a.ts b.ts` committed (or staged) | BOTH `a.ts` and `b.ts` present |
 | repo-relative | file in a subdirectory | path exactly as git emits (posix separators, no leading `./`, relative to repo root) |
-| over-long path (producer rule) | a changed path longer than `PATH_WIRE_CAP` (512) chars | DROPPED before the cap/sentinel step; every returned path is ≤ `PATH_WIRE_CAP`, so this session's facts frame can never be rejected wholesale by Task 3's validator (paired with Task 3's "producer never emits a rejectable path" row). Not truncated — a truncated path is a different path and would false-collide |
+| over-long path (producer rule) | a changed path longer than `PATH_WIRE_CAP` (512) chars | DROPPED before the cap/sentinel step; every returned path is ≤ `PATH_WIRE_CAP`, so this session's facts frame can never be rejected wholesale by Task 3's validator (paired with Task 3's "producer never emits a rejectable path" row). Not truncated — a truncated path is a different path and would false-collide. **AND the drop is LOGGED, exactly once per call that dropped anything**, on stderr, that line verbatim: ``process.stderr.write(`[touched] dropped ${n} path(s) over ${PATH_WIRE_CAP} chars in ${workdir}\n`)`` — asserted verbatim by `touched.test.ts` (prefix `[touched] dropped `, the count, and the workdir). Two dropped paths in one call → ONE line with `n = 2`, never two lines. The path itself is never logged (a >512-char path in a log line is the same size problem one layer down) |
+| no drop, no log (discriminating) | a call in which every changed path is ≤ `PATH_WIRE_CAP` | NOTHING is written to stderr by `touchedFiles` — an implementation that logs unconditionally must fail this row |
 | cap + sentinel | > TOUCH_CAP distinct paths (after the over-long drop) | first TOUCH_CAP after sort, then final element exactly `TOUCH_SENTINEL`; length = TOUCH_CAP + 1 |
 | clean worktree | no divergence, nothing uncommitted | `[]` |
 | git failure | `workdir` is not a git repo / git exits non-zero | throws (Error carries git's stderr) |
@@ -377,6 +447,11 @@ three DECLARED in `collisions.ts` (Task 5) and re-exported here, never re-declar
 `5000` ms.
 Status parsing must handle the porcelain rename format (`R  old -> new`, both sides
 contribute).
+**Why the drop is logged (Global Constraints, cycle-2 round-3).** The drop narrows LOCKED banked
+decision 1 for paths > 512 chars; the plan's own stated objection to it was that the exemption is
+*silent*. The one-line-per-call stderr emit above removes that objection mechanically while the
+proposed spec §8a ruling 9 (drop / truncate / raise the cap) is with the owner — see
+`## Final-pass notes`. Execution is not gated on that ruling.
 
 **Verify:** `cd poc/server && npx vitest run test/touched.test.ts && npx tsc --noEmit &&
 npm run build && test -f dist/touched.js` → tests green (they build real temp git repos; no
@@ -428,8 +503,20 @@ sites ONLY — the session-creation binding is Task 2b); test
   execution ledger BEFORE the first new-scheme provision runs.
 
 **Interfaces — produces:** `WorkspaceManager.provision(projectId: string, slug: string,
-baseRef: string)` (projectId is a new FIRST parameter; SLUG-validated like slug at point of
-use). Internal map key literal `${projectId}/${slug}`; path and branch as in Global Constraints.
+baseRef: string)` (projectId is a new FIRST parameter). Internal map key literal
+`${projectId}/${slug}`; path and branch as in Global Constraints.
+
+**`projectId` validation — named, homed and placed (cycle-2 round-3 fix; "SLUG-validated like
+slug at point of use" left three things to guess).** The regex is the EXISTING
+`SLUG = /^[a-z0-9-]{1,40}$/` exported from `poc/server/src/project.ts:11` — no new regex, no new
+bound. The check runs **inside `provision`, as its first statement**, not at the `server.ts` call
+sites: `provision` is the function that turns the value into a filesystem path and a git branch
+name, so the guard belongs where the path is built (one guard, all call sites covered, and it
+cannot be forgotten by a future caller). On a non-SLUG `projectId` it **THROWS**
+`new Error(\`invalid projectId: ${projectId}\`)` — it does not sanitise, does not fall back to a
+default, and does not return a worktree; a caller with a bad projectId is a bug, and a
+path-traversing projectId (`../`, absolute, `..`) is exactly what `SLUG` rejects. `slug` keeps
+whatever validation it has today, unchanged. Asserted by the behavior row below.
 
 **Behavior:**
 
@@ -441,6 +528,7 @@ use). Internal map key literal `${projectId}/${slug}`; path and branch as in Glo
 | branch-taken check ordering | branch `mpai/acme/auth` exists but worktree dir is gone | existing branch-taken behavior preserved, evaluated against the project-scoped branch name |
 | old flat scheme untouched | a legacy `<root>/.mpai/worktrees/<slug>` dir exists | never reused, never deleted, never migrated by any new-scheme call |
 | call sites | every `provision(` caller in server.ts | passes the session's projectId; no caller left on the old signature (compiler-enforced) |
+| non-SLUG projectId (discriminating) | `provision("../escape", "auth", base)` / `provision("Acme", …)` (uppercase) / `provision("", …)` / a 41-char projectId | THROWS `invalid projectId: …` as `provision`'s first statement — no directory is created, no branch is created, no map entry is written. An implementation that validates at the call sites instead of inside `provision` must fail this row (the test calls `provision` directly) |
 
 **Verify:** `cd poc/server && npx vitest run && npx tsc --noEmit && npm run build` → WHOLE
 server suite green (live provisioning path), typecheck clean, build exits 0. Then the mechanical
@@ -543,9 +631,12 @@ touched: string[] | null;
 ```
 
 `sessionFactsOf` copies `entry.touched` into facts. Validation in the facts validator:
-absent/null accepted (→ null); else array of strings, each length ≤ `PATH_WIRE_CAP`, array length
-≤ `TOUCH_CAP + 1` (both imported from `./collisions.js`, never re-declared here); anything else
-rejects the frame exactly like other malformed facts fields.
+absent/null accepted (→ null); else array of strings, each length ≤ `PATH_WIRE_CAP`, **each
+containing no control characters and no newline** (Global Constraints' untrusted-peer-strings
+rule — these strings reach the agent's `<teammates>` block via Task 7b and a human-read gate
+reason via Task 8b, so the validator bounds the CHARACTERS as well as the length), array length
+≤ `TOUCH_CAP + 1` (both length bounds imported from `./collisions.js`, never re-declared here);
+anything else rejects the frame exactly like other malformed facts fields.
 
 **Downgrade note (journal records outlive a revert; referenced by Task 6b).** Once `touched`
 ships, hub journal rows carry it inside `facts_json`. If Tasks 3/6 are later reverted, those
@@ -574,6 +665,7 @@ membership — asserted by the discriminating row below.
 | carried | entry.touched = ["a.ts","b.ts"] | sessionFactsOf output has exactly that array (copied, not aliased — mutation of the returned facts never mutates the entry) |
 | validation accepts | facts frame with touched: [] / ["a.ts"] / absent / null | accepted; absent normalizes to null |
 | validation rejects | touched: "x" / [1] / [a `PATH_WIRE_CAP + 1` = 513-char string] / TOUCH_CAP+2 entries | frame rejected with the existing malformed-facts error path |
+| validation rejects control characters (discriminating, untrusted peer strings) | `touched: ["src/a.ts\ninjected: line"]` / a path containing `\r` / a path containing ` ` or any other C0 control char | frame rejected on the same malformed-facts path — a length-only validator passes all of these and lets a hostile or compromised peer land newline-separated text inside the agent's `<teammates>` prompt block (Task 7b) and inside a human-read gate reason (Task 8b), so an implementation that checks only `length ≤ PATH_WIRE_CAP` must fail this row |
 | snapshot row carries it (discriminating) | a session with `entry.touched = ["a.ts"]` rendered through `projectSnapshot` | the emitted `ProjectMessage.sessions[0].touched` deep-equals `["a.ts"]` and TYPECHECKS against the inline row type — a change that adds the field to `SessionFacts` only must fail this row |
 | producer never emits a rejectable path (paired with Task 1) | facts built by `sessionFactsOf` from a `touchedFiles` result computed in a repo that contains a path longer than `PATH_WIRE_CAP` chars | the over-long path was already DROPPED producer-side (Task 1's over-long-path row), so the frame VALIDATES and the session's other paths survive — one pathological path never costs a session its whole facts frame |
 | project bound (exposure, discriminating) | two projects on one server, each with sessions carrying touched | a project push to project A's members contains touched for A's sessions ONLY — no session of project B appears in it at all |
@@ -594,35 +686,90 @@ the downgrade note must be rewritten before this task ships.
 
 ## Task 4: laptop recompute triggers *(spec §3.2)*
 
-**Files:** modify `poc/server/src/server.ts`; test `poc/server/test/serverTouched.test.ts`
+**Files:** modify `poc/server/src/server.ts` (the `recomputeTouched` function, the `turn_end` hook,
+and the hook supply at the driver construction site `server.ts:445`),
+`poc/server/src/agentDriver.ts` (the `recomputeTouched?: () => void` hook member + its two
+decision-site calls at `:294` and `:531`), `poc/server/src/permissions.ts` (the decision-site call
+in `buildCanUseTool`'s write-tool path, `:141`); test `poc/server/test/serverTouched.test.ts`
 (new; real sessions over a real socket, real temp git worktrees via Task 2a's provisioning).
 
 **Interfaces — consumes:** `touchedFiles`/`TOUCH_CAP` (Task 1), `entry.touched` (Task 3),
 `entry.workdir` + `entry.baseRef` (Task 2b — the recompute call site reads baseRef from the
-persisted field and nowhere else), project-scoped provisioning (Task 2a). Produces: no new
-exports — behavior only.
+persisted field and nowhere else), project-scoped provisioning (Task 2a).
 
-**The two hook sites, pinned (an executor must not have to choose an insertion point).** Both
-recomputes hang off the per-session event subscriber registered at session creation,
-`poc/server/src/server.ts:464-465`:
+**Interfaces — produces (verbatim; this task now EXPORTS a trigger, it is not behavior-only any
+more):**
 
 ```ts
-session.subscribe((event) => {
-  if (INTERESTING.has(event.type)) schedulePush(project);   // server.ts:465
-  …
-});
+// poc/server/src/server.ts — a module-local function, NOT exported from the package.
+// It is the single recompute entry point; nothing else may call `touchedFiles` directly.
+function recomputeTouched(project: Project, sessionId: string): void;
+// Reads entry.workdir / entry.baseRef, calls touchedFiles, assigns entry.touched.
+// Never throws: a git failure (including the 5000 ms timeout) KEEPS the previous
+// entry.touched and logs once per session (behavior rows below).
+
+// poc/server/src/agentDriver.ts — DriverHooks gains, beside `getOversight`:
+  /** Recompute this session's touched set NOW, synchronously, before a write-tool
+   *  permission decision is made (spec §3.2 pre-gate freshness, Task 4).
+   *  Absent on drivers constructed without collision wiring — then no recompute runs
+   *  and the decision sites judge the last turn-boundary set. */
+  recomputeTouched?: () => void;
 ```
 
-- **Turn boundary:** on `event.type === "turn_end"`, recompute **before** `schedulePush(project)`
-  is called, so the very push this event triggers already carries the fresh `entry.touched`
-  (a recompute after the schedule would ship the previous turn's set).
-- **Pre-gate:** on `event.type === "permission_request"` whose `toolName` is a write tool
-  (Edit / Write / NotebookEdit), recompute **synchronously inside this subscriber**, before the
-  subscriber returns. `Session.append` invokes subscribers synchronously, and Task 8b's
-  decision sites resolve their permission off the same append, so a synchronous recompute here is
-  what makes "Task 8b judges fresh data" true; an async recompute would race the auto-allow.
-  (This is the same blocking call Task 1's blast-radius note governs — the 5000 ms whole-process
-  ceiling is accepted per spec §8a.8.)
+`server.ts` supplies it at the driver construction site `server.ts:445` as
+`() => recomputeTouched(project, sessionId)` — the same closure-over-project shape Task 8b's four
+contested hooks use, and the same shape the existing `getOversight?: () => string`
+(`agentDriver.ts:78-80`, supplied at `server.ts:455`) already uses. `AgentDriver` takes it as a
+constructor param in the same position-after-`getOversight` style and puts it into the hooks object
+literal it hands `run(this.prompts, { … })` (`agentDriver.ts:289`), so site 3 reads
+`hooks.recomputeTouched?.()` off the SAME object sites 1 and 2 read `this.recomputeTouched?.()`
+from.
+
+**The hook sites, pinned (an executor must not have to choose an insertion point).**
+
+- **Turn boundary — unchanged, still on the per-session event subscriber** registered at session
+  creation, `poc/server/src/server.ts:464-465`:
+
+  ```ts
+  session.subscribe((event) => {
+    if (INTERESTING.has(event.type)) schedulePush(project);   // server.ts:465
+    …
+  });
+  ```
+
+  On `event.type === "turn_end"`, call `recomputeTouched(project, sessionId)` **before**
+  `schedulePush(project)` is called, so the very push this event triggers already carries the
+  fresh `entry.touched` (a recompute after the schedule would ship the previous turn's set).
+
+- **Pre-gate — MOVED OFF the `permission_request` subscriber and ONTO the decision sites
+  themselves (cycle-2 round-3 fix; this is the blocking D6 contradiction closed).** The earlier
+  revision hung the pre-gate recompute on `event.type === "permission_request"` in the subscriber
+  above and claimed that made "Task 8b judges fresh data" true. It does not, and the two tasks
+  contradicted each other: **site 3 (`permissions.ts:141`, `buildCanUseTool`) runs BEFORE any
+  `permission_request` event exists** — `buildCanUseTool` decides, and only if it declines to
+  auto-allow does control reach `hooks.onPermissionRequest`, which is what appends the event. A
+  subscriber-based recompute therefore could never have run before site 3's read, so site 3 would
+  silently have judged the previous turn's set while the plan asserted freshness at all three
+  sites. **One ordering, stated once, and every task now agrees on it: the recompute runs at the
+  decision site, synchronously, immediately before the contested set is read.** The three call
+  sites, pinned:
+
+  | # | Decision site | Where the call goes | Guard |
+  |---|---------------|---------------------|-------|
+  | 1 | `poc/server/src/agentDriver.ts:294` — `onPermissionRequest`, before the `if (this.permissionMode === "auto")` branch | `this.recomputeTouched?.()` as the FIRST statement of `onPermissionRequest` | only when `FILE_WRITE_TOOLS.has(toolName)` — a Read/Grep/Bash gate must not shell out to git |
+  | 2 | `poc/server/src/agentDriver.ts:531` — `setPermissionMode`, before `this.allowAllPending(userId)` | `this.recomputeTouched?.()` immediately before the `allowAllPending` call | only when at least one already-pending request's `toolName` is in `FILE_WRITE_TOOLS`; otherwise no call. One recompute for the whole batch, never one per pending request |
+  | 3 | `poc/server/src/permissions.ts:141` — `buildCanUseTool`, the write-tool path | `hooks.recomputeTouched?.()` immediately BEFORE the `if (FILE_WRITE_TOOLS.has(toolName) && isContainedWrite(...))` early-allow | inside the same `FILE_WRITE_TOOLS` condition — evaluate `FILE_WRITE_TOOLS.has(toolName)` first, recompute, then run the containment test and the allow |
+
+  All three calls are **synchronous** (`recomputeTouched` wraps the synchronous `touchedFiles`),
+  so the set Task 8b reads one statement later is the set this call just wrote — no async race
+  with the auto-allow, and no reliance on `Session.append`'s subscriber ordering. (This is the
+  same blocking call Task 1's blast-radius note governs — the 5000 ms whole-process ceiling is
+  accepted per spec §8a.8; moving the call from the subscriber to the decision site does not
+  change how often it runs or how long it can block, only WHEN, and the new placement is strictly
+  closer to the read.)
+  **A driver with no `recomputeTouched` hook** (existing test fakes, older call sites) runs no
+  pre-gate recompute and judges the last turn-boundary set — the `?.` is the guard, nothing
+  throws, and Task 8b's "driver without collision wiring" row is the matching case.
 
 **Risk / rollback (same form as Task 2a's and Task 6b's).**
 
@@ -635,9 +782,24 @@ session.subscribe((event) => {
   laptop process. After the revert, sessions keep whatever `entry.touched` they last computed
   (nothing clears it) and tiers (a)/(b) then act on stale-or-empty local state — advisory
   surfaces degrade, nothing blocks.
-- **The revert is independent of Tasks 1, 3 and 5**: this task exports nothing and no other task
-  imports from it — it only adds call sites inside `server.ts`'s subscriber. Reverting it leaves
-  `touchedFiles`, the `touched` facts field and `collisionsFrom` in place and compiling.
+  **Blast radius of the RESTART itself — read before running it (Task 2a models this form; the
+  env/revert rollback paths in this plan did not until cycle-2 round-3).** Restarting a laptop
+  process is not free and is not transparent to its users: **every in-flight agent turn on that
+  process is interrupted**, **every unanswered `permission_request` is lost with the process** (the
+  gate promise never resolves; the human sees a gate that stops existing), and **all in-memory
+  per-session state is cleared** — `entry.touched`, `entry.contestedFrame` (Task 7a),
+  `entry.contestedAsked` (Task 8b), so once-per-file promises reset and every previously-answered
+  contested file can be asked about again. Worktrees and committed work on disk are untouched.
+  **Therefore: drain or park live sessions first** — tell the drivers, let in-flight turns finish,
+  answer or abandon pending gates deliberately — and only then restart. Never restart a laptop
+  process out from under a running turn to apply a rollback.
+- **The revert is independent of Tasks 1, 3 and 5**: this task exports nothing from the package —
+  it adds a module-local `recomputeTouched` in `server.ts`, one optional `DriverHooks` member, and
+  three guarded call sites. Reverting it leaves `touchedFiles`, the `touched` facts field and
+  `collisionsFrom` in place and compiling. It is NOT independent of Task 8b in the other
+  direction: 8b's decision sites keep working after this revert, they simply judge whatever
+  `entry.touched` the last `turn_end` recompute wrote — reverting Task 4 turns pre-gate freshness
+  off, it does not turn the gate off.
 - If the owner wants a RUNTIME switch for the recompute itself (e.g. `MPAI_TOUCHED_RECOMPUTE=0`)
   rather than a revert, that is a separate owner call — this plan does not add one, because spec
   §8a.8 accepted the cost rather than gating it.
@@ -650,13 +812,27 @@ session.subscribe((event) => {
 | baseRef source (discriminating) | session provisioned with baseRef `origin/dev` while the repo's default branch is `main` | the git invocation uses `origin/dev` — the persisted `entry.baseRef`, never `defaultBranch()`, never a literal `"main"` |
 | null baseRef | `entry.baseRef === null` (session with no repo, or never provisioned) | touched stays null; NO git invocation, no error, no log spam |
 | no workdir | `entry.workdir === undefined` | touched stays null; no git invocation |
-| pre-gate | a `permission_request` for a write tool (Edit/Write/NotebookEdit) arrives | recompute BEFORE the gate is offered/answered, so Task 8b judges fresh data |
+| pre-gate, site 1 (discriminating) | driver in `permissionMode === "auto"`; an Edit arrives at `agentDriver.ts:294` | `recomputeTouched` ran BEFORE the auto branch is evaluated — assert ordering, not just occurrence: the git invocation is observed before the `permission_request` append. A recompute hung off the event subscriber must fail this row (it would run after the append, and after the auto branch already resolved) |
+| pre-gate, site 2 | a write request is already pending; `setPermissionMode("auto")` is called | exactly ONE recompute runs before `allowAllPending` iterates, regardless of how many write requests are pending |
+| pre-gate, site 3 (discriminating) | driver in `default` mode; an Edit inside the workdir reaches `permissions.ts:141` | `recomputeTouched` ran BEFORE the `isContainedWrite` early-allow is evaluated. **This is the site the previous revision could not have covered** — `buildCanUseTool` runs before any `permission_request` event exists, so an implementation that recomputes on the event must fail this row |
+| pre-gate, non-write tools (discriminating) | a Read / Grep / Bash permission decision at any of the three sites | NO recompute, no git invocation — the `FILE_WRITE_TOOLS` guard at each site is what this row asserts |
+| pre-gate, no hook supplied | a driver constructed without `recomputeTouched` | no recompute, no throw; the sites judge the last turn-boundary set |
 | git failure | touchedFiles throws | previous `entry.touched` value KEPT (stale beats absent); logged once per session, not per event, with this EXACT line on stderr: ``process.stderr.write(`[touched] session=${sessionId} recompute failed: ${err.message}\n`)`` — asserted verbatim by `serverTouched.test.ts` (prefix `[touched] session=` plus the session id), and a second failure for the same session id emits NOTHING |
 | git hangs (bounded stall) | git exceeds `touchedFiles`' 5000 ms timeout (Task 1) during a PRE-GATE recompute | treated exactly as a git failure: previous `entry.touched` KEPT, the gate PROCEEDS (never blocked, never delayed past the timeout), logged once per session. **Accepted blast radius, stated plainly (Task 1's "Blast radius of the synchronous call"):** `execFileSync` blocks the whole laptop process for that interval — every session's socket traffic, the 1s project push and every other pending gate are frozen, not just this gate. 5000 ms is the whole-process ceiling. **Ruled accepted (spec §8a.8); revisit only on an observed freeze** — not an executor decision |
 | no recompute storms | non-write tools, non-boundary events | no git invocation (discriminate: a `tool_call` Read appends → no recompute) |
 
 **Verify:** `cd poc/server && npx vitest run && npx tsc --noEmit && npm run build` → WHOLE
-server suite green (edits the live server), typecheck clean, build exits 0.
+server suite green (this task edits the live server AND `agentDriver.ts` / `permissions.ts`, whose
+existing suites `test/agentDriver.test.ts` and `test/permissions.test.ts` guard today's gate
+behavior — a recompute call inserted at the wrong place shows up there), typecheck clean, build
+exits 0 (build last in the BUILD chain, Global Constraints). Then the three read-only
+decision-site checks — each prints a number, each expectation is a number:
+`command grep -c "recomputeTouched" poc/server/src/agentDriver.ts` → **≥ 3** (the hook member
+declaration plus the calls at sites 1 and 2) and
+`command grep -c "recomputeTouched" poc/server/src/permissions.ts` → **≥ 1** (site 3) and
+`command grep -c "permission_request" poc/server/src/server.ts` → the pre-task baseline,
+**unchanged by this task** (ledger the pre-task count before editing and compare) — the subscriber
+gained no `permission_request` branch, because the pre-gate recompute no longer lives there.
 **Commit:** `feat(server): recompute a session's touched set at turn boundaries and write gates`
 
 ---
@@ -681,15 +857,40 @@ no hub file and changes no hub behavior — which is why it is `standard` risk w
                                                             // laptop can NAME them (spec §6)
 ```
 
-`paths` is exactly the distinct path set of `collisions`, sorted ascending; `sessionIds`
+**Invariant between `paths` and `collisions` (cycle-2 round-3 fix — the earlier wording
+contradicted Task 6b's own over-cap row).** `paths` is the distinct path set of `collisions`,
+sorted ascending, **plus a trailing `TOUCH_SENTINEL` element when the set was truncated** (Task
+6b's `over-cap` row appends the sentinel to `paths` while truncating `collisions` to the RETAINED
+paths, so in the over-cap case `paths` is exactly one element longer than the distinct path set of
+`collisions` and its last element is the sentinel). Stated as one rule so a validator or a test
+written from the invariant does not reject a legitimate over-cap frame:
+
+- not truncated → `paths` deep-equals the sorted distinct `collisions[].path` set;
+- truncated → `paths` = that sorted set, then `TOUCH_SENTINEL` as the final element, and
+  `collisions` carries no entry whose `path` is `TOUCH_SENTINEL`.
+
+`sessionIds`
 excludes nothing — the recipient's own id IS present, matching `collisionsFrom`'s output shape.
 
-**`sessionId` bound (stated like every other field's, not left implicit).** The frame's top-level
+**`sessionId` bound (stated like every other field's, not left implicit) — and the SAME bound on
+every PEER id.** The frame's top-level
 `sessionId` is validated with the existing `SLUG` regex exported from `poc/server/src/project.ts:11`
 (`/^[a-z0-9-]{1,40}$/`), via the same `str(f.sessionId, SLUG)` helper `relayProtocol.ts:202` and
 `:208` already use for the `publish` and `facts` frames — no new regex, no new bound, and the
 40-char length ceiling comes from `SLUG` itself. A non-string, non-SLUG or over-long `sessionId`
 rejects the whole frame on the existing malformed-frame path (asserted by the validator row below).
+**Every id in `collisions[].sessionIds` gets the identical `str(id, SLUG)` treatment
+(cycle-2 round-3 fix; the earlier `≤ 128 chars` bound is WITHDRAWN).** Peer ids are session ids of
+the same universe as the top-level one, so bounding them two different ways in one frame was an
+internal contradiction; and Task 8b interpolates a peer id straight into the human-read reason
+`contested with session ${otherSessionId}`, so a 128-char-arbitrary-string bound admitted
+newlines and control characters into that line. With `SLUG`, the 512-char gate-reason cap (Task
+8a) is unreachable by construction — `contested with session ` + at most 40 SLUG chars.
+
+**Character bound on paths (untrusted peer strings, Global Constraints).** Every `paths[]` entry
+and every `collisions[].path` must contain no control characters and no newline, in addition to
+`≤ PATH_WIRE_CAP`. Same rule, same reason, as Task 3's facts validator: these strings land in the
+agent's `<teammates>` prompt block (Task 7b) and on a permission card a human reads (Task 8c).
 
 **Note (the `TOUCH_CAP + 1` bound IS the spec's bound — no divergence, nothing to reconcile).**
 Spec §6a says the frame's paths are "capped at TOUCH_CAP". That phrase is the spec's own idiom
@@ -710,9 +911,12 @@ owner reads §6a as a flat 500 INCLUDING the sentinel, say so and this task drop
 | Case | Input / state | Expected |
 |------|---------------|----------|
 | validation accepts | a well-formed `contested` frame (SLUG `sessionId`, `paths: []`, `collisions: []`) and a populated one | accepted, parsed to the shape above, never partially applied |
+| validation accepts a TRUNCATED frame (the invariant's carve-out, discriminating) | a frame whose `paths` is `[…N retained paths sorted…, TOUCH_SENTINEL]` and whose `collisions` has exactly those N retained paths and no sentinel entry — i.e. Task 6b's `over-cap` output | ACCEPTED. A validator or test written from "`paths` is exactly the distinct path set of `collisions`" would reject this legitimate frame; the invariant above carries the carve-out explicitly so it cannot |
 | validation rejects — `sessionId` (discriminating) | inbound frame whose `sessionId` is `7` / `""` / `"Alpha"` (uppercase, non-SLUG) / a 41-char string | each rejected on the existing malformed-frame error path — the same `str(f.sessionId, SLUG)` treatment `relayProtocol.ts:202/208` already give `publish`/`facts` |
 | validation rejects — `paths` | inbound `contested` frame with `paths: "x"` / a `PATH_WIRE_CAP + 1` = 513-char path / TOUCH_CAP+2 entries | frame rejected with the existing malformed-frame error path — never partially applied |
-| validation rejects — `collisions` (explicit bounds) | inbound frame with `collisions: "x"` / TOUCH_CAP+2 collision entries / an entry missing `sessionIds` / `sessionIds: [1]` / `sessionIds: []` (empty) / a `sessionIds` string > 128 chars / 101 ids in one entry / an entry whose `path` is 513 chars | each rejected with the same malformed-frame error path. Bounds are the Global-Constraints ones: `collisions` length ≤ `TOUCH_CAP + 1`, `path` ≤ `PATH_WIRE_CAP` (imported, never re-stated as `512`), `sessionIds` non-empty, each id a string ≤ 128 chars, ≤ 100 ids per entry (these two are inline literals beside the existing `MAX_REPOS = 100`, per Global Constraints) |
+| validation rejects — `collisions` (explicit bounds) | inbound frame with `collisions: "x"` / TOUCH_CAP+2 collision entries / an entry missing `sessionIds` / `sessionIds: [1]` / `sessionIds: []` (empty) / 101 ids in one entry / an entry whose `path` is 513 chars | each rejected with the same malformed-frame error path. Bounds are the Global-Constraints ones: `collisions` length ≤ `TOUCH_CAP + 1`, `path` ≤ `PATH_WIRE_CAP` (imported, never re-stated as `512`), `sessionIds` non-empty, ≤ 100 ids per entry (the count is the one inline literal, beside the existing `MAX_REPOS = 100`, per Global Constraints) |
+| validation rejects — peer ids bounded by `SLUG` (discriminating) | inbound frame with `collisions: [{ path: "a.ts", sessionIds: ["Alpha"] }]` (uppercase) / `["a 41-character-long-session-id-aaaaaaaaaa"]` / `[""]` / `["ok", "bad id with spaces"]` / `["ok\ninjected"]` | each rejected on the existing malformed-frame path via the SAME `str(id, SLUG)` helper the top-level `sessionId` uses. An implementation that bounds peer ids only by length (the withdrawn `≤ 128 chars` rule) passes every one of these and must fail this row — and would let a hostile hub put arbitrary text, newlines included, into Task 8b's `contested with session ${otherSessionId}` line |
+| validation rejects control characters in paths (discriminating) | `paths: ["src/a.ts\ninjected: line"]` / a `collisions[].path` containing `\r` or a C0 control char | rejected on the same malformed-frame path — an implementation that checks only `length ≤ PATH_WIRE_CAP` must fail this row. Same rule and same reason as Task 3's facts-validator row: these strings reach the agent's prompt block and a human-read permission card |
 | old laptop / unknown down-frame (compat) | a laptop built before this task receives a `type: "contested"` frame | the frame is IGNORED by the unknown-frame path; the uplink is NOT disconnected and no error surfaces. `RELAY_PROTOCOL_VERSION` stays **UNCHANGED** — a PLAN-AUTHORED reading (spec §3.3 grants the no-bump exemption to an additive optional FIELD; applying it to a whole new frame type is this plan's extension, registered with the other plan-authored decisions and justified by exactly this row's unknown-frame ignore path). Bumping the version instead would be an owner override |
 | no sender yet (discriminating) | the whole server and hub suites on this commit | nothing anywhere CONSTRUCTS a `contested` frame — this task ships the type and validator only; Task 6b supplies the first sender. `command grep -rn "\"contested\"" poc/hub/src` → prints nothing |
 | thesis bound | frame contents | ONLY sessionId, paths and colliding session ids — no transcript data, no prompts, no names |
@@ -725,97 +929,6 @@ the same argument Task 3 and Task 8a make for the same file); then `npm run buil
 Plus the no-sender check: `command grep -rn "\"contested\"" poc/hub/src` → prints nothing
 (exit status 1) on this commit.
 **Commit:** `feat(server): contested down-frame type and inbound validator`
-
----
-
-## Task 6b: hub producer — push hook + change detection *(spec §6a as amended by §8a ruling 6)*
-
-**Files:** modify `poc/hub/src/hub.ts`; tests `poc/hub/test/contested.test.ts` (new, on the
-uplink harness), `poc/hub/test/hubRestart.test.ts` (extend — the §8.7 restart harness, spec §9
-Testing).
-
-**Depends on Task 6a** — the frame type and its bounds are 6a's; this task only produces frames
-of that shape and may not restate a bound.
-
-**Hub behavior — exact site and store.** The hook is `pushProject(projectId)` in
-`poc/hub/src/hub.ts:142` (the function `schedulePush`, `hub.ts:167`, throttles at 1s
-leading+trailing). At the END of each `pushProject` body, after the project snapshot is built:
-compute `collisionsFrom` over the snapshot's sessions, then for every session in the snapshot
-whose contested state CHANGED since the last frame sent to its owning uplink, send one frame
-(empty `paths: []` **and** `collisions: []` when a session's last collision clears). Consumes
-`collisionsFrom` (Task 5), `facts.touched` (Task 3, already stored/journaled by the hub for
-free), and the frame type/validator (Task 6a).
-
-Change detection is a new module-level store in `createHub`'s closure, declared beside
-`const uplinks = new Map<string, WebSocket>()` (`poc/hub/src/hub.ts:131`) — exact shape:
-
-```ts
-// poc/hub/src/hub.ts — beside `uplinks`, keyed by sessionId
-const lastContestedSent = new Map<
-  string,                                                        // sessionId
-  { paths: string[]; collisions: { path: string; sessionIds: string[] }[] }
->();
-```
-
-A session's entry is written immediately after its frame is handed to the socket, compared by
-value (paths AND collisions) on the next push, and DELETED when the session leaves the project
-snapshot. It is in-memory only — never journaled — which is exactly why the restart row below
-tolerates one duplicate frame after a hub restart.
-
-**Laptop restart / uplink reconnect (the symmetric case — an explicit rule, not a gap).** The
-hub's change detection is per-session state the LAPTOP cannot see. When a laptop process restarts
-or its uplink reconnects, the laptop loses `entry.contestedFrame` (Task 7a, in-memory) while the
-hub still holds a matching `lastContestedSent` entry, so change detection would suppress the
-resend and hub-sourced contested state would stay silently empty until the collision set happened
-to change. **Rule: on uplink disconnect AND on uplink re-registration, the hub DELETES the
-`lastContestedSent` entry of every session owned by that uplink**, so the next `pushProject`
-re-sends that session's current frame unconditionally. One redundant frame after a reconnect is
-acceptable (same posture as the hub-restart duplicate); a silently missing one is not. Asserted
-by the reconnect row below.
-
-**Behavior:**
-
-| Case | Input / state | Expected |
-|------|---------------|----------|
-| frame on collision | two uplinks' sessions in one repoKey publish overlapping touched | each owning uplink receives `contested` for ITS sessionId, `paths` listing the shared paths and `collisions` naming the peer session ids |
-| change-only | same collision state across two pushes | no duplicate frame on the second push (state compared on paths AND collisions) |
-| clear | one session's touched update removes the overlap | affected uplinks receive `paths: []`, `collisions: []` exactly once |
-| over-cap | a session's contested path set exceeds TOUCH_CAP | truncated after sort to TOUCH_CAP entries plus a final `TOUCH_SENTINEL` element (length = TOUCH_CAP + 1, same semantics as Task 1/Task 3); `collisions` truncated to the retained paths |
-| offline uplink | collision involves a session whose uplink is offline | no send, no error; frame delivered on next change after reconnect (no replay obligation — the next push recomputes) |
-| uplink reconnect / laptop restart (discriminating) | an uplink with a contested session disconnects and re-registers; the collision set is UNCHANGED throughout | that session's `lastContestedSent` entry was deleted on disconnect/re-registration, so the first `pushProject` after re-registration RE-SENDS the identical frame — an implementation that only compares by value must fail this row (it would send nothing and leave the reconnected laptop with no hub-sourced contested state) |
-| restart preserves touched | hub restarts and hydrates from the journal (extends `poc/hub/test/hubRestart.test.ts`) | each hydrated `SessionFacts.touched` deep-equals what was journaled before the restart; the first post-restart push recomputes collisions from it and emits frames matching pre-restart state (change-detection state MAY reset — one duplicate frame after restart is acceptable and documented) |
-| thesis bound | frame contents | ONLY sessionId, paths and colliding session ids — no transcript data, no prompts, no names |
-
-**Risk / rollback (no runtime switch — deliberate).** `MPAI_CONTESTED_GATE` (Task 8b) covers
-tier (b) on the laptop ONLY. The hub's `collisionsFrom` computation and the `contested`
-down-frame have **no runtime switch**: their disable path is a `git revert` of this task's
-commit followed by a rebuild, a restart, and a laptop-side step. The full procedure, in order:
-
-1. `git revert` this task's commit, then `npm --prefix poc/hub run build`, then restart the hub
-   (the hub is a long-lived process; a revert does not take effect in a running one). If the hub
-   is ever run as a shared/deployed process rather than the local :4000 walk process, this step
-   is a redeploy rather than a restart. (Task 6a's commit may stay: an unused frame type and
-   validator that nothing sends is inert. Revert it too only if the type itself is unwanted.)
-2. **Laptop side (required — the revert alone does not restore prior behavior).** Every attached
-   laptop keeps its last-received `entry.contestedFrame` (Task 7a, in-memory) and would go on
-   withdrawing auto-approve on stale hub-sourced peers. **Relaunch every attached laptop with
-   `MPAI_CONTESTED_GATE=0`.** There is no "or" here: a running node process's `process.env`
-   cannot be changed from outside it, so setting the variable is a RELAUNCH, not a live flip
-   (see Task 8b's kill-switch note, which states the same truth).
-3. Tier (a) surfaces need no separate step: local derivation is computed on read, so hub-sourced
-   contested state clears on the next laptop restart and locally-derived state remains correct
-   throughout.
-
-Reverting does NOT remove `touched` values already written to the hub journal — those rows keep
-the field and are ignored by the field-unaware reader (Task 3's downgrade note).
-
-**Verify (server build FIRST — the hub resolves `relayProtocol` through the package exports map
-from `dist/`, so a hub suite run before the build would exercise the pre-task `dist/`):**
-`cd poc/server && npx vitest run && npx tsc --noEmit && npm run build` → WHOLE server suite green
-(this task changes no server source, so the suite is a regression guard on the `dist/` the hub is
-about to consume), typecheck clean, build exits 0. THEN
-`cd ../hub && npx vitest run && npx tsc --noEmit` → WHOLE hub suite green.
-**Commit:** `feat(hub): contested down-frame — per-session collision signal to owning laptops`
 
 ---
 
@@ -874,6 +987,7 @@ stale. `TOUCH_SENTINEL` is never a member of either accessor's output.
 | local-only (solo + same-machine) | two LOCAL sessions in one repoKey overlap on `src/b.ts`; NO hub frame ever arrives | `contestedFor` = {`src/b.ts`} computed via `collisionsFrom` over the laptop's own project sessions; `contestedSessionsFor` names the local peer session id |
 | union | hub frame has `src/a.ts` (peer `s9`) and local derivation has `src/b.ts` (peer `s2`) | `contestedFor` = {`src/a.ts`,`src/b.ts`}; each path's peers come from its own source |
 | union dedupe | the SAME path collides in both sources with an overlapping peer id | path appears once; `contestedSessionsFor` returns each peer id once, ascending |
+| sentinel in hub frame (discriminating) | a stored `contested` frame whose `paths` ends in `TOUCH_SENTINEL` (Task 6b's `over-cap` row produces exactly this, and this task stores the frame verbatim) | `contestedFor` OMITS it — the sentinel is never a member of the returned set — and `contestedSessionsFor(…, TOUCH_SENTINEL)` returns `[]`. The filtering rule stated above is the ONLY thing keeping the sentinel out of a digest line (Task 7b) and out of a gate reason (Task 8b), so it is asserted here rather than left as prose; Task 5 carries the equivalent `sentinel inert` row on the derivation side |
 | unknown session (accessor side) | `contestedFor(project, "nope")` | empty set; never throws |
 | frame for unknown session (inbound side, discriminating) | a validated `contested` frame arrives whose `sessionId` is not in this laptop's project map — e.g. it raced a session removal, or names a session owned by another uplink | frame **DROPPED**: no `ProjectSessionEntry` is created, nothing is stored anywhere, no throw, no uplink disconnect, and at most one log line per session id — that line EXACTLY: ``process.stderr.write(`[contested] session=${sessionId} unknown session, frame dropped\n`)``, asserted verbatim, with a second frame for the same unknown id emitting NOTHING. A later `contested` frame for a session that DOES exist is still applied normally |
 | thesis bound | accessor outputs | paths and session ids only — no prompts, no transcript, no file contents |
@@ -881,6 +995,143 @@ stale. `TOUCH_SENTINEL` is never a member of either accessor's output.
 **Verify:** `cd poc/server && npx vitest run && npx tsc --noEmit && npm run build` → WHOLE
 server suite green, typecheck clean, build exits 0.
 **Commit:** `feat(server): laptop contested storage — hub frame ∪ local derivation`
+
+---
+
+## Task 6b: hub producer — push hook + change detection *(spec §6a as amended by §8a ruling 6)*
+
+**Files:** modify `poc/hub/src/hub.ts`; tests `poc/hub/test/contested.test.ts` (new, on the
+uplink harness), `poc/hub/test/hubRestart.test.ts` (extend — the §8.7 restart harness, spec §9
+Testing).
+
+**Depends on Task 6a** — the frame type and its bounds are 6a's; this task only produces frames
+of that shape and may not restate a bound.
+
+**Runs AFTER Task 7a in the serial order, deliberately (cycle-2 round-3).** 7a is the laptop-side
+HANDLER for this frame; scheduling the producer first would have put one commit in the history at
+which a `contested` frame validates into the down-frame union and then falls through with no
+handler — a state the plan never described (Task 6a's `old laptop / unknown down-frame` compat row
+covers a different case: a laptop built before the TYPE existed, which ignores the frame on the
+unknown-frame path). With 7a first, **this commit is the first one in the plan that sends a
+`contested` frame, and it sends into a laptop that already handles it.** 7a's Depends-on cell
+(`4, 5, 6a`) is fully satisfied before this task either way, so the re-ordering costs nothing.
+
+**Hub behavior — exact site and store.** The hook is `pushProject(projectId)` in
+`poc/hub/src/hub.ts:142` (the function `schedulePush`, `hub.ts:167`, throttles at 1s
+leading+trailing). At the END of each `pushProject` body, after the project snapshot is built:
+compute `collisionsFrom` over the snapshot's sessions, then for every session in the snapshot
+whose contested state CHANGED since the last frame sent to its owning uplink, send one frame
+(empty `paths: []` **and** `collisions: []` when a session's last collision clears). Consumes
+`collisionsFrom` (Task 5), `facts.touched` (Task 3, already stored/journaled by the hub for
+free), and the frame type/validator (Task 6a).
+
+**Routing — named exactly, like every other site in this plan (cycle-2 round-3 fix; "its owning
+uplink" named no mechanism).** The owning uplink of a session is
+`store.ownerOf(projectId, sessionId)` (the accessor used at `poc/hub/src/hub.ts:394`,
+`:444`, `:579`, `:685`, `:782`), and the socket to write to is `uplinks.get(owner)` — the exact
+pattern already at `poc/hub/src/hub.ts:444-445`:
+
+```ts
+const owner = store.ownerOf(projectId, sessionId);
+const uplink = owner ? uplinks.get(owner) : undefined;
+// no owner, or no live socket → skip this session entirely (the `offline uplink` row)
+```
+
+**Disconnect / re-registration hooks — both pinned.** The `lastContestedSent` purge rule below
+hangs off exactly two existing sites, and the enumeration it uses is stated so an executor does
+not invent one:
+
+| Hook | Site (file:line, today) | What to do |
+|------|-------------------------|------------|
+| uplink DISCONNECT | the socket `close` handler, `poc/hub/src/hub.ts:410-418`, **beside `store.detach(uplinkId)` and before `schedulePush(projectId)`** | delete the `lastContestedSent` entry of every session this uplink owned |
+| uplink RE-REGISTRATION | the hello/supersede path, `poc/hub/src/hub.ts:284-292`, immediately after `uplinks.set(frame.uplinkId, socket)` / `store.attach(...)` | same deletion, for the re-registering `frame.uplinkId` |
+
+**Enumeration (exact):** iterate the project snapshot's sessions for that `projectId` and delete
+each `lastContestedSent` key whose `store.ownerOf(projectId, sessionId)` equals the departing /
+re-registering `uplinkId`. (At the disconnect site this must run **before** `store.detach(uplinkId)`
+clears the ownership the enumeration depends on — stated because the order is load-bearing and
+the `uplink reconnect / laptop restart` row below is what catches getting it wrong.)
+
+Change detection is a new module-level store in `createHub`'s closure, declared beside
+`const uplinks = new Map<string, WebSocket>()` (`poc/hub/src/hub.ts:131`) — exact shape:
+
+```ts
+// poc/hub/src/hub.ts — beside `uplinks`, keyed by sessionId
+const lastContestedSent = new Map<
+  string,                                                        // sessionId
+  { paths: string[]; collisions: { path: string; sessionIds: string[] }[] }
+>();
+```
+
+A session's entry is written immediately after its frame is handed to the socket, compared by
+value (paths AND collisions) on the next push, and DELETED when the session leaves the project
+snapshot. It is in-memory only — never journaled — which is exactly why the restart row below
+tolerates one duplicate frame after a hub restart.
+
+**Laptop restart / uplink reconnect (the symmetric case — an explicit rule, not a gap).** The
+hub's change detection is per-session state the LAPTOP cannot see. When a laptop process restarts
+or its uplink reconnects, the laptop loses `entry.contestedFrame` (Task 7a, in-memory) while the
+hub still holds a matching `lastContestedSent` entry, so change detection would suppress the
+resend and hub-sourced contested state would stay silently empty until the collision set happened
+to change. **Rule: on uplink disconnect AND on uplink re-registration, the hub DELETES the
+`lastContestedSent` entry of every session owned by that uplink**, so the next `pushProject`
+re-sends that session's current frame unconditionally. One redundant frame after a reconnect is
+acceptable (same posture as the hub-restart duplicate); a silently missing one is not. Asserted
+by the reconnect row below.
+
+**Behavior:**
+
+| Case | Input / state | Expected |
+|------|---------------|----------|
+| frame on collision | two uplinks' sessions in one repoKey publish overlapping touched | each owning uplink receives `contested` for ITS sessionId, `paths` listing the shared paths and `collisions` naming the peer session ids |
+| change-only | same collision state across two pushes | no duplicate frame on the second push (state compared on paths AND collisions) |
+| clear | one session's touched update removes the overlap | affected uplinks receive `paths: []`, `collisions: []` exactly once |
+| over-cap | a session's contested path set exceeds TOUCH_CAP | truncated after sort to TOUCH_CAP entries plus a final `TOUCH_SENTINEL` element (length = TOUCH_CAP + 1, same semantics as Task 1/Task 3); `collisions` truncated to the retained paths |
+| offline uplink | collision involves a session whose uplink is offline | no send, no error; frame delivered on next change after reconnect (no replay obligation — the next push recomputes) |
+| uplink reconnect / laptop restart (discriminating) | an uplink with a contested session disconnects and re-registers; the collision set is UNCHANGED throughout | that session's `lastContestedSent` entry was deleted on disconnect/re-registration, so the first `pushProject` after re-registration RE-SENDS the identical frame — an implementation that only compares by value must fail this row (it would send nothing and leave the reconnected laptop with no hub-sourced contested state) |
+| restart preserves touched | hub restarts and hydrates from the journal (extends `poc/hub/test/hubRestart.test.ts`) | each hydrated `SessionFacts.touched` deep-equals what was journaled before the restart; the first post-restart push recomputes collisions from it and emits frames matching pre-restart state (change-detection state MAY reset — one duplicate frame after restart is acceptable and documented) |
+| thesis bound | frame contents | ONLY sessionId, paths and colliding session ids — no transcript data, no prompts, no names |
+
+**Risk / rollback (no runtime switch — deliberate).** `MPAI_CONTESTED_GATE` (Task 8b) covers
+tier (b) on the laptop ONLY. The hub's `collisionsFrom` computation and the `contested`
+down-frame have **no runtime switch**: their disable path is a `git revert` of this task's
+commit followed by a rebuild, a restart, and a laptop-side step. The full procedure, in order:
+
+1. `git revert` this task's commit, then `npm --prefix poc/hub run build`, then restart the hub
+   (the hub is a long-lived process; a revert does not take effect in a running one). If the hub
+   is ever run as a shared/deployed process rather than the local :4000 walk process, this step
+   is a redeploy rather than a restart. (Task 6a's commit may stay: an unused frame type and
+   validator that nothing sends is inert. Revert it too only if the type itself is unwanted.)
+2. **Laptop side (required — the revert alone does not restore prior behavior).** Every attached
+   laptop keeps its last-received `entry.contestedFrame` (Task 7a, in-memory) and would go on
+   withdrawing auto-approve on stale hub-sourced peers. **Relaunch every attached laptop with
+   `MPAI_CONTESTED_GATE=0`.** There is no "or" here: a running node process's `process.env`
+   cannot be changed from outside it, so setting the variable is a RELAUNCH, not a live flip
+   (see Task 8b's kill-switch note, which states the same truth).
+   **Blast radius of that relaunch — read before running it (cycle-2 round-3 fix; Task 2a models
+   this form and the env/revert paths lacked it).** Relaunching a laptop process **interrupts every
+   in-flight agent turn on it**, **loses every unanswered `permission_request` with the process**
+   (the gate promise never resolves; the human's open permission card stops existing), and
+   **clears all in-memory per-session state** — `entry.touched` (Task 4), `entry.contestedFrame`
+   (Task 7a) and `entry.contestedAsked` (Task 8b), so once-per-file promises reset and files a
+   human already answered for can be asked about again. Worktrees and committed work on disk are
+   untouched. **Drain or park live sessions first** — tell the drivers, let in-flight turns finish,
+   answer or abandon pending gates deliberately — then relaunch. This cost is per laptop and this
+   step says "every attached laptop", so it is paid once per attached machine.
+3. Tier (a) surfaces need no separate step: local derivation is computed on read, so hub-sourced
+   contested state clears on the next laptop restart and locally-derived state remains correct
+   throughout.
+
+Reverting does NOT remove `touched` values already written to the hub journal — those rows keep
+the field and are ignored by the field-unaware reader (Task 3's downgrade note).
+
+**Verify (server build FIRST — the hub resolves `relayProtocol` through the package exports map
+from `dist/`, so a hub suite run before the build would exercise the pre-task `dist/`):**
+`cd poc/server && npx vitest run && npx tsc --noEmit && npm run build` → WHOLE server suite green
+(this task changes no server source, so the suite is a regression guard on the `dist/` the hub is
+about to consume), typecheck clean, build exits 0. THEN
+`cd ../hub && npx vitest run && npx tsc --noEmit` → WHOLE hub suite green.
+**Commit:** `feat(hub): contested down-frame — per-session collision signal to owning laptops`
 
 ---
 
@@ -913,6 +1164,25 @@ export function buildTeammateDigest(others: TeammateSummary[]): string;  // sign
 whole format lives where Task 7b's tests are). `server.ts`'s `digestFor` supplies each peer's
 `contested` array from the Task 7a accessors; the optional 4th parameter keeps `project.ts`'s
 existing `summarizeSession` call sites compiling untouched.
+
+**Insertion point inside `poc/server/src/digest.ts`, pinned (cycle-2 round-3 fix — pinned the way
+Task 4 pins `server.ts:464-465` and Task 8c pins `Transcript.tsx:125`).** `buildTeammateDigest`
+(`digest.ts:30`) opens `lines` with `"<teammates>"` (`digest.ts:32`) and then, per peer, pushes
+the summary line `- session "${o.id}"${status}: …` (`digest.ts:35-37`) followed — only when
+`o.recentToolCalls.length > 0` — by the indented `  recent activity: …` line
+(`digest.ts:38-44`). The contested line is pushed **inside the same per-peer loop iteration, AFTER
+both of those**, i.e. as the LAST line of that peer's block:
+
+```ts
+// digest.ts, inside the `for (const o of others)` loop, after the recent-activity push
+if (o.contested.length > 0) {
+  lines.push(`  ${contestedLineFor(o)}`);   // the spec §6a line form, indented like
+}                                           // `recent activity:` — one line per peer
+```
+
+Not a separate trailing group after all peers, and not before the summary line: the digest reads
+peer-by-peer today and the contested fact belongs to the peer whose block it sits in. A peer with
+`contested: []` pushes nothing (the `no collisions` row below).
 
 **`MPAI_DIGEST_DUMP` — the capture mechanism Task 11a step 5 and Task 11b step 8e depend on.** Today
 `digestFor` is a non-exported local (`server.ts:510`) whose output is never logged, so "record
@@ -955,6 +1225,7 @@ shared machine.
 | dump gate off (discriminating) | `MPAI_DIGEST_DUMP` unset, a turn that builds a digest | NOTHING is written to stderr by `digestFor` |
 | dump gate on (`serverDigestContested.test.ts`) | `MPAI_DIGEST_DUMP=1`, a turn whose digest contains `notes.txt` | exactly one stderr line matching `[digest-dump] session=<id> ` whose JSON payload contains `notes.txt` |
 | thesis bound | digest content | paths, session ids, driver names only — never another session's prompts/transcript |
+| untrusted peer text (discriminating) | a contested path and a peer id that arrived over the wire | interpolated VERBATIM into the line and never re-parsed, re-split or executed. This is safe only because the validators bound the characters upstream — Task 6a and Task 3 reject control characters and newlines in paths and bound every peer id by `SLUG` — so no peer string can break out of its line into a forged `<teammates>` entry. The row asserts the pairing: a path containing `\n` never reaches this function, and this function adds no escaping of its own |
 | no collisions | nothing contested | `<teammates>` block unchanged from today (no empty contested section) |
 
 **Exact values / provenance:** the **5-path-per-line cap and the ` +N more` overflow are
@@ -1024,9 +1295,15 @@ reason?: string | null;  // additive OPTIONAL field; absent and null are the sam
 
 **Verify:** `cd poc/server && npx vitest run test/pendingGate.test.ts test/relayProtocol.test.ts
 && npx tsc --noEmit` → targeted files green; then `npx vitest run` → WHOLE server suite green;
-then `npm run build` → exits 0. Plus the no-writer check:
-`command grep -rn "reason:" poc/server/src/agentDriver.ts poc/server/src/server.ts` → no hit
-assigns a `permission_request` reason on this commit (Task 8b supplies the first writer).
+then `npm run build` → exits 0 (build last in the BUILD chain, Global Constraints; the check below
+is read-only). Plus the no-writer check — **count-anchored, so it decides PASS/FAIL rather than
+being read** (cycle-2 round-3 fix: "→ no hit assigns a …" was a judgment read of grep output,
+unlike every other check in this plan):
+`command grep -c "reason:" poc/server/src/agentDriver.ts poc/server/src/server.ts` → **prints
+exactly `poc/server/src/agentDriver.ts:1` and `poc/server/src/server.ts:1`** — the pre-task
+baseline, verified against the tree at plan time (each file has exactly one existing `reason:`
+line, neither of them a `permission_request` reason). This task adds no new one; Task 8b supplies
+the first writer, and its commit is where those counts are expected to rise.
 **Commit:** `feat(server): permission gates carry a reason line`
 
 ---
@@ -1120,11 +1397,20 @@ An executor must not have to find these. There are exactly three places in the c
 turn a write into an approval without asking a human, and **ALL THREE consult the contested check
 in this task** — a fix at one of them is not this task done:
 
-| # | Site (file:line, today) | What it does today | After this task |
-|---|-------------------------|--------------------|-----------------|
-| 1 | `poc/server/src/agentDriver.ts:294` — `onPermissionRequest`, `if (this.permissionMode === "auto") { … }` | appends `permission_request` + an `auto: true` `permission_decision` and resolves `"allow"` immediately | if `contestedWrite(...)` returns a path AND that path is not already in `contestedAsked`, this branch is SKIPPED: the request falls through to the existing human-ask path, and the appended `permission_request` carries `reason` |
-| 2 | `poc/server/src/agentDriver.ts:531` — `setPermissionMode`, `if (mode === "auto") this.allowAllPending(userId)` (helper at `:655`) | blanket-allows every already-pending request when the driver switches to AUTO | pending requests whose contested path is not yet in `contestedAsked` are LEFT PENDING (not resolved, not denied); every other pending request is allowed exactly as today |
-| 3 | `poc/server/src/permissions.ts:141` — `buildCanUseTool`, `if (FILE_WRITE_TOOLS.has(toolName) && isContainedWrite(hooks.workdir, input)) return { behavior: "allow" }` | auto-allows any contained write regardless of permission mode | the early `allow` is skipped when `contestedWrite(toolName, input, hooks.workdir, hooks.getContested?.() ?? new Set())` returns a path not in `contestedAsked`; control falls through to the existing `hooks.onPermissionRequest` await |
+| # | Site (file:line, today) | What it does today | After this task | Which recompute has run at this point |
+|---|-------------------------|--------------------|-----------------|----------------------------------------|
+| 1 | `poc/server/src/agentDriver.ts:294` — `onPermissionRequest`, `if (this.permissionMode === "auto") { … }` | appends `permission_request` + an `auto: true` `permission_decision` and resolves `"allow"` immediately | if `contestedWrite(...)` returns a path AND that path is not already in `contestedAsked`, this branch is SKIPPED: the request falls through to the existing human-ask path, and the appended `permission_request` carries `reason` | **Task 4 site 1** — `this.recomputeTouched?.()` ran as the FIRST statement of `onPermissionRequest`, synchronously, before this branch is evaluated. The set read here is the set that call just wrote |
+| 2 | `poc/server/src/agentDriver.ts:531` — `setPermissionMode`, `if (mode === "auto") this.allowAllPending(userId)` (helper at `:655`) | blanket-allows every already-pending request when the driver switches to AUTO | pending requests whose contested path is not yet in `contestedAsked` are LEFT PENDING (not resolved, not denied); every other pending request is allowed exactly as today | **Task 4 site 2** — one `this.recomputeTouched?.()` ran immediately before `allowAllPending` iterates (only when a pending request is a write tool). Every pending request in this batch is judged against that single fresh set, not against the set that was current when each was queued |
+| 3 | `poc/server/src/permissions.ts:141` — `buildCanUseTool`, `if (FILE_WRITE_TOOLS.has(toolName) && isContainedWrite(hooks.workdir, input)) return { behavior: "allow" }` | auto-allows any contained write regardless of permission mode | the early `allow` is skipped when `contestedWrite(toolName, input, hooks.workdir, hooks.getContested?.() ?? new Set())` returns a path not in `contestedAsked`; control falls through to the existing `hooks.onPermissionRequest` await | **Task 4 site 3** — `hooks.recomputeTouched?.()` ran immediately before this `if`, inside the same `FILE_WRITE_TOOLS` guard. This site is the reason the pre-gate recompute had to move off the `permission_request` event subscriber: `buildCanUseTool` runs BEFORE any `permission_request` event exists, so a subscriber-based recompute could never have run before this read |
+
+**One ordering, stated once, and this table is where it is checked per site (cycle-2 round-3 —
+this closes the D6 blocking contradiction).** All three sites read `hooks.getContested?.()` /
+`this.getContested?.()` one statement after Task 4's synchronous decision-site recompute wrote
+`entry.touched`, so "Task 8b judges fresh data" is true at all three, by construction rather than
+by an assumption about `Session.append`'s subscriber ordering. If a driver was constructed without
+`recomputeTouched` (existing fakes, older call sites), no recompute runs and the site judges the
+last turn-boundary set — the `driver without collision wiring` behavior row covers it, and nothing
+throws.
 
 **How the contested state reaches those sites (the carrier — plan-authored, modelled on existing
 code).** `Project` is not in scope in `agentDriver.ts` or `permissions.ts`, so the state arrives as
@@ -1169,7 +1455,19 @@ boot — **and the reason is not "an operator can flip it without a restart", wh
 running node process's `process.env` cannot be changed from outside it. The per-decision read
 means the switch is honoured per-gate in tests and takes effect on the very first gate after a
 relaunch; changing it on a LIVE laptop still requires relaunching that process with
-`MPAI_CONTESTED_GATE=0` (Task 6b's rollback step 2 says the same). If a genuinely no-restart kill
+`MPAI_CONTESTED_GATE=0` (Task 6b's rollback step 2 says the same).
+**What that relaunch COSTS — stated here, before anyone reaches for the switch on a live machine
+(cycle-2 round-3 fix; Task 2a models this form).** Relaunching the laptop process **interrupts
+every in-flight agent turn on it**, **loses every unanswered `permission_request` with the
+process** (including the very contested gate someone was trying to escape), and **clears all
+in-memory per-session state** — `entry.touched` (Task 4), `entry.contestedFrame` (Task 7a) and
+`entry.contestedAsked` (this task), so the once-per-(file, session) promise resets and files a
+human already answered for become askable again. Worktrees and committed work on disk are
+untouched. **Drain or park live sessions first** — tell the drivers, let in-flight turns finish,
+answer or abandon pending gates deliberately — then relaunch. Note the asymmetry this creates: a
+kill switch whose only live application path costs a restart is a deployment-time switch, not an
+incident-time one; the incident-time behavior is "answer the gate once per file", which never
+blocks a write. If a genuinely no-restart kill
 switch is wanted, moving the flag to a dot-file read per gate decision is an owner call, not a
 mechanical change. Tier (a) surfaces (Task 7b digest, client UI) are NOT gated by
 it, and that absence is deliberate: tier (a) mutates no shared state and changes no control
@@ -1202,6 +1500,7 @@ case, it still never blocks a write, and `MPAI_CONTESTED_GATE=0` is the escape h
 | driver without collision wiring | a driver constructed with no `getContested` hook (existing test fakes, older call sites) | `hooks.getContested?.() ?? new Set()` — behaves exactly as today, never throws |
 | non-write tools | Bash/Read/etc. on any path | never affected (end-to-end at the gate; the predicate-level row lives in Task 8p) |
 | outside worktree | write whose resolved path escapes the workdir | existing isContainedWrite behavior unchanged; contested logic never widens what may be written |
+| untrusted peer id in the reason line (discriminating) | the colliding peer id arrived over the wire in a hub `contested` frame | the reason is `contested with session ${otherSessionId}` with the id interpolated VERBATIM and never re-parsed or escaped by this task — safe because Task 6a validates every peer id with `str(id, SLUG)` (`/^[a-z0-9-]{1,40}$/`), so no newline, control character or 500-char string can reach this line. Two consequences asserted by this row: a non-SLUG peer id never gets here at all (the frame was rejected upstream), and the 512-char gate-reason cap (Task 8a) is unreachable by construction — `contested with session ` + ≤ 40 chars |
 | advisory bound | any collision state | NOTHING is blocked — the only effect is auto → human, once |
 
 **Verify:** `cd poc/server && npx vitest run test/serverGateContested.test.ts &&
@@ -1394,26 +1693,74 @@ state — `const collisions = useMemo(() => projectCollisions(sessions), [sessio
 NO new prop, so nothing in `App.tsx` needs to change and `npx tsc -b` cannot fail on an unpassed
 required prop.
 
+**Render placement, pinned (cycle-2 round-3 fix — the same precision Task 8c and Task 10a already
+carry; `SessionPicker.tsx:33` named only the state hook, not where anything is drawn).** Two
+insertion points in `poc/client/src/components/SessionPicker.tsx`, both inside the
+`groups.map((group) => …)` block at `SessionPicker.tsx:231-268`:
+
+- **repo-group chip** — the group head is the `showRepoHeads &&` block,
+  `SessionPicker.tsx:233-244`, whose single rendered expression is
+  `{labels.get(group.repoKey) ?? (group.repoKey || "unknown repo")}` (`:242`). The chip is
+  appended INSIDE that same `<div className="line pix sm dim">`, after the label expression:
+
+  ```tsx
+  {labels.get(group.repoKey) ?? (group.repoKey || "unknown repo")}
+  {groupContestedCount > 0 && (
+    <span className="contested-calm">{`⚠ ${groupContestedCount} contested`}</span>
+  )}
+  ```
+
+  Note it must render even when `showRepoHeads` is false only if the owner wants it there — it
+  does NOT: the chip belongs to the group head, and a single-group view has no head today. That
+  is existing behavior this task does not change.
+- **session-row marker** — the state badge is the `<span className={\`spstate pix sm …\`}>` at
+  `SessionPicker.tsx:250-252`, inside `<div className="spname">` (`:249`). The marker is a sibling
+  rendered immediately AFTER that badge, still inside `.spname`:
+
+  ```tsx
+  {isContested && <span className="contested-calm">contested</span>}
+  ```
+
+  — beside the state badge, exactly as spec §5 words it, and after it so a CLOSED session reads
+  `CLOSED` then `contested` (the `spec §2.6` case in the rows below).
+
 **Behavior:**
 
 | Case | Input / state | Expected |
 |------|---------------|----------|
 | repo-group chip | a repo group with ≥1 collision | group head renders exactly `⚠ ${n} contested` where `n` = the distinct contested path COUNT for that repo group (a number, never a path list — e.g. `⚠ 2 contested`, never `⚠ src/a.ts,src/b.ts contested`); groups without collisions render exactly as today |
-| session-row marker | a session appearing in any Collision | a marker beside the state badge rendering the EXACT literal `⚠ contested` (no count — the row is one session; Global Constraints); CLOSED sessions show both markers (spec §2.6) |
+| session-row marker | a session appearing in any Collision | a marker beside the state badge (immediately after it, inside `.spname`) rendering the EXACT literal `contested` — **no count and NO `⚠` glyph**, matching spec §5's per-session marker literal verbatim (Global Constraints; the earlier `⚠ contested` reading is withdrawn — the glyph belongs to the group chip and the header badge, which spec §5 spells with it); CLOSED sessions show both markers (spec §2.6) |
 | calm styling | the chip/marker | carries class `contested-calm` (assert the class name, not a color) AND the class is DECLARED in `terminal.css` as `.contested-calm { color: var(--gold); border-color: var(--gold); background: var(--gold-wash); }` — the existing awareness tokens at `terminal.css:35` and `:42`; no `--amber*` token appears in the rule |
 | none | no collisions | zero new DOM (discriminating row) |
 
 **Verify:** `cd poc/client && npm --prefix ../server run build && npx tsc -b && npx vitest run
 src/components/SessionPicker.test.tsx` → server build exits 0 (explicit — no `pretest` hook
 fires under `npx vitest run`), then the new file's cases green (each shown RED on pre-task code
-first, per the TDD constraint); then `npx vitest run` → WHOLE client suite green. Plus
-`command grep -n "contested-calm" poc/client/src/terminal.css` → the class is DEFINED (a rule
-body, not just a class reference), and — anchored to the RULE BODY, not to a single line, because
-a one-line pipeline passes vacuously the moment the rule is formatted across several lines —
-`command grep -A3 '^\.contested-calm' poc/client/src/terminal.css | command grep -c 'amber'` →
-prints exactly `0` (the rule's declaration line plus its next 3 lines contain no amber token).
+first, per the TDD constraint); then `npx vitest run` → WHOLE client suite green. Plus the two CSS
+checks, **both count-anchored, and the second's anchor proved by the first** (cycle-2 round-3 fix:
+"the class is DEFINED (a rule body, not just a class reference)" was a judgment read of grep
+output, and the `-A3` pipeline printed the PASS value `0` vacuously whenever its anchor failed to
+match):
+
+1. **Rule-body existence AND anchor precondition, in one command:**
+   `command grep -c '^\.contested-calm[[:space:]]*{' poc/client/src/terminal.css` →
+   **prints exactly `1`**. This proves a rule BODY exists (not a bare class reference) and pins
+   the exact anchor check 2 depends on: the selector is written at column 0, unindented and
+   uncompounded. **If this prints `0`, check 2 is void, not passed** — a selector written indented
+   or compounded (`.chip.contested-calm {`) makes `^\.contested-calm` match nothing, so check 2's
+   pipeline prints `0`, the PASS value, even if the rule uses `--amber`. Check 1 failing is
+   therefore a FAIL of this Verify, not a licence to interpret check 2.
+2. **No amber token in the rule body:**
+   `command grep -A3 '^\.contested-calm' poc/client/src/terminal.css | command grep -c 'amber'` →
+   **prints exactly `0`**. Valid only with check 1 green.
+
 The rule is authored as ≤ 4 lines (selector + the three declarations in Global Constraints), so
 `-A3` covers its whole body; a longer rule must widen the `-A` count to match.
+Plus the marker-literal check (the glyph withdrawal above is a stated requirement of this diff, so
+it carries an objective check like every other):
+`command grep -c '⚠ contested' poc/client/src/components/SessionPicker.tsx` → **prints exactly
+`0`** — the session-row marker is the bare literal `contested`; the only `⚠` in this file is the
+group chip's `⚠ ${n} contested`.
 **Commit:** `feat(client): contested chips on the session list`
 
 ---
@@ -1425,6 +1772,16 @@ The rule is authored as ≤ 4 lines (selector + the three declarations in Global
 follow the `ProjectPicker.test.tsx` / `RecordPanel.test.tsx` pattern). Render tests over
 `collisionsFrom` fixtures (spec §9). **No stylesheet edit:** `contested-calm` is declared by
 Task 9b; this task only applies the class name.
+
+**Depends on Task 9b — and the edge is now in the scheduling contract, not only in prose
+(cycle-2 round-3 fix).** This task's badge carries `className="contested-calm"`, and that class is
+DECLARED by Task 9b in `poc/client/src/terminal.css`. The plan said so in two places (this
+paragraph and the client rationale), but "the table alone is the scheduling contract" — so an
+executor scheduling from the table could have landed 10a's badge referencing an undeclared class.
+The dependency table's Depends-on cell for 10a now reads `5, 9a, 9b`. The edge is ordering-only:
+this task's tests assert the class NAME, never a computed style, so nothing here fails on a
+missing rule — but a badge styled by nothing is not the calm surface spec §5 asks for, and
+shipping it in that state for one commit is avoidable by ordering.
 
 **Interfaces — consumes:** Task 9a's `projectCollisions` / `contestedCountFor`.
 
@@ -1469,9 +1826,15 @@ for the exact line. Every row in the behavior table below IS asserted by `Header
 src/components/Header.test.tsx` → server build exits 0 (explicit — `npx vitest run` fires no
 `pretest`), then the new file's cases green (each shown RED on pre-task code first); then
 `npx vitest run` → WHOLE client suite green. Plus the memo-presence check (the one stated
-requirement of this diff with no behavioral test — see the note above):
-`command grep -c "useMemo(() => projectCollisions(projectSessions)" poc/client/src/App.tsx` →
-**prints exactly `1`**.
+requirement of this diff with no behavioral test — see the note above), **whitespace-hardened so a
+formatter cannot produce a spurious FAIL on a correct diff** (cycle-2 round-3 fix: the literal
+string form failed on the perfectly correct
+`useMemo(\n  () => projectCollisions(projectSessions),`):
+`command grep -czE 'useMemo\([[:space:]]*\([[:space:]]*\)[[:space:]]*=>[[:space:]]*projectCollisions\(projectSessions\)' poc/client/src/App.tsx`
+→ **prints exactly `1`**. (`-z` makes the file one record so the pattern matches across the line
+break a formatter may insert; drop `-z` only if the memo is written on a single line, in which
+case `command grep -cE 'useMemo\([[:space:]]*\([[:space:]]*\)[[:space:]]*=>[[:space:]]*projectCollisions\(projectSessions\)' poc/client/src/App.tsx`
+→ exactly `1` is the equivalent check.)
 **Commit:** `feat(client): contested badge in the session header`
 
 ---
@@ -1489,6 +1852,28 @@ same pattern as above). Render tests over `collisionsFrom` fixtures (spec §9).
 so this task computes collisions IN THE COMPONENT from that existing prop —
 `const collisions = useMemo(() => projectCollisions(props.sessions), [props.sessions]);` — and
 adds no prop and no `App.tsx` edit. (10a's `Header` prop is separate and does not reach here.)
+
+**Render placement, pinned (cycle-2 round-3 fix — same precision as Task 8c's
+`Transcript.tsx:125` block).** The OTHER PARTIES section head is at
+`poc/client/src/components/PartyPane.tsx:59-60` (`<div className="party-title pix">` /
+`<span>OTHER PARTIES</span>`); the rows it heads are the `others.map((s) => …)` block beginning at
+`PartyPane.tsx:88`, each row an `<a className="member …">` (`:95-118`) containing
+`<div className="member-head">` (`:100`) and `<div className="member-meta">` (`:113`). The shares
+line is rendered as the LAST child of that `<a>`, after the existing `member-meta` div and before
+the closing `</a>` (`:118`):
+
+```tsx
+{shared.length > 0 && (
+  <div className="member-meta contested-calm">
+    {`⚠ shares: ${shared.slice(0, 3).join(", ")}${shared.length > 3 ? ` +${shared.length - 3} more` : ""}`}
+  </div>
+)}
+```
+
+`shared` is `sharedWith(props.sessionId, s.id, collisions)` (Task 9a). It reuses the existing
+`member-meta` class for layout and adds `contested-calm` for the calm token — no new stylesheet
+rule, and `terminal.css` stays Task 9b's file (Global Constraints forbid staging outside this
+task's file list).
 
 **Behavior:**
 
@@ -1559,9 +1944,26 @@ Two rules, both mandatory:
    At step 0, before anything is launched, run once and ledger the two printed paths:
    `umask 077 && LOGDIR=$(mktemp -d) && LAPTOP_LOG="$LOGDIR/laptop.log" && SOLO_LOG="$LOGDIR/solo.log" && echo "$LAPTOP_LOG" && echo "$SOLO_LOG"`
    — the same posture `HUB_DB=$(mktemp -d)/hub.db` already uses. Every reference to
-   `$LAPTOP_LOG` / `$SOLO_LOG` below means those ledgered paths; `$LOGDIR` must be exported into
-   (or re-captured and re-ledgered in) whatever shell runs step 8a. Step 9 removes the whole
+   `$LAPTOP_LOG` / `$SOLO_LOG` below means those ledgered paths. Step 9 removes the whole
    directory.
+
+   **`$LOGDIR` is RE-READ from the ledger, never re-derived — and its deletion is checked
+   non-vacuously (cycle-2 round-3 fix).** The plan already warned that `$LOGDIR` may not survive
+   into the shell running step 8a/9, but the only assurance the logs were gone was
+   `test ! -d "$LOGDIR"`, which **exits 0 vacuously when the variable is empty or unset** — and
+   `rm -rf "$LOGDIR"` is likewise a no-op in that case, so an unset variable read as a clean
+   sweep while the capture logs sat on disk. Two binding rules:
+
+   - **Before any step that references `$LOGDIR`** (11a's abort cleanup, 11b step 8a's FAIL
+     branch, 11b step 9), set it by **pasting the absolute path ledgered at 11a step 0** —
+     `LOGDIR=<the ledgered absolute path>` — not by re-running `mktemp -d`, which would mint an
+     empty new directory and "clean" that instead.
+   - **The cleanup command is this exact chain, and an unset or missing `$LOGDIR` is a FAIL, not
+     a pass:**
+     `test -n "$LOGDIR" && test -d "$LOGDIR" && rm -rf "$LOGDIR" && test ! -d "$LOGDIR"` → exits 0.
+     A non-zero exit means the logs may still be on disk: re-read the ledgered path and re-run.
+     (If the directory is legitimately already gone — a second cleanup pass on the same walk —
+     ledger that, with the path, rather than recording a vacuous pass.)
 2. **Verify identity before every `kill`.** Run
    `ps -p $(cat <pidfile>) -o command=` and confirm the output contains the expected entrypoint
    — `poc/hub/dist/main.js` for the hub pidfile, `poc/server/bin/mpai.js` for the laptop and
@@ -1596,8 +1998,16 @@ Two rules, both mandatory:
    digest dump enabled and stderr captured** (steps 5 and 8e read that file), recording its
    PID, invoking the CLI by `$REPO_ROOT` path (a relative path resolves to nothing from the
    scratch repo, and a global binary must not be assumed):
-   `SCRATCH=$(mktemp -d) && cd "$SCRATCH" && git init && MPAI_DIGEST_DUMP=1 node "$REPO_ROOT"/poc/server/bin/mpai.js --hub ws://127.0.0.1:4000/uplink --port 3002 --no-open 2> "$LAPTOP_LOG" & echo $! > /tmp/mpai-walk-laptop.pid`
-   (NOT port 3001 — may be user-occupied). Ledger `$SCRATCH`: steps 2 and 3 assert on worktrees
+   `SCRATCH=$(mktemp -d) && cd "$SCRATCH" && git init && git commit --allow-empty -m init && MPAI_DIGEST_DUMP=1 node "$REPO_ROOT"/poc/server/bin/mpai.js --hub ws://127.0.0.1:4000/uplink --port 3002 --no-open 2> "$LAPTOP_LOG" & echo $! > /tmp/mpai-walk-laptop.pid`
+   (NOT port 3001 — may be user-occupied). **The `git commit --allow-empty -m init` is not
+   optional and is not cosmetic (cycle-2 round-3 fix):** a bare `git init` leaves an UNBORN HEAD —
+   no commit and no branch ref — so there is no ref for Task 2a's `provision(projectId, slug,
+   baseRef)` to branch a worktree from and no `baseRef` for Task 2b to bind, and steps 2 and 3
+   (`test -f "$SCRATCH"/.mpai/worktrees/<projectId>/alpha/notes.txt`, `git -C …/beta status`)
+   would be asserting on worktrees that were never created. **Ledger the resulting branch name**
+   (`git -C "$SCRATCH" branch --show-current` → typically `main` or `master` depending on this
+   machine's `init.defaultBranch`) so the `baseRef` Task 2b binds is a real ref that can be checked
+   against step 2's assertion. Ledger `$SCRATCH`: steps 2 and 3 assert on worktrees
    under it. *(If `mpai` is already on
    PATH via `npm --prefix poc/server link`, `mpai …` is equivalent; ledger which form was used.)*
    Ledger both PIDs. PASS = both PIDs recorded, the hub answering on :4000 and the laptop on
@@ -1658,8 +2068,11 @@ and laptop processes are LEFT RUNNING for Task 11b, which stops them at its step
 files stay in place. **If this task ABORTS before 11b can run — at any step, for any reason —
 cleanup is not optional and not deferred to a task that will never start:** run step 9's cleanup
 here (identity-check with `ps -p $(cat <pidfile>) -o command=`, `kill` only on a match, then
-`rm -f /tmp/mpai-walk-hub.pid /tmp/mpai-walk-laptop.pid /tmp/mpai-walk-solo.pid` and
-`rm -rf "$LOGDIR"`), ledger that it ran, and ledger the walk BLOCKED.
+`rm -f /tmp/mpai-walk-hub.pid /tmp/mpai-walk-laptop.pid /tmp/mpai-walk-solo.pid` and the guarded
+log-directory chain — `LOGDIR=<ledgered absolute path from step 0>` then
+`test -n "$LOGDIR" && test -d "$LOGDIR" && rm -rf "$LOGDIR" && test ! -d "$LOGDIR"` → exit 0,
+per the PID/log-hygiene rules; a bare `rm -rf "$LOGDIR"` on an unset variable is a silent no-op),
+ledger that it ran with the path it ran on, and ledger the walk BLOCKED.
 **Commit:** none.
 
 ---
@@ -1695,14 +2108,20 @@ Each lettered sub-step is INDEPENDENTLY ledgered, exactly as in 11a.
      not leave this walk's own artifacts behind:** run step 9's cleanup now — identity-check
      (`ps -p $(cat <pidfile>) -o command=`) and `kill` **only** PIDs this walk recorded and only on
      a match, then `rm -f /tmp/mpai-walk-hub.pid /tmp/mpai-walk-laptop.pid
-     /tmp/mpai-walk-solo.pid` and `rm -rf "$LOGDIR"` (the capture logs hold peer paths, session
-     ids and driver names). **Then EXIT the abort state properly, because it is not a done state:**
+     /tmp/mpai-walk-solo.pid` and the guarded log-directory chain — `LOGDIR=<the absolute path
+     ledgered at 11a step 0, pasted, not re-derived>` then
+     `test -n "$LOGDIR" && test -d "$LOGDIR" && rm -rf "$LOGDIR" && test ! -d "$LOGDIR"` → exit 0
+     (the capture logs hold peer paths, session ids and driver names; an unset `$LOGDIR` makes a
+     bare `rm -rf` a no-op and a bare `test ! -d` a vacuous pass — see the hygiene rules). **Then EXIT the abort state properly, because it is not a done state:**
      ledger the walk **BLOCKED**, identify the occupant with
      `lsof -ti :<port> | xargs ps -p -o command=`, and have the **OPERATOR** free the port (never
      the executor — the process-hygiene rule is binding); once free, re-run the solo leg from 8a.
      Only once both ports are empty:
-     `rm -f /tmp/mpai-walk-solo.pid`, create a fresh scratch git repo
-     (`SOLO_SCRATCH=$(mktemp -d) && cd "$SOLO_SCRATCH" && git init`)
+     `rm -f /tmp/mpai-walk-solo.pid`, create a fresh scratch git repo **with an initial commit —
+     same reason and same form as 11a step 1, a bare `git init` leaves an unborn HEAD with no ref
+     to provision a worktree from** (cycle-2 round-3 fix):
+     `SOLO_SCRATCH=$(mktemp -d) && cd "$SOLO_SCRATCH" && git init && git commit --allow-empty -m init`
+     — ledger the resulting branch name (`git -C "$SOLO_SCRATCH" branch --show-current`) —
      and launch solo from it, same invocation form as 11a step 1 (dump enabled, stderr captured
      to a FRESH log — `$SOLO_LOG`, not `$LAPTOP_LOG` — so step 8e cannot read step 5's lines),
      using the `$REPO_ROOT` captured at
@@ -1745,8 +2164,13 @@ Each lettered sub-step is INDEPENDENTLY ledgered, exactly as in 11a.
    then `kill $(cat /tmp/mpai-walk-solo.pid)`; on a mismatch do not kill, ledger and `rm -f`.
    Then `rm -f /tmp/mpai-walk-hub.pid /tmp/mpai-walk-laptop.pid /tmp/mpai-walk-solo.pid` so the
    next walk cannot inherit these paths. **Then delete the capture logs, once their evidence
-   lines are already pasted into the ledger (steps 5 and 8e):** `rm -rf "$LOGDIR"` (removes both
-   `$LAPTOP_LOG` and `$SOLO_LOG` and the owner-only directory holding them). They hold peer paths,
+   lines are already pasted into the ledger (steps 5 and 8e).** Set `LOGDIR` by pasting the
+   absolute path ledgered at 11a step 0 (never re-derive it with `mktemp -d`), then run the
+   guarded chain:
+   `test -n "$LOGDIR" && test -d "$LOGDIR" && rm -rf "$LOGDIR" && test ! -d "$LOGDIR"` → **exits
+   0** (removes both `$LAPTOP_LOG` and `$SOLO_LOG` and the owner-only directory holding them). A
+   non-zero exit means the logs may still be on disk — re-read the ledgered path and re-run; do
+   not record the sweep. They hold peer paths,
    session ids and driver names on a machine this plan repeatedly calls shared
    (Task 7b's capture-file handling note), so leaving them behind is the same class of hazard as
    a stale PID file. Sweep = `lsof -ti :4000; lsof -ti :3002`
@@ -1758,8 +2182,12 @@ Each lettered sub-step is INDEPENDENTLY ledgered, exactly as in 11a.
 8f PASS, step 8f's gate-reason text `contested with session gamma` pasted verbatim **and recorded
 as observed IN THE BROWSER**, step 8e's
 `[digest-dump]` line pasted verbatim, and step 9's sweep showing both ports empty, all three
-PID files removed and `$LOGDIR` gone (`test ! -d "$LOGDIR"` → exit 0). Together with 11a's record this is the "both-mode"
-walk evidence the plan-level Done criteria require.
+PID files removed and `$LOGDIR` gone — the last one recorded as the **guarded** chain's exit 0,
+`test -n "$LOGDIR" && test -d "$LOGDIR" && rm -rf "$LOGDIR" && test ! -d "$LOGDIR"`, run against
+the absolute path re-read from 11a step 0's ledger entry (a bare `test ! -d "$LOGDIR"` exits 0
+whenever the variable is empty, so on its own it is not evidence the logs were deleted; the
+ledger records the path the chain ran on, not just the exit status). Together with 11a's record
+this is the "both-mode" walk evidence the plan-level Done criteria require.
 **Commit:** none.
 
 ---
@@ -1891,8 +2319,11 @@ reads it as drift:
   walk's ledger evidence with a server-suite assertion — was rejected because it would stop
   pinning the LIVE turn's digest, which is the whole point of step 5.
 - **`collisions` inbound bounds (Task 6a).** `collisions` ≤ `TOUCH_CAP + 1`, `sessionIds`
-  non-empty, ids ≤ 128 chars, ≤ 100 ids per entry — spec fixes the shape, not the bounds; the
-  numbers follow `relayProtocol.ts`'s existing `MAX_REPOS = 100` posture.
+  non-empty, **≤ 100 ids per entry** — spec fixes the shape, not the bounds; the number follows
+  `relayProtocol.ts`'s existing `MAX_REPOS = 100` posture. **Narrowed in cycle-2 round-3:** the
+  per-id `≤ 128 chars` bound is WITHDRAWN and replaced by the existing `SLUG` regex, so the only
+  plan-authored bound left on this field is the ≤ 100 count. Peer ids are no longer a
+  plan-authored bound at all — they reuse `poc/server/src/project.ts:11`.
 - **§6a `paths` bound read as `TOUCH_CAP + 1` (Task 6a).** Consistent reading of §3.1/§3.3; if
   the owner reads §6a as a flat 500 including the sentinel, Task 6a drops to `TOUCH_CAP − 1`
   paths + sentinel and Task 3's facts bound is unaffected.
@@ -1938,3 +2369,92 @@ reads it as drift:
 - **Over-long paths dropped producer-side; walk discrimination label** — carried forward from
   the round-2 residuals above, with the round-2 bullet now stating the banked-decision-1 cost in
   full.
+
+### Plan-authored decisions ADDED in cycle-2 round-3 (this register stays complete)
+
+- **`recomputeTouched` as a fifth `DriverHooks` callback (Task 4).** Spec §3.2 requires a pre-gate
+  recompute but names no mechanism. `Project` is not in scope in `agentDriver.ts` or
+  `permissions.ts`, so the trigger reaches the three decision sites as
+  `recomputeTouched?: () => void`, supplied at `server.ts:445` — modelled on the existing
+  `getOversight?: () => string` (`agentDriver.ts:78-80`) and identical in shape to Task 8b's four
+  contested hooks. Owner alternatives: move the whole gate decision into `server.ts`, or accept
+  turn-boundary-only freshness and delete the pre-gate requirement (that second one is a spec
+  change, since §3.2 is an owner ruling).
+- **Recompute at decision site 2 (`setPermissionMode` → `allowAllPending`) as well as sites 1 and
+  3 (Task 4).** The council's prescription named two sites; the plan calls it at all three so the
+  per-site statement in Task 8b's table ("the just-executed decision-site recompute") is uniformly
+  true and no site silently judges a staler set than its neighbours. It is one extra recompute per
+  AUTO switch that has write requests pending, never one per pending request. Owner may drop it
+  and mark site 2 "judges the set current when the batch was queued".
+- **The over-long-path drop is LOGGED (Task 1, Global Constraints).** One stderr line per call
+  that dropped anything, carrying a COUNT and the workdir, never the path. Plan-authored: the spec
+  has no producer-side drop rule at all, so it has no log rule either. This exists to make the
+  banked-decision-1 exemption attributable while proposed §8a ruling 9 is with the owner.
+- **`provision` THROWS on a non-SLUG `projectId`, validated inside the function (Task 2a).** The
+  spec requires project scoping, not a validation posture. Throwing (rather than sanitising or
+  falling back) and guarding inside `provision` (rather than at each `server.ts` call site) are
+  this plan's choices; the regex itself is the existing `SLUG` at `poc/server/src/project.ts:11`,
+  not a new bound.
+- **Session-row marker literal aligned to the spec (Task 9b) — this is a WITHDRAWAL, not a new
+  decision.** The plan previously pinned `⚠ contested`; spec §5's per-session marker literal is
+  bare `contested`. The spec governs, the glyph is dropped, and no plan-authored decision is
+  created — recorded here only so the change is visible to a reviewer who read the earlier
+  revision.
+
+## Cycle-2 round-3 residuals
+
+**None.** All 24 council violations from cycle 2 round 3 (2 blocking + 22 minor) are closed in
+this revision (per-violation mapping: `.soltero/plan-fix-final-report.md`). Both blocking
+violations were one root cause — the pre-gate recompute was pinned to the `permission_request`
+event subscriber while decision site 3 (`permissions.ts:141`) runs before any such event
+exists — and are closed together by moving the recompute onto the decision sites (Task 4) and
+stating, per site, which recompute has run at that point (Task 8b's site table). The turn-boundary
+recompute is unchanged.
+
+Two D3 minors (the over-long-path drop narrowing LOCKED banked decision 1) were graded
+`owner-decision`. They are closed here on the most conservative reading available to a docs-only
+pass — the behavior is unchanged (drop, never truncate, never raise the cap, so no frame becomes
+rejectable and no false path is invented) and the plan's own stated objection, that the exemption
+is *silent*, is removed mechanically by the new log line. The ruling itself is filed for the owner
+as proposed spec §8a ruling 9; see `## Final-pass notes`. Execution is not gated on it.
+
+The conflict matrix was **re-verified mechanically again** after this round's re-ordering
+(7a ahead of 6b) and Depends-on/Files widenings: still 18 implementing rows, each listing exactly
+the other 17, symmetric in both directions, no self-reference, no unknown label, and every
+Depends-on cell satisfied by the serial order — see the note under the Task Dependency Table.
+
+## Final-pass notes
+
+This was the final revision pass; no further review round follows. Two notes for the controller
+and the owner:
+
+1. **Proposed spec §8a ruling 9 — over-long paths (FILED, NOT BLOCKING).** The producer-side rule
+   "`touchedFiles` DROPS any path longer than `PATH_WIRE_CAP` (512 chars)" narrows LOCKED banked
+   decision 1 (spec §2.1) for that class of paths: if two sessions both diverge on a >512-char
+   path, the collision is invisible to `collisionsFrom` — no badge, chip, party row, digest line
+   or gate. Every other spec-level conflict on this branch was escalated and ruled (§8a rulings
+   4–8), so this one is put to the owner in the same form: **(a) rule the drop into the spec,
+   formally narrowing banked decision 1 to paths ≤ `PATH_WIRE_CAP`; (b) raise `PATH_WIRE_CAP` in
+   spec §3.3 so the class stays detectable; or (c) truncate instead** (rejected on the merits
+   here — a truncated path is a different path and would false-collide). Worth stating in the
+   escalation: spec §3.3's own "each ≤ 512 chars" validator bound already makes such a path
+   untransportable, so the tension originates in the spec, not in this plan. **Meanwhile the plan
+   executes on (a)'s behavior with the exemption LOGGED** (Task 1's new
+   `[touched] dropped ${n} path(s) over ${PATH_WIRE_CAP} chars in ${workdir}` line), which is the
+   most conservative reading: it changes no behavior a later ruling would have to undo, and it
+   converts an undetectable exemption into an attributable one. If the owner picks (b), two
+   behavior rows and one constant change (Task 1's over-long-path row, Task 3's
+   producer-never-emits-a-rejectable-path row, `PATH_WIRE_CAP`); if the owner picks (a), nothing
+   changes.
+2. **One interpretation the controller should see.** The controller's pre-gate prescription named
+   two recompute call sites (`buildCanUseTool`'s write-tool path, and the top of `agentDriver`'s
+   auto-mode permission path) and separately required Task 8b's site table to state, per site,
+   which recompute has run — "all three now: the just-executed decision-site recompute". Those two
+   sentences are only simultaneously satisfiable if decision site 2
+   (`setPermissionMode` → `allowAllPending`, `agentDriver.ts:531`) also gets a call, because a
+   request queued earlier and released by a later AUTO switch would otherwise be judged against
+   the set that was current when it was queued. **Resolved conservatively: Task 4 pins three call
+   sites, not two**, with site 2's call made once per batch and only when a pending request is a
+   write tool. This adds freshness, never removes it; if the owner prefers the literal two-site
+   reading, delete Task 4's site-2 row and change Task 8b's site-2 cell to "judges the set current
+   when the batch was queued". Registered above with the other plan-authored decisions.
