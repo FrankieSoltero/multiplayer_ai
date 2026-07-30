@@ -4,6 +4,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import { staticHandler } from "multiplayer-ai-server/staticFiles";
 import { slugify } from "multiplayer-ai-server/workspace";
 import { projectRecordFrom } from "multiplayer-ai-server/record";
+import { collisionsFrom, TOUCH_CAP, TOUCH_SENTINEL } from "multiplayer-ai-server/collisions";
+import type { ProjectMessage } from "multiplayer-ai-server/project";
 import {
   MAX_FRAME_BYTES,
   RELAY_PROTOCOL_VERSION,
@@ -129,6 +131,27 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     store = new HubStore();
   }
   const uplinks = new Map<string, WebSocket>();
+  /** The last `contested` frame sent for each session, so a push only writes
+   *  down an uplink when that session's collision state actually CHANGED
+   *  (spec §6a). Without it every push would re-send every session's frame once
+   *  a second, forever, to every attached laptop.
+   *
+   *  Keyed by (projectId, sessionId) rather than by the bare sessionId the
+   *  plan's shape names: session ids are unique per PROJECT, not per hub — two
+   *  projects each holding an "auth" would otherwise share one entry and
+   *  suppress each other's frames — and both operations over this map
+   *  (`emitContested`'s prune, `forgetContested`'s purge) are project-scoped,
+   *  exactly like `store.snapshot` and `store.ownerOf` themselves.
+   *
+   *  In-memory only, never journaled, which is why a hub restart is allowed one
+   *  duplicate frame per contested session: the record holds `touched`, and the
+   *  first post-restart push recomputes from it with nothing to compare against
+   *  (`hubRestart.test.ts`). One duplicate is acceptable; a silently missing
+   *  frame is not. */
+  const lastContestedSent = new Map<
+    string,
+    { paths: string[]; collisions: { path: string; sessionIds: string[] }[] }
+  >();
   const channels = new Map<string, BrowserChannel>();
   const lastPush = new Map<string, number>();
   const pushTimers = new Map<string, NodeJS.Timeout>();
@@ -150,6 +173,136 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       if (channel.projectId === projectId) send(channel.socket, payload);
     }
     lastPush.set(projectId, Date.now());
+    // Last, on the same throttled beat as the browser snapshot and off the
+    // same value: the collision set is derived from exactly the facts a
+    // browser was just shown, so the two surfaces can never disagree about
+    // which files are contested.
+    emitContested(projectId, payload);
+  }
+
+  /** `lastContestedSent`'s key. NUL cannot appear in either half — a projectId
+   *  is `SLUG`-validated here and a sessionId by `parseUpFrame` — so no pair of
+   *  distinct ids can ever collide on one key. */
+  const contestedKey = (projectId: string, sessionId: string) => `${projectId}\u0000${sessionId}`;
+
+  const sameContested = (
+    a: { paths: string[]; collisions: { path: string; sessionIds: string[] }[] },
+    b: { paths: string[]; collisions: { path: string; sessionIds: string[] }[] },
+  ): boolean => {
+    if (a.paths.length !== b.paths.length || a.collisions.length !== b.collisions.length) {
+      return false;
+    }
+    for (let i = 0; i < a.paths.length; i += 1) if (a.paths[i] !== b.paths[i]) return false;
+    // Both lists are fully sorted by `collisionsFrom` (repoKey, then path, then
+    // sessionIds), so equality is positional — no set comparison needed, and a
+    // reordering would be a real change in what the hub computed.
+    for (let i = 0; i < a.collisions.length; i += 1) {
+      const x = a.collisions[i]!;
+      const y = b.collisions[i]!;
+      if (x.path !== y.path || x.sessionIds.length !== y.sessionIds.length) return false;
+      for (let j = 0; j < x.sessionIds.length; j += 1) {
+        if (x.sessionIds[j] !== y.sessionIds[j]) return false;
+      }
+    }
+    return true;
+  };
+
+  /** The `contested` down-frame (spec §6a as amended by §8a ruling 6): which of
+   *  a session's files ANOTHER live session is also touching, and whose. Only
+   *  the hub sees every laptop, so this is the only way a hub-attached laptop
+   *  can name a peer at all — its own derivation covers just the sessions in
+   *  its own process.
+   *
+   *  Thesis bound (§1.1): a session id, paths, and peer session ids. Nothing
+   *  here reads a transcript, a prompt or a participant name, and nothing may
+   *  be added that does.
+   *
+   *  One frame per session whose state CHANGED, written down the uplink that
+   *  OWNS that session and no other — a laptop learns about its own sessions,
+   *  never about a peer's. */
+  function emitContested(projectId: string, payload: ProjectMessage): void {
+    const collisions = collisionsFrom(
+      payload.sessions.map((session) => ({
+        sessionId: session.id,
+        repoKey: session.repoKey,
+        lifecycle: session.lifecycle,
+        touched: session.touched,
+      })),
+    );
+    const live = new Set<string>();
+    for (const session of payload.sessions) {
+      const key = contestedKey(projectId, session.id);
+      live.add(key);
+      const owner = store.ownerOf(projectId, session.id);
+      const uplink = owner ? uplinks.get(owner) : undefined;
+      // No owner, or no live socket: skip this session entirely. Nothing is
+      // queued and nothing is recorded as sent — there is no replay
+      // obligation, because the next push recomputes the whole thing from
+      // stored facts and the reconnect purge below guarantees it is re-sent.
+      if (!uplink) continue;
+      // `collisionsFrom` sorts by (repoKey, path) and a session lives in
+      // exactly one repo, so this is already the distinct path set in
+      // ascending order — no second sort, and no chance the two lists disagree
+      // about which paths were retained.
+      const mine = collisions.filter((c) => c.sessionIds.includes(session.id));
+      const over = mine.length > TOUCH_CAP;
+      const kept = over ? mine.slice(0, TOUCH_CAP) : mine;
+      const paths = kept.map((c) => c.path);
+      // The producer's promise the validator deliberately does not enforce
+      // (relayProtocol's `contested` note): a truncated frame ends in the
+      // "…and more" sentinel, exactly as an over-cap `touched` does, so a
+      // laptop can tell "nothing else is contested" from "the rest did not
+      // fit". Length is then TOUCH_CAP + 1 — the widest frame the validator
+      // admits, by construction.
+      if (over) paths.push(TOUCH_SENTINEL);
+      const next = {
+        paths,
+        collisions: kept.map((c) => ({ path: c.path, sessionIds: [...c.sessionIds] })),
+      };
+      const previous = lastContestedSent.get(key);
+      // Never contested and still not: say nothing. An empty frame is the
+      // CLEAR signal, and a clear that nothing preceded is noise on every
+      // uplink for every session on every push.
+      if (previous === undefined && next.paths.length === 0) continue;
+      if (previous && sameContested(previous, next)) continue;
+      down(uplink, {
+        t: "contested",
+        sessionId: session.id,
+        paths: next.paths,
+        collisions: next.collisions,
+      });
+      lastContestedSent.set(key, next);
+    }
+    // A session that left the snapshot takes its change-detection state with
+    // it, or the map grows for the life of the process. Scoped to THIS
+    // project's keys: another project's sessions are not in this snapshot and
+    // are not gone.
+    const prefix = `${projectId}\u0000`;
+    for (const key of lastContestedSent.keys()) {
+      if (key.startsWith(prefix) && !live.has(key)) lastContestedSent.delete(key);
+    }
+  }
+
+  /** An uplink went away or re-registered: drop the change-detection state for
+   *  every session it owns, so the next push re-sends that session's current
+   *  frame unconditionally.
+   *
+   *  The hub's change detection is state the LAPTOP cannot see. A restarted
+   *  laptop process has lost its `entry.contestedFrame` while the hub still
+   *  holds a matching `lastContestedSent`, so comparing by value alone would
+   *  suppress the resend and leave hub-sourced contested state silently empty
+   *  until the collision set happened to change on its own. One redundant frame
+   *  after a reconnect is acceptable; a silently missing one is not.
+   *
+   *  Called from the disconnect handler BEFORE `store.detach` and from the
+   *  hello/supersede path — the second is not redundant: a superseded socket's
+   *  late close is guarded out of the disconnect handler entirely. */
+  function forgetContested(projectId: string, uplinkId: string): void {
+    for (const session of store.snapshot(projectId).sessions) {
+      if (store.ownerOf(projectId, session.id) === uplinkId) {
+        lastContestedSent.delete(contestedKey(projectId, session.id));
+      }
+    }
   }
 
   /** The project directory changed. Every browser sees every project (spec
@@ -297,6 +450,12 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
           frame.repos,
           new Date().toISOString(),
         );
+        // A re-registering laptop has lost whatever contested state it held
+        // (it is in-memory on its side too), so the hub must forget what it
+        // believes that laptop already knows. Not redundant with the
+        // disconnect hook: a supersede leaves the old socket's close guarded
+        // out entirely, so nothing else on this path would ever fire.
+        forgetContested(frame.projectId, frame.uplinkId);
         down(socket, {
           t: "welcome",
           v: RELAY_PROTOCOL_VERSION,
@@ -413,6 +572,12 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       // unregister nor mark offline the live uplink.
       if (uplinks.get(uplinkId) !== socket) return;
       uplinks.delete(uplinkId);
+      // BEFORE `detach` and before the push below. The enumeration is defined
+      // in terms of the ownership the store still holds here; `detach` only
+      // flips `online` today, but nothing about this purge should depend on
+      // that staying true, and after the push it would be too late — the push
+      // is the very one that must re-send.
+      if (projectId) forgetContested(projectId, uplinkId);
       // The sessions stay — that is the hub's payoff. What must not stay is
       // the illusion that they can be driven (spec §8).
       store.detach(uplinkId);

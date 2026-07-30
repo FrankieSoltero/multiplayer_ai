@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import { Relay, type RelaySocket } from "multiplayer-ai-server/relay";
+import { Relay, type ContestedFrame, type RelaySocket } from "multiplayer-ai-server/relay";
 import {
   MAX_FRAME_BYTES,
   type RepoDecl,
@@ -63,12 +63,31 @@ export function relayConnector(url: string, hooks: ConnectHooks = {}) {
   return { connect, sockets };
 }
 
+/** The laptop's `contested` consumer, standing in for `server.ts`'s
+ *  `applyContested` exactly as `laptopThatAnswers`'s `createConnection` stands
+ *  in for its command plane — this package depends on the server for its relay
+ *  and its types, not for a process.
+ *
+ *  RECORDING is the whole point: `RelayDeps.onContested` is required precisely
+ *  so nothing can wire an uplink and silently drop the hub's collision frames
+ *  (relay.ts), and a sink that keeps every frame IN ARRIVAL ORDER is what lets
+ *  a scenario assert "exactly once", "and again after a reconnect" and "never
+ *  a duplicate" — claims a fake that only kept the LAST frame could not tell
+ *  apart. The frames land here already through the real `parseDownFrame`, so
+ *  anything the producer emits that the wire contract rejects never arrives at
+ *  all, and the row asserting on it fails. */
+function contestedSink(): { contested: ContestedFrame[]; onContested: (f: ContestedFrame) => void } {
+  const contested: ContestedFrame[] = [];
+  return { contested, onContested: (frame) => void contested.push(frame) };
+}
+
 export function laptop(
   hubPort: number,
   over: Record<string, unknown> = {},
   hooks: ConnectHooks = {},
 ) {
   const wire = relayConnector(`ws://127.0.0.1:${hubPort}/uplink`, hooks);
+  const sink = contestedSink();
   const relay = new Relay(
     {
       hubUrl: `ws://127.0.0.1:${hubPort}/uplink`,
@@ -83,9 +102,12 @@ export function laptop(
     },
     // The command plane is not what these scenarios are about; a no-op handle
     // keeps a tunnelled `join` from mattering either way.
-    { createConnection: () => ({ handleMessage: () => {}, close: () => {} }) },
+    {
+      createConnection: () => ({ handleMessage: () => {}, close: () => {} }),
+      onContested: sink.onContested,
+    },
   );
-  return { relay, wire };
+  return { relay, wire, contested: sink.contested };
 }
 
 /** `laptop()` injects a no-op command plane, so nothing ever replies to a
@@ -107,6 +129,7 @@ export function laptopThatAnswers(
 ) {
   const wire = relayConnector(`ws://127.0.0.1:${hubPort}/uplink`);
   const arrived: any[] = [];
+  const sink = contestedSink();
   const relay = new Relay(
     {
       hubUrl: `ws://127.0.0.1:${hubPort}/uplink`,
@@ -132,9 +155,10 @@ export function laptopThatAnswers(
         },
         close: () => {},
       }),
+      onContested: sink.onContested,
     },
   );
-  return { relay, wire, arrived };
+  return { relay, wire, arrived, contested: sink.contested };
 }
 
 /** What a browser actually sees: join the session on a fresh socket and read
