@@ -204,6 +204,15 @@ describe("sessionBlocks — turn lines", () => {
     );
   });
 
+  it("says (no time) for a turn the record could not date", () => {
+    // `startTs` is null when no event in the turn carried a `ts` (see
+    // `record.ts`). Interpolating that would print the word "null" at the one
+    // spot a reader scans for a timestamp.
+    expect(firstTurnLine(turn({ startTs: null }))).toBe(
+      "#1 frank · (no time) · fix the thing · tools: none · files: none · approvals: none",
+    );
+  });
+
   it("renders every turn of a session, in order", () => {
     const blocks = sessionBlocks(
       record({ sessions: [session({ turns: [turn({ turn: 1 }), turn({ turn: 2, driver: null })] })] }),

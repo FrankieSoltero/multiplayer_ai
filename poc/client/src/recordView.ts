@@ -56,7 +56,10 @@ function turnLine(turn: TurnRecord): string {
   );
   const errorsSeg = turn.errors > 0 ? ` · errors: ${turn.errors}` : "";
   const progressSeg = turn.inProgress ? " · IN PROGRESS" : "";
-  return `#${turn.turn} ${turn.driver ?? "system"} · ${turn.startTs} · ${turn.prompt ?? "(no prompt)"} · tools: ${toolsSeg} · files: ${filesSeg} · approvals: ${approvalsSeg}${errorsSeg}${progressSeg}`;
+  // `startTs` is null when no event in the turn carried a `ts` at all
+  // (`record.ts`), so it gets the same treatment as an absent prompt: an
+  // interpolated null prints the word "null" where a reader looks for a time.
+  return `#${turn.turn} ${turn.driver ?? "system"} · ${turn.startTs ?? "(no time)"} · ${turn.prompt ?? "(no prompt)"} · tools: ${toolsSeg} · files: ${filesSeg} · approvals: ${approvalsSeg}${errorsSeg}${progressSeg}`;
 }
 
 /** One line per user who appears in the rollup, in the record's order. */

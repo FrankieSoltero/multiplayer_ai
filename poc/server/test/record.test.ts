@@ -36,6 +36,15 @@ function input(id: string, events: LoggedEvent[], over: Partial<RecordSessionInp
   return { facts: facts(id), machineId: null, events, ...over };
 }
 
+/** Events exactly as written, with no seq/ts stamping: the shapes a real log
+ *  file can hold but the `LoggedEvent` type promises it cannot. The derivation
+ *  reads persisted JSON written by older builds and by a laptop this hub does
+ *  not control, so the type is a claim about the wire, not a guarantee about the
+ *  bytes on disk. */
+function raw(...evs: unknown[]): LoggedEvent[] {
+  return evs as LoggedEvent[];
+}
+
 /** The single session's turns, for the many one-session cases below. */
 function turnsOf(events: LoggedEvent[]) {
   return projectRecordFrom("proj", [input("s1", events)]).sessions[0].turns;
@@ -208,6 +217,34 @@ describe("turn tool activity", () => {
       { type: "turn_end" },
     );
     expect(turnsOf(events)[0].toolCounts).toEqual({ Edit: 3, Bash: 1 });
+  });
+
+  it("counts tool names that collide with Object.prototype keys", () => {
+    // `toolName` is whatever a tool call was named — a plugin's, an MCP
+    // server's, a laptop this hub does not control. Counting into a plain object
+    // made `constructor` read back as `function Object() {...}1` (a function
+    // plus one) and dropped `__proto__` entirely, because assigning it invokes
+    // the prototype setter instead of storing a count.
+    const events = log(
+      { type: "tool_call", toolName: "constructor", input: {} },
+      { type: "tool_call", toolName: "__proto__", input: {} },
+      { type: "tool_call", toolName: "__proto__", input: {} },
+      { type: "tool_call", toolName: "toString", input: {} },
+      { type: "turn_end" },
+    );
+    const counts = turnsOf(events)[0].toolCounts;
+    // Built by parse, not by a literal: `{ __proto__: 1 }` in source sets the
+    // prototype rather than a property, so a literal cannot even state this.
+    const expected = JSON.parse('{"constructor":1,"__proto__":2,"toString":1}');
+    expect(counts).toEqual(expected);
+    // And it survives the trip to the browser, which is the only place the
+    // counts are ever read.
+    expect(JSON.parse(JSON.stringify(counts))).toEqual(expected);
+    expect(Object.entries(counts).sort()).toEqual([
+      ["__proto__", 2],
+      ["constructor", 1],
+      ["toString", 1],
+    ]);
   });
 
   it("collects file_path from Edit/Write/NotebookEdit, deduped in first-occurrence order", () => {
@@ -427,6 +464,96 @@ describe("rollup", () => {
     const record = projectRecordFrom("proj", [input("s1", a), input("s2", b)]);
     expect(record.rollup.totalTurns).toBe(5);
     expect(record.rollup.totalSessions).toBe(2);
+  });
+});
+
+describe("malformed logged events", () => {
+  // Why this matters beyond tidiness: the hub calls `projectRecordFrom` in its
+  // ws listener, OUTSIDE the fatal seam. A throw in here does not degrade one
+  // panel, it takes the hub process down — and it does it again on every
+  // reopen, because the offending event is on disk forever.
+  it("treats a non-string user_message text as no prompt, and still derives the turn", () => {
+    const events = raw(
+      { type: "user_message", userId: "u1", text: { parts: ["hi"] }, seq: 0, ts: ts(0) },
+      { type: "tool_call", toolName: "Read", input: {}, seq: 1, ts: ts(1) },
+      { type: "turn_end", seq: 2, ts: ts(2) },
+    );
+    expect(() => turnsOf(events)).not.toThrow();
+    const turns = turnsOf(events);
+    expect(turns).toHaveLength(1);
+    expect(turns[0].prompt).toBeNull();
+    // The driver is NOT lost with the text: a user_message with a userId still
+    // says who opened the turn, and that is the whole basis of `turnsDriven`
+    // (spec §8a ruling 9). Only the unusable text goes missing.
+    expect(turns[0].driver).toBe("u1");
+    expect(turns[0].toolCounts).toEqual({ Read: 1 });
+  });
+
+  it("keeps a text-less first user_message as the opener rather than promoting the next", () => {
+    // The contract keys on the FIRST user_message of the turn. A malformed text
+    // does not demote it, so the prompt stays null rather than borrowing a
+    // later message's words and attributing them to the same turn opening.
+    const events = raw(
+      { type: "user_message", userId: "u1", text: null, seq: 0, ts: ts(0) },
+      { type: "user_message", userId: "u9", text: "second", seq: 1, ts: ts(1) },
+      { type: "turn_end", seq: 2, ts: ts(2) },
+    );
+    const turns = turnsOf(events);
+    expect(turns[0].driver).toBe("u1");
+    expect(turns[0].prompt).toBeNull();
+  });
+
+  it("passes over a user_message that names nobody and uses the next one", () => {
+    // No string userId means the event cannot answer "who drove this turn", so
+    // it does not get to claim the turn's opening either.
+    const events = raw(
+      { type: "user_message", userId: 7, text: "ghost", seq: 0, ts: ts(0) },
+      { type: "user_message", userId: "u2", text: "mine", seq: 1, ts: ts(1) },
+      { type: "turn_end", seq: 2, ts: ts(2) },
+    );
+    const turns = turnsOf(events);
+    expect(turns[0].driver).toBe("u2");
+    expect(turns[0].prompt).toBe("mine");
+  });
+
+  it("takes startTs/endTs from the events that actually carry a string ts", () => {
+    const events = raw(
+      { type: "user_message", userId: "u1", text: "hi", seq: 0 },
+      { type: "tool_call", toolName: "Read", input: {}, seq: 1, ts: ts(5) },
+      { type: "tool_call", toolName: "Read", input: {}, seq: 2, ts: ts(7) },
+      { type: "turn_end", seq: 3, ts: 1769000000000 },
+    );
+    const turns = turnsOf(events);
+    expect(turns[0].startTs).toBe(ts(5));
+    expect(turns[0].endTs).toBe(ts(7));
+    expect(turns[0].inProgress).toBe(false);
+  });
+
+  it("reports null timestamps for a turn no event stamped", () => {
+    const turns = turnsOf(raw({ type: "user_message", userId: "u1", text: "hi", seq: 0 }));
+    expect(turns[0].startTs).toBeNull();
+    expect(turns[0].endTs).toBeNull();
+    // Explicitly null, not absent: `undefined` is dropped by JSON, and a field
+    // the browser never receives renders as "undefined" in the turn line.
+    expect(JSON.parse(JSON.stringify(turns[0]))).toMatchObject({ startTs: null, endTs: null });
+  });
+
+  it("derives a whole project record from a log of mixed junk without throwing", () => {
+    const events = raw(
+      { type: "user_message", userId: "u1", text: 42, seq: 0, ts: ts(0) },
+      { type: "tool_call", toolName: "__proto__", input: null, seq: 1 },
+      { type: "permission_decision", requestId: "r1", decision: "allow", userId: "u1", seq: 2, ts: ts(2) },
+      { type: "turn_end", seq: 3, ts: ts(3) },
+      { type: "user_message", userId: "u2", text: "next", seq: 4 },
+    );
+    const record = projectRecordFrom("proj", [input("s1", events)]);
+    expect(record.rollup.totalTurns).toBe(2);
+    expect(record.rollup.perUser.map((u) => [u.userId, u.turnsDriven, u.approvalsGiven])).toEqual([
+      ["u1", 1, 1],
+      ["u2", 1, 0],
+    ]);
+    expect(record.sessions[0].turns[0].prompt).toBeNull();
+    expect(record.sessions[0].turns[1].prompt).toBe("next");
   });
 });
 

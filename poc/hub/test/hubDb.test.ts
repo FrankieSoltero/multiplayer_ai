@@ -1,9 +1,9 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HubDb, SCHEMA_VERSION } from "../src/hubDb.js";
 import type { HubPersister, StoredEvent } from "../src/hubStore.js";
 import type { RepoDecl, SessionFacts } from "multiplayer-ai-server/relayProtocol";
@@ -119,6 +119,31 @@ describe("HubDb — fresh file", () => {
         "sessions",
       ]);
     });
+  });
+
+  it("tightens a parent dir and a db file that ALREADY existed (spec §8a.7)", () => {
+    // The shape this actually takes on a real laptop: `~/.mpai` is already
+    // there — created 0755 by the server's machine identity
+    // (`poc/server/src/machineIdentity.ts`) — so `mkdirSync`'s `mode` never
+    // runs, and SQLite creates the DB itself 0644 under a default umask.
+    // Neither is the posture the record's contents deserve.
+    const dbPath = path.join(tmp(), "mpai", "hub.db");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    fs.chmodSync(path.dirname(dbPath), 0o755);
+    new Database(dbPath).close();
+    fs.chmodSync(dbPath, 0o644);
+
+    openDb(dbPath);
+
+    const mode = (p: string) => (fs.statSync(p).mode & 0o777).toString(8);
+    expect(mode(path.dirname(dbPath))).toBe("700");
+    expect(mode(dbPath)).toBe("600");
+    // The WAL side files carry the same rows, so they carry the same posture.
+    // Both exist while the handle is open — this is not a vacuous loop.
+    expect(fs.existsSync(`${dbPath}-wal`)).toBe(true);
+    expect(fs.existsSync(`${dbPath}-shm`)).toBe(true);
+    expect(mode(`${dbPath}-wal`)).toBe("600");
+    expect(mode(`${dbPath}-shm`)).toBe("600");
   });
 
   it("reopens an existing file without complaint or duplicate meta rows", () => {
@@ -287,6 +312,51 @@ describe("HubDb — single-writer lock", () => {
     const db = openDb(dbPath);
     expect(fs.readFileSync(`${dbPath}.lock`, "utf8")).toBe(String(process.pid));
     expect(db.load().sessions).toEqual([]);
+  });
+
+  it("refuses when the stale lock it judged was reclaimed before it could unlink it", () => {
+    // The race: this hub reads a dead pid and judges the lock stale, and in the
+    // window before it unlinks, ANOTHER hub reclaims the lock and writes its own
+    // live pid. Unlinking on the old judgement would delete a live hub's lock
+    // and put two writers on one journal — the exact failure the lock exists to
+    // prevent. Reclaiming is only safe for the bytes that were judged.
+    const dbPath = path.join(tmp(), "hub.db");
+    const lockPath = `${dbPath}.lock`;
+    const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+    fs.writeFileSync(lockPath, String(dead));
+    // A genuinely running process to stand in for the winner: its pid is alive
+    // for as long as this test needs it to be.
+    const racer = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], {
+      stdio: "ignore",
+    });
+    expect(racer.pid).toBeGreaterThan(0);
+
+    // Rewrites the lockfile the instant HubDb reads it — i.e. exactly inside the
+    // window between the staleness judgement and the unlink. One shot: every
+    // read after it is the real thing, seeing the racer's pid on disk.
+    const realRead = fs.readFileSync;
+    const spy = vi.spyOn(fs, "readFileSync").mockImplementation(((
+      p: Parameters<typeof fs.readFileSync>[0],
+      ...rest: unknown[]
+    ) => {
+      const out = (realRead as (...a: unknown[]) => unknown)(p, ...rest);
+      if (String(p) === lockPath) {
+        spy.mockRestore();
+        fs.writeFileSync(lockPath, String(racer.pid));
+      }
+      return out;
+    }) as never);
+
+    try {
+      expect(() => openDb(dbPath)).toThrow(
+        `hub.db is in use by pid ${racer.pid} — refusing to start`,
+      );
+      // And the winner's lock is still on disk: nothing deleted it.
+      expect(fs.readFileSync(lockPath, "utf8")).toBe(String(racer.pid));
+    } finally {
+      spy.mockRestore();
+      racer.kill();
+    }
   });
 
   it("releases the lock on close, so the next hub starts", () => {

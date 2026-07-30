@@ -116,8 +116,8 @@ export class HubDb implements HubPersister {
 
   /** @param dbPath a file path, or `":memory:"` for an ephemeral hub that locks
    *  nothing and leaves nothing on disk. A file's parent directory is created
-   *  recursively, mode `0700`: the journal holds prompts, userIds and file
-   *  paths (spec §8a.7).
+   *  recursively and set to `0700`, and the DB and its WAL side files to
+   *  `0600`: the journal holds prompts, userIds and file paths (spec §8a.7).
    *  @param opts.skipLock the crash-test seam ONLY — it lets a test open a
    *  second handle on a file whose first handle was abandoned without closing,
    *  standing in for a killed hub process. Never set in production wiring: two
@@ -125,7 +125,16 @@ export class HubDb implements HubPersister {
   constructor(dbPath: string, opts?: { skipLock?: boolean }) {
     const inMemory = dbPath === MEMORY_PATH;
     if (!inMemory) {
-      fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
+      const dir = path.dirname(dbPath);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      // `mode` above only applies to a directory this call CREATES, and the
+      // usual parent — `~/.mpai` — is routinely already there at 0755, made by
+      // the server's machine identity (`poc/server/src/machineIdentity.ts`). So
+      // the mode is SET, not merely requested: the journal holds prompts,
+      // userIds and file paths either way (spec §8a.7). A directory this
+      // process cannot chmod is one it cannot make private, and refusing to
+      // start is the honest answer to that.
+      fs.chmodSync(dir, 0o700);
     }
     this.lockPath = inMemory || opts?.skipLock ? null : acquireLock(dbPath);
     // A local too, because a boot that refuses (corrupt file, newer schema) has
@@ -148,6 +157,8 @@ export class HubDb implements HubPersister {
       this.db
         .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO NOTHING")
         .run(String(SCHEMA_VERSION));
+      // After the first write, so the WAL side files this tightens exist.
+      if (!inMemory) tightenAtRest(dbPath);
       this.appendFrame = this.db.transaction(
         (
           projectId: string,
@@ -418,6 +429,22 @@ export class HubDb implements HubPersister {
  *  contain. Only ever a `Map` key inside `load()` — never written. */
 const sessionKey = (projectId: string, sessionId: string) => `${projectId}\u0000${sessionId}`;
 
+/** Owner-only, on the file SQLite made and on the side files that share its
+ *  rows: the record is prompts, userIds and file paths (spec §8a.7), and SQLite
+ *  creates a fresh DB 0644 under a default umask.
+ *
+ *  The main file FIRST, deliberately: SQLite copies the database file's mode
+ *  onto every `-wal`/`-shm` it creates afterwards, so tightening it also covers
+ *  the side files of every later checkpoint. The two that exist right now are
+ *  tightened by hand, guarded with `existsSync` because a hub that has not
+ *  written yet may not have them. */
+function tightenAtRest(dbPath: string): void {
+  fs.chmodSync(dbPath, 0o600);
+  for (const side of [`${dbPath}-wal`, `${dbPath}-shm`]) {
+    if (fs.existsSync(side)) fs.chmodSync(side, 0o600);
+  }
+}
+
 /** Takes `<dbPath>.lock` for this process, or refuses. Returns the lockfile
  *  path so `close()` can release exactly what it took.
  *
@@ -451,10 +478,37 @@ function acquireLock(dbPath: string): string {
           `${path.basename(dbPath)} is in use by pid ${owner} — refusing to start`,
         );
       }
-      fs.rmSync(lockPath, { force: true });
+      discardStaleLock(lockPath, contents);
     }
   }
   throw new Error(`${path.basename(dbPath)} lock could not be taken — refusing to start`);
+}
+
+/** Unlinks a lockfile ONLY if it still holds the bytes that were judged stale.
+ *
+ *  Judging takes a read, a parse and a liveness syscall, and another hub can
+ *  reclaim the lock in that window — a blind `rmSync` would then delete a LIVE
+ *  hub's fresh lock and leave two writers on one journal, which is the single
+ *  failure this whole mechanism exists to prevent. Re-reading first means a
+ *  reclaim that already happened is seen: this call becomes a no-op, and the
+ *  caller's next attempt reads the new pid and refuses properly.
+ *
+ *  A window remains between this read and the unlink below — unlink-by-path
+ *  cannot close it — but it is now two adjacent syscalls wide instead of
+ *  spanning the whole judgement, and losing it requires a second reclaim inside
+ *  it. Not silent, either: whoever loses that race still holds a lock nobody
+ *  deleted, and the third attempt's bound turns a persistent racer into a
+ *  refusal to start rather than a shared journal. */
+function discardStaleLock(lockPath: string, judged: string): void {
+  let current: string;
+  try {
+    current = fs.readFileSync(lockPath, "utf8");
+  } catch {
+    // Gone already — the caller's next attempt takes it or finds its successor.
+    return;
+  }
+  if (current !== judged) return;
+  fs.rmSync(lockPath, { force: true });
 }
 
 /** Decimal text and nothing else, which is exactly what this module writes.

@@ -26,8 +26,12 @@ export interface TurnRecord {
   driver: string | null;
   /** First `user_message` text of the turn, sliced to PROMPT_CAP. */
   prompt: string | null;
-  startTs: string;
-  endTs: string;
+  /** The turn's first and last event timestamps — `null` only when NO event in
+   *  the turn carries one, which a hand-written or older log can do. Not
+   *  `undefined`: JSON drops that, and a field the browser never receives
+   *  renders as "undefined" in the turn line. */
+  startTs: string | null;
+  endTs: string | null;
   inProgress: boolean;
   toolCounts: Record<string, number>;
   filesChanged: string[];
@@ -99,14 +103,23 @@ function turnRecordOf(
   controllerAtStart: string | null,
   toolNameByRequest: Map<string, string>,
 ): TurnRecord {
-  const first = group[0];
   // The turn's FIRST `user_message`, wherever it sits: real logs open every
   // turn with system bookkeeping (presence_join, skill_roster), and reading
   // "opening user_message" as "literal first event" would null the driver on
   // nearly every real turn and gut `turnsDriven` (spec §8a ruling 9). A later
   // second message in the same turn never overrides it.
-  let opening: { userId: string; text: string } | null = null;
-  const toolCounts: Record<string, number> = {};
+  //
+  // `text` is nullable here on purpose. Every event below is read as data off
+  // disk, not as the `LoggedEvent` the types promise: this derivation runs over
+  // a journal written by older builds and by laptops this process does not
+  // control, and the hub calls it OUTSIDE its fatal seam, so one unusable field
+  // must cost that field and nothing more.
+  let opening: { userId: string; text: string | null } | null = null;
+  // Null prototype: `toolName` is whatever named a tool call, and on a plain
+  // object `"constructor"` reads back as `Object`'s constructor (counted as a
+  // function plus one) while `"__proto__"` hits the prototype setter and is
+  // never stored at all.
+  const toolCounts: Record<string, number> = Object.create(null) as Record<string, number>;
   const filesChanged: string[] = [];
   const approvals: TurnApproval[] = [];
   let errors = 0;
@@ -114,7 +127,13 @@ function turnRecordOf(
   for (const ev of group) {
     switch (ev.type) {
       case "user_message":
-        if (opening === null) opening = { userId: ev.userId, text: ev.text };
+        // A message that names nobody cannot answer "who drove this turn", so it
+        // does not get to claim the turn's opening either — the next one does.
+        // One that names somebody but carries unusable text keeps the opening
+        // (the driver is the point) and simply has no prompt.
+        if (opening === null && typeof ev.userId === "string") {
+          opening = { userId: ev.userId, text: typeof ev.text === "string" ? ev.text : null };
+        }
         break;
       case "tool_call": {
         toolCounts[ev.toolName] = (toolCounts[ev.toolName] ?? 0) + 1;
@@ -147,12 +166,17 @@ function turnRecordOf(
     }
   }
 
+  // Only the stamps that ARE stamps: an event with no `ts` is still part of the
+  // turn, it just cannot be the one that dates it. First and last of what is
+  // left, which for a well-formed log is the first and last event as before.
+  const stamps = group.map((ev) => ev.ts).filter((t): t is string => typeof t === "string");
+
   return {
     turn,
     driver: opening?.userId ?? controllerAtStart,
-    prompt: opening === null ? null : opening.text.slice(0, PROMPT_CAP),
-    startTs: first.ts,
-    endTs: group[group.length - 1].ts,
+    prompt: opening?.text == null ? null : opening.text.slice(0, PROMPT_CAP),
+    startTs: stamps[0] ?? null,
+    endTs: stamps[stamps.length - 1] ?? null,
     inProgress: group[group.length - 1].type !== "turn_end",
     toolCounts,
     filesChanged,
