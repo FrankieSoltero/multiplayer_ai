@@ -479,6 +479,40 @@ describe("Relay command plane", () => {
     expect(() => fake.deliverRaw("not json at all")).not.toThrow();
     expect(fake.sent.filter((f) => f.t === "reply")).toHaveLength(0);
   });
+
+  it("ignores a VALIDATED contested frame it has no handler for yet, and stays up", () => {
+    // The `contested` frame's type and validator ship here (Task 6a); the
+    // laptop-side handler arrives with Task 7a and nothing constructs one until
+    // Task 6b. At THIS commit the frame validates and is then dropped — it must
+    // NOT fall through into the tunnel branch, which would mint a channel keyed
+    // on a `channelId` this frame does not carry and hand the hub's payload to a
+    // connection nobody asked for. Silence with the uplink up is the contract.
+    const created: unknown[] = [];
+    const fake = fakeSocket();
+    const relay = new Relay(
+      { hubUrl: "ws://hub.test", projectId: "default", name: "lap", repos: () => [decl()], uplinkId: "lap-1", connect: fake.connect },
+      {
+        createConnection: () => {
+          created.push(1);
+          return { handleMessage: () => {}, close: () => {} };
+        },
+      },
+    );
+    relay.start();
+    fake.open();
+    fake.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    expect(() =>
+      fake.deliver({
+        type: "contested",
+        sessionId: "auth",
+        paths: ["src/a.ts"],
+        collisions: [{ path: "src/a.ts", sessionIds: ["auth", "s9"] }],
+      }),
+    ).not.toThrow();
+    expect(created).toHaveLength(0);
+    expect(fake.sent.filter((f) => f.t === "reply")).toHaveLength(0);
+    expect(fake.sockets[0]!.closeRequested).toBe(false);
+  });
 });
 
 describe("Relay reconnect", () => {

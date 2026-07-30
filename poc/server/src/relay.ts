@@ -257,6 +257,14 @@ export class Relay {
     }
     const frame = parseDownFrame(raw);
     if (!frame) return;
+    // The `contested` frame (spec §6a) is keyed on `type`, not `t`, and has no
+    // handler on this path yet — Task 7a supplies it. Until then a frame that
+    // VALIDATES but is not routed here is dropped exactly like an unknown one:
+    // silently, with the uplink left up. Without this guard it would fall
+    // through to the tunnel branch below and be read for a `channelId` it does
+    // not carry. Nothing constructs one at this commit, so the branch is dead
+    // code today and a safety floor tomorrow.
+    if (!("t" in frame)) return;
 
     if (frame.t === "welcome") {
       // A successful handshake ends the episode the latch above was guarding:

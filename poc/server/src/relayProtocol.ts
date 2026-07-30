@@ -115,7 +115,38 @@ export type DownFrame =
   /** This channel's browser is gone. The laptop tears down the connection,
    *  which runs the same leave path a closed direct socket runs — otherwise
    *  `presence_leave` never fires and the roster keeps a ghost forever. */
-  | { t: "detach"; channelId: string };
+  | { t: "detach"; channelId: string }
+  /** The paths this session shares with OTHER sessions in its project, pushed
+   *  whenever the hub's collision set for it changes (spec §6a as amended by
+   *  §8a ruling 6). In hub mode a laptop cannot see other machines' sessions,
+   *  so this frame is the only way `digestFor` and the gate can name a peer.
+   *
+   *  Keyed on `type`, not `t`, because that is the shape the spec fixes for
+   *  this frame; every branch below narrows explicitly rather than assuming
+   *  one discriminator across the whole union.
+   *
+   *  `RELAY_PROTOCOL_VERSION` is NOT bumped for it: a laptop built before the
+   *  type existed drops the frame on the unknown-frame path (`parseDownFrame`
+   *  returns null and `relay.ts`'s `onMessage` returns), so the uplink stays up
+   *  and nothing surfaces — the same additive argument spec §3.3 makes for an
+   *  optional field, extended to a whole frame type by exactly that ignore path.
+   *
+   *  `collisions` carries the colliding peers per path so the laptop can NAME
+   *  them (spec §6); `sessionIds` excludes nothing, so the recipient's own id is
+   *  present, matching `collisionsFrom`'s output shape. `paths` is the distinct
+   *  path set of `collisions`, sorted, PLUS a trailing `TOUCH_SENTINEL` when the
+   *  producer truncated — which is why the validator bounds the two lists
+   *  independently instead of asserting one is derivable from the other: the
+   *  over-cap frame is legitimate and a derivation check would reject it.
+   *
+   *  Thesis bound (§1.1): a session id, paths, and peer session ids. No
+   *  transcript content, no prompts, no participant names. */
+  | {
+      type: "contested";
+      sessionId: string;
+      paths: string[];
+      collisions: { path: string; sessionIds: string[] }[];
+    };
 
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -147,13 +178,58 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
  *  "…and more" sentinel. */
 function touchedList(raw: unknown): { ok: true; value: string[] | null } | { ok: false } {
   if (raw === undefined || raw === null) return { ok: true, value: null };
-  if (!Array.isArray(raw) || raw.length > TOUCH_CAP + 1) return { ok: false };
+  const paths = pathList(raw);
+  return paths ? { ok: true, value: paths } : { ok: false };
+}
+
+/** The one bounded path-list check, shared by the facts frame's `touched` and
+ *  the `contested` frame's `paths` so the two can never drift apart: both carry
+ *  the same kind of untrusted repo-relative paths to the same consumers. Null
+ *  for anything out of bounds — never a filtered subset, which would leave the
+ *  two ends disagreeing about what is contested. `TOUCH_CAP + 1` admits the
+ *  producer's own worst case, a full cap plus the "…and more" sentinel. */
+function pathList(raw: unknown): string[] | null {
+  if (!Array.isArray(raw) || raw.length > TOUCH_CAP + 1) return null;
   for (const p of raw) {
-    if (typeof p !== "string" || p.length > PATH_WIRE_CAP || CONTROL_CHARS.test(p)) {
-      return { ok: false };
-    }
+    if (typeof p !== "string" || p.length > PATH_WIRE_CAP || CONTROL_CHARS.test(p)) return null;
   }
-  return { ok: true, value: raw as string[] };
+  return raw as string[];
+}
+
+/** The `contested` frame's per-path peer lists. Every id gets the SAME
+ *  `str(id, SLUG)` treatment as the frame's own `sessionId` — these are session
+ *  ids of one universe, and bounding them two different ways in one frame would
+ *  be an internal contradiction. It also puts the 512-char gate-reason cap out
+ *  of reach by construction: Task 8b renders `contested with session ${id}`,
+ *  and SLUG admits at most 40 characters and no newline or control character.
+ *
+ *  Rejects the whole frame — never a partial list — on one bad entry, for the
+ *  same reason `repoList` does: a hub that sends one malformed entry has a bug
+ *  or is not what it claims to be, and a silently dropped peer would surface
+ *  later as a gate that cannot say who it is contesting with. */
+function collisionList(raw: unknown): { path: string; sessionIds: string[] }[] | null {
+  if (!Array.isArray(raw) || raw.length > TOUCH_CAP + 1) return null;
+  const out: { path: string; sessionIds: string[] }[] = [];
+  for (const item of raw) {
+    const c = obj(item);
+    if (!c) return null;
+    if (typeof c.path !== "string" || c.path.length > PATH_WIRE_CAP) return null;
+    if (CONTROL_CHARS.test(c.path)) return null;
+    // Non-empty: an entry naming a path with nobody to contest it with says
+    // nothing a consumer can act on. 100 is the peer ceiling — one project's
+    // sessions, the same order as `MAX_REPOS` above.
+    if (!Array.isArray(c.sessionIds) || c.sessionIds.length < 1 || c.sessionIds.length > 100) {
+      return null;
+    }
+    const sessionIds: string[] = [];
+    for (const id of c.sessionIds) {
+      const slug = str(id, SLUG);
+      if (!slug) return null;
+      sessionIds.push(slug);
+    }
+    out.push({ path: c.path, sessionIds });
+  }
+  return out;
 }
 
 /** Structural check only. The laptop still validates every tunnelled payload
@@ -308,6 +384,16 @@ export function parseDownFrame(raw: unknown): DownFrame | null {
   if (f.t === "detach") {
     const channelId = str(f.channelId, ID);
     return channelId ? { t: "detach", channelId } : null;
+  }
+  if (f.type === "contested") {
+    const sessionId = str(f.sessionId, SLUG);
+    const paths = pathList(f.paths);
+    const collisions = collisionList(f.collisions);
+    // Rebuilt field by field rather than spread: unlike `facts`, nothing here is
+    // meant to ride through unread, and the thesis bound (§1.1) is that this
+    // frame carries a session id, paths and peer ids — nothing else.
+    if (!sessionId || !paths || !collisions) return null;
+    return { type: "contested", sessionId, paths, collisions };
   }
   return null;
 }

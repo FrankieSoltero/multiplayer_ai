@@ -339,6 +339,228 @@ describe("parseDownFrame", () => {
   });
 });
 
+/** The hub's `contested` down-frame (spec §6a as amended by §8a ruling 6). Every
+ *  field on it is UNTRUSTED text from a peer machine: the paths land in the
+ *  agent's `<teammates>` block and the peer ids are interpolated into a
+ *  human-read gate reason, so both are bounded here at the frame boundary. */
+const contested = (over: Record<string, unknown> = {}) => ({
+  type: "contested",
+  sessionId: "auth",
+  paths: ["src/a.ts", "src/b.ts"],
+  collisions: [
+    { path: "src/a.ts", sessionIds: ["auth", "s9"] },
+    { path: "src/b.ts", sessionIds: ["auth", "s2"] },
+  ],
+  ...over,
+});
+
+describe("parseDownFrame — contested", () => {
+  test("accepts an empty and a populated contested frame, parsed to the exact shape", () => {
+    // Empty is the CLEAR frame (Task 7a's "frame clears" row), not a fault.
+    expect(parseDownFrame(contested({ paths: [], collisions: [] }))).toEqual({
+      type: "contested",
+      sessionId: "auth",
+      paths: [],
+      collisions: [],
+    });
+    expect(parseDownFrame(contested())).toEqual({
+      type: "contested",
+      sessionId: "auth",
+      paths: ["src/a.ts", "src/b.ts"],
+      collisions: [
+        { path: "src/a.ts", sessionIds: ["auth", "s9"] },
+        { path: "src/b.ts", sessionIds: ["auth", "s2"] },
+      ],
+    });
+  });
+
+  test("accepts a TRUNCATED frame — paths carries the sentinel that collisions does not", () => {
+    // Task 6b's `over-cap` row appends TOUCH_SENTINEL to `paths` while truncating
+    // `collisions` to the RETAINED paths, so in that case `paths` is exactly one
+    // element longer than the distinct path set of `collisions`. A validator
+    // written from "paths IS the distinct path set of collisions" would reject
+    // this legitimate frame; this row is what stops that implementation.
+    const truncated = contested({
+      paths: ["src/a.ts", "src/b.ts", TOUCH_SENTINEL],
+      collisions: [
+        { path: "src/a.ts", sessionIds: ["auth", "s9"] },
+        { path: "src/b.ts", sessionIds: ["auth", "s2"] },
+      ],
+    });
+    expect(parseDownFrame(truncated)).toEqual(truncated);
+
+    // …and the producer's own worst case sits exactly on the cap: TOUCH_CAP real
+    // paths plus the sentinel slot. A bound of TOUCH_CAP would reject it.
+    const full = [...Array.from({ length: TOUCH_CAP }, (_, i) => `f${i}.ts`), TOUCH_SENTINEL];
+    const capped = parseDownFrame(contested({ paths: full, collisions: [] }));
+    expect(capped && "paths" in capped && capped.paths).toEqual(full);
+  });
+
+  test("carries ONLY the four wire fields — never a payload the hub tacked on", () => {
+    // Thesis bound (§1.1): signal, never artifact. The frame is rebuilt from the
+    // validated fields, so an extra key on the wire cannot ride into the laptop.
+    const frame = parseDownFrame(contested({ transcript: "secret", prompts: ["x"] }));
+    expect(frame && Object.keys(frame).sort()).toEqual([
+      "collisions",
+      "paths",
+      "sessionId",
+      "type",
+    ]);
+  });
+
+  test("rejects a contested frame whose sessionId is not a SLUG", () => {
+    // The same `str(f.sessionId, SLUG)` treatment `publish` and `facts` already
+    // get — no new regex, and the 40-char ceiling comes from SLUG itself.
+    expect(parseDownFrame(contested({ sessionId: 7 }))).toBeNull();
+    expect(parseDownFrame(contested({ sessionId: "" }))).toBeNull();
+    expect(parseDownFrame(contested({ sessionId: "Alpha" }))).toBeNull();
+    expect(parseDownFrame(contested({ sessionId: "a".repeat(41) }))).toBeNull();
+    expect(parseDownFrame(contested({ sessionId: undefined }))).toBeNull();
+    // …and exactly 40 chars, the SLUG ceiling, is accepted.
+    expect(parseDownFrame(contested({ sessionId: "a".repeat(40) }))).not.toBeNull();
+  });
+
+  test("rejects a contested frame whose paths bust either bound, and accepts both bounds exactly", () => {
+    expect(parseDownFrame(contested({ paths: "x" }))).toBeNull();
+    expect(parseDownFrame(contested({ paths: undefined }))).toBeNull();
+    expect(parseDownFrame(contested({ paths: [1] }))).toBeNull();
+    expect(parseDownFrame(contested({ paths: ["d".repeat(PATH_WIRE_CAP + 1)] }))).toBeNull();
+    expect(
+      parseDownFrame(
+        contested({ paths: Array.from({ length: TOUCH_CAP + 2 }, (_, i) => `f${i}.ts`) }),
+      ),
+    ).toBeNull();
+    // Both bounds are inclusive, or "rejects everything" would pass this row.
+    expect(
+      parseDownFrame(contested({ paths: ["d".repeat(PATH_WIRE_CAP)], collisions: [] })),
+    ).not.toBeNull();
+  });
+
+  test("rejects a contested frame whose collisions bust their bounds, and accepts them exactly", () => {
+    const entry = { path: "src/a.ts", sessionIds: ["auth", "s9"] };
+    expect(parseDownFrame(contested({ collisions: "x" }))).toBeNull();
+    expect(parseDownFrame(contested({ collisions: undefined }))).toBeNull();
+    expect(parseDownFrame(contested({ collisions: [null] }))).toBeNull();
+    expect(parseDownFrame(contested({ collisions: [{ path: "src/a.ts" }] }))).toBeNull();
+    expect(parseDownFrame(contested({ collisions: [{ sessionIds: ["s9"] }] }))).toBeNull();
+    expect(parseDownFrame(contested({ collisions: [{ path: 7, sessionIds: ["s9"] }] }))).toBeNull();
+    expect(parseDownFrame(contested({ collisions: [{ ...entry, sessionIds: [1] }] }))).toBeNull();
+    expect(parseDownFrame(contested({ collisions: [{ ...entry, sessionIds: [] }] }))).toBeNull();
+    expect(parseDownFrame(contested({ collisions: [{ ...entry, sessionIds: "s9" }] }))).toBeNull();
+    expect(
+      parseDownFrame(
+        contested({
+          collisions: [{ ...entry, sessionIds: Array.from({ length: 101 }, (_, i) => `s${i}`) }],
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseDownFrame(
+        contested({ collisions: [{ ...entry, path: "d".repeat(PATH_WIRE_CAP + 1) }] }),
+      ),
+    ).toBeNull();
+    expect(
+      parseDownFrame(
+        contested({
+          collisions: Array.from({ length: TOUCH_CAP + 2 }, (_, i) => ({
+            path: `f${i}.ts`,
+            sessionIds: ["s9"],
+          })),
+        }),
+      ),
+    ).toBeNull();
+    // Every bound inclusive: 100 peers, a PATH_WIRE_CAP-char path, TOUCH_CAP + 1
+    // entries (the producer's own worst case) all pass.
+    expect(
+      parseDownFrame(
+        contested({
+          collisions: [{ ...entry, sessionIds: Array.from({ length: 100 }, (_, i) => `s${i}`) }],
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      parseDownFrame(contested({ collisions: [{ ...entry, path: "d".repeat(PATH_WIRE_CAP) }] })),
+    ).not.toBeNull();
+    expect(
+      parseDownFrame(
+        contested({
+          collisions: Array.from({ length: TOUCH_CAP + 1 }, (_, i) => ({
+            path: `f${i}.ts`,
+            sessionIds: ["s9"],
+          })),
+        }),
+      ),
+    ).not.toBeNull();
+  });
+
+  test("rejects a peer session id that is not a SLUG — not merely a long one", () => {
+    // Peer ids are session ids of the same universe as the top-level one, and
+    // Task 8b interpolates one straight into `contested with session ${id}`. An
+    // implementation that bounds them only by LENGTH passes every case below and
+    // must fail this row — a hostile hub would otherwise put arbitrary text,
+    // newlines included, into a line a human reads on a permission card.
+    const bad = [
+      "Alpha",
+      "a-41-character-long-session-id-aaaaaaaaaaa",
+      "",
+      "bad id with spaces",
+      "ok\ninjected",
+      "../etc",
+      "s9\u0000",
+    ];
+    for (const id of bad) {
+      expect(parseDownFrame(contested({ collisions: [{ path: "a.ts", sessionIds: [id] }] }))).toBeNull();
+      // …and one bad id among good ones rejects the whole frame, never a subset.
+      expect(
+        parseDownFrame(contested({ collisions: [{ path: "a.ts", sessionIds: ["ok", id] }] })),
+      ).toBeNull();
+    }
+    expect(
+      parseDownFrame(
+        contested({ collisions: [{ path: "a.ts", sessionIds: ["ok", "a".repeat(40)] }] }),
+      ),
+    ).not.toBeNull();
+  });
+
+  test("rejects control characters in a contested frame's paths", () => {
+    // Same rule, same reason as the facts validator's `touched` row: these
+    // strings reach the agent's prompt block and a human-read permission card,
+    // so a newline is a forged line boundary, not a filename. An implementation
+    // that checks only `length <= PATH_WIRE_CAP` fails this row.
+    expect(parseDownFrame(contested({ paths: ["src/a.ts\ninjected: line"] }))).toBeNull();
+    expect(parseDownFrame(contested({ paths: ["src/a.ts\rmore"] }))).toBeNull();
+    expect(parseDownFrame(contested({ paths: ["src/a\u0000.ts"] }))).toBeNull();
+    expect(parseDownFrame(contested({ paths: ["src/a\u001b[31m.ts"] }))).toBeNull();
+    expect(parseDownFrame(contested({ paths: ["src/a\u007f.ts"] }))).toBeNull();
+    expect(
+      parseDownFrame(contested({ collisions: [{ path: "a\r.ts", sessionIds: ["s9"] }] })),
+    ).toBeNull();
+    expect(
+      parseDownFrame(contested({ collisions: [{ path: "a\u0001.ts", sessionIds: ["s9"] }] })),
+    ).toBeNull();
+    expect(
+      parseDownFrame(contested({ collisions: [{ path: "a\ninjected", sessionIds: ["s9"] }] })),
+    ).toBeNull();
+    // …while an ordinary non-ASCII path is not a control character.
+    expect(
+      parseDownFrame(
+        contested({ paths: ["src/café.ts"], collisions: [{ path: "src/café.ts", sessionIds: ["s9"] }] }),
+      ),
+    ).not.toBeNull();
+  });
+
+  test("is a DOWN frame only, and does not disturb the unknown-frame path", () => {
+    // A laptop built before this task ignores the frame on the unknown-frame
+    // path — parseDownFrame returns null and relay.ts's onMessage returns —
+    // rather than dropping the uplink, which is what lets a new frame TYPE ship
+    // without a RELAY_PROTOCOL_VERSION bump. Both parsers still refuse anything
+    // they do not know.
+    expect(parseUpFrame(contested())).toBeNull();
+    expect(parseDownFrame({ type: "evicted", sessionId: "auth" })).toBeNull();
+    expect(parseDownFrame({ t: "contested", sessionId: "auth", paths: [], collisions: [] })).toBeNull();
+  });
+});
+
 test("MAX_FRAME_BYTES is far below the ws default of 100MB", () => {
   // The `ws` default lets an unauthenticated peer push 100MB into JSON.parse
   // (spec §10.2). Tasks 3 and 7 apply this constant as maxPayload on both
