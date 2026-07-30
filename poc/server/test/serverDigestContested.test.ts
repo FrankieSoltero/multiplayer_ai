@@ -190,6 +190,68 @@ describe("digestFor — contested lines and the dump gate", () => {
     ]);
   });
 
+  it("names a frame peer that has NO session on this laptop (cross-machine)", async () => {
+    // The case the down-frame exists for (spec §6a): `remote-9` runs on another
+    // machine, so it is in no local map and can be named ONLY by the frame.
+    const { hub, project, send } = await laptop([{ id: "beta", userId: "u2", name: "Ben" }]);
+    touch(project, "beta", ["notes.txt"]);
+    hub.deliver({
+      t: "contested",
+      sessionId: "beta",
+      paths: ["notes.txt"],
+      collisions: [{ path: "notes.txt", sessionIds: ["beta", "remote-9"] }],
+    });
+
+    send("beta", { type: "prompt", text: "go" });
+    await wait(50);
+
+    // Whole prompt pinned: with no local peers there is no `<teammates>` block
+    // at all today, so this fails loudly rather than on a substring.
+    expect(prompts.at(-1)).toBe(
+      [
+        "<teammates>",
+        '- session "remote-9": no declared intent yet',
+        "  session remote-9 has also changed: notes.txt",
+        "</teammates>",
+        "",
+        "go",
+      ].join("\n"),
+    );
+    // The frame carries no names, and none is invented.
+    expect(prompts.at(-1)).not.toContain("driven by");
+    expect(prompts.at(-1)).not.toContain("undefined");
+  });
+
+  it("names local and remote contesting peers side by side, each once", async () => {
+    const { hub, project, send } = await laptop([
+      { id: "alpha", userId: "u1", name: "Ana" },
+      { id: "beta", userId: "u2", name: "Ben" },
+    ]);
+    touch(project, "alpha", ["notes.txt"]);
+    touch(project, "beta", ["notes.txt"]);
+    hub.deliver({
+      t: "contested",
+      sessionId: "beta",
+      paths: ["notes.txt", "src/w.ts"],
+      collisions: [
+        // `alpha` IS local — it must not be named twice (once resolved, once raw).
+        { path: "notes.txt", sessionIds: ["beta", "alpha", "remote-9"] },
+        { path: "src/w.ts", sessionIds: ["beta", "remote-2"] },
+      ],
+    });
+
+    send("beta", { type: "prompt", text: "go" });
+    await wait(50);
+
+    expect(contestedLines()).toEqual([
+      "  session alpha (driven by Ana) has also changed: notes.txt",
+      // Remote peers follow the local ones, ascending by id.
+      "  session remote-2 has also changed: src/w.ts",
+      "  session remote-9 has also changed: notes.txt",
+    ]);
+    expect(prompts.at(-1)!.split("\n").filter((l) => l.includes("alpha"))).toHaveLength(2);
+  });
+
   it("degrades to the bare form when the peer's driver has left", async () => {
     const { project, send } = await laptop([
       { id: "alpha", userId: "u1", name: "Ana" },

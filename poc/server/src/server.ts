@@ -647,6 +647,34 @@ export async function startServer(opts: {
           driverName,
         );
       });
+    // Peers named ONLY by the hub's frame — sessions on ANOTHER machine, which
+    // this laptop's map cannot hold. Spec §6a makes the digest read the UNION
+    // of local derivation and the frame, and the frame exists precisely so a
+    // cross-machine collision reaches the agent; building `others` from the
+    // local map alone would drop exactly that case on the floor.
+    //
+    // Skipped when the peer DOES have a local session: it is already in
+    // `others` above with its driver resolved, and naming it twice would read
+    // as two teammates. Sorted by id so the block is deterministic regardless
+    // of the order paths happened to be walked in.
+    const remoteIds = [...byPeer.keys()]
+      .filter((peerId) => !project.sessions.has(peerId))
+      .sort();
+    for (const peerId of remoteIds) {
+      // Everything but the id and the paths is unknown BY CONSTRUCTION: the
+      // frame carries session ids and paths only (thesis §1.1), so no name is
+      // invented — the line degrades to its bare `session X has also changed:`
+      // form — and the summary line states what this laptop knows, which is
+      // nothing beyond the id.
+      others.push({
+        id: peerId,
+        intent: null,
+        recentToolCalls: [],
+        ended: false,
+        contested: [...byPeer.get(peerId)!],
+        driverName: null,
+      });
+    }
     const digest = buildTeammateDigest(others);
     // Debug facility, not a product surface (Task 11a step 5 / 11b step 8e
     // read it back): the laptop's OWN stderr, one JSON-escaped line, crossing
