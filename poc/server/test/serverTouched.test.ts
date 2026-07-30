@@ -162,7 +162,7 @@ describe("turn-boundary recompute", () => {
     const repo = seedRepo();
     tmpDirs.push(repo);
     const live = await liveSession({ runQuery: turnRun, repo });
-    fs.writeFileSync(path.join(live.workdir, "feature.ts", ), "export const a = 1;\n");
+    fs.writeFileSync(path.join(live.workdir, "feature.ts"), "export const a = 1;\n");
 
     send(live.ws, { type: "prompt", text: "go" });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import WebSocket from "ws";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -66,6 +66,27 @@ function keyedWorkspace(key: string) {
     repoKey: () => key,
   };
 }
+
+/** Suite-output hygiene. The turn-boundary recompute (spec §3.2) runs on every
+ *  `turn_end`, and the fake workspaces in this file hand out worktree paths
+ *  that never exist on disk — so git fails and the server writes its
+ *  once-per-session `[touched] session=… recompute failed: …` line. That log is
+ *  specified behavior and stays asserted verbatim in `serverTouched.test.ts`;
+ *  here it is pure noise, so this PASSTHROUGH spy drops only those chunks and
+ *  forwards every other stderr write untouched. Registered before the teardown
+ *  hooks below so it is restored last. */
+let stderrFilter: ReturnType<typeof vi.spyOn> | undefined;
+beforeEach(() => {
+  const realWrite = process.stderr.write.bind(process.stderr) as (...a: any[]) => boolean;
+  stderrFilter = vi
+    .spyOn(process.stderr, "write")
+    .mockImplementation(((chunk: any, ...rest: any[]) =>
+      String(chunk).startsWith("[touched] session=") ? true : realWrite(chunk, ...rest)) as never);
+});
+afterEach(() => {
+  stderrFilter?.mockRestore();
+  stderrFilter = undefined;
+});
 
 let close: (() => Promise<void>) | undefined;
 afterEach(async () => {

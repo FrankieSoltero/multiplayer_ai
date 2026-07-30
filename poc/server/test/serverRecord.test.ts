@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import WebSocket from "ws";
 import { startServer } from "../src/server.js";
 import type { RunQuery, SdkMessage } from "../src/agentDriver.js";
@@ -56,6 +56,25 @@ const AUTH = {
   sessionSecret: "sekrit",
   allowlist: "ana",
 };
+
+/** Suite-output hygiene — same reason as `server.test.ts`: these tests drive
+ *  real turns to `turn_end` against a fake workspace whose worktree paths do
+ *  not exist, so the turn-boundary recompute logs its once-per-session
+ *  `[touched] session=… recompute failed: …` line. The log stays asserted
+ *  verbatim in `serverTouched.test.ts`; this PASSTHROUGH spy drops only those
+ *  chunks and forwards every other stderr write untouched. */
+let stderrFilter: ReturnType<typeof vi.spyOn> | undefined;
+beforeEach(() => {
+  const realWrite = process.stderr.write.bind(process.stderr) as (...a: any[]) => boolean;
+  stderrFilter = vi
+    .spyOn(process.stderr, "write")
+    .mockImplementation(((chunk: any, ...rest: any[]) =>
+      String(chunk).startsWith("[touched] session=") ? true : realWrite(chunk, ...rest)) as never);
+});
+afterEach(() => {
+  stderrFilter?.mockRestore();
+  stderrFilter = undefined;
+});
 
 let close: (() => Promise<void>) | undefined;
 afterEach(async () => {
