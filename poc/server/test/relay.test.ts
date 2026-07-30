@@ -503,7 +503,7 @@ describe("Relay command plane", () => {
     fake.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
     expect(() =>
       fake.deliver({
-        type: "contested",
+        t: "contested",
         sessionId: "auth",
         paths: ["src/a.ts"],
         collisions: [{ path: "src/a.ts", sessionIds: ["auth", "s9"] }],

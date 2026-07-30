@@ -121,9 +121,11 @@ export type DownFrame =
    *  §8a ruling 6). In hub mode a laptop cannot see other machines' sessions,
    *  so this frame is the only way `digestFor` and the gate can name a peer.
    *
-   *  Keyed on `type`, not `t`, because that is the shape the spec fixes for
-   *  this frame; every branch below narrows explicitly rather than assuming
-   *  one discriminator across the whole union.
+   *  Keyed on `t`, like every other frame in both unions (owner ruling on spec
+   *  §8a ruling 6, amended for consistency: the ruling's substance was the
+   *  `collisions[]` payload, not the discriminator's name). One discriminator
+   *  across the whole union is what lets a consumer switch on `frame.t` and get
+   *  exhaustiveness from the compiler.
    *
    *  `RELAY_PROTOCOL_VERSION` is NOT bumped for it: a laptop built before the
    *  type existed drops the frame on the unknown-frame path (`parseDownFrame`
@@ -142,7 +144,7 @@ export type DownFrame =
    *  Thesis bound (§1.1): a session id, paths, and peer session ids. No
    *  transcript content, no prompts, no participant names. */
   | {
-      type: "contested";
+      t: "contested";
       sessionId: string;
       paths: string[];
       collisions: { path: string; sessionIds: string[] }[];
@@ -385,7 +387,7 @@ export function parseDownFrame(raw: unknown): DownFrame | null {
     const channelId = str(f.channelId, ID);
     return channelId ? { t: "detach", channelId } : null;
   }
-  if (f.type === "contested") {
+  if (f.t === "contested") {
     const sessionId = str(f.sessionId, SLUG);
     const paths = pathList(f.paths);
     const collisions = collisionList(f.collisions);
@@ -393,7 +395,7 @@ export function parseDownFrame(raw: unknown): DownFrame | null {
     // meant to ride through unread, and the thesis bound (§1.1) is that this
     // frame carries a session id, paths and peer ids — nothing else.
     if (!sessionId || !paths || !collisions) return null;
-    return { type: "contested", sessionId, paths, collisions };
+    return { t: "contested", sessionId, paths, collisions };
   }
   return null;
 }

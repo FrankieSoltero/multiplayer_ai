@@ -344,7 +344,7 @@ describe("parseDownFrame", () => {
  *  agent's `<teammates>` block and the peer ids are interpolated into a
  *  human-read gate reason, so both are bounded here at the frame boundary. */
 const contested = (over: Record<string, unknown> = {}) => ({
-  type: "contested",
+  t: "contested",
   sessionId: "auth",
   paths: ["src/a.ts", "src/b.ts"],
   collisions: [
@@ -358,13 +358,13 @@ describe("parseDownFrame — contested", () => {
   test("accepts an empty and a populated contested frame, parsed to the exact shape", () => {
     // Empty is the CLEAR frame (Task 7a's "frame clears" row), not a fault.
     expect(parseDownFrame(contested({ paths: [], collisions: [] }))).toEqual({
-      type: "contested",
+      t: "contested",
       sessionId: "auth",
       paths: [],
       collisions: [],
     });
     expect(parseDownFrame(contested())).toEqual({
-      type: "contested",
+      t: "contested",
       sessionId: "auth",
       paths: ["src/a.ts", "src/b.ts"],
       collisions: [
@@ -400,12 +400,7 @@ describe("parseDownFrame — contested", () => {
     // Thesis bound (§1.1): signal, never artifact. The frame is rebuilt from the
     // validated fields, so an extra key on the wire cannot ride into the laptop.
     const frame = parseDownFrame(contested({ transcript: "secret", prompts: ["x"] }));
-    expect(frame && Object.keys(frame).sort()).toEqual([
-      "collisions",
-      "paths",
-      "sessionId",
-      "type",
-    ]);
+    expect(frame && Object.keys(frame).sort()).toEqual(["collisions", "paths", "sessionId", "t"]);
   });
 
   test("rejects a contested frame whose sessionId is not a SLUG", () => {
@@ -556,8 +551,13 @@ describe("parseDownFrame — contested", () => {
     // without a RELAY_PROTOCOL_VERSION bump. Both parsers still refuse anything
     // they do not know.
     expect(parseUpFrame(contested())).toBeNull();
-    expect(parseDownFrame({ type: "evicted", sessionId: "auth" })).toBeNull();
-    expect(parseDownFrame({ t: "contested", sessionId: "auth", paths: [], collisions: [] })).toBeNull();
+    expect(parseDownFrame({ t: "evicted", sessionId: "auth" })).toBeNull();
+    // The discriminator is `t`, like every other frame in both unions. A frame
+    // keyed on `type` is not a contested frame — it is an unknown one, and the
+    // parser must not accept it just because the rest of the shape lines up.
+    expect(
+      parseDownFrame({ type: "contested", sessionId: "auth", paths: [], collisions: [] }),
+    ).toBeNull();
   });
 });
 

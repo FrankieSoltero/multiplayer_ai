@@ -257,15 +257,6 @@ export class Relay {
     }
     const frame = parseDownFrame(raw);
     if (!frame) return;
-    // The `contested` frame (spec §6a) is keyed on `type`, not `t`, and has no
-    // handler on this path yet — Task 7a supplies it. Until then a frame that
-    // VALIDATES but is not routed here is dropped exactly like an unknown one:
-    // silently, with the uplink left up. Without this guard it would fall
-    // through to the tunnel branch below and be read for a `channelId` it does
-    // not carry. Nothing constructs one at this commit, so the branch is dead
-    // code today and a safety floor tomorrow.
-    if (!("t" in frame)) return;
-
     if (frame.t === "welcome") {
       // A successful handshake ends the episode the latch above was guarding:
       // a LATER 1008 (e.g. a hub upgrade after this laptop reconnected fine)
@@ -302,6 +293,17 @@ export class Relay {
       const conn = this.channels.get(frame.channelId);
       conn?.close();
       this.channels.delete(frame.channelId);
+      return;
+    }
+
+    if (frame.t === "contested") {
+      // The frame's type and validator ship with Task 6a; the laptop-side
+      // handler arrives with Task 7a and nothing constructs one until Task 6b.
+      // Until then it is a NO-OP, not an error: dropping it silently leaves the
+      // uplink up, which is the same thing an older laptop does on the
+      // unknown-frame path. The explicit branch is load-bearing — the fallthrough
+      // below is the tunnel handler, and letting a `contested` frame reach it
+      // would mint a channel keyed on a `channelId` this frame does not carry.
       return;
     }
 
