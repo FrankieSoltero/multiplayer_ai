@@ -377,8 +377,8 @@ lifecycle. The entrance screen lists yours.
 
 *What:* one daemon per machine, many repos, attached from the hub.
 
-*Today:* shipped (branch `feature/machines-repos`, spec
-`docs/superpowers/specs/2026-07-28-machines-repos-design.md`, unmerged). A machine is a durable
+*Today:* shipped and merged (PR #23, spec
+`docs/superpowers/specs/2026-07-28-machines-repos-design.md`). A machine is a durable
 identity: `~/.mpai/machine.json` (`MPAI_HOME` override) persists `{ machineId, name }` across
 restarts, and `mpai`'s `--machine-name`/`--root` flags give a one-launch display name and an
 allowlisted repo-candidate scan (`machineIdentity.ts`, `machineRepos.ts`). One daemon now offers a
@@ -414,9 +414,9 @@ repo needs a restart to appear (spec §4, §12.5).
 *What:* the unit of agent work, and spawning sub-agents within it.
 
 *Today:* sessions are complete and work well. Creating a session from the hub now works — the
-projects branch (PR #22) routes `create_session` and narrowcasts the reply back, closing the
-break that sent people back to a `localhost` tab. Machines & repos (§8.3, branch
-`feature/machines-repos`) extended the routing rather than replacing it: `create_session` now
+projects work (PR #22, merged) routes `create_session` and narrowcasts the reply back, closing the
+break that sent people back to a `localhost` tab. Machines & repos (§8.3, merged as PR #23)
+extended the routing rather than replacing it: `create_session` now
 carries an optional `machineId`, so a repo offered by several online machines is routed to the
 one named instead of a coin-toss first-match, with three distinct refusals (machine unknown,
 offline, or not offering that repo) (`hub.ts:549-613`). Sub-sessions do not exist as a product

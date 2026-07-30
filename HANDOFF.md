@@ -1,10 +1,36 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-29 (session #20, §8.3 shipped).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-29 (session #20 end, post-merge).*
 
 ---
 
-## 🚀 START HERE — §8.3 "MACHINES & REPOS" IS COMPLETE AND SHIPPED AS **PR #23**. Nothing is in flight. The next move is the USER'S (merge decisions), then the next PRD §8 section.
+## 🚀 START HERE — PRs #22 AND #23 ARE **MERGED** (user's call, executed session #20). `main` = `af63bec`, we are ON main, suites verified there (server 499 / hub 104 / client 279*). Next work: the user picks the next PRD §8 section, and the loop runs on **soltero-skills, NOT superpowers** (user directive, see below).
+
+**Two things a fresh session must know FIRST:**
+
+1. **USER DIRECTIVE (end of session #20, verbatim intent):** "use the new skills from soltero
+   skills to do the agentic loop. Avoid superpowers for the time being — I want to test out our
+   new skills." The plugin was just updated to **soltero-skills 0.18.0** — session #20's skill
+   listing was 0.12.0, so CHECK THE FRESH SESSION'S SKILL LISTING for new skills before assuming
+   what exists; 0.12.0 had no direct brainstorm/spec-plan/SDD equivalents, 0.18.0 may. Map the
+   flow (brainstorm → spec → plan → execute) onto whatever soltero-skills now provides; fall back
+   to asking the user only if no plausible mapping exists. This directive is temporary ("for the
+   time being"), not a permanent superpowers ban.
+2. **\*Uncommitted USER work in the tree — DO NOT touch, commit, stash, or clean:**
+   `poc/client/src/game/doodle.ts` + `doodle.test.ts` (modified) and
+   `poc/client/src/game/doodle.regression.test.ts` (untracked). This is the user's own WIP
+   (appeared mid-session #20, not from our pipeline; verified `git diff 104e549 main` empty).
+   It is why client shows **279** tests (31 files) instead of the branch's 271 (30 files). Never
+   `git add -A` — this is the standing rule's live tripwire.
+
+**Pending decision (the user has NOT answered yet):** which §8 section is next. The options were
+presented with a recommendation at the end of session #20: **recommended §8.7 The record** (hub
+state all in-memory, `poc/hub/src/hubStore.ts:38`; every merged feature evaporates on hub
+restart; PRD says durable turn-boundary record is a product requirement) — **alternative §8.8
+Awareness** (freshly unblocked BY §8.3: file-collision detection needs multi-repo projects, which
+just shipped; closest to the user's original multiplayer complaint). Also on the table later:
+§8.1+§8.10 (the deploy/security gate pair), §8.6 (needs a gap inventory first). Ask the user to
+pick if they haven't; do NOT start a section unasked.
 
 **What happened (session #19 wrote the spec/plan + Tasks 1-6; session #20 executed Tasks 7-13,
 the final review, the fix wave, the live walk, and opened the PR):** all 13 tasks of
@@ -24,22 +50,20 @@ worktrees in the correct repos, detach refusal text exact, restart reclaim with 
 refusals — debt §2.3 live-proven, W4 labels visually confirmed, solo one-item entrance intact).
 Walk record + screenshot: ledger + `walk-step8-labels.png` (repo root, untracked).
 
-**PRs — BOTH MERGES ARE THE USER'S, NEVER YOURS:**
-- **PR #22** (`feature/projects` → main): open, untouched.
-- **PR #23** (`feature/machines-repos` → main): open, carries 7 disclosures (spec §12's six + the
-  attach-volatility discovery) and the parked residuals in its body. #23 builds on #22 — its
-  GitHub diff includes #22's commits until #22 merges. Sensible order: merge #22 first, then #23.
-
-**THE LEDGER:** `.superpowers/sdd/2026-07-29-machines-repos/progress.md` — every task's commits,
-deferred minors with rulings and the final review's triage of them (all DEFER; two DISCHARGED),
-fix-wave record, walk record. Git-ignored — `git clean -fdx` destroys it. **Retained until #23
-merges** (PR feedback may need it); after merge, `rm -rf .superpowers/sdd/2026-07-29-machines-repos`
-— git + the PR body are the durable record.
+**PRs — MERGED, session #20, at the user's request:** #22 (`5cc1890`) then #23 (`af63bec`), merge
+commits per house style. #23's body carries the 7 disclosures + parked residuals — it is the
+durable record now: **both merged plans' SDD workspaces were deleted post-merge**
+(`.superpowers/sdd/2026-07-29-machines-repos` and `2026-07-28-projects` are GONE, as planned).
+Older flat scratch under `.superpowers/sdd/` (loose `progress.md`, `task-N-*.md`, `review-*.diff`
++ four older plan dirs) predates the per-plan convention — left alone, not ours to clean unasked.
 
 **Parked residuals (real, trivial, disclosed in #23's body — fix only if the user asks or a next
 branch touches these files):** `docs/tech-debt.md` §2.7 cites `server.ts:677-742`, actual handler
-is `:707-787` at HEAD; `poc/server/test/relayProtocol.test.ts:4` imports `MAX_REPOS` but tests
-hardcode 101.
+is `:707-787`; `poc/server/test/relayProtocol.test.ts:4` imports `MAX_REPOS` but tests hardcode
+101. **Known doc staleness to fold into the NEXT branch's first docs commit (do not commit
+straight to main):** PRD §8.3 "Today" still says "unmerged" (`docs/PRD.md:380-381`) and §8.4
+mentions PR #22 as open (`docs/PRD.md:417-419`); this HANDOFF edit itself is uncommitted on main
+for the same reason.
 
 **Decisions locked (why):** (1) model directive (fable orchestrates + gates; opus 3/5/6/9/12;
 sonnet the rest; haiku tiny reviews) — worked, keep for the next section. (2) Spec-of-record beats
@@ -48,30 +72,34 @@ plan code (the RepoDecl clamp was exactly this: plan's Task 8 block omitted the 
 (3) Minors → ledger, never the fix loop; ONE final fix wave, one scoped re-review, residuals
 parked with rulings. (4) NEVER merge PRs; the user does.
 
-### ➡️ NEXT STEPS (nothing to resume — these are the options)
+### ➡️ ORDERED NEXT STEPS (fresh session starts at step 1)
 
-1. **User merges #22 then #23** (their call, their order). After #23 merges: delete this plan's
-   workspace (see above).
-2. **Next §8 section:** PRD §8 has ten named sections; §8.2 (projects) and §8.3 (machines/repos)
-   are done. The next section starts with its own brainstorm → spec → plan (superpowers flow),
-   fresh ledger in its own `.superpowers/sdd/<plan>/` dir. Spec §13 + PRD §10 list what's open at
-   product level (see Open questions below).
-3. **If PR feedback arrives on #23:** the ledger + `final-fix-report.md` +
-   `task-N-report.md` files in the workspace carry every decision's evidence.
+1. **Check the fresh session's skill listing for soltero-skills 0.18.0's new skills** (the
+   directive above). Identify which of them map onto brainstorm → spec → plan → execution for a
+   PRD §8 section.
+2. **Get the user's section pick** if this conversation didn't already carry it (recommendation
+   on record: §8.7 The record; alternative §8.8 Awareness — rationales in the pending-decision
+   block above). Do not start a section unasked.
+3. **Start the picked section on a fresh branch off `main`** (branch → push → PR; merge is the
+   user's — standing flow). First docs commit on that branch folds in the staleness list above
+   (PRD §8.3/§8.4 "Today" wording + this HANDOFF edit).
+4. Run the section's flow with the soltero-skills mapping from step 1, keeping the practices
+   that worked regardless of skill family: fresh ledger dir per plan, model directive, one
+   implementer at a time, diff-tree-verified commits, revert-and-rerun tests, final
+   whole-branch review + one fix wave + live walk before the PR.
 
 ### Resume & verify — run this first, expect exactly this
 
 ```bash
 cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
-git status -sb            # feature/machines-repos, in sync; untracked: market-research.md, poc/demo-plugins/, tour-skill-suggest.png, walk-step8-labels.png (NEVER commit these)
-git log --oneline -2      # HANDOFF docs commit atop 455a922 fix(server): clearer refusal when no repo is attached
-head -5 .superpowers/sdd/2026-07-29-machines-repos/progress.md   # ledger names THIS plan
-gh pr view 22 --json state --jq .state   # OPEN — never merge it
-gh pr view 23 --json state --jq .state   # OPEN — never merge it
-for p in 3001 3002 3003 4000 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY — walk cleaned up
+git status -sb            # main, in sync; MODIFIED: HANDOFF.md (this edit, uncommitted) + the user's doodle files (M doodle.ts, M doodle.test.ts); untracked: doodle.regression.test.ts, market-research.md, poc/demo-plugins/, tour-skill-suggest.png, walk-step8-labels.png (NEVER commit any of these yourself)
+git log --oneline -3      # af63bec Merge pull request #23 … / 5cc1890 Merge pull request #22 … / 104e549 docs: HANDOFF …
+gh pr view 23 --json state --jq .state   # MERGED
+ls .superpowers/sdd/ | grep -c 2026-07-29 # 0 — the §8.3 workspace is deleted, that's correct
+for p in 3001 3002 3003 4000 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY
 cd poc/server && npx tsc --noEmit && npx vitest run   # 499 passed, 24 files
 cd ../hub    && npx tsc --noEmit && npx vitest run    # 104 passed, 4 files
-cd ../client && npx tsc -b && npx vitest run          # 271 passed, 30 files
+cd ../client && npx tsc -b && npx vitest run          # 279 passed, 31 files (= 271 ours + 8 from the user's doodle WIP; drops back to 271/30 only if the user removes their WIP)
 ```
 
 **Gotchas (unchanged, still true):** client typecheck is `npx tsc -b` (`--noEmit` is a NO-OP);
