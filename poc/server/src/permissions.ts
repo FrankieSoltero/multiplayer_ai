@@ -95,6 +95,57 @@ function isContainedWrite(workdir: string | undefined, input: unknown): boolean 
 }
 
 /**
+ * The repo-relative path this tool call would write, IF that path is one the
+ * session is contesting — otherwise `null` (spec §6b).
+ *
+ * Pure: no env, no filesystem, no gate state, and neither argument is
+ * mutated. Path resolution is lexical, so a target that does not exist on disk
+ * yet (the common case for Write) answers exactly like one that does.
+ *
+ * `contested` is the caller's set of repo-relative POSIX paths (Task 7a's
+ * `contestedFor` output); the tool input is a path relative to `workdir` or an
+ * absolute one, so the target is resolved and then relativized back before the
+ * membership test. Containment is the EXISTING `isContainedWrite` rule, reused
+ * unchanged: a target outside the worktree is never a match, so this predicate
+ * cannot widen what may be written — it only reports on writes that were
+ * already headed inside.
+ *
+ * `workdir` is `string | undefined` deliberately: every caller's workdir comes
+ * from a session (`undefined` when the session has no repo) or from
+ * `DriverHooks.workdir?`. Without a worktree root there is nothing to
+ * relativize against, so the predicate simply never fires — the guard lives
+ * here, once, rather than at each call site.
+ */
+export function contestedWrite(
+  toolName: string,
+  input: unknown,
+  workdir: string | undefined,
+  contested: ReadonlySet<string>,
+): string | null {
+  if (!FILE_WRITE_TOOLS.has(toolName)) return null;
+  if (contested.size === 0) return null;
+  if (!workdir) return null;
+  // `isContainedWrite` destructures `input`, which throws on null/undefined —
+  // this predicate's contract is "never throws", so non-objects stop here.
+  if (typeof input !== "object" || input === null) return null;
+  if (!isContainedWrite(workdir, input)) return null;
+
+  const { file_path, notebook_path } = input as {
+    file_path?: unknown;
+    notebook_path?: unknown;
+  };
+  const filePath = file_path ?? notebook_path;
+  // Already proved a string by the containment check; re-narrowed for the type.
+  if (typeof filePath !== "string") return null;
+  const relative = path.relative(path.resolve(workdir), path.resolve(workdir, filePath));
+  // The worktree root itself relativizes to "" — not a file, and never a
+  // contested path, even if an upstream list somehow carried an empty string.
+  if (relative === "") return null;
+  const repoRelative = relative.split(path.sep).join("/");
+  return contested.has(repoRelative) ? repoRelative : null;
+}
+
+/**
  * Bridge the SDK's canUseTool callback to the driver-approval hook.
  * MUST always resolve to a PermissionResult — returning null tells the SDK
  * "the response was sent out-of-band" and blocks the tool forever
