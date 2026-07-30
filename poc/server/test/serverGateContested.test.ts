@@ -707,6 +707,51 @@ describe("server wiring", () => {
     });
   });
 
+  it("withdrawal with NO peer to name: the reason is exactly \"contested\"", async () => {
+    // The frame's two lists are bounded INDEPENDENTLY (see `contested.ts`), so a
+    // hub can legitimately list a path in `paths` with no matching `collisions`
+    // entry — `contestedSessionsFor` then answers `[]`. The path IS contested,
+    // so the withdrawal still happens; there is simply no session to name, and
+    // the reason must never become `contested with session undefined`.
+    const lap = await laptop(editRun("src/a.ts"), true);
+    const work = await lap.session("work");
+    const entry = projectOf().sessions.get("work")!;
+
+    lap.hub.deliver({
+      t: "contested",
+      sessionId: "work",
+      paths: ["src/a.ts"],
+      collisions: [],
+    });
+    send(work.ws, { type: "set_permission_mode", mode: "auto" });
+    send(work.ws, { type: "prompt", text: "edit it" });
+
+    // The withdrawal happened: a gate is waiting on the facts surface.
+    await vi.waitFor(
+      () => {
+        expect(rowOf(lap.seen, "work")?.pendingGate).toMatchObject({
+          toolName: "Edit",
+          reason: "contested",
+        });
+      },
+      { timeout: 4000 },
+    );
+    // Exactly `"contested"` — not a templated line with an undefined id in it.
+    const request = eventsOf(work.seen).find((e) => e?.type === "permission_request");
+    expect(request.reason).toBe("contested");
+    expect(request.reason).not.toContain("undefined");
+    expect(request.reason).not.toContain("session");
+    // Withdrawn, not auto-approved, and not blocked either.
+    expect(eventsOf(work.seen).some((e) => e?.type === "permission_decision")).toBe(false);
+    expect([...entry.contestedAsked]).toEqual([]);
+
+    // A human answering still records the path, so the file is asked once.
+    send(work.ws, { type: "permission", requestId: request.requestId, decision: "allow" });
+    await vi.waitFor(() => {
+      expect([...entry.contestedAsked]).toEqual(["src/a.ts"]);
+    });
+  });
+
   it("withdrawal from LOCAL derivation only: the reason names the real local peer", async () => {
     const lap = await laptop(editRun("shared.ts"), false);
     const one = await lap.session("one");
