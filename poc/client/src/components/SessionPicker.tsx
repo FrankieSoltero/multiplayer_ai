@@ -6,6 +6,7 @@ import { sessionBadgeLabel, sessionStateClass } from "../sessionState";
 import { groupByRepo } from "../repoGroups";
 import { choiceValue, chooseRepo, parseChoiceValue, repoChoices, repoLabels } from "../repoChoices";
 import { canAct, refusalText } from "../projectAccess";
+import { contestedCountFor, projectCollisions } from "../collisionView";
 import { freeSessionName } from "../sessionNames";
 import { entranceUrl, sessionUrlFrom } from "../pickerUrl";
 import { MachinesPanel } from "./MachinesPanel";
@@ -140,14 +141,6 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   // special case it used to need is gone (spec §8).
   const choices = repoChoices(machines);
   const chosen = chooseRepo(choices, picked);
-  // repoKey/machineId are stable identity, not something to show a human
-  // (walk finding W4): every render site below looks a UUID up in one of
-  // these two maps first. Built off `machines` (spec §8), so a repo's label
-  // survives its own detach and a machine's name survives it going offline.
-  const labels = repoLabels(machines);
-  const machineNames = new Map(machines.map((m) => [m.machineId, m.name]));
-  const groups = groupByRepo(sortSessions(sessions));
-  const showRepoHeads = groups.length > 1;
 
   // Per-repo prefill (D9): the chosen repo's own default branch, until the
   // user types over it. Changing the repo clears `baseRef` so this re-prefills.
@@ -228,45 +221,12 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
           {sessions.length === 0 && (
             <div className="line dim">no sessions yet.</div>
           )}
-          {groups.map((group) => (
-            <div key={group.repoKey || "unknown"}>
-              {showRepoHeads && (
-                <div className="line pix sm dim">
-                  {/* `group.repoKey` is a plain `string` (never null/undefined) that
-                   *  `groupByRepo` sets to "" for a session with no repo key at all —
-                   *  a distinct case from "a real key no machine currently offers"
-                   *  (spec §8's raw-key fallback). A bare `labels.get(...) ?? group.repoKey
-                   *  ?? "unknown repo"` would print blank, not "unknown repo", for the ""
-                   *  case, since `??` does not treat "" as nullish. `||` on the terminal
-                   *  fallback keeps that case reading "unknown repo" as it always has. */}
-                  {labels.get(group.repoKey) ?? (group.repoKey || "unknown repo")}
-                </div>
-              )}
-              {group.sessions.map((s) => (
-                <div className="sprow" key={s.id}>
-                  <div className="spbody">
-                    <div className="spname">
-                      {s.id}
-                      <span className={`spstate pix sm ${sessionStateClass({ ...s, participantCount: s.participants.length }) || "live"}`}>
-                        {sessionBadgeLabel({ ...s, participantCount: s.participants.length })}
-                      </span>
-                    </div>
-                    {s.intent && <div className="spintent dim">{s.intent}</div>}
-                    <div className="spwho pix sm">
-                      {[
-                        labels.get(s.repoKey ?? "") ?? s.repoKey ?? "unknown repo",
-                        machineNames.get(s.machineId ?? "") ?? s.machineId ?? "unknown machine",
-                        s.participants.length > 0 ? s.participants.join(" · ") : "empty",
-                      ].join("  ·  ")}
-                    </div>
-                  </div>
-                  <button className="btn" onClick={() => joinSession(s.id, props.projectId)}>
-                    {refusal === null ? "JOIN ▸" : "WATCH ▸"}
-                  </button>
-                </div>
-              ))}
-            </div>
-          ))}
+          <SessionGroups
+            sessions={sessions}
+            machines={machines}
+            canJoin={refusal === null}
+            projectId={props.projectId}
+          />
         </div>
         {/* RECORD (spec §5) — collapsed by default: the record is a read a
          *  user asks for, not a wall of history the screen opens with. Outside
@@ -351,6 +311,105 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
         )}
       </div>
     </div>
+  );
+}
+
+/** The session list itself: every session grouped under its repo.
+ *
+ *  Exported and props-only on purpose. `SessionPicker` fills `sessions` from a
+ *  socket in `useEffect`, and this repo's render tests are STATIC
+ *  (`react-dom/server`, no DOM environment — `docs/tech-debt.md`), so effects
+ *  never run and the picker itself can only ever be rendered with an empty
+ *  list in a test. Taking the snapshot as a prop is the seam that lets
+ *  `SessionPicker.test.tsx` assert these rows against real fixtures. It is a
+ *  seam, not a fake: the collisions below are still derived here, from the
+ *  same snapshot the rows are drawn from, so no caller passes them in and
+ *  `App.tsx` is untouched. */
+export function SessionGroups(props: {
+  sessions: ProjectSessionInfo[];
+  machines: MachineInfo[];
+  canJoin: boolean;
+  projectId: string;
+}) {
+  // repoKey/machineId are stable identity, not something to show a human
+  // (walk finding W4): every render site below looks a UUID up in one of
+  // these two maps first. Built off `machines` (spec §8), so a repo's label
+  // survives its own detach and a machine's name survives it going offline.
+  const labels = repoLabels(props.machines);
+  const machineNames = new Map(props.machines.map((m) => [m.machineId, m.name]));
+  const groups = groupByRepo(sortSessions(props.sessions));
+  const showRepoHeads = groups.length > 1;
+  // Spec §5's two contested surfaces, both derived from THIS snapshot through
+  // the one shared implementation (Task 9a) — the hub, the laptop and every
+  // browser must name the same contested set, so nothing is recomputed here.
+  const collisions = useMemo(() => projectCollisions(props.sessions), [props.sessions]);
+
+  return (
+    <>
+      {groups.map((group) => {
+        // A COUNT of contended paths, never the paths themselves: the group
+        // head is one line, and a repo with forty shared files would push the
+        // list off the screen. `collisionsFrom` already emits one Collision per
+        // (repo, path), so the Set is belt-and-braces — it states the claim the
+        // number makes rather than trusting the upstream shape to keep making
+        // it true.
+        const contestedPaths = new Set(
+          collisions.filter((c) => c.repoKey === group.repoKey).map((c) => c.path),
+        );
+        return (
+          <div key={group.repoKey || "unknown"}>
+            {showRepoHeads && (
+              <div className="line pix sm dim">
+                {/* `group.repoKey` is a plain `string` (never null/undefined) that
+                 *  `groupByRepo` sets to "" for a session with no repo key at all —
+                 *  a distinct case from "a real key no machine currently offers"
+                 *  (spec §8's raw-key fallback). A bare `labels.get(...) ?? group.repoKey
+                 *  ?? "unknown repo"` would print blank, not "unknown repo", for the ""
+                 *  case, since `??` does not treat "" as nullish. `||` on the terminal
+                 *  fallback keeps that case reading "unknown repo" as it always has. */}
+                {labels.get(group.repoKey) ?? (group.repoKey || "unknown repo")}
+                {contestedPaths.size > 0 && (
+                  <span className="contested-calm">{`⚠ ${contestedPaths.size} contested`}</span>
+                )}
+              </div>
+            )}
+            {group.sessions.map((s) => (
+              <div className="sprow" key={s.id}>
+                <div className="spbody">
+                  <div className="spname">
+                    {s.id}
+                    <span className={`spstate pix sm ${sessionStateClass({ ...s, participantCount: s.participants.length }) || "live"}`}>
+                      {sessionBadgeLabel({ ...s, participantCount: s.participants.length })}
+                    </span>
+                    {/* Beside the state badge and AFTER it, so a closed session
+                     *  reads `CLOSED contested` — closing a session does not
+                     *  release the files it changed (spec §2.6), and the marker
+                     *  has to outlive the lifecycle badge to say so. The bare
+                     *  word, with no count and no glyph: the ⚠ and the number
+                     *  belong to the group chip above, which is where a reader
+                     *  goes to ask how much. */}
+                    {contestedCountFor(s.id, collisions) > 0 && (
+                      <span className="contested-calm">contested</span>
+                    )}
+                  </div>
+                  {s.intent && <div className="spintent dim">{s.intent}</div>}
+                  <div className="spwho pix sm">
+                    {[
+                      labels.get(s.repoKey ?? "") ?? s.repoKey ?? "unknown repo",
+                      machineNames.get(s.machineId ?? "") ?? s.machineId ?? "unknown machine",
+                      s.participants.length > 0 ? s.participants.join(" · ") : "empty",
+                    ].join("  ·  ")}
+                  </div>
+                </div>
+                <button className="btn" onClick={() => joinSession(s.id, props.projectId)}>
+                  {props.canJoin ? "JOIN ▸" : "WATCH ▸"}
+                </button>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </>
   );
 }
 

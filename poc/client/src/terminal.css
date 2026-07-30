@@ -747,6 +747,14 @@ code, pre { font-family: var(--fm); }
 .spstate.empty { color: var(--dim); }
 .spintent { margin-top: 2px; overflow-wrap: anywhere; }
 .spwho { color: var(--accent); margin-top: 2px; }
+/* Contested (spec §5) — the group chip and the per-session marker share one
+   class. Deliberately the AWARENESS gold, not the permission gate's --amber:
+   a contested file is something to know, not a decision anyone is being asked
+   to make, and spending the gate's colour on it would teach people to ignore
+   the gate. */
+.contested-calm {
+  color: var(--gold); border-color: var(--gold); background: var(--gold-wash);
+}
 .spform { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
 .spinput {
   background: var(--bg); color: var(--fg);
