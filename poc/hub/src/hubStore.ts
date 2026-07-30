@@ -97,6 +97,26 @@ export interface HubPersister {
   // transaction (spec §3.3, one transaction per frame).
 }
 
+/** Everything a restarting hub reads back out of the record (spec §3.4), in
+ *  exactly the shape it goes in as: the rows a `HubPersister` was handed, with
+ *  each project's members and each session's events gathered onto their owner.
+ *
+ *  **Order is meaningful.** `listProjects()`, `machinesIn()` and `snapshot()`
+ *  all report in the store's own map-insertion order, and members report in
+ *  Set-insertion order, so the arrays here must arrive in the order the record
+ *  first learned each row — which is what a rowid-ordered SQL read gives. Sort
+ *  them differently and the hydrated hub answers the same facts in a different
+ *  order, which is a visible difference to a browser diffing a project view.
+ *
+ *  Runtime state is deliberately absent: no `online`, no sockets, no watchers.
+ *  Every hydrated machine reads offline and every hydrated session reads
+ *  `presence: "offline"` until its laptop re-attaches. */
+export interface HubHydration {
+  projects: { id: string; name: string; createdBy: string | null; createdAt: string; lifecycle: ProjectLifecycle; members: string[] }[];
+  machines: { uplinkId: string; projectId: string; name: string; repos: RepoDecl[] }[];
+  sessions: { projectId: string; sessionId: string; uplinkId: string; facts: SessionFacts; lastRunId: string | null; lastSeq: number; events: StoredEvent[] }[];
+}
+
 /** The default: the hub keeps no record at all, which is what every caller
  *  that does not ask for one gets. Module-private and stateless, so it costs a
  *  bare call — nothing allocated — on `publish`, the hottest write path. */
@@ -122,8 +142,59 @@ export class HubStore {
   private projectMeta = new Map<string, ProjectRecord>();
   private persister: HubPersister;
 
-  constructor(persister: HubPersister = noOpPersister) {
+  constructor(persister: HubPersister = noOpPersister, hydration?: HubHydration) {
     this.persister = persister;
+    if (hydration) this.hydrate(hydration);
+  }
+
+  /** Boot (spec §3.4). Rebuilds memory straight from the record, WITHOUT going
+   *  through the mutators — deliberately, for two reasons: the mutators would
+   *  hand every row back to the persister and rewrite the whole record on every
+   *  restart, and several of them would refuse or rewrite what they were given
+   *  (`createProject` rejects an id it already holds, `attach` marks a machine
+   *  online and re-`ensureProject`s, `setFacts` invents offsets). Hydration is
+   *  not a replay of history; it is the state that history already produced.
+   *
+   *  Private and constructor-only: a store that could be re-hydrated mid-run
+   *  would be a second write path into stored history with no persister call
+   *  behind it — the exact inverse of "durable before visible". */
+  private hydrate(h: HubHydration): void {
+    for (const p of h.projects) {
+      this.projectMeta.set(p.id, {
+        id: p.id,
+        name: p.name,
+        createdBy: p.createdBy,
+        createdAt: p.createdAt,
+        // Array order in, iteration order out: a `Set` preserves insertion
+        // order, which is what `listProjects` reports.
+        members: new Set(p.members),
+        lifecycle: p.lifecycle,
+      });
+    }
+    for (const m of h.machines) {
+      this.uplinks.set(m.uplinkId, {
+        uplinkId: m.uplinkId,
+        projectId: m.projectId,
+        name: m.name,
+        // Copied like `attach` does, so the caller's hydration object cannot
+        // stay a second handle on a machine's declared set.
+        repos: [...m.repos],
+        // The one fact the record does not hold: nothing is attached yet. The
+        // laptop's next `hello` flips it (spec §3.3).
+        online: false,
+      });
+    }
+    for (const s of h.sessions) {
+      this.sessionsOf(s.projectId).set(s.sessionId, {
+        uplinkId: s.uplinkId,
+        facts: s.facts,
+        // The array is the store's own from here; its events are `StoredEvent`s
+        // and read-only for everyone, exactly as after a `publish`.
+        events: [...s.events],
+        lastRunId: s.lastRunId,
+        lastSeq: s.lastSeq,
+      });
+    }
   }
 
   createProject(

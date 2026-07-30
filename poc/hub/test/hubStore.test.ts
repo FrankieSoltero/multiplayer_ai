@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { HubStore, type HubPersister } from "../src/hubStore.js";
+import {
+  HubStore,
+  type HubHydration,
+  type HubPersister,
+  type ProjectLifecycle,
+  type ProjectSummary,
+  type StoredEvent,
+} from "../src/hubStore.js";
+import type { ProjectMessage } from "multiplayer-ai-server/project";
 import type { RepoDecl, SessionFacts } from "multiplayer-ai-server/relayProtocol";
+import { captureHydration } from "./helpers/hydrationCapture.js";
 
 /** One entry of a machine's declared repo set. `label` defaults to the key's
  *  last segment, which is what the launch-time scan produces. */
@@ -854,5 +863,487 @@ describe("HubStore persister seam", () => {
     expect(store.lifecycleOf("acme")).toBe("closed");
     expect(store.lifecycleOf("other")).toBe("active");
     expect(store.machinesIn("acme")[0].repos).toEqual([decl("github.com/acme/web")]);
+  });
+});
+
+/** One event as the record holds it, for a hydration fixture. */
+const stored = (id: number, runId: string, seq: number): StoredEvent => ({
+  id,
+  runId,
+  event: ev(seq),
+});
+
+const hyd = (over: Partial<HubHydration> = {}): HubHydration => ({
+  projects: [],
+  machines: [],
+  sessions: [],
+  ...over,
+});
+
+describe("HubStore hydration", () => {
+  it("rebuilds projects, members, machines and sessions from the record", () => {
+    // A restart. Everything below came out of the record; nothing came from a
+    // live laptop, so every machine reads offline and every session reads
+    // `presence: "offline"` until its uplink re-attaches (spec §3.3).
+    const store = new HubStore(
+      undefined,
+      hyd({
+        projects: [
+          {
+            id: "acme",
+            name: "Acme Migration",
+            createdBy: "ana",
+            createdAt: T0,
+            lifecycle: "closed",
+            // Deliberately NOT sorted: the record's order is the order the
+            // pre-restart store's `members` Set reported, so hydration must
+            // apply it as given rather than normalize it.
+            members: ["cy", "ana", "bo"],
+          },
+        ],
+        machines: [
+          {
+            uplinkId: "lap-1",
+            projectId: "acme",
+            name: "Ana's MacBook",
+            repos: [decl("github.com/acme/api"), decl("github.com/acme/web", { attached: false })],
+          },
+        ],
+        sessions: [
+          {
+            projectId: "acme",
+            sessionId: "auth",
+            uplinkId: "lap-1",
+            facts: facts(),
+            lastRunId: "run-a",
+            lastSeq: 2,
+            events: [stored(1, "run-a", 0), stored(2, "run-a", 1), stored(3, "run-a", 2)],
+          },
+        ],
+      }),
+    );
+
+    expect(store.listProjects()).toEqual([
+      {
+        id: "acme",
+        name: "Acme Migration",
+        lifecycle: "closed",
+        members: ["cy", "ana", "bo"],
+        sessionCount: 1,
+        liveSessionCount: 1,
+        machines: [
+          {
+            machineId: "lap-1",
+            name: "Ana's MacBook",
+            repos: [decl("github.com/acme/api"), decl("github.com/acme/web", { attached: false })],
+            online: false,
+          },
+        ],
+      },
+    ]);
+    expect(store.lifecycleOf("acme")).toBe("closed");
+    expect(store.isMember("acme", "cy")).toBe(true);
+    expect(store.isMember("acme", "nobody")).toBe(false);
+    expect(store.ownerOf("acme", "auth")).toBe("lap-1");
+    expect(store.eventsFor("acme", "auth", 0).map((e) => e.id)).toEqual([1, 2, 3]);
+    expect(store.eventsFor("acme", "auth", 2).map((e) => e.id)).toEqual([3]);
+    // The laptop is told the hub's high-water mark, so a reconnect replays only
+    // the gap — the whole point of persisting the offsets (spec §3.5).
+    expect(store.resumeOffsets("lap-1")).toEqual({ auth: { runId: "run-a", lastSeq: 2 } });
+
+    const snap = store.snapshot("acme");
+    expect(snap.sessions).toHaveLength(1);
+    expect(snap.sessions[0].presence).toBe("offline");
+    expect(snap.sessions[0].machineId).toBe("lap-1");
+    expect(snap.sessions[0].repoKey).toBe("github.com/acme/api");
+    expect(snap.machines?.[0].online).toBe(false);
+  });
+
+  it("applies hydrated members in array order", () => {
+    const store = new HubStore(
+      undefined,
+      hyd({
+        projects: [
+          { id: "p", name: "p", createdBy: null, createdAt: T0, lifecycle: "active", members: ["zoe", "ana", "mo"] },
+        ],
+      }),
+    );
+    expect(store.listProjects()[0].members).toEqual(["zoe", "ana", "mo"]);
+    // And a join after hydration appends, exactly as it would have before.
+    expect(store.joinProject("p", "bo")).toBe(true);
+    expect(store.joinProject("p", "ana")).toBe(false);
+    expect(store.listProjects()[0].members).toEqual(["zoe", "ana", "mo", "bo"]);
+  });
+
+  it("writes nothing to the persister while hydrating", () => {
+    // Hydration reads what is ALREADY durable. Re-persisting it on boot would
+    // rewrite the whole record every restart — and, once the record is a file
+    // the hub also loads from, would make boot cost grow with history.
+    const r = recorder();
+    const store = new HubStore(
+      r.persister,
+      hyd({
+        projects: [{ id: "acme", name: "Acme", createdBy: "ana", createdAt: T0, lifecycle: "active", members: ["ana"] }],
+        machines: [{ uplinkId: "lap-1", projectId: "acme", name: "lap-1", repos: [decl("k")] }],
+        sessions: [
+          {
+            projectId: "acme",
+            sessionId: "auth",
+            uplinkId: "lap-1",
+            facts: facts(),
+            lastRunId: "run-a",
+            lastSeq: 0,
+            events: [stored(1, "run-a", 0)],
+          },
+        ],
+      }),
+    );
+    expect(r.calls).toEqual([]);
+    // The seam still works for what happens AFTER boot.
+    expect(store.joinProject("acme", "bo")).toBe(true);
+    expect(r.names()).toEqual(["memberAdded"]);
+  });
+
+  it("continues session ids where the record left off", () => {
+    // Ids are the hub's own per-session counter and browsers resume from them.
+    // Restarting them at 1 would hand a watcher two different events with the
+    // same id, and a replay from an earlier id would skip real history.
+    const r = recorder();
+    const store = new HubStore(
+      r.persister,
+      hyd({
+        machines: [{ uplinkId: "lap-1", projectId: "acme", name: "lap-1", repos: [decl("k")] }],
+        projects: [{ id: "acme", name: "acme", createdBy: null, createdAt: T0, lifecycle: "active", members: [] }],
+        sessions: [
+          {
+            projectId: "acme",
+            sessionId: "auth",
+            uplinkId: "lap-1",
+            facts: facts(),
+            lastRunId: "run-a",
+            lastSeq: 2,
+            events: [stored(1, "run-a", 0), stored(2, "run-a", 1), stored(3, "run-a", 2)],
+          },
+        ],
+      }),
+    );
+    r.clear();
+
+    const accepted = store.publish("lap-1", "auth", "run-a", [ev(3)]);
+    expect(accepted.map((e) => e.id)).toEqual([4]);
+    expect(store.eventsFor("acme", "auth", 0).map((e) => e.id)).toEqual([1, 2, 3, 4]);
+    // The hydrated high-water mark is honoured too: a resume overshoot for the
+    // same run is still dropped.
+    expect(store.publish("lap-1", "auth", "run-a", [ev(1), ev(2)])).toEqual([]);
+    expect(store.eventsFor("acme", "auth", 0)).toHaveLength(4);
+    // And a laptop restart appends a second run rather than overwriting.
+    expect(store.publish("lap-1", "auth", "run-b", [ev(0)]).map((e) => e.id)).toEqual([5]);
+    expect(r.names()).toEqual(["eventsAppended", "eventsAppended"]);
+    // No `newSession`: the record already holds this session's row.
+    expect(r.calls[0].args[5]).toBeUndefined();
+  });
+
+  it("brings a hydrated machine back online when its uplink re-attaches", () => {
+    const store = new HubStore(
+      undefined,
+      hyd({
+        projects: [{ id: "acme", name: "acme", createdBy: null, createdAt: T0, lifecycle: "active", members: [] }],
+        machines: [{ uplinkId: "lap-1", projectId: "acme", name: "Ana's MacBook", repos: [decl("github.com/acme/api")] }],
+        sessions: [
+          {
+            projectId: "acme",
+            sessionId: "auth",
+            uplinkId: "lap-1",
+            facts: facts(),
+            lastRunId: "run-a",
+            lastSeq: 2,
+            events: [stored(1, "run-a", 0), stored(2, "run-a", 1), stored(3, "run-a", 2)],
+          },
+        ],
+      }),
+    );
+    expect(store.machinesIn("acme")[0].online).toBe(false);
+
+    store.attach("lap-1", "acme", "Ana's MacBook", [decl("github.com/acme/api")], T0);
+    expect(store.machinesIn("acme")[0].online).toBe(true);
+    expect(store.snapshot("acme").sessions[0].presence).toBe("online");
+    // Its sessions are still its own — nothing about the restart reassigned
+    // them, so it can drive them again.
+    expect(store.ownerOf("acme", "auth")).toBe("lap-1");
+    expect(store.resumeOffsets("lap-1")).toEqual({ auth: { runId: "run-a", lastSeq: 2 } });
+    expect(store.setFacts("lap-1", "auth", "run-a", facts({ intent: "ship auth" })).ok).toBe(true);
+    expect(store.publish("lap-1", "auth", "run-a", [ev(3)]).map((e) => e.id)).toEqual([4]);
+
+    // And a DIFFERENT machine cannot claim a hydrated session: ownership
+    // survives the restart, by the same rules as before it.
+    store.attach("lap-2", "acme", "Bo's ThinkPad", [decl("github.com/acme/api")], T0);
+    expect(store.setFacts("lap-2", "auth", "run-z", facts()).ok).toBe(false);
+    expect(store.publish("lap-2", "auth", "run-z", [ev(9)])).toEqual([]);
+    expect(store.ownerOf("acme", "auth")).toBe("lap-1");
+    expect(store.resumeOffsets("lap-2")).toEqual({});
+  });
+});
+
+describe("hydration capture helper", () => {
+  it("records a deep copy, so a later mutation of the store's own instances cannot reach it", () => {
+    // The store hands the persister its LIVE instances (documented read-only).
+    // A capture that kept them would alias stored state, and the equivalence
+    // property below would then compare the store against itself — passing no
+    // matter what hydration did.
+    const capture = captureHydration();
+    const store = new HubStore(capture.persister);
+    const repos = [decl("github.com/acme/api")];
+    store.attach("lap-1", "acme", "lap-1", repos, T0);
+    const f = facts();
+    store.setFacts("lap-1", "auth", "run-a", f);
+    const accepted = store.publish("lap-1", "auth", "run-a", [ev(0)]);
+    const before = capture.hydration();
+
+    // Every one of these is an alias the store really holds: `attach` copies
+    // the repo ARRAY but not its elements, `setFacts` keeps the caller's facts
+    // object, and `publish` returns the stored events themselves.
+    repos[0].label = "MUTATED";
+    f.participants.push("intruder");
+    f.repoKey = "MUTATED";
+    (accepted[0].event as any).text = "MUTATED";
+    accepted[0].id = 99;
+
+    expect(capture.hydration()).toEqual(before);
+    expect(before.machines[0].repos[0].label).toBe("api");
+    expect(before.sessions[0].facts.participants).toEqual(["ana"]);
+    expect(before.sessions[0].events[0].id).toBe(1);
+    // Proof the aliases were real: the mutations DID land in the store.
+    expect(store.machinesIn("acme")[0].repos[0].label).toBe("MUTATED");
+    expect(store.snapshot("acme").sessions[0].participants).toEqual(["ana", "intruder"]);
+    expect(store.eventsFor("acme", "auth", 0)[0].id).toBe(99);
+  });
+});
+
+/** The PRNG the equivalence property runs on — inlined on purpose: the whole
+ *  value of a property test here is that a failure REPRODUCES, and a dependency
+ *  (or `Math.random`) would take that away. Public-domain mulberry32. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const BASE_SEED = 1337;
+const SEQUENCES = 25;
+
+const P_IDS = ["acme", "beta"];
+const U_IDS = ["lap-1", "lap-2", "lap-3"];
+const S_IDS = ["auth", "chat", "pay"];
+const USER_IDS = ["ana", "bo", "cy"];
+const REPO_KEYS = ["github.com/acme/api", "github.com/acme/web", "github.com/acme/infra"];
+const RUN_IDS = ["run-a", "run-b"];
+const LIFECYCLES: ProjectLifecycle[] = ["active", "closed", "archived"];
+const STAMPS = [T0, "2026-07-28T11:30:00.000Z", "2026-07-29T09:15:00.000Z"];
+
+/** Weighted so a sequence reaches interesting states quickly — an unweighted
+ *  draw spends most of a short sequence on projects with no machine in them.
+ *  Every op in the spec's set appears. */
+const OPS = [
+  "createProject",
+  "ensureProject",
+  "joinProject",
+  "leaveProject",
+  "setLifecycle",
+  "attach",
+  "attach",
+  "setRepos",
+  "setFacts",
+  "setFacts",
+  "publish",
+  "publish",
+  "publish",
+] as const;
+
+interface Coverage {
+  /** Publishes that created the session they wrote to. */
+  implicitCreates: number;
+  /** Publishes into a session the store already held. */
+  existingSessions: number;
+  /** Publishes that accepted nothing — a replay, or an unattached uplink. No
+   *  session comes of these, which is exactly why they belong in the mix. */
+  zeroAccepts: number;
+  /** Sequences that ended with ≥2 machines AND ≥2 sessions in one store. */
+  rich: number;
+  maxMachines: number;
+  maxSessions: number;
+}
+
+/** Applies `len` random mutations to `store`, returning a human-readable trace
+ *  so a failing seed can be read rather than re-derived. */
+function applySequence(store: HubStore, rand: () => number, len: number, cover: Coverage): string[] {
+  const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)];
+  const trace: string[] = [];
+  /** Where each uplink last attached — the store's own mapping, which the test
+   *  needs to know which project a publish lands in. */
+  const attachedTo = new Map<string, string>();
+
+  const repoSet = (): RepoDecl[] => {
+    const n = 1 + Math.floor(rand() * REPO_KEYS.length);
+    return REPO_KEYS.slice(0, n).map((k) => decl(k, { attached: rand() < 0.7 }));
+  };
+  const someFacts = (sessionId: string): SessionFacts =>
+    facts({
+      id: sessionId,
+      participants: USER_IDS.slice(0, 1 + Math.floor(rand() * USER_IDS.length)),
+      driverName: pick(USER_IDS),
+      intent: rand() < 0.5 ? null : `work on ${sessionId}`,
+      lastActivityTs: pick(STAMPS),
+      pendingGate: rand() < 0.3 ? { toolName: "Bash", sinceTs: pick(STAMPS) } : null,
+      skills: rand() < 0.3 ? [{ name: "brainstorm", description: "d" }] : [],
+      repoKey: pick(REPO_KEYS),
+      lifecycle: rand() < 0.2 ? "closed" : "open",
+    });
+
+  for (let i = 0; i < len; i++) {
+    const op = pick(OPS);
+    switch (op) {
+      case "createProject": {
+        const [p, u, ts] = [pick(P_IDS), pick(USER_IDS), pick(STAMPS)];
+        trace.push(`createProject(${p},${u})`);
+        store.createProject(p, `${p} board`, u, ts);
+        break;
+      }
+      case "ensureProject": {
+        const p = pick(P_IDS);
+        trace.push(`ensureProject(${p})`);
+        store.ensureProject(p, pick(STAMPS));
+        break;
+      }
+      case "joinProject": {
+        const [p, u] = [pick(P_IDS), pick(USER_IDS)];
+        trace.push(`joinProject(${p},${u})`);
+        store.joinProject(p, u);
+        break;
+      }
+      case "leaveProject": {
+        const [p, u] = [pick(P_IDS), pick(USER_IDS)];
+        trace.push(`leaveProject(${p},${u})`);
+        store.leaveProject(p, u);
+        break;
+      }
+      case "setLifecycle": {
+        const [p, l] = [pick(P_IDS), pick(LIFECYCLES)];
+        trace.push(`setLifecycle(${p},${l})`);
+        store.setLifecycle(p, l);
+        break;
+      }
+      case "attach": {
+        const [u, p] = [pick(U_IDS), pick(P_IDS)];
+        trace.push(`attach(${u},${p})`);
+        store.attach(u, p, `${u} box`, repoSet(), pick(STAMPS));
+        attachedTo.set(u, p);
+        break;
+      }
+      case "setRepos": {
+        const u = pick(U_IDS);
+        trace.push(`setRepos(${u})`);
+        store.setRepos(u, repoSet());
+        break;
+      }
+      case "setFacts": {
+        const [u, s] = [pick(U_IDS), pick(S_IDS)];
+        trace.push(`setFacts(${u},${s})`);
+        store.setFacts(u, s, pick(RUN_IDS), someFacts(s));
+        break;
+      }
+      case "publish": {
+        const [u, s, run] = [pick(U_IDS), pick(S_IDS), pick(RUN_IDS)];
+        const base = Math.floor(rand() * 5);
+        const batch = [0, 1, 2].slice(0, 1 + Math.floor(rand() * 3)).map((k) => ev(base + k));
+        trace.push(`publish(${u},${s},${run},seq ${base}..${base + batch.length - 1})`);
+        const project = attachedTo.get(u);
+        const heldBefore = project === undefined ? null : store.ownerOf(project, s);
+        const accepted = store.publish(u, s, run, batch);
+        if (accepted.length === 0) cover.zeroAccepts += 1;
+        else if (heldBefore === null) cover.implicitCreates += 1;
+        else cover.existingSessions += 1;
+        break;
+      }
+    }
+  }
+
+  const machines = P_IDS.reduce((n, p) => n + store.machinesIn(p).length, 0);
+  const sessions = P_IDS.reduce((n, p) => n + store.snapshot(p).sessions.length, 0);
+  cover.maxMachines = Math.max(cover.maxMachines, machines);
+  cover.maxSessions = Math.max(cover.maxSessions, sessions);
+  if (machines >= 2 && sessions >= 2) cover.rich += 1;
+  return trace;
+}
+
+/** The one documented difference across a restart: runtime presence is not in
+ *  the record, so every hydrated machine reads offline until it re-attaches
+ *  (spec §3.3). Everything else must match exactly. */
+const asOffline = (ps: ProjectSummary[]): ProjectSummary[] =>
+  ps.map((p) => ({ ...p, machines: p.machines.map((m) => ({ ...m, online: false })) }));
+
+const snapshotAsOffline = (snap: ProjectMessage): ProjectMessage => ({
+  ...snap,
+  sessions: snap.sessions.map((s) => ({ ...s, presence: "offline" as const })),
+  machines: snap.machines?.map((m) => ({ ...m, online: false })),
+});
+
+describe("HubStore hydration equivalence (property, spec §7)", () => {
+  it("hydrates a store whose answers are identical to the one the record came from", () => {
+    // THE load-bearing test of the branch (spec §3.4/§7): a restarted hub must
+    // answer exactly as the hub that died. Anything hydration forgets — an id
+    // counter, a member's position, a session's owner, a resume offset — is a
+    // fact browsers or laptops act on, and every one of them is a silent
+    // wrong answer rather than an error.
+    const cover: Coverage = {
+      implicitCreates: 0,
+      existingSessions: 0,
+      zeroAccepts: 0,
+      rich: 0,
+      maxMachines: 0,
+      maxSessions: 0,
+    };
+
+    for (let i = 0; i < SEQUENCES; i++) {
+      const seed = BASE_SEED + i;
+      const rand = mulberry32(seed);
+      const len = 10 + Math.floor(rand() * 51); // 10–60 ops
+      const capture = captureHydration();
+      const a = new HubStore(capture.persister);
+      const trace = applySequence(a, rand, len, cover);
+      // Only the record crosses the restart — no reference to `a`.
+      const b = new HubStore(undefined, capture.hydration());
+      const ctx = `seed ${seed} (sequence #${i}, ${len} ops): ${trace.join(" | ")}`;
+
+      expect(b.listProjects(), `${ctx} — listProjects`).toEqual(asOffline(a.listProjects()));
+      for (const p of P_IDS) {
+        expect(b.snapshot(p), `${ctx} — snapshot(${p})`).toEqual(snapshotAsOffline(a.snapshot(p)));
+        for (const m of b.machinesIn(p)) {
+          expect(m.online, `${ctx} — ${m.machineId} hydrated online`).toBe(false);
+        }
+        for (const s of S_IDS) {
+          expect(b.eventsFor(p, s, 0), `${ctx} — eventsFor(${p},${s})`).toEqual(a.eventsFor(p, s, 0));
+          expect(b.ownerOf(p, s), `${ctx} — ownerOf(${p},${s})`).toBe(a.ownerOf(p, s));
+        }
+      }
+      for (const u of U_IDS) {
+        expect(b.resumeOffsets(u), `${ctx} — resumeOffsets(${u})`).toEqual(a.resumeOffsets(u));
+      }
+    }
+
+    // The generator is part of the test: an equivalence that only ever saw
+    // empty stores would pass forever. These pin what the fixed seeds actually
+    // exercised, so a future edit to the pools or weights cannot quietly
+    // hollow the property out.
+    expect(cover.implicitCreates, "publishes that created their session").toBeGreaterThan(0);
+    expect(cover.existingSessions, "publishes into an existing session").toBeGreaterThan(0);
+    expect(cover.zeroAccepts, "publishes that accepted nothing").toBeGreaterThan(0);
+    expect(cover.maxMachines, "machines in one store").toBeGreaterThanOrEqual(2);
+    expect(cover.maxSessions, "sessions in one store").toBeGreaterThanOrEqual(2);
+    expect(cover.rich, "sequences with ≥2 machines and ≥2 sessions").toBeGreaterThanOrEqual(5);
   });
 });
