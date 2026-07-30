@@ -1,4 +1,30 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import WebSocket from "ws";
+
+/** The session entries the SERVER builds are reachable no other way: nothing on
+ *  the wire carries `workdir`/`baseRef` (Task 4 is the first consumer), and
+ *  `startServer` exposes no registry. So the `Project` the server constructs is
+ *  captured here at construction — the class it imports is the one this file
+ *  mocks — and the real entries are read straight off it. Everything else in
+ *  the module is passed through untouched. */
+const { createdProjects } = vi.hoisted(() => ({
+  createdProjects: [] as {
+    id: string;
+    sessions: Map<string, import("../src/project.js").ProjectSessionEntry>;
+  }[],
+}));
+
+vi.mock("../src/project.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/project.js")>();
+  class TrackedProject extends actual.Project {
+    constructor(id: string) {
+      super(id);
+      createdProjects.push(this);
+    }
+  }
+  return { ...actual, Project: TrackedProject };
+});
+
 import {
   Project,
   projectSnapshot,
@@ -9,6 +35,7 @@ import {
 import type { RepoDecl } from "../src/relayProtocol.js";
 import { Session } from "../src/session.js";
 import { AgentDriver, type RunQuery } from "../src/agentDriver.js";
+import { startServer } from "../src/server.js";
 
 const idleRun: RunQuery = async function* (prompts) {
   for await (const _p of prompts) {
@@ -21,9 +48,11 @@ function addSession(
   id: string,
   skills: { name: string; description: string }[] = [],
   repoKey: string | null = null,
+  workdir: string | undefined = repoKey === null ? undefined : `/tmp/wt/${id}`,
+  baseRef: string | null = repoKey === null ? null : "main",
 ): Session {
   const session = new Session(id);
-  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map(), pendingOversight: false, repoKey });
+  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map(), pendingOversight: false, repoKey, workdir, baseRef });
   return session;
 }
 
@@ -231,5 +260,167 @@ describe("projectSnapshot plugins", () => {
     const snap = projectSnapshot(new Project("p2"));
     expect(snap.plugins).toEqual([]);
     expect(snap.pluginsEnabled).toBe(false);
+  });
+});
+
+describe("session workdir/baseRef binding (spec §3.1, §3.2)", () => {
+  /** A workspace that records exactly what it was handed, so a test can compare
+   *  the bound `entry.baseRef` against the string that actually reached
+   *  `provision` rather than against a literal it wrote itself. */
+  function recordingWorkspace(defaultBranch: string | null = "main") {
+    const calls: { projectId: string; slug: string; baseRef: string }[] = [];
+    return {
+      calls,
+      provision(projectId: string, slug: string, baseRef: string) {
+        calls.push({ projectId, slug, baseRef });
+        return { ok: true as const, workdir: `/tmp/wt/${projectId}/${slug}` };
+      },
+      // A repo with no default branch is a real state (RepoEntry.defaultBranch
+      // is `string | null`); the fake reproduces it for the pass-through row.
+      defaultBranch: () => defaultBranch as unknown as string,
+      repoKey: () => "local:test:000000000000",
+    };
+  }
+
+  function entryOf(projectId: string, sessionId: string) {
+    for (let i = createdProjects.length - 1; i >= 0; i--) {
+      const project = createdProjects[i];
+      const entry = project.id === projectId ? project.sessions.get(sessionId) : undefined;
+      if (entry) return entry;
+    }
+    throw new Error(`no session entry for ${projectId}/${sessionId}`);
+  }
+
+  function connect(port: number): Promise<WebSocket> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      ws.on("open", () => resolve(ws));
+      ws.on("error", reject);
+    });
+  }
+
+  let closeServer: (() => Promise<void>) | undefined;
+  let sockets: WebSocket[] = [];
+  afterEach(async () => {
+    for (const ws of sockets) ws.close();
+    sockets = [];
+    await closeServer?.();
+    closeServer = undefined;
+  });
+
+  async function open(port: number, sink: unknown[]): Promise<WebSocket> {
+    const ws = await connect(port);
+    sockets.push(ws);
+    ws.on("message", (raw) => sink.push(JSON.parse(raw.toString())));
+    return ws;
+  }
+
+  it("binds the provisioned worktree and the exact baseRef on create_session", async () => {
+    const workspace = recordingWorkspace();
+    const server = await startServer({ port: 0, runQuery: idleRun, workspace });
+    closeServer = server.close;
+    const seen: any[] = [];
+    const ws = await open(server.port, seen);
+    ws.send(JSON.stringify({ type: "create_session", name: "Auth", baseRef: "origin/main" }));
+    await vi.waitFor(() => {
+      expect(seen.some((m) => m.type === "session_created" && m.sessionId === "auth")).toBe(true);
+    });
+
+    const entry = entryOf("default", "auth");
+    expect(entry.workdir).toBe("/tmp/wt/default/auth");
+    expect(entry.baseRef).toBe("origin/main");
+    // Character-identical to what provision actually received.
+    expect(entry.baseRef).toBe(workspace.calls[0].baseRef);
+  });
+
+  it("stores the session's own baseRef, never a re-derived default branch", async () => {
+    // Discriminating: the repo's default branch is `main`, the session was cut
+    // from `origin/dev`. Any binding that consults defaultBranch() or falls back
+    // to a "main" literal of its own fails here.
+    const workspace = recordingWorkspace("main");
+    const server = await startServer({ port: 0, runQuery: idleRun, workspace });
+    closeServer = server.close;
+    const seen: any[] = [];
+    const ws = await open(server.port, seen);
+    ws.send(JSON.stringify({ type: "create_session", name: "Dev Work", baseRef: "origin/dev" }));
+    await vi.waitFor(() => {
+      expect(seen.some((m) => m.type === "session_created" && m.sessionId === "dev-work")).toBe(true);
+    });
+
+    expect(workspace.defaultBranch()).toBe("main");
+    expect(workspace.calls).toEqual([
+      { projectId: "default", slug: "dev-work", baseRef: "origin/dev" },
+    ]);
+    expect(entryOf("default", "dev-work").baseRef).toBe("origin/dev");
+  });
+
+  it("binds on EVERY creation path — deep-link join as well as create_session", async () => {
+    // Discriminating: a binding wired into only one of the two paths leaves the
+    // other session with an unset pair while its worktree exists.
+    const workspace = recordingWorkspace();
+    const server = await startServer({ port: 0, runQuery: idleRun, workspace });
+    closeServer = server.close;
+    const seen: any[] = [];
+    const ws = await open(server.port, seen);
+
+    ws.send(JSON.stringify({ type: "join", sessionId: "adhoc", userId: "u1", name: "Ana" }));
+    await vi.waitFor(() => {
+      expect(seen.some((m) => m.event?.type === "presence_join")).toBe(true);
+    });
+    ws.send(JSON.stringify({ type: "create_session", name: "made", baseRef: "origin/main" }));
+    await vi.waitFor(() => {
+      expect(seen.some((m) => m.type === "session_created" && m.sessionId === "made")).toBe(true);
+    });
+
+    for (const call of workspace.calls) {
+      const entry = entryOf("default", call.slug);
+      expect(entry.workdir).toBe(`/tmp/wt/default/${call.slug}`);
+      expect(entry.baseRef).toBe(call.baseRef);
+    }
+    expect(workspace.calls.map((c) => c.slug).sort()).toEqual(["adhoc", "made"]);
+  });
+
+  it("passes a default chosen by the CALL SITE through byte-for-byte", async () => {
+    // The repo has no default branch, so getOrCreateSession itself hands
+    // provision "main". Storing that is correct — it is what git branched from.
+    const workspace = recordingWorkspace(null);
+    const server = await startServer({ port: 0, runQuery: idleRun, workspace });
+    closeServer = server.close;
+    const seen: any[] = [];
+    const ws = await open(server.port, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "adhoc", userId: "u1", name: "Ana" }));
+    await vi.waitFor(() => {
+      expect(seen.some((m) => m.event?.type === "presence_join")).toBe(true);
+    });
+
+    expect(workspace.calls).toEqual([
+      { projectId: "default", slug: "adhoc", baseRef: "main" },
+    ]);
+    expect(entryOf("default", "adhoc").baseRef).toBe("main");
+  });
+
+  it("records no workdir and a null baseRef for a session with no repo", async () => {
+    const previousRoot = process.env.AGENT_WORKDIR_ROOT;
+    delete process.env.AGENT_WORKDIR_ROOT;
+    try {
+      const server = await startServer({ port: 0, runQuery: idleRun });
+      closeServer = server.close;
+      const seen: any[] = [];
+      const ws = await open(server.port, seen);
+      ws.send(JSON.stringify({ type: "join", sessionId: "solo", userId: "u1", name: "Ana" }));
+      await vi.waitFor(() => {
+        expect(seen.some((m) => m.event?.type === "presence_join")).toBe(true);
+      });
+
+      const entry = entryOf("default", "solo");
+      // Bound deliberately, not merely absent: both keys exist on the entry.
+      expect(Object.hasOwn(entry, "workdir")).toBe(true);
+      expect(Object.hasOwn(entry, "baseRef")).toBe(true);
+      expect(entry.workdir).toBeUndefined();
+      expect(entry.baseRef).toBeNull();
+    } finally {
+      if (previousRoot === undefined) delete process.env.AGENT_WORKDIR_ROOT;
+      else process.env.AGENT_WORKDIR_ROOT = previousRoot;
+    }
   });
 });

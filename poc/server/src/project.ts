@@ -26,6 +26,19 @@ export interface ProjectSessionEntry {
    *  answer (no repo was attached when it was created) and has to be written
    *  down deliberately. */
   repoKey: string | null;
+  /** This session's worktree on disk (spec §3.1) — the directory
+   *  `touchedFiles(workdir, baseRef)` runs git in. `undefined` when no repo was
+   *  attached and nothing was provisioned; bound at creation on EVERY path,
+   *  beside `repoKey`, because a session's worktree cannot move either. */
+  workdir: string | undefined;
+  /** What this session's worktree was branched FROM (spec §3.1/§3.2) —
+   *  EXACTLY the string this session's creation path handed
+   *  `workspace.provision(...)`, so the divergence recompute measures against
+   *  the ref git actually used. Never re-derived here: a base re-read from the
+   *  repo later (default branch, a `"main"` fallback) would silently measure a
+   *  session against a branch it was never cut from. `null` when nothing was
+   *  provisioned (no repo). */
+  baseRef: string | null;
 }
 
 /** Minimal structural type so tests don't need real sockets. */

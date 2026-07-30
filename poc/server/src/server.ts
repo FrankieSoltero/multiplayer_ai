@@ -404,26 +404,30 @@ export async function startServer(opts: {
   function getOrCreateSession(
     project: Project,
     sessionId: string,
-    init?: { workdir?: string; repoKey?: string | null },
+    init?: { workdir?: string; repoKey?: string | null; baseRef?: string | null },
   ): ProjectSessionEntry | { error: string } {
     let entry = project.sessions.get(sessionId);
     if (!entry) {
       let workdir: string | undefined = init?.workdir;
       let repoKey: string | null = init?.repoKey ?? null;
+      // Whatever the caller branched from, verbatim (spec §3.1). This function
+      // never picks a base of its own for the entry: the value below is only
+      // ever the argument that reached `provision` on the path taken.
+      let baseRef: string | null = init?.baseRef ?? null;
       if (workdir === undefined) {
         const attached = attachedRepos();
         if (attached.length === 1) {
           // Deep-link join to a not-yet-provisioned session: same core as
           // create_session, branched off the default branch (spec §3).
           const only = attached[0];
-          const result = only.workspace.provision(
-            project.id,
-            sessionId,
-            only.defaultBranch ?? "main",
-          );
+          const base = only.defaultBranch ?? "main";
+          const result = only.workspace.provision(project.id, sessionId, base);
           if (!result.ok) return { error: result.error };
           workdir = result.workdir;
           repoKey = only.key;
+          // The same `base` that git just branched the worktree from — not a
+          // second read of `only.defaultBranch`, which could answer differently.
+          baseRef = base;
         } else if (attached.length === 0) {
           const root = process.env.AGENT_WORKDIR_ROOT;
           workdir = root ? path.join(root, sessionId) : undefined;
@@ -462,6 +466,8 @@ export async function startServer(opts: {
         pendingSuggests: new Map(),
         pendingOversight: false,
         repoKey,
+        workdir,
+        baseRef,
       };
       entry = newEntry;
       project.sessions.set(sessionId, entry);
@@ -1047,6 +1053,9 @@ export async function startServer(opts: {
         const entry = getOrCreateSession(project, slug, {
           workdir: result.workdir,
           repoKey: resolved.key,
+          // The very string handed to `provision` one line above, whether it
+          // came from the create form or from this call site's own fallback.
+          baseRef,
         });
         if ("error" in entry) return sendError(entry.error);
         io.send({ type: "session_created", sessionId: slug });
