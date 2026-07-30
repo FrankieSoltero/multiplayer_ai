@@ -39,6 +39,15 @@ export interface ProjectSessionEntry {
    *  session against a branch it was never cut from. `null` when nothing was
    *  provisioned (no repo). */
   baseRef: string | null;
+  /** Repo-relative paths this session's worktree has changed (spec §3.3) — the
+   *  last value `touchedFiles(workdir, baseRef)` returned. `null` means NEVER
+   *  MEASURED, which is not the same claim as `[]` ("measured, changed
+   *  nothing"): the project screen distinguishes the two, so a fresh entry
+   *  starts null rather than empty. Kept rather than recomputed on read because
+   *  the producer shells out to git synchronously; a failed recompute keeps the
+   *  previous value (stale beats absent, spec §3.1), which only a stored field
+   *  can express. */
+  touched: string[] | null;
 }
 
 /** Minimal structural type so tests don't need real sockets. */
@@ -140,6 +149,10 @@ export function sessionFactsOf(
     pendingGate: pendingGateOf(events),
     skills: entry.skills,
     repoKey,
+    // Copied, never aliased: these facts cross the wire, the project snapshot
+    // and the collision engine, and a consumer that sorted or truncated the
+    // array it was handed would otherwise rewrite the session's stored state.
+    touched: entry.touched === null ? null : [...entry.touched],
     lifecycle: lifecycleOf(events),
   };
 }
@@ -163,6 +176,14 @@ export interface ProjectMessage {
      *  carries the SAME key — it is per-session because v7b's hub holds
      *  sessions from many repos at once. */
     repoKey: string | null;
+    /** Repo-relative paths this session has changed (spec §3.3), or null when it
+     *  has never been measured. Enumerated here rather than inherited: this row
+     *  type does not extend `SessionFacts`, so a field added only there would
+     *  never reach the snapshot the browser reads.
+     *
+     *  EXPOSURE (spec §8a ruling 5 — accepted): the FULL list, to every member
+     *  of this project. See the note on `SessionFacts.touched`. */
+    touched: string[] | null;
     /** Has someone deliberately ended this session (spec §3.4)? Orthogonal to
      *  `ended`, which is about the agent process. */
     lifecycle: Lifecycle;

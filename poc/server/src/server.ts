@@ -468,6 +468,9 @@ export async function startServer(opts: {
         repoKey,
         workdir,
         baseRef,
+        // Never measured yet (spec §3.3) — null, not [], which would claim this
+        // worktree has been inspected and found clean.
+        touched: null,
       };
       entry = newEntry;
       project.sessions.set(sessionId, entry);

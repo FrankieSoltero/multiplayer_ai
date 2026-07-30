@@ -5,6 +5,10 @@ import type { Lifecycle } from "./lifecycle.js";
  *  `project.ts` to ensure the relay parser accepts exactly what `server.ts`
  *  enforces, keeping the shape in one place. */
 import { SLUG } from "./project.js";
+/** The two wire bounds for `touched`. Imported, never re-declared: `collisions.ts`
+ *  is the single canonical home for both (it is the isomorphic module, so the
+ *  browser and this parser agree on the same numbers by construction). */
+import { PATH_WIRE_CAP, TOUCH_CAP } from "./collisions.js";
 
 /** Bumped whenever a frame's meaning changes. A mismatch is rejected at the
  *  frame boundary (see parseUpFrame/parseDownFrame) rather than tolerated:
@@ -33,6 +37,22 @@ export interface SessionFacts {
   pendingGate: PendingGate | null;
   skills: SkillInfo[];
   repoKey: string | null;
+  /** Repo-relative paths this session's worktree has changed (spec §3.3), or
+   *  null when it has never been measured — null and `[]` are different claims
+   *  and the difference is load-bearing on the project screen.
+   *
+   *  ADDITIVE on the wire, which is why `RELAY_PROTOCOL_VERSION` is NOT bumped:
+   *  the validator normalizes an absent field to null, so a v2 peer built before
+   *  this field keeps validating unchanged.
+   *
+   *  EXPOSURE (spec §8a ruling 5 — accepted, do not re-litigate): this is a
+   *  session's FULL changed-path list, and it rides the existing project push to
+   *  ALL members of that project on every laptop, and is journaled hub-side under
+   *  the journal's existing retention policy. Deliberately broader than the
+   *  `contested` down-frame, which minimizes to intersecting paths only. Same
+   *  exposure class as the record's `filesChanged`, to be swept together with
+   *  v7b2 auth. The bound that holds today is project membership. */
+  touched: string[] | null;
   lifecycle: Lifecycle;
 }
 
@@ -109,13 +129,43 @@ function str(v: unknown, re: RegExp): string | null {
   return typeof v === "string" && re.test(v) ? v : null;
 }
 
+/** C0 controls plus DEL. No legitimate repo-relative path carries one — git's
+ *  own porcelain output escapes them — while a newline is exactly the character
+ *  needed to forge a line boundary inside the agent's `<teammates>` block or a
+ *  human-read gate reason, both of which render these strings verbatim. Bounding
+ *  the CHARACTERS as well as the length is the untrusted-peer-strings rule. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+/** `touched` on a facts frame (spec §3.3). Absent and null both yield null: the
+ *  field is additive, so a peer that predates it must validate rather than be
+ *  cut off, and normalizing here means no consumer downstream has to spell
+ *  `?? null` again. Anything present-but-malformed returns `null` for the whole
+ *  facts object, rejecting the frame exactly like every other malformed field —
+ *  never a filtered subset, which would leave the two ends disagreeing about
+ *  what this session touched. The two length bounds come from `collisions.ts`;
+ *  `TOUCH_CAP + 1` admits the producer's own worst case, a full cap plus the
+ *  "…and more" sentinel. */
+function touchedList(raw: unknown): { ok: true; value: string[] | null } | { ok: false } {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (!Array.isArray(raw) || raw.length > TOUCH_CAP + 1) return { ok: false };
+  for (const p of raw) {
+    if (typeof p !== "string" || p.length > PATH_WIRE_CAP || CONTROL_CHARS.test(p)) {
+      return { ok: false };
+    }
+  }
+  return { ok: true, value: raw as string[] };
+}
+
 /** Structural check only. The laptop still validates every tunnelled payload
  *  through its own handler exactly as it does for a direct socket — trusting
- *  the hub for identity does not mean trusting it for shape (spec §10.4). */
-function isFacts(raw: unknown): raw is SessionFacts {
+ *  the hub for identity does not mean trusting it for shape (spec §10.4).
+ *
+ *  Returns the facts rather than a boolean because `touched` is NORMALIZED (an
+ *  absent field becomes null) and a type guard cannot rewrite what it guards. */
+function parseFacts(raw: unknown): SessionFacts | null {
   const f = obj(raw);
-  if (!f) return false;
-  return (
+  if (!f) return null;
+  const structural =
     typeof f.id === "string" &&
     Array.isArray(f.participants) &&
     (f.driverName === null || typeof f.driverName === "string") &&
@@ -125,8 +175,14 @@ function isFacts(raw: unknown): raw is SessionFacts {
     (f.pendingGate === null || typeof f.pendingGate === "object") &&
     Array.isArray(f.skills) &&
     (f.repoKey === null || typeof f.repoKey === "string") &&
-    (f.lifecycle === "open" || f.lifecycle === "closed")
-  );
+    (f.lifecycle === "open" || f.lifecycle === "closed");
+  if (!structural) return null;
+  const touched = touchedList(f.touched);
+  if (!touched.ok) return null;
+  // Spread rather than rebuild: unknown keys have always ridden through this
+  // parser untouched (that is what makes a newer peer's extra field harmless to
+  // an older one), and only `touched` is rewritten.
+  return { ...(f as unknown as SessionFacts), touched: touched.value };
 }
 
 /** The one validator for a declared repo set, shared by `hello` and `repos` so
@@ -207,8 +263,9 @@ export function parseUpFrame(raw: unknown): UpFrame | null {
   if (f.t === "facts") {
     const sessionId = str(f.sessionId, SLUG);
     const runId = str(f.runId, ID);
-    if (!sessionId || !runId || !isFacts(f.facts)) return null;
-    return { t: "facts", sessionId, runId, facts: f.facts };
+    const facts = parseFacts(f.facts);
+    if (!sessionId || !runId || !facts) return null;
+    return { t: "facts", sessionId, runId, facts };
   }
   if (f.t === "reply") {
     const channelId = str(f.channelId, ID);

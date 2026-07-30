@@ -8,6 +8,7 @@ import {
   parseUpFrame,
   type RepoDecl,
 } from "../src/relayProtocol.js";
+import { PATH_WIRE_CAP, TOUCH_CAP, TOUCH_SENTINEL } from "../src/collisions.js";
 
 const decl = (over: Partial<RepoDecl> = {}): RepoDecl => ({
   key: "github.com/acme/api",
@@ -40,6 +41,21 @@ const facts = {
   repoKey: "github.com/acme/api",
   lifecycle: "open" as const,
 };
+
+/** Deliberately carries NO `touched`: this baseline IS the v2 peer that predates
+ *  the field (spec §3.3 is additive, no version bump), so every existing test
+ *  above that sends it doubles as the compatibility assertion. */
+const factsFrame = (over: Record<string, unknown> = {}) =>
+  parseUpFrame({ t: "facts", sessionId: "auth", runId: "run-a", facts: { ...facts, ...over } });
+
+/** The parsed `touched` of an otherwise-valid facts frame. Throws rather than
+ *  returning null on rejection, so an accept-case test that starts failing says
+ *  "frame rejected" instead of comparing against a silent null. */
+function touchedOf(over: Record<string, unknown> = {}): string[] | null {
+  const frame = factsFrame(over);
+  if (frame === null || frame.t !== "facts") throw new Error("facts frame was rejected");
+  return frame.facts.touched;
+}
 
 describe("clampRepoDecl", () => {
   // Finding 1: a laptop's real label/key/branch is unbounded upstream (a repo
@@ -211,6 +227,60 @@ describe("parseUpFrame", () => {
     expect(frame?.t).toBe("facts");
   });
 
+  // `touched` — the session's repo-relative changed paths (spec §3.3). Additive
+  // and OPTIONAL on the wire: absent and null both mean "no list", which is what
+  // lets a v2 peer built before the field keep validating without a version bump.
+  test("normalizes an absent or null touched to null", () => {
+    expect(touchedOf()).toBeNull();
+    expect(touchedOf({ touched: null })).toBeNull();
+  });
+
+  test("accepts an empty and a populated touched list unchanged", () => {
+    expect(touchedOf({ touched: [] })).toEqual([]);
+    expect(touchedOf({ touched: ["src/a.ts", "src/b.ts"] })).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  test("accepts the exact length bounds — PATH_WIRE_CAP chars and TOUCH_CAP + 1 entries", () => {
+    // TOUCH_CAP + 1 is the producer's own worst case: a full cap plus the
+    // "…and more" sentinel. A bound of TOUCH_CAP would reject every capped
+    // session's frame.
+    const atCap = "d".repeat(PATH_WIRE_CAP);
+    expect(touchedOf({ touched: [atCap] })).toEqual([atCap]);
+
+    const full = [...Array.from({ length: TOUCH_CAP }, (_, i) => `f${i}.ts`), TOUCH_SENTINEL];
+    expect(touchedOf({ touched: full })).toEqual(full);
+  });
+
+  test("rejects a touched that is not an array of strings", () => {
+    expect(factsFrame({ touched: "src/a.ts" })).toBeNull();
+    expect(factsFrame({ touched: 7 })).toBeNull();
+    expect(factsFrame({ touched: {} })).toBeNull();
+    expect(factsFrame({ touched: [1] })).toBeNull();
+    expect(factsFrame({ touched: ["ok.ts", null] })).toBeNull();
+  });
+
+  test("rejects a touched that busts either length bound", () => {
+    expect(factsFrame({ touched: ["d".repeat(PATH_WIRE_CAP + 1)] })).toBeNull();
+    expect(factsFrame({ touched: Array.from({ length: TOUCH_CAP + 2 }, (_, i) => `f${i}.ts`) })).toBeNull();
+  });
+
+  // Untrusted-peer strings: these paths reach an agent's `<teammates>` block and
+  // a human-read gate reason, so the validator bounds the CHARACTERS as well as
+  // the length. A newline is a prompt-injection frame boundary, not a filename.
+  test("rejects a touched path containing control characters", () => {
+    expect(factsFrame({ touched: ["src/a.ts\ninjected: line"] })).toBeNull();
+    expect(factsFrame({ touched: ["src/a.ts\rmore"] })).toBeNull();
+    expect(factsFrame({ touched: ["src/a\u0000.ts"] })).toBeNull();
+    expect(factsFrame({ touched: ["src/a\u001b[31m.ts"] })).toBeNull();
+    expect(factsFrame({ touched: ["src/a\u007f.ts"] })).toBeNull();
+    expect(factsFrame({ touched: ["ok.ts", "src/a\tb.ts"] })).toBeNull();
+    // …while an ordinary non-ASCII path is not a control character.
+    expect(touchedOf({ touched: ["src/café.ts", TOUCH_SENTINEL] })).toEqual([
+      "src/café.ts",
+      TOUCH_SENTINEL,
+    ]);
+  });
+
   test("accepts a reply addressed to a channel", () => {
     const frame = parseUpFrame({ t: "reply", channelId: "c1", payload: { type: "error", message: "no" } });
     expect(frame).toEqual({ t: "reply", channelId: "c1", payload: { type: "error", message: "no" } });
@@ -274,4 +344,11 @@ test("MAX_FRAME_BYTES is far below the ws default of 100MB", () => {
   // (spec §10.2). Tasks 3 and 7 apply this constant as maxPayload on both
   // sockets; pinning it here keeps the number in one place.
   expect(MAX_FRAME_BYTES).toBe(1_000_000);
+});
+
+test("RELAY_PROTOCOL_VERSION is unchanged by the additive touched field", () => {
+  // `touched` is optional on the wire in both directions (spec §3.3), so a peer
+  // that predates it neither sends nor needs it and a bump would strand every
+  // running uplink for nothing. Pinned so adding the field cannot quietly bump it.
+  expect(RELAY_PROTOCOL_VERSION).toBe(2);
 });

@@ -25,14 +25,22 @@ vi.mock("../src/project.js", async (importOriginal) => {
   return { ...actual, Project: TrackedProject };
 });
 
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import nodePath from "node:path";
 import {
   Project,
   projectSnapshot,
   SLUG,
   sessionFactsOf,
   arcadeRecordsFrom,
+  type ProjectMessage,
 } from "../src/project.js";
 import type { RepoDecl } from "../src/relayProtocol.js";
+import { parseUpFrame } from "../src/relayProtocol.js";
+import { PATH_WIRE_CAP } from "../src/collisions.js";
+import { touchedFiles } from "../src/touched.js";
 import { Session } from "../src/session.js";
 import { AgentDriver, type RunQuery } from "../src/agentDriver.js";
 import { startServer } from "../src/server.js";
@@ -50,9 +58,10 @@ function addSession(
   repoKey: string | null = null,
   workdir: string | undefined = repoKey === null ? undefined : `/tmp/wt/${id}`,
   baseRef: string | null = repoKey === null ? null : "main",
+  touched: string[] | null = null,
 ): Session {
   const session = new Session(id);
-  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map(), pendingOversight: false, repoKey, workdir, baseRef });
+  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map(), pendingOversight: false, repoKey, workdir, baseRef, touched });
   return session;
 }
 
@@ -208,6 +217,106 @@ describe("sessionFactsOf", () => {
     const project = new Project("p");
     addSession(project, "auth");
     expect(sessionFactsOf("auth", project.sessions.get("auth")!, null).repoKey).toBeNull();
+  });
+});
+
+describe("touched on session facts", () => {
+  it("is null on a fresh entry rather than an empty list", () => {
+    // Null and [] are different claims: null is "this session has never been
+    // measured", [] is "measured, and it has changed nothing". A fresh entry has
+    // not been measured, so the honest default is null.
+    const project = new Project("p");
+    addSession(project, "auth", [], "github.com/acme/api");
+    expect(project.sessions.get("auth")!.touched).toBeNull();
+    expect(sessionFactsOf("auth", project.sessions.get("auth")!, "github.com/acme/api").touched).toBeNull();
+  });
+
+  it("carries the entry's list through as a COPY, never an alias", () => {
+    // The facts object crosses the wire, the snapshot and the collision engine.
+    // If it aliased the entry's array, any consumer that sorted or truncated the
+    // list it was handed would silently rewrite the session's own stored state.
+    const project = new Project("p");
+    addSession(project, "auth", [], "github.com/acme/api", undefined, undefined, ["a.ts", "b.ts"]);
+    const entry = project.sessions.get("auth")!;
+
+    const facts = sessionFactsOf("auth", entry, "github.com/acme/api");
+    expect(facts.touched).toEqual(["a.ts", "b.ts"]);
+    expect(facts.touched).not.toBe(entry.touched);
+
+    facts.touched!.push("c.ts");
+    facts.touched!.sort().reverse();
+    expect(entry.touched).toEqual(["a.ts", "b.ts"]);
+  });
+
+  it("reaches the project snapshot row, not just SessionFacts", () => {
+    // The snapshot row type enumerates its fields explicitly and does NOT inherit
+    // from SessionFacts, even though `projectSnapshot` builds each row by
+    // spreading `sessionFactsOf(...)`. The annotation below is the assertion that
+    // matters: adding the field to `SessionFacts` alone fails to compile here.
+    const project = new Project("p");
+    addSession(project, "auth", [], "github.com/acme/api", undefined, undefined, ["a.ts"]);
+
+    const row: ProjectMessage["sessions"][number] = projectSnapshot(project).sessions[0];
+    expect(row.touched).toEqual(["a.ts"]);
+  });
+
+  it("rides the project push to that project's members ONLY", () => {
+    // `touched` is a session's FULL changed-path list and it goes to every member
+    // of its project (spec §8a ruling 5, accepted). The bound that DOES hold is
+    // project membership — one server holding two projects must never leak one
+    // project's paths into the other's push.
+    const alpha = new Project("alpha");
+    addSession(alpha, "a1", [], "github.com/acme/api", undefined, undefined, ["alpha-only.ts"]);
+    const beta = new Project("beta");
+    addSession(beta, "b1", [], "github.com/acme/api", undefined, undefined, ["beta-only.ts"]);
+
+    const push = projectSnapshot(alpha);
+    expect(push.sessions.map((s) => s.id)).toEqual(["a1"]);
+    expect(push.sessions.map((s) => s.touched)).toEqual([["alpha-only.ts"]]);
+    const wire = JSON.stringify(push);
+    expect(wire).not.toContain("beta-only.ts");
+    expect(wire).not.toContain("b1");
+  });
+
+  it("never produces a facts frame its own validator rejects, even from a repo holding an over-long path", () => {
+    // Paired with the producer's drop rule: `touchedFiles` drops a path longer
+    // than PATH_WIRE_CAP rather than truncating it, so one pathological path
+    // costs that path and never the session's whole facts frame.
+    const repo = fs.mkdtempSync(nodePath.join(os.tmpdir(), "mpai-facts-"));
+    const git = (...args: string[]): string =>
+      execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    git("init", "-b", "main");
+    git("config", "user.email", "facts@example.test");
+    git("config", "user.name", "Facts Test");
+    fs.writeFileSync(nodePath.join(repo, "README.md"), "seed\n");
+    git("add", "-A");
+    git("commit", "--no-gpg-sign", "-m", "seed");
+
+    const seg = "d".repeat(100);
+    const overLong = [seg, seg, seg, seg, seg, seg, "leaf.ts"].join("/");
+    expect(overLong.length).toBeGreaterThan(PATH_WIRE_CAP);
+    fs.mkdirSync(nodePath.join(repo, nodePath.dirname(overLong)), { recursive: true });
+    fs.writeFileSync(nodePath.join(repo, overLong), "x\n");
+    fs.writeFileSync(nodePath.join(repo, "src.ts"), "y\n");
+
+    // The producer logs one drop line; silence it without hiding a real failure.
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    let paths: string[];
+    try {
+      paths = touchedFiles(repo, "main");
+    } finally {
+      stderr.mockRestore();
+    }
+
+    const project = new Project("p");
+    addSession(project, "auth", [], "github.com/acme/api", repo, "main", paths);
+    const facts = sessionFactsOf("auth", project.sessions.get("auth")!, "github.com/acme/api");
+
+    expect(facts.touched).toEqual(["src.ts"]);
+    const frame = parseUpFrame({ t: "facts", sessionId: "auth", runId: "run-a", facts });
+    expect(frame?.t).toBe("facts");
+
+    fs.rmSync(repo, { recursive: true, force: true });
   });
 });
 

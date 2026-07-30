@@ -27,6 +27,7 @@ function facts(id: string, over: Partial<SessionFacts> = {}): SessionFacts {
     pendingGate: null,
     skills: [],
     repoKey: null,
+    touched: null,
     lifecycle: "open",
     ...over,
   };

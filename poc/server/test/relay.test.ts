@@ -97,7 +97,7 @@ function factsFor(intent: string): SessionFacts {
   return {
     id: "auth", participants: ["ana"], driverName: "ana", intent,
     lastActivityTs: null, ended: false, pendingGate: null, skills: [],
-    repoKey: "github.com/acme/api", lifecycle: "open",
+    repoKey: "github.com/acme/api", touched: ["src/auth.ts"], lifecycle: "open",
   };
 }
 
