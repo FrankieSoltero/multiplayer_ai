@@ -136,8 +136,18 @@ derivation then never needs same-working-copy dedup.
 1. Should the RECORD panel eventually mark historically-contested turns? (Display-only; defer.)
 2. `touched` staleness display — show "as of turn N"? Defer until it confuses someone.
 
-## 8a. Owner rulings (2026-07-30, during design)
+## 8a. Owner rulings (2026-07-30)
 
 1. **Scope:** §8.8 split — collisions this branch; hub-side oversight follows separately.
 2. **Freshness:** turn boundaries + pre-gate recomputation; no watchers.
 3. **Debt §2.1:** fixed at the root here — project-scoped worktree provisioning.
+4. **§6b kill switch:** env `MPAI_CONTESTED_GATE=0` restores today's auto-approve path
+   entirely (default ON per banked decision 5); discriminating test required. Covers the
+   degenerate case (huge touched set → auto-approve effectively off repo-wide, still never
+   blocking a write).
+5. **§3.3 exposure:** `facts.touched` broadcasting full per-session path lists to all project
+   members (and into the hub journal, journal retention policy applying) is ACCEPTED — same
+   exposure class as the record's filesChanged; sweep together with v7b2 auth.
+6. **§6a frame shape (amends §6a):** the down-frame is
+   `{ type: "contested", sessionId, paths: string[], collisions: { path: string; sessionIds: string[] }[] }`
+   so hub-mode gate reasons and digest lines can NAME the colliding session, as §6 requires.
