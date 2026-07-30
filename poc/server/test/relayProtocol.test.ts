@@ -9,6 +9,7 @@ import {
   type RepoDecl,
 } from "../src/relayProtocol.js";
 import { PATH_WIRE_CAP, TOUCH_CAP, TOUCH_SENTINEL } from "../src/collisions.js";
+import type { PendingGate } from "../src/pendingGate.js";
 
 const decl = (over: Partial<RepoDecl> = {}): RepoDecl => ({
   key: "github.com/acme/api",
@@ -55,6 +56,20 @@ function touchedOf(over: Record<string, unknown> = {}): string[] | null {
   const frame = factsFrame(over);
   if (frame === null || frame.t !== "facts") throw new Error("facts frame was rejected");
   return frame.facts.touched;
+}
+
+/** A facts frame carrying an otherwise-valid gate, so each test varies exactly
+ *  one field of it. The baseline gate deliberately carries NO `reason`: it IS
+ *  the peer that predates the field (additive, no version bump). */
+const gateFrame = (over: Record<string, unknown> = {}) =>
+  factsFrame({ pendingGate: { toolName: "Bash", sinceTs: "2026-07-27T10:00:00.000Z", ...over } });
+
+/** The parsed `pendingGate`. Throws rather than returning null on rejection, so
+ *  an accept-case test says "frame rejected" instead of comparing against null. */
+function gateOf(over: Record<string, unknown> = {}): PendingGate | null {
+  const frame = gateFrame(over);
+  if (frame === null || frame.t !== "facts") throw new Error("facts frame was rejected");
+  return frame.facts.pendingGate;
 }
 
 describe("clampRepoDecl", () => {
@@ -279,6 +294,79 @@ describe("parseUpFrame", () => {
       "src/café.ts",
       TOUCH_SENTINEL,
     ]);
+  });
+
+  // `pendingGate.reason` — spec §6b's "the gate's UI line names why", server
+  // half. Additive and OPTIONAL on the wire exactly like `touched`: absent and
+  // null are the same thing, so a peer that predates the field keeps validating
+  // and keeps rendering the gate without a version bump.
+  test("normalizes an absent or null gate reason to null", () => {
+    // Byte-identical to today's gate frame apart from the optional field: the
+    // ordinary gate's other fields ride through untouched.
+    expect(gateOf()).toEqual({ toolName: "Bash", sinceTs: "2026-07-27T10:00:00.000Z", reason: null });
+    expect(gateOf({ reason: null })).toEqual({
+      toolName: "Bash", sinceTs: "2026-07-27T10:00:00.000Z", reason: null,
+    });
+  });
+
+  test("carries a gate reason to the client character for character", () => {
+    expect(gateOf({ reason: "contested with session alpha" })?.reason).toBe(
+      "contested with session alpha",
+    );
+  });
+
+  test("accepts a gate reason at the 512-char cap and rejects one over it", () => {
+    // The gate-reason cap is a SEPARATE bound from PATH_WIRE_CAP that
+    // deliberately shares its number, so it is spelled out here rather than
+    // imported from `collisions.ts`.
+    expect(gateOf({ reason: "r".repeat(512) })?.reason).toBe("r".repeat(512));
+    expect(gateFrame({ reason: "r".repeat(513) })).toBeNull();
+  });
+
+  test("rejects a gate reason that is not a string", () => {
+    expect(gateFrame({ reason: 7 })).toBeNull();
+    expect(gateFrame({ reason: {} })).toBeNull();
+    expect(gateFrame({ reason: [] })).toBeNull();
+    expect(gateFrame({ reason: true })).toBeNull();
+  });
+
+  // Untrusted-peer strings, same rule as `touched`: this string is rendered
+  // verbatim in a human-read gate line, so a newline is a forged line boundary.
+  test("rejects a gate reason containing control characters", () => {
+    expect(gateFrame({ reason: "contested\ninjected: line" })).toBeNull();
+    expect(gateFrame({ reason: "contested\rmore" })).toBeNull();
+    expect(gateFrame({ reason: "contested\u0000" })).toBeNull();
+    expect(gateFrame({ reason: "contested\u001b[31m" })).toBeNull();
+    expect(gateFrame({ reason: "contested\u007f" })).toBeNull();
+    // …while an ordinary non-ASCII reason is not a control character.
+    expect(gateOf({ reason: "contested with session café" })?.reason).toBe(
+      "contested with session café",
+    );
+  });
+
+  test("rejects a malformed gate outright — never a partially applied frame", () => {
+    // The whole facts frame is rejected, so no consumer ever sees a gate with
+    // the bad field quietly stripped and the rest applied.
+    expect(gateFrame({ reason: 7 })).toBeNull();
+    expect(factsFrame({ pendingGate: "Bash" })).toBeNull();
+    expect(factsFrame({ pendingGate: 7 })).toBeNull();
+  });
+
+  test("carries the reason on the permission_request event a publish replays", () => {
+    // The EVENT is the carrier the client actually renders (Transcript's
+    // `case \"permission_request\"`), so the publish path must not drop it.
+    const frame = parseUpFrame({
+      t: "publish",
+      sessionId: "auth",
+      runId: "run-a",
+      events: [{
+        type: "permission_request", requestId: "r1", toolName: "Write", input: {},
+        reason: "contested with session alpha", seq: 0, ts: "2026-07-27T00:00:00.000Z",
+      }],
+    });
+    const ev = frame && frame.t === "publish" ? (frame.events[0] as { reason?: string }) : null;
+
+    expect(ev?.reason).toBe("contested with session alpha");
   });
 
   test("accepts a reply addressed to a channel", () => {
@@ -573,4 +661,17 @@ test("RELAY_PROTOCOL_VERSION is unchanged by the additive touched field", () => 
   // that predates it neither sends nor needs it and a bump would strand every
   // running uplink for nothing. Pinned so adding the field cannot quietly bump it.
   expect(RELAY_PROTOCOL_VERSION).toBe(2);
+});
+
+test("RELAY_PROTOCOL_VERSION is unchanged by the additive gate reason", () => {
+  // Same posture as Task 3's `touched`: `reason` is optional on the wire, so a
+  // peer that ignores it still validates the frame AND still renders the gate.
+  expect(RELAY_PROTOCOL_VERSION).toBe(2);
+  const frame = parseUpFrame({
+    t: "facts",
+    sessionId: "auth",
+    runId: "run-a",
+    facts: { ...facts, pendingGate: { toolName: "Bash", sinceTs: "2026-07-27T10:00:00.000Z" } },
+  });
+  expect(frame?.t).toBe("facts");
 });

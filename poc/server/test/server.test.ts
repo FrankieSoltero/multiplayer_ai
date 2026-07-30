@@ -419,7 +419,13 @@ describe("pending gate on the project snapshot", () => {
     await wait(200);
 
     const entry = lastProject(seenBen)?.sessions.find((s: any) => s.id === "ana");
-    expect(entry.pendingGate).toEqual({ toolName: "Bash", sinceTs: expect.any(String) });
+    // `reason: null` is pinned end-to-end, not just at the unit: this task ships
+    // the gate-reason CARRIER only, so a gate opened by the real server through
+    // the real snapshot path must still name no reason. Task 8b is where a
+    // non-null one first appears here.
+    expect(entry.pendingGate).toEqual({
+      toolName: "Bash", sinceTs: expect.any(String), reason: null,
+    });
 
     wsAna.close();
     wsBen.close();

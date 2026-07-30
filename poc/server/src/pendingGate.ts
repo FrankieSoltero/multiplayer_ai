@@ -7,7 +7,28 @@ import type { LoggedEvent } from "./events.js";
 export interface PendingGate {
   toolName: string;
   sinceTs: string;
+  /** Why this gate is worth someone's attention — e.g. `contested with session
+   *  alpha` — or null for an ordinary gate, which is every gate today. Read off
+   *  the `permission_request` EVENT rather than computed here: the event is the
+   *  copy the client replays and renders, so deriving the field from it keeps
+   *  ONE source behind both surfaces with no second writer to keep in sync.
+   *
+   *  ADDITIVE on the wire, which is why `RELAY_PROTOCOL_VERSION` is NOT bumped:
+   *  the relay validator normalizes an absent field to null, so a peer built
+   *  before it keeps validating and keeps rendering the gate. */
+  reason: string | null;
 }
+
+/** The longest reason that may ride on a gate. A SEPARATE bound from
+ *  `PATH_WIRE_CAP` that deliberately carries the same number — the two describe
+ *  different things (one path vs one human-read line) and are free to diverge.
+ *  Spelled inline here and in `relayProtocol.ts` rather than exported from a
+ *  shared module, because nothing else consumes it.
+ *
+ *  Applied on the PRODUCING side as a clamp, not a rejection, for the same
+ *  reason `clampRepoDecl` exists: this one choke point must never emit a gate
+ *  the relay's own parser would reject on the far end. */
+const GATE_REASON_CAP = 512;
 
 /** The oldest unanswered permission request in this log, or null.
  *
@@ -23,7 +44,11 @@ export function pendingGateOf(events: LoggedEvent[]): PendingGate | null {
   // encountered is the oldest — no sorting needed.
   for (const ev of events) {
     if (ev.type === "permission_request" && !decided.has(ev.requestId)) {
-      return { toolName: ev.toolName, sinceTs: ev.ts };
+      return {
+        toolName: ev.toolName,
+        sinceTs: ev.ts,
+        reason: ev.reason === undefined ? null : ev.reason.slice(0, GATE_REASON_CAP),
+      };
     }
   }
   return null;

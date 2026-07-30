@@ -184,6 +184,39 @@ function touchedList(raw: unknown): { ok: true; value: string[] | null } | { ok:
   return paths ? { ok: true, value: paths } : { ok: false };
 }
 
+/** The longest gate reason accepted on the wire. A SEPARATE bound from
+ *  `PATH_WIRE_CAP` that deliberately carries the same number, spelled inline
+ *  here and in `pendingGate.ts` (which clamps producers to it) rather than
+ *  exported, because nothing else consumes it. */
+const GATE_REASON_CAP = 512;
+
+/** `pendingGate.reason` on a facts frame (spec §6b). Additive and OPTIONAL, the
+ *  same posture as `touched`: absent and null both yield null, so a peer built
+ *  before the field validates unchanged and no consumer downstream has to spell
+ *  `?? null` again. A present-but-malformed reason rejects the WHOLE frame
+ *  rather than being stripped — a gate applied without the line explaining it is
+ *  a worse outcome than no frame, and partial application would leave the two
+ *  ends disagreeing about what the gate says.
+ *
+ *  Bounded in characters as well as length for the same untrusted-peer-strings
+ *  reason `CONTROL_CHARS` exists: this string is rendered verbatim in a
+ *  human-read gate line, where a newline forges a line boundary. */
+function gateReason(raw: unknown): { ok: true; value: PendingGate | null } | { ok: false } {
+  if (raw === null || raw === undefined) return { ok: true, value: null };
+  const g = obj(raw);
+  if (!g) return { ok: false };
+  const r = g.reason;
+  if (r === undefined || r === null) {
+    return { ok: true, value: { ...(g as unknown as PendingGate), reason: null } };
+  }
+  if (typeof r !== "string" || r.length > GATE_REASON_CAP || CONTROL_CHARS.test(r)) {
+    return { ok: false };
+  }
+  // Spread rather than rebuild, matching `parseFacts`: unknown keys have always
+  // ridden through this parser untouched, and only `reason` is normalized.
+  return { ok: true, value: { ...(g as unknown as PendingGate), reason: r } };
+}
+
 /** The one bounded path-list check, shared by the facts frame's `touched` and
  *  the `contested` frame's `paths` so the two can never drift apart: both carry
  *  the same kind of untrusted repo-relative paths to the same consumers. Null
@@ -257,10 +290,16 @@ function parseFacts(raw: unknown): SessionFacts | null {
   if (!structural) return null;
   const touched = touchedList(f.touched);
   if (!touched.ok) return null;
+  const gate = gateReason(f.pendingGate);
+  if (!gate.ok) return null;
   // Spread rather than rebuild: unknown keys have always ridden through this
   // parser untouched (that is what makes a newer peer's extra field harmless to
-  // an older one), and only `touched` is rewritten.
-  return { ...(f as unknown as SessionFacts), touched: touched.value };
+  // an older one), and only `touched` and the gate's `reason` are rewritten.
+  return {
+    ...(f as unknown as SessionFacts),
+    touched: touched.value,
+    pendingGate: gate.value,
+  };
 }
 
 /** The one validator for a declared repo set, shared by `hello` and `repos` so
