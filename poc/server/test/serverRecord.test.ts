@@ -120,13 +120,15 @@ describe("standalone get_record", () => {
     expect(session.closedBy).toBe(null);
     expect(session.turns.length).toBe(2);
     // Turn 1 opens on the session's own bookkeeping (skill_roster /
-    // presence_join / control_change), not on a `user_message`, so its driver
-    // is the pre-turn controller — null at log start. `record.ts`'s rule, not
-    // this handler's: the point here is that the handler hands the WHOLE log
-    // to `projectRecordFrom` and publishes its answer unaltered.
+    // presence_join / control_change) and only then carries the prompt — and
+    // its driver is still the prompter, because the driver keys on the turn's
+    // FIRST `user_message`, not its literal first event (spec §8a ruling 9).
+    // This is exactly the real-log shape that ruling exists for. `record.ts`'s
+    // rule, not this handler's: the point here is that the handler hands the
+    // WHOLE log to `projectRecordFrom` and publishes its answer unaltered.
     expect(session.turns[0]).toMatchObject({
       turn: 1,
-      driver: null,
+      driver: "u1",
       prompt: "ship the record",
       inProgress: false,
     });
@@ -137,7 +139,7 @@ describe("standalone get_record", () => {
       inProgress: false,
     });
     expect(reply.record.rollup).toEqual({
-      perUser: [{ userId: "u1", turnsDriven: 1, approvalsGiven: 0, denialsGiven: 0 }],
+      perUser: [{ userId: "u1", turnsDriven: 2, approvalsGiven: 0, denialsGiven: 0 }],
       totalTurns: 2,
       totalSessions: 1,
     });

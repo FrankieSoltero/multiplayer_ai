@@ -104,6 +104,32 @@ describe("turn driver", () => {
     expect(turns[0].driver).toBe("u1");
   });
 
+  it("uses the first user_message even when the turn opens on system events", () => {
+    // Real logs open every turn with presence/skill bookkeeping; those events
+    // never null the driver (spec §8a ruling 9).
+    const events = log(
+      { type: "presence_join", userId: "u1", name: "ana" },
+      { type: "skill_roster", skills: [] },
+      { type: "user_message", userId: "u1", text: "ship it" },
+      { type: "tool_call", toolName: "Read", input: {} },
+      { type: "turn_end" },
+    );
+    expect(turnsOf(events)[0].driver).toBe("u1");
+  });
+
+  it("prefers the turn's first user_message over the controller fallback", () => {
+    // A turn containing a user_message is not a system turn, so the earlier
+    // controller does not get credit for it (spec §8a ruling 9).
+    const events = log(
+      { type: "control_change", userId: "u5" },
+      { type: "turn_end" },
+      { type: "tool_call", toolName: "Read", input: {} },
+      { type: "user_message", userId: "u1", text: "mine" },
+      { type: "turn_end" },
+    );
+    expect(turnsOf(events)[1].driver).toBe("u1");
+  });
+
   it("falls back to the most recent control_change before the turn started", () => {
     const events = log(
       { type: "control_change", userId: "u4" },
@@ -128,20 +154,21 @@ describe("turn driver", () => {
     expect(turns[1].driver).toBe("u5");
   });
 
-  it("leaves driver null with no opening user_message and no prior control_change", () => {
+  it("leaves driver null with no user_message in the turn and no prior control_change", () => {
     const turns = turnsOf(
       log({ type: "tool_call", toolName: "Read", input: {} }, { type: "turn_end" }),
     );
     expect(turns[0].driver).toBeNull();
   });
 
-  it("does not let a mid-turn user_message set the driver", () => {
+  it("never lets a second user_message in the turn override the first", () => {
     const events = log(
       { type: "tool_call", toolName: "Read", input: {} },
-      { type: "user_message", userId: "u9", text: "hi" },
+      { type: "user_message", userId: "u1", text: "hi" },
+      { type: "user_message", userId: "u9", text: "interrupting" },
       { type: "turn_end" },
     );
-    expect(turnsOf(events)[0].driver).toBeNull();
+    expect(turnsOf(events)[0].driver).toBe("u1");
   });
 });
 

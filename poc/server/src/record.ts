@@ -100,8 +100,12 @@ function turnRecordOf(
   toolNameByRequest: Map<string, string>,
 ): TurnRecord {
   const first = group[0];
-  const opening = first.type === "user_message" ? first.userId : null;
-  let prompt: string | null = null;
+  // The turn's FIRST `user_message`, wherever it sits: real logs open every
+  // turn with system bookkeeping (presence_join, skill_roster), and reading
+  // "opening user_message" as "literal first event" would null the driver on
+  // nearly every real turn and gut `turnsDriven` (spec §8a ruling 9). A later
+  // second message in the same turn never overrides it.
+  let opening: { userId: string; text: string } | null = null;
   const toolCounts: Record<string, number> = {};
   const filesChanged: string[] = [];
   const approvals: TurnApproval[] = [];
@@ -110,7 +114,7 @@ function turnRecordOf(
   for (const ev of group) {
     switch (ev.type) {
       case "user_message":
-        if (prompt === null) prompt = ev.text.slice(0, PROMPT_CAP);
+        if (opening === null) opening = { userId: ev.userId, text: ev.text };
         break;
       case "tool_call": {
         toolCounts[ev.toolName] = (toolCounts[ev.toolName] ?? 0) + 1;
@@ -145,8 +149,8 @@ function turnRecordOf(
 
   return {
     turn,
-    driver: opening ?? controllerAtStart,
-    prompt,
+    driver: opening?.userId ?? controllerAtStart,
+    prompt: opening === null ? null : opening.text.slice(0, PROMPT_CAP),
     startTs: first.ts,
     endTs: group[group.length - 1].ts,
     inProgress: group[group.length - 1].type !== "turn_end",
