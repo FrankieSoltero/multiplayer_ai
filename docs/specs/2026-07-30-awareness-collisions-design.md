@@ -151,3 +151,9 @@ derivation then never needs same-working-copy dedup.
 6. **§6a frame shape (amends §6a):** the down-frame is
    `{ type: "contested", sessionId, paths: string[], collisions: { path: string; sessionIds: string[] }[] }`
    so hub-mode gate reasons and digest lines can NAME the colliding session, as §6 requires.
+7. **§7 old-scheme orphaning:** pre-branch flat-scheme sessions do NOT survive a daemon
+   restart under project-scoped provisioning — their worktrees/branches sit unreferenced on
+   disk. Accepted POC breakage; PR discloses; no legacy compat path.
+8. **§3.2 sync latency:** `touchedFiles` runs synchronously with a 5s git timeout — a
+   worst-case whole-daemon freeze of 5s at a turn boundary/gate is ACCEPTED (git name-only
+   diffs are ms-scale in practice); revisit only on an observed freeze.

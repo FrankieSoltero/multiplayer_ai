@@ -37,3 +37,13 @@ the conflict-free client cells could race two builds over one dist — the exact
 execution dodged by hand. Fixes (controller): client rows join the mutual-exclusion group;
 Task 2 → 2a/2b (provisioning vs session-entry binding); Task 8 → 8a/8b (wire reason carrier vs
 policy); all minors applied. → round 3 (cycle cap).
+
+## Round 3 — **BLOCKED** (overall 83.6; zero floor breaches; 3 blocking violations) — CYCLE CAP
+
+Run `wf_53a83414-c08`. Blocking trend across the cycle: 7 → 2 → 3; scores 82.3 → 84.2 → 83.6.
+Round-3 blockings are command-form defects (the load-bearing one: hub/client verifies invoke
+`npx vitest run` directly, which never fires the `pretest` hook the build-ordering rationale
+depends on — the verifies don't run the build the plan claims). Minors: Task 10 → 10a/10b
+split, 8b predicate extraction (8p), Task 5 build carve-out deleted. All dispatched to the
+round-3 fix pass; per the skill's cap rule the revision feeds a FRESH cycle (record-branch
+precedent, owner process ruling).
