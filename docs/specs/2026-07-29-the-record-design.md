@@ -125,8 +125,11 @@ Per session, events split into **turns**: a turn opens at the first event after 
 `turn_end` (or log start) and closes at `turn_end`. A trailing unclosed group is one **in-progress**
 turn. Derived per turn:
 
-- `driver`: userId of the turn's opening `user_message`; else the most recent `control_change`
-  user at that point; else `null` (system/auto turns).
+- `driver`: userId of the turn's opening `user_message` — the turn's FIRST `user_message`;
+  leading system events (presence_join, skill_roster, control_change, …) do not disqualify it
+  (§8a ruling 9). Else the most recent `control_change` user strictly before the turn's first
+  event; else `null` (system/auto turns). A `control_change` inside a turn never sets that
+  turn's own driver.
 - `prompt`: first `user_message` text in the turn (truncated to a fixed cap, exact cap in the plan).
 - `startTs` / `endTs`: first / last event `ts` in the turn.
 - `toolCounts`: `toolName → count` from `tool_call`.
@@ -235,6 +238,14 @@ Exact TypeScript types live in `record.ts` and are the contract; the plan pins t
    `approvalsGiven`/`denialsGiven` tallies — the rollup answers "who approved what", and an
    auto-approval is the system's act, not the user's. The decision still appears on its turn,
    marked auto.
+9. **§4.1 driver (execution ruling — controller under authority delegated by the owner
+   2026-07-29 "defer to fable for implementation decisions"; surfaced by Task 10's real-log
+   evidence):** "opening `user_message`" means the turn's FIRST `user_message`, not the turn's
+   literal first event — real logs open every turn with system events (presence_join,
+   skill_roster), so the strict first-event reading would null the driver on nearly every turn
+   and gut `turnsDriven`. A turn containing a `user_message` is not a "system turn". Unchanged:
+   an in-turn `control_change` never sets its own turn's driver, and the controller fallback
+   still keys on the most recent `control_change` strictly before the turn's first event.
 
 ## 8. Open questions (not blocking this branch)
 

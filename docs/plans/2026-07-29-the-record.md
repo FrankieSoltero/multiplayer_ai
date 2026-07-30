@@ -170,10 +170,11 @@ export function projectRecordFrom(projectId: string, sessions: RecordSessionInpu
 | trailing open turn | events after the last `turn_end` (or a session with events and no `turn_end` at all) | one final turn, `inProgress: true` |
 | empty session | `events: []` | session appears with `turns: []` |
 | consecutive turn_ends | `turn_end` immediately after `turn_end` | second group is a 1-event turn (its `turn_end`) |
-| driver — user message | the turn's first event is a `user_message` | driver = that message's `userId` (spec §4.1: the turn's OPENING `user_message` — a `user_message` arriving mid-turn does not set the driver) |
-| driver — controller fallback | the turn does not open on a `user_message`; a `control_change` occurred in an earlier turn | driver = most recent `control_change.userId` strictly before the turn's first event (spec §4.1 "at that point") |
-| driver — in-turn control_change does not count | turn = [`control_change` (u5), `tool_call`], no `control_change` before the turn's first event | driver = null — a `control_change` inside the turn never sets that turn's own driver (it feeds LATER turns' fallback) |
-| driver — none | turn does not open on a `user_message`, no prior `control_change` | driver = null |
+| driver — user message | turn contains a `user_message` (leading system events allowed) | driver = the turn's FIRST `user_message`'s `userId` (spec §4.1 as clarified by §8a ruling 9 — real logs open turns with presence/skill events, which never null the driver) |
+| driver — leading system events | turn = [`presence_join`, `skill_roster`, `user_message` (u1), `tool_call`, `turn_end`] | driver = "u1" |
+| driver — controller fallback | turn has NO `user_message`; a `control_change` occurred in an earlier turn | driver = most recent `control_change.userId` strictly before the turn's first event (spec §4.1 "at that point") |
+| driver — in-turn control_change does not count | turn = [`control_change` (u5), `tool_call`], no `user_message`, no `control_change` before the turn's first event | driver = null — a `control_change` inside the turn never sets that turn's own driver (it feeds LATER turns' fallback) |
+| driver — none | no `user_message` in the turn, no prior `control_change` | driver = null |
 | prompt | first `user_message` text of 500 chars | `prompt` = first 200 chars (`.slice(0, PROMPT_CAP)`); no user_message → null |
 | toolCounts | 3× `tool_call` Edit, 1× `tool_call` Bash in a turn | `{ Edit: 3, Bash: 1 }` |
 | filesChanged | `tool_call` with `toolName` ∈ {"Edit","Write","NotebookEdit"} and `input` an object whose `file_path` is a string | file_path collected; deduped, first-occurrence order; non-object input / missing / non-string `file_path` skipped silently; other toolNames never contribute |
