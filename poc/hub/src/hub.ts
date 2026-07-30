@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { staticHandler } from "multiplayer-ai-server/staticFiles";
 import { slugify } from "multiplayer-ai-server/workspace";
+import { projectRecordFrom } from "multiplayer-ai-server/record";
 import {
   MAX_FRAME_BYTES,
   RELAY_PROTOCOL_VERSION,
@@ -655,6 +656,37 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         // asked for; it just keeps receiving pushes for its session's project.
         if (msg.type === "watch_project" && !channel.sessionId) channel.projectId = projectId;
         send(socket, store.snapshot(projectId));
+        return;
+      }
+
+      /** The project record (spec §4.3). Hub-answered for the same reason as
+       *  `HUB_HANDLED` above — only the hub sees every laptop, so only the hub
+       *  can stamp each session with the machine that owns it — but its own
+       *  branch rather than a member of that set, because `HUB_HANDLED` replies
+       *  with a snapshot and this replies with a record.
+       *
+       *  `identify` is required (owner ruling, spec §8a.1), which is where this
+       *  deliberately differs from the standalone handler's `denyUnauthed()`:
+       *  the hub has no auth of its own until v7b2, so this pins the line the
+       *  hub's cookie-verified login will replace. Membership is deliberately
+       *  NOT required — visibility is hub-wide, exactly as for `watch_project`
+       *  and `list_projects` (spec P2). Everything else — the validation, the
+       *  error string, the reply's shape — is the standalone handler's, byte for
+       *  byte (server.ts's `get_record`), because one browser bundle talks to
+       *  both. */
+      if (msg?.type === "get_record") {
+        if (!channel.identity) return error("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) return error("get_record requires a valid projectId");
+        // Never re-homed, for the same reason `watch_project` above never
+        // re-homes a joined channel: this is a read, and `fanOut` keys on
+        // projectId AND sessionId, so touching either would cut a joined
+        // session's event stream.
+        send(socket, {
+          type: "record",
+          projectId,
+          record: projectRecordFrom(projectId, store.recordInputs(projectId)),
+        });
         return;
       }
 

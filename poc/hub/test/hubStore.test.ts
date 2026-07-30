@@ -347,6 +347,75 @@ describe("HubStore snapshot assembly", () => {
   });
 });
 
+describe("HubStore recordInputs", () => {
+  it("hands out every session's facts, owner and whole log", () => {
+    // The raw material of the record (spec §4.2): one project, two laptops,
+    // and each session stamped with the machine that actually owns it — the
+    // fact a standalone server cannot produce, and the reason `get_record` is
+    // answered by the hub instead of tunnelled.
+    const store = new HubStore();
+    store.attach("lap-1", "default", "lap-1", [decl("github.com/acme/api")], T0);
+    store.attach("lap-2", "default", "lap-2", [decl("github.com/acme/web")], T0);
+    store.setFacts("lap-1", "auth", "run-a", facts({ id: "auth" }));
+    store.setFacts("lap-2", "chat", "run-a", facts({ id: "chat", repoKey: "github.com/acme/web" }));
+    store.publish("lap-1", "auth", "run-a", [ev(0), ev(1)]);
+    store.publish("lap-2", "chat", "run-a", [ev(0)]);
+
+    const inputs = store.recordInputs("default");
+    expect(inputs.map((i) => [i.facts.id, i.machineId, i.events.length])).toEqual([
+      ["auth", "lap-1", 2],
+      ["chat", "lap-2", 1],
+    ]);
+    // The LoggedEvents themselves, unwrapped from their StoredEvent envelopes:
+    // the record derives from the log and nothing else.
+    expect(inputs[0].events.map((e: any) => e.seq)).toEqual([0, 1]);
+    expect(inputs[1].facts.repoKey).toBe("github.com/acme/web");
+  });
+
+  it("does not create a project just because something asked for its record", () => {
+    const store = new HubStore();
+    expect(store.recordInputs("ghost")).toEqual([]);
+    expect((store as unknown as { projects: Map<string, unknown> }).projects.size).toBe(0);
+  });
+
+  it("deep-copies session facts so mutating recordInputs cannot reach stored state", () => {
+    // Facts are copied; events are documented read-only and may share refs. The
+    // copy is what stops a caller normalizing the record for the browser from
+    // editing the hub's own session rows.
+    const store = new HubStore();
+    store.attach("lap-1", "default", "lap-1", [decl("k")], T0);
+    store.setFacts(
+      "lap-1",
+      "auth",
+      "run-a",
+      facts({
+        participants: ["ana"],
+        skills: [{ name: "deploy", description: "ship it" }],
+        pendingGate: { toolName: "bash", sinceTs: "2026-07-27T00:00:00.000Z" },
+      }),
+    );
+
+    const inputs = store.recordInputs("default");
+    inputs[0].facts.participants.push("mallory");
+    inputs[0].facts.skills[0].name = "tampered";
+    (inputs[0].facts.pendingGate as { toolName: string }).toolName = "tampered";
+    inputs[0].facts.intent = "tampered";
+    inputs[0].facts.repoKey = "tampered";
+
+    const again = store.recordInputs("default");
+    expect(again[0].facts.participants).toEqual(["ana"]);
+    expect(again[0].facts.skills).toEqual([{ name: "deploy", description: "ship it" }]);
+    expect(again[0].facts.pendingGate).toEqual({
+      toolName: "bash",
+      sinceTs: "2026-07-27T00:00:00.000Z",
+    });
+    expect(again[0].facts.intent).toBeNull();
+    expect(again[0].facts.repoKey).toBe("github.com/acme/api");
+    // The snapshot path reads the same rows, so it must be untouched too.
+    expect(store.snapshot("default").sessions[0].participants).toEqual(["ana"]);
+  });
+});
+
 describe("HubStore project registry", () => {
   const T = "2026-07-28T10:00:00.000Z";
 

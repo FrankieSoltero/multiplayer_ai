@@ -1,5 +1,6 @@
 import type { LoggedEvent } from "multiplayer-ai-server/events";
 import { arcadeRecordsFrom, type ProjectMessage } from "multiplayer-ai-server/project";
+import type { RecordSessionInput } from "multiplayer-ai-server/record";
 import type { RepoDecl, SessionFacts } from "multiplayer-ai-server/relayProtocol";
 
 export interface StoredEvent {
@@ -595,6 +596,38 @@ export class HubStore {
       // Oversight is host-configured and hub-side (spec §3.7) — v7b3.
       oversight: { enabled: false, latest: null },
     };
+  }
+
+  /** The raw material of one project's record (spec §4.2): every session's
+   *  declared facts, the machine that OWNS it, and its whole log. The owner is
+   *  per session and not per project, which is the fact a standalone server
+   *  cannot report — one hub-attached project spans laptops — and the reason
+   *  `get_record` is answered here rather than tunnelled to one of them.
+   *
+   *  Non-creating, like every other read path (`readSessionsOf`): a browser
+   *  names the projectId, so a creating read would let it grow `projects`
+   *  without bound by asking for records that do not exist. An unknown project
+   *  is an empty list, which `projectRecordFrom` turns into an empty record.
+   *
+   *  `facts` are deep-copied exactly as `snapshot` copies them: this value
+   *  leaves the hub toward a browser and the caller derives from it, so nothing
+   *  downstream may reach back into a stored session row. The `events` are the
+   *  store's own `LoggedEvent` instances, unwrapped from their `StoredEvent`
+   *  envelopes and READ-ONLY for the caller — copying a whole project's log per
+   *  request is what the read is meant to avoid, and `projectRecordFrom` is
+   *  pure, so it never writes to them. */
+  recordInputs(projectId: string): RecordSessionInput[] {
+    const sessions = [...(this.readSessionsOf(projectId)?.values() ?? [])];
+    return sessions.map((session) => ({
+      facts: {
+        ...session.facts,
+        participants: [...session.facts.participants],
+        skills: session.facts.skills.map((skill) => ({ ...skill })),
+        pendingGate: session.facts.pendingGate ? { ...session.facts.pendingGate } : null,
+      },
+      machineId: session.uplinkId,
+      events: session.events.map((stored) => stored.event),
+    }));
   }
 }
 
