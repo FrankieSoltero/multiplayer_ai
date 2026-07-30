@@ -83,6 +83,9 @@ export type ProjectSessionInfo = {
   /** Spec §3.4. Optional so an older server's snapshot still renders. */
   presence?: "online" | "offline";
   lifecycle?: "open" | "closed";
+  /** Repo-relative paths this session has changed (spec §3.3). Optional so a
+   *  snapshot from an older server still parses — same posture as `repoKey`. */
+  touched?: string[] | null;
 };
 
 export type ProjectLifecycle = "active" | "closed" | "archived";
