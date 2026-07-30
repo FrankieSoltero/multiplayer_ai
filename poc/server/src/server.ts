@@ -16,7 +16,7 @@ import {
   type ProjectWatcher,
 } from "./project.js";
 import { projectRecordFrom, type RecordSessionInput } from "./record.js";
-import { Relay, type ConnectFn } from "./relay.js";
+import { Relay, type ConnectFn, type ContestedFrame } from "./relay.js";
 import { defaultBaseRefFor, type RepoCandidate } from "./machineRepos.js";
 import { clampRepoDecl, MAX_REPOS, type RepoDecl } from "./relayProtocol.js";
 import { Session } from "./session.js";
@@ -413,6 +413,51 @@ export async function startServer(opts: {
     }
   }
 
+  /** Unknown session ids a `contested` frame has already been dropped for. A
+   *  hub that keeps naming a session this laptop does not hold is a STANDING
+   *  condition — it pushes on every collision change — so logging per frame
+   *  would bury the one line that diagnoses it. Same log-once shape, and the
+   *  same reason, as `touchedFailureLogged` above. */
+  const contestedUnknownLogged = new Set<string>();
+
+  /** The inbound `contested` frame (spec §6a): the hub's view of which files
+   *  this session shares with sessions on OTHER machines. Stored verbatim on
+   *  the entry, where `contested.ts`'s accessors union it with local derivation
+   *  on read.
+   *
+   *  Scoped to the uplink's OWN project. The relay is opened for exactly one
+   *  project (`opts.hub.projectId`), so that is the map this frame's session id
+   *  is resolved in — searching every project would let a frame land on a
+   *  same-named session in a project this uplink does not speak for.
+   *
+   *  A frame for a session this laptop does not hold is DROPPED, never created:
+   *  a `ProjectSessionEntry` minted here would be a session with no driver, no
+   *  worktree and no participants, sitting in the project map — visible on the
+   *  project screen — because a peer said its name. It races real removals and
+   *  it names sessions owned by other uplinks, so it is an expected event, not
+   *  an error: no throw, no disconnect, one log line per id. */
+  function applyContested(frame: ContestedFrame): void {
+    const projectId = opts.hub?.projectId;
+    const project = projectId === undefined ? undefined : projects.get(projectId);
+    const entry = project?.sessions.get(frame.sessionId);
+    if (!entry) {
+      if (contestedUnknownLogged.has(frame.sessionId)) return;
+      contestedUnknownLogged.add(frame.sessionId);
+      process.stderr.write(
+        `[contested] session=${frame.sessionId} unknown session, frame dropped\n`,
+      );
+      return;
+    }
+    // Copied field by field, never aliased: the parsed frame is the relay's
+    // object, and a consumer that sorted or truncated the array it was handed
+    // would rewrite this session's stored state (`sessionFactsOf` copies
+    // `touched` for the same reason).
+    entry.contestedFrame = {
+      paths: [...frame.paths],
+      collisions: frame.collisions.map((c) => ({ path: c.path, sessionIds: [...c.sessionIds] })),
+    };
+  }
+
   function getOrCreateProject(projectId: string): Project {
     let project = projects.get(projectId);
     if (!project) {
@@ -501,6 +546,9 @@ export async function startServer(opts: {
         // Never measured yet (spec §3.3) — null, not [], which would claim this
         // worktree has been inspected and found clean.
         touched: null,
+        // No hub frame has arrived for this session (spec §6a) — null, not an
+        // empty frame, which would claim the hub has spoken and found nothing.
+        contestedFrame: null,
       };
       entry = newEntry;
       project.sessions.set(sessionId, entry);
@@ -1493,7 +1541,7 @@ export async function startServer(opts: {
           uplinkId: opts.hub.uplinkId ?? opts.machine?.machineId ?? randomUUID(),
           connect: opts.hub.connect,
         },
-        { createConnection },
+        { createConnection, onContested: applyContested },
       )
     : null;
 

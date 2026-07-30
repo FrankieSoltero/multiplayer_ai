@@ -89,7 +89,7 @@ function relayWith(fake: ReturnType<typeof fakeSocket>, over: Record<string, unk
       newRunId: () => `run-${++n}`,
       ...over,
     },
-    { createConnection: () => ({ handleMessage: () => {}, close: () => {} }) },
+    { createConnection: () => ({ handleMessage: () => {}, close: () => {} }), onContested: () => {} },
   );
 }
 
@@ -392,6 +392,7 @@ describe("Relay command plane", () => {
           },
           close: () => {},
         }),
+        onContested: () => {},
       },
     );
     relay.start();
@@ -411,7 +412,7 @@ describe("Relay command plane", () => {
     const fake = fakeSocket();
     const relay = new Relay(
       { hubUrl: "ws://hub.test", projectId: "default", name: "lap", repos: () => [decl()], uplinkId: "lap-1", connect: fake.connect },
-      { createConnection: (io) => { created.push(io); return { handleMessage: () => {}, close: () => {} }; } },
+      { createConnection: (io) => { created.push(io); return { handleMessage: () => {}, close: () => {} }; }, onContested: () => {} },
     );
     relay.start();
     fake.open();
@@ -426,7 +427,7 @@ describe("Relay command plane", () => {
     const fake = fakeSocket();
     const relay = new Relay(
       { hubUrl: "ws://hub.test", projectId: "default", name: "lap", repos: () => [decl()], uplinkId: "lap-1", connect: fake.connect },
-      { createConnection: (io) => { ios.push(io); return { handleMessage: () => {}, close: () => {} }; } },
+      { createConnection: (io) => { ios.push(io); return { handleMessage: () => {}, close: () => {} }; }, onContested: () => {} },
     );
     relay.start();
     fake.open();
@@ -453,6 +454,7 @@ describe("Relay command plane", () => {
           created.push(1);
           return { handleMessage: () => {}, close: () => closed.push("c") };
         },
+        onContested: () => {},
       },
     );
     relay.start();
@@ -480,14 +482,16 @@ describe("Relay command plane", () => {
     expect(fake.sent.filter((f) => f.t === "reply")).toHaveLength(0);
   });
 
-  it("ignores a VALIDATED contested frame it has no handler for yet, and stays up", () => {
-    // The `contested` frame's type and validator ship here (Task 6a); the
-    // laptop-side handler arrives with Task 7a and nothing constructs one until
-    // Task 6b. At THIS commit the frame validates and is then dropped — it must
-    // NOT fall through into the tunnel branch, which would mint a channel keyed
-    // on a `channelId` this frame does not carry and hand the hub's payload to a
-    // connection nobody asked for. Silence with the uplink up is the contract.
+  it("routes a VALIDATED contested frame to the laptop's handler, never into the tunnel path", () => {
+    // The routing seam (Task 7a): the frame's type and validator ship with Task
+    // 6a, and this is how one reaches `server.ts`'s handler — the same injected
+    // -deps seam the tunnel path uses for `createConnection`, so the relay still
+    // depends on no running server. The explicit branch is load-bearing: the
+    // fallthrough below it is the tunnel handler, and a `contested` frame
+    // reaching it would mint a channel keyed on a `channelId` this frame does
+    // not carry. The uplink stays up throughout.
     const created: unknown[] = [];
+    const contested: unknown[] = [];
     const fake = fakeSocket();
     const relay = new Relay(
       { hubUrl: "ws://hub.test", projectId: "default", name: "lap", repos: () => [decl()], uplinkId: "lap-1", connect: fake.connect },
@@ -496,6 +500,7 @@ describe("Relay command plane", () => {
           created.push(1);
           return { handleMessage: () => {}, close: () => {} };
         },
+        onContested: (frame) => void contested.push(frame),
       },
     );
     relay.start();
@@ -509,6 +514,21 @@ describe("Relay command plane", () => {
         collisions: [{ path: "src/a.ts", sessionIds: ["auth", "s9"] }],
       }),
     ).not.toThrow();
+
+    // The PARSED frame, field for field — the handler is handed what
+    // `parseDownFrame` rebuilt, not the raw object off the wire.
+    expect(contested).toEqual([
+      {
+        t: "contested",
+        sessionId: "auth",
+        paths: ["src/a.ts"],
+        collisions: [{ path: "src/a.ts", sessionIds: ["auth", "s9"] }],
+      },
+    ]);
+    // A frame the validator rejects never reaches the handler at all.
+    fake.deliver({ t: "contested", sessionId: "auth", paths: "src/a.ts", collisions: [] });
+    expect(contested).toHaveLength(1);
+
     expect(created).toHaveLength(0);
     expect(fake.sent.filter((f) => f.t === "reply")).toHaveLength(0);
     expect(fake.sockets[0]!.closeRequested).toBe(false);
@@ -710,6 +730,7 @@ describe("Relay bounds", () => {
           handleMessage: () => {},
           close: () => closed.push(io.mode === "relay" ? io.stampedIdentity.userId : "direct"),
         }),
+        onContested: () => {},
       },
     );
     relay.start();

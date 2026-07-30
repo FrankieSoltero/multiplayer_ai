@@ -59,9 +59,10 @@ function addSession(
   workdir: string | undefined = repoKey === null ? undefined : `/tmp/wt/${id}`,
   baseRef: string | null = repoKey === null ? null : "main",
   touched: string[] | null = null,
+  contestedFrame: import("../src/project.js").ProjectSessionEntry["contestedFrame"] = null,
 ): Session {
   const session = new Session(id);
-  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map(), pendingOversight: false, repoKey, workdir, baseRef, touched });
+  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map(), pendingOversight: false, repoKey, workdir, baseRef, touched, contestedFrame });
   return session;
 }
 
@@ -372,6 +373,25 @@ describe("projectSnapshot plugins", () => {
   });
 });
 
+describe("projectSnapshot and the stored contested frame (spec §6a)", () => {
+  it("keeps the hub's frame OFF the wire — the row carries touched, not peers", () => {
+    // `contestedFrame` is laptop-local state for `digestFor` and the gate
+    // (Tasks 7b/8b). The snapshot row is built field by field from
+    // `sessionFactsOf`, so a row assembled by spreading the ENTRY instead would
+    // publish the hub's peer ids to every browser watching this project.
+    const project = new Project("p3");
+    addSession(project, "auth", [], "github.com/acme/api", "/tmp/wt/auth", "main", ["src/a.ts"], {
+      paths: ["src/a.ts"],
+      collisions: [{ path: "src/a.ts", sessionIds: ["auth", "s9"] }],
+    });
+    const snap = projectSnapshot(project);
+    expect(snap.sessions[0]).not.toHaveProperty("contestedFrame");
+    expect(JSON.stringify(snap)).not.toContain("s9");
+    // The field the row DOES carry is untouched by any of this.
+    expect(snap.sessions[0].touched).toEqual(["src/a.ts"]);
+  });
+});
+
 describe("session workdir/baseRef binding (spec §3.1, §3.2)", () => {
   /** A workspace that records exactly what it was handed, so a test can compare
    *  the bound `entry.baseRef` against the string that actually reached
@@ -530,6 +550,33 @@ describe("session workdir/baseRef binding (spec §3.1, §3.2)", () => {
     } finally {
       if (previousRoot === undefined) delete process.env.AGENT_WORKDIR_ROOT;
       else process.env.AGENT_WORKDIR_ROOT = previousRoot;
+    }
+  });
+
+  it("starts contestedFrame null on every creation path (spec §6a)", async () => {
+    // `null` means NO HUB FRAME HAS ARRIVED, which is not the same claim as an
+    // empty frame ("the hub says nothing is contested any more") — the two are
+    // distinguishable on the entry, so a fresh session must start at the former.
+    // Both creation paths, because a field wired into only one of them leaves
+    // the other session missing the key entirely.
+    const workspace = recordingWorkspace();
+    const server = await startServer({ port: 0, runQuery: idleRun, workspace });
+    closeServer = server.close;
+    const seen: any[] = [];
+    const ws = await open(server.port, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "adhoc", userId: "u1", name: "Ana" }));
+    await vi.waitFor(() => {
+      expect(seen.some((m) => m.event?.type === "presence_join")).toBe(true);
+    });
+    ws.send(JSON.stringify({ type: "create_session", name: "made", baseRef: "origin/main" }));
+    await vi.waitFor(() => {
+      expect(seen.some((m) => m.type === "session_created" && m.sessionId === "made")).toBe(true);
+    });
+
+    for (const sessionId of ["adhoc", "made"]) {
+      const entry = entryOf("default", sessionId);
+      expect(Object.hasOwn(entry, "contestedFrame")).toBe(true);
+      expect(entry.contestedFrame).toBeNull();
     }
   });
 });

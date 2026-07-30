@@ -48,6 +48,25 @@ export interface ProjectSessionEntry {
    *  previous value (stale beats absent, spec §3.1), which only a stored field
    *  can express. */
   touched: string[] | null;
+  /** The last hub `contested` frame for this session, stored VERBATIM (spec
+   *  §6a) — `null` until one arrives, which is not the same claim as an empty
+   *  frame ("the hub says nothing is contested any more"); `contested.ts` reads
+   *  the two states identically today, and the distinction is kept because only
+   *  the entry can express it.
+   *
+   *  Stored rather than derived because a laptop cannot see another machine's
+   *  sessions: this frame is the only place a peer on another laptop is named.
+   *  Its counterpart — collisions between sessions on THIS machine — is
+   *  derived on read instead (`contested.ts`), so it cannot go stale.
+   *
+   *  Structural, not an imported frame type: this is laptop state that happens
+   *  to arrive on the wire, and `relayProtocol.ts` owns the wire shape. It is
+   *  deliberately NOT copied into `sessionFactsOf` — nothing here goes back out
+   *  to the browsers watching this project. */
+  contestedFrame: {
+    paths: string[];
+    collisions: { path: string; sessionIds: string[] }[];
+  } | null;
 }
 
 /** Minimal structural type so tests don't need real sockets. */
