@@ -453,12 +453,27 @@ behind the driver rather than building new agent machinery.
 
 *What:* D11 — come out knowing what everyone did, losing nothing.
 
-*Today:* the hub's log is **in memory** (`hubStore.ts:38`), so a hub restart loses everything, and
-there is no cross-session summary. **A laptop restart no longer loses continuity** (§8.3, debt
-§2.3 dissolved): a machine's persisted identity lets it silently reclaim its own sessions, which
-survive as `offline` rather than becoming permanently unreachable. What is still missing is a hub
-restart's continuity (unchanged — no durable storage yet) and any graceful-shutdown signal for a
-closed lid (a laptop vanishing and a laptop cleanly restarting still look identical to the hub).
+*Today:* **built.** The hub's store is durable SQLite (`better-sqlite3`, WAL mode) behind
+`HUB_DB` — default `~/.mpai/hub.db`, honoring the same `MPAI_HOME`-overridable dotdir §8.3 uses
+for machine identity (spec §8a.2) — with a single-writer PID lockfile beside the DB that silently
+reclaims a stale (dead/unparsable-PID) lock at boot (spec §8a.5); the one accepted false-alive
+edge (a reused PID fooling the liveness check, or the resulting dual failure where boot is
+refused though nobody actually holds the DB) recovers by deleting `<dbPath>.lock`. A hub restart
+now replays from disk instead of starting empty, and a turn-boundary record — derived, not
+written at close — is surfaced through `get_record` on both the hub and the standalone server
+(`multiplayer-ai-server/record`) and rendered by the project screen's RECORD panel. Any write
+failure is **fail-stop**: the hub process exits rather than run with memory ahead of disk, a
+deliberate whole-hub outage (spec §3.6). Operator recovery order (spec §8a ruling 7): **back up
+the `hub.db`/`hub.db-wal`/`hub.db-shm` trio FIRST** — it is the product's sole record and moving
+`hub.db` alone strands committed WAL data — then free disk space, move the trio together, or run
+degraded with `HUB_DB=:memory:`; a corrupt DB has no recovery before §8.10 ships backups, so the
+record to that point is lost absent copies kept by the operator; schema bumps follow the same
+backup-before-upgrade convention. Separately, `better-sqlite3` is a **native** dependency of
+`poc/hub` — a failed native build breaks hub boot even when `HUB_DB` itself is fine, recovered
+with `npm rebuild better-sqlite3`. What remains open, unchanged: **any graceful-shutdown signal
+for a closed lid is still missing** (spec §6 non-goal 3) — a laptop vanishing and a laptop
+cleanly restarting still look identical to the hub. Retention/compaction/backup for the
+now-unbounded events table is deliberately deferred to §8.10 (debt §2.8).
 
 *Final state:* durable hub-side storage; a record built **continuously at turn boundaries**, not
 written at close; a project-scoped summary of what happened, who drove what, what changed, what was
