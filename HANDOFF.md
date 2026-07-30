@@ -1,10 +1,113 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-29 (session #20 end, post-merge).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-29 (session #21, mid-plan-review for §8.7).*
 
 ---
 
-## 🚀 START HERE — PRs #22 AND #23 ARE **MERGED** (user's call, executed session #20). `main` = `af63bec`, we are ON main, suites verified there (server 499 / hub 104 / client 279*). Next work: the user picks the next PRD §8 section, and the loop runs on **soltero-skills, NOT superpowers** (user directive, see below).
+## 🚀 START HERE (session #21) — §8.7 "The record" is mid-pipeline on branch **`feature/the-record`** (pushed; tip `73e565d`). Spec approved + plan written via the soltero-skills lean pipeline; **plan-review is BLOCKED at cycle 2 round 1 (84.1, zero floor breaches)** — next session applies ~26 mechanical fixes, gets 2 owner rulings, and re-convenes round 2. Do NOT execute the plan before a council PASS (≥95 overall AND every dimension ≥80).
+
+**Goal & current task:** ship PRD §8.7 (durable hub SQLite storage + derived turn-boundary
+record + RECORD panel; PRD.md:452-466, D11 at PRD.md:306). Current task: get
+`docs/plans/2026-07-29-the-record.md` through soltero-skills:plan-review, then execute with
+soltero-skills:lean-sdd. **Stopped exactly here:** cycle-2 round-1 verdict recorded in
+`docs/plan-reviews/2026-07-29-the-record-review.md:127`; its 26 mechanical fixes are NOT yet
+applied and its 2 owner questions are NOT yet asked.
+
+**Review history (all in the review report):** cycle 1 = rounds 1–3 on the 0.18.0 council
+(agents inherited Fable 5 — no model pins in that script version): 83.4 → 84.3 → 80.0, all
+BLOCKED, 3-round cap hit → plan revised (now 14 tasks). Cycle 2 round 1 on the **0.19.0**
+council (opus graders, sonnet skeptics): **84.1, first round with NO floor breaches** —
+D1 86 · D2 84 · D3 80 · D4 87 · D5 87 · D6 82; 26 minors + 2 blockings + 2 owner questions.
+Full findings JSON: `/private/tmp/claude-501/-Users-franciscosoltero-Desktop-Code-multiplayer-ai/4026c7bb-3d54-433a-9b0e-ced8f4edb2fd/tasks/wo262xt6i.output`
+(and journal at `~/.claude/projects/-Users-franciscosoltero-Desktop-Code-multiplayer-ai/4026c7bb-3d54-433a-9b0e-ced8f4edb2fd/subagents/workflows/wf_cf9c3a9d-0f3/journal.jsonl`) —
+if the tmp file is gone, the report's cycle-2 section summarizes the queue.
+
+**Decisions locked (WHY matters — do not re-litigate):**
+1. **Five owner rulings in spec §8a** (`docs/specs/2026-07-29-the-record-design.md:213`):
+   (1) hub `get_record` requires `identify`, membership NOT required — symbolic in v7b1 but
+   pins the gate line for v7b2 auth; (2) DB default `~/.mpai/hub.db` honoring MPAI_HOME —
+   matches §8.3's machine.json dotdir, kills cwd-dependence; (3) single-writer PID lockfile —
+   double-start silently corrupts the journal; (4) `requestId` dropped from TurnApproval —
+   join key only, nothing renders it; (5) stale locks silently reclaimed — single-operator dev
+   hub, blast radius documented.
+2. **Process ruling (user):** after cycle 1's 3-round cap, fix + fresh cycle (not override,
+   not stop). The gate stays: no execution before PASS.
+3. Spec of record governs the plan (standing ruling); spec §8a is where plan-review rulings
+   get ratified — cycle-2's two owner questions ask for rulings #6/#7 in the same pattern.
+4. Design approved by user with: persist EVERYTHING (full event log), deterministic no-LLM
+   record, better-sqlite3 (node:sqlite still experimental on Node 22), record UI included.
+
+### ➡️ ORDERED NEXT STEPS
+
+1. Read the cycle-2 findings (paths above; the report's `docs/plan-reviews/…review.md:127`
+   block lists representative fixes). Apply ALL mechanical fixes to
+   `docs/plans/2026-07-29-the-record.md` — notably: widen Tasks 2/3/9 Verify to the whole hub
+   suite; make the dependency table alone sufficient for scheduling (conflicts column or dep
+   edges for the hub.ts/hubStore.ts writers); split or explicitly-fuse Task 7 (wiring vs
+   fail-stop); make Task 13's steps independently ledgered; mechanical no-logic-edited check
+   on Task 5; pass/fail criterion for walk step 4; named assertion for Task 12's "rendering"
+   row.
+2. Ask the user the 2 owner questions (AskUserQuestion is fine): (a) ratify the
+   `SqlitePersister`→`HubDb` rename as spec §8a ruling 6 (or rename the class to match the
+   spec); (b) ratify the backup posture (backup-first recovery ordering +
+   backup-before-upgrade convention, plan Task 7/14) as ruling 7 or strip it from the plan.
+   Record answers in spec §8a + the plan, commit.
+3. Re-convene the council — cycle 2 round 2:
+   `Workflow({scriptPath: "~/.claude/plugins/cache/soltero-skills-marketplace/soltero-skills/0.19.0/skills/plan-review/workflows/review.mjs", args: {planPath: "<abs>/docs/plans/2026-07-29-the-record.md", rubricPath: "<same dir>/references/rubric.md", date: "<today>", round: 2}})`
+   (use ABSOLUTE paths; the 0.19.0 script pins opus/sonnet). Append the verdict to the review
+   report. If BLOCKED again with only-minors, present the user the same override/continue
+   choice as before (their call; cycle 2 has a fresh 3-round budget).
+4. On PASS: execute via **soltero-skills:lean-sdd** on this branch (fresh ledger dir per its
+   skill; one implementer per task; the dependency table is the schedule). Keep the practices
+   that work: diff-tree-verified commits, revert-and-rerun tests, model directive from past
+   sessions (fable orchestrates; opus for judgment-tier reviews; sonnet rest; haiku tiny).
+5. After all 14 tasks + final review + Task 13 walk: push, **open PR, never merge** (user's
+   call), then refresh this HANDOFF.
+
+**Files with line refs:**
+- Plan: `docs/plans/2026-07-29-the-record.md` (dep table :59; access-gate ruling row :488).
+- Spec: `docs/specs/2026-07-29-the-record-design.md` (§8a rulings :213; schema DDL §3.2).
+- Review report: `docs/plan-reviews/2026-07-29-the-record-review.md` (cycle-2 block :127).
+- Code anchors the plan cites: `poc/hub/src/hubStore.ts:74-78` (in-memory store),
+  `poc/hub/src/hub.ts:61` (store construction), `:409` ("identify first" gate precedent),
+  `:649-659` (watch_project gate shape); `poc/server/src/server.ts:947` (watch_project,
+  solo get_record goes beside it), `:907` (peek non-creating read);
+  `poc/server/src/events.ts:14-49` (SessionEvent incl. turn_end);
+  `poc/client/src/components/SessionPicker.tsx:3,32,67-87` (types import, machines state, ws
+  dispatch); `poc/hub/test/relayIntegration.test.ts:11-220` (harness helpers Task 5 extracts).
+
+**Gotchas / constraints:**
+- **Never `git add -A`** — the tree carries user WIP: `poc/client/src/game/tetris.test.ts`
+  (modified, an unused-import cleanup — NOT ours) + untracked `market-research.md`,
+  `poc/demo-plugins/`, `tour-skill-suggest.png`, `walk-step8-labels.png`. Diff-tree every commit.
+- Client typecheck is `npx tsc -b` (`--noEmit` is a no-op); rebuild `poc/server` before
+  hub/client typechecks; `poc/server/.env` holds a placeholder key — never source it; launch
+  laptops only via the `mpai` CLI; the hub reads `PORT`/`CLIENT_DIST`/`HUB_DB` env, not flags.
+- Workflow councils run in the BACKGROUND — wait for the task notification; never predict or
+  fabricate a verdict. The gate numbers are the script's numbers (84.6 ≠ 85).
+- plan-review rule: the fixer never re-reviews its own fixes — only a fresh council round
+  counts; owner questions go to the USER, never self-answered.
+- soltero-skills is now 0.19.0 — skill listings may differ from what this session saw.
+
+**Open questions:** the 2 owner questions in step 2; whether the council converges to ≥95 or
+the user chooses to override after further rounds (their call, not yours); PRD §10 Q2/Q3 and
+spec §8.4 sub-session worktrees (product-level, unchanged from session #20).
+
+### Resume & verify — run this first, expect exactly this
+
+```bash
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
+git status -sb   # feature/the-record... (73e565d local-only until pushed); M tetris.test.ts (user WIP) + the 4 untracked user files above; HANDOFF.md modified by this refresh
+git log --oneline -3   # 73e565d docs(the-record): plan v3 … / 0bef736 docs: fold in post-merge staleness … / d2027c8 Merge PR #25
+for p in 3001 3002 3003 4000 5173; do lsof -nP -iTCP:$p -sTCP:LISTEN; done   # ALL EMPTY
+# suites (verified green this session, pre-plan-review): server 499/24 files · hub 104/4 · client 283/32
+```
+
+---
+
+## 🟡 HISTORICAL — session #20 state below (PRs #22/#23 merged; §8.7 section pick was pending — now made: §8.7, this branch). Superseded where it conflicts with the block above.
+
+## (was) START HERE — PRs #22 AND #23 ARE **MERGED** (user's call, executed session #20). `main` = `af63bec`, we are ON main, suites verified there (server 499 / hub 104 / client 279*). Next work: the user picks the next PRD §8 section, and the loop runs on **soltero-skills, NOT superpowers** (user directive, see below).
 
 **Two things a fresh session must know FIRST:**
 
