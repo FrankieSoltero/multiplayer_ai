@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HubStore } from "../src/hubStore.js";
+import { HubStore, type HubPersister } from "../src/hubStore.js";
 import type { RepoDecl, SessionFacts } from "multiplayer-ai-server/relayProtocol";
 
 /** One entry of a machine's declared repo set. `label` defaults to the key's
@@ -503,5 +503,356 @@ describe("HubStore snapshot machines", () => {
     expect(snap).not.toHaveProperty("repo");
     expect(snap.machines?.[0].name).toBe("lap-1");
     expect(snap.machines?.[0].repos[0].key).toBe("github.com/acme/api");
+  });
+});
+
+/** A `HubPersister` that records every call in order, so a test can assert
+ *  WHICH calls a mutation made, in what order, and what each carried — the
+ *  only observable form of "one transaction per frame".
+ *
+ *  `state.throwOn` makes one method refuse, which is how the durability
+ *  invariant is tested: a real persister's refusal is a failed commit, and the
+ *  store must then behave as if the frame never happened. */
+function recorder() {
+  const calls: { m: string; args: unknown[] }[] = [];
+  const state: { throwOn: string | null } = { throwOn: null };
+  const rec =
+    (m: string) =>
+    (...args: unknown[]): void => {
+      calls.push({ m, args });
+      if (state.throwOn === m) throw new Error(`persister refused ${m}`);
+    };
+  const persister: HubPersister = {
+    projectSaved: rec("projectSaved"),
+    memberAdded: rec("memberAdded"),
+    memberRemoved: rec("memberRemoved"),
+    machineSaved: rec("machineSaved"),
+    sessionSaved: rec("sessionSaved"),
+    eventsAppended: rec("eventsAppended"),
+  };
+  return {
+    persister,
+    calls,
+    state,
+    names: () => calls.map((c) => c.m),
+    clear: () => {
+      calls.length = 0;
+    },
+  };
+}
+
+describe("HubStore persister seam", () => {
+  const T = "2026-07-28T10:00:00.000Z";
+  const EMPTY_FACTS: SessionFacts = {
+    id: "auth",
+    participants: [],
+    driverName: null,
+    intent: null,
+    lastActivityTs: null,
+    ended: false,
+    pendingGate: null,
+    skills: [],
+    repoKey: null,
+    lifecycle: "open",
+  };
+
+  it("persists a created project and its creator, and nothing for a duplicate id", () => {
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    expect(store.createProject("acme", "Acme Migration", "ana", T)).toEqual({ ok: true });
+    expect(r.calls).toEqual([
+      {
+        m: "projectSaved",
+        args: [
+          { id: "acme", name: "Acme Migration", createdBy: "ana", createdAt: T, lifecycle: "active" },
+        ],
+      },
+      { m: "memberAdded", args: ["acme", "ana"] },
+    ]);
+
+    r.clear();
+    expect(store.createProject("acme", "Someone Else's", "bo", T).ok).toBe(false);
+    expect(r.calls).toEqual([]);
+  });
+
+  it("persists an auto-created project with a null creator, and nothing for one it already holds", () => {
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    store.ensureProject("acme", T);
+    expect(r.calls).toEqual([
+      {
+        m: "projectSaved",
+        args: [{ id: "acme", name: "acme", createdBy: null, createdAt: T, lifecycle: "active" }],
+      },
+    ]);
+    // No memberAdded: attaching a laptop is not joining a project.
+    r.clear();
+    store.ensureProject("acme", "2026-07-29T10:00:00.000Z");
+    expect(r.calls).toEqual([]);
+  });
+
+  it("persists the whole project record with the updated lifecycle", () => {
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    store.createProject("acme", "Acme", "ana", T);
+    r.clear();
+    expect(store.setLifecycle("acme", "closed")).toEqual({ ok: true });
+    expect(r.calls).toEqual([
+      {
+        m: "projectSaved",
+        args: [{ id: "acme", name: "Acme", createdBy: "ana", createdAt: T, lifecycle: "closed" }],
+      },
+    ]);
+
+    r.clear();
+    expect(store.setLifecycle("nope", "closed").ok).toBe(false);
+    expect(r.calls).toEqual([]);
+  });
+
+  it("persists membership changes only when they change something", () => {
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    store.createProject("acme", "Acme", "ana", T);
+    r.clear();
+
+    expect(store.joinProject("acme", "bo")).toBe(true);
+    expect(r.calls).toEqual([{ m: "memberAdded", args: ["acme", "bo"] }]);
+    r.clear();
+    expect(store.joinProject("acme", "bo")).toBe(false);
+    expect(r.calls).toEqual([]);
+
+    expect(store.leaveProject("acme", "bo")).toBe(true);
+    expect(r.calls).toEqual([{ m: "memberRemoved", args: ["acme", "bo"] }]);
+    r.clear();
+    expect(store.leaveProject("acme", "bo")).toBe(false);
+    expect(store.leaveProject("nope", "bo")).toBe(false);
+    expect(r.calls).toEqual([]);
+  });
+
+  it("persists the machine on attach, and the project the attach auto-created", () => {
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    store.attach("lap-1", "acme", "Ana's MacBook", [decl("github.com/acme/api")], T);
+    // The project row first: a machine row that referenced a project no record
+    // mentions would be a dangling reference on the next boot.
+    expect(r.names()).toEqual(["projectSaved", "machineSaved"]);
+    expect(r.calls[1].args).toEqual([
+      {
+        uplinkId: "lap-1",
+        projectId: "acme",
+        name: "Ana's MacBook",
+        repos: [decl("github.com/acme/api")],
+      },
+    ]);
+
+    r.clear();
+    store.attach("lap-2", "acme", "Bo's ThinkPad", [decl("github.com/acme/web")], T);
+    expect(r.names()).toEqual(["machineSaved"]);
+  });
+
+  it("persists the replaced repo list on setRepos, and nothing for an unknown uplink", () => {
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    store.attach("lap-1", "acme", "lap-1", [decl("github.com/acme/api"), decl("github.com/acme/web")], T);
+    r.clear();
+
+    store.setRepos("lap-1", [decl("github.com/acme/api", { attached: false, defaultBranch: null })]);
+    expect(r.calls).toEqual([
+      {
+        m: "machineSaved",
+        args: [
+          {
+            uplinkId: "lap-1",
+            projectId: "acme",
+            name: "lap-1",
+            // The whole new list, not a merge — the record mirrors memory's
+            // wholesale replacement (spec §5.2).
+            repos: [decl("github.com/acme/api", { attached: false, defaultBranch: null })],
+          },
+        ],
+      },
+    ]);
+
+    r.clear();
+    store.setRepos("ghost", [decl("k")]);
+    expect(r.calls).toEqual([]);
+  });
+
+  it("persists a facts-only session with no offsets, and nothing on an ownership refusal", () => {
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    store.attach("lap-1", "acme", "lap-1", [decl("k")], T);
+    r.clear();
+
+    expect(store.setFacts("lap-1", "auth", "run-a", facts())).toEqual({ ok: true });
+    expect(r.calls).toEqual([
+      {
+        m: "sessionSaved",
+        args: [
+          {
+            projectId: "acme",
+            sessionId: "auth",
+            uplinkId: "lap-1",
+            facts: facts(),
+            // `runId` is deliberately not recorded by a facts-only session:
+            // the hub holds no events for it, so it may claim no offset.
+            lastRunId: null,
+            lastSeq: -1,
+          },
+        ],
+      },
+    ]);
+
+    store.attach("lap-2", "acme", "lap-2", [decl("k2")], T);
+    r.clear();
+    expect(store.setFacts("lap-2", "auth", "run-z", facts()).ok).toBe(false);
+    expect(r.calls).toEqual([]);
+  });
+
+  it("persists updated facts with the offsets the hub already holds for that session", () => {
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    store.attach("lap-1", "acme", "lap-1", [decl("k")], T);
+    store.publish("lap-1", "auth", "run-a", [ev(0), ev(1), ev(2)]);
+    r.clear();
+
+    store.setFacts("lap-1", "auth", "run-a", facts({ intent: "ship auth" }));
+    expect(r.calls).toEqual([
+      {
+        m: "sessionSaved",
+        args: [
+          {
+            projectId: "acme",
+            sessionId: "auth",
+            uplinkId: "lap-1",
+            facts: facts({ intent: "ship auth" }),
+            lastRunId: "run-a",
+            lastSeq: 2,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("persists exactly one eventsAppended per publish frame for a session it already holds", () => {
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    store.attach("lap-1", "acme", "lap-1", [decl("k")], T);
+    store.setFacts("lap-1", "auth", "run-a", facts());
+    r.clear();
+
+    const accepted = store.publish("lap-1", "auth", "run-a", [ev(0), ev(1), ev(2)]);
+    expect(r.names()).toEqual(["eventsAppended"]);
+    const args = r.calls[0].args;
+    // The very array the caller fans out — the record is written from the
+    // store's own instances, with no copy on this path.
+    expect(args.slice(0, 5)).toEqual(["acme", "auth", accepted, "run-a", 2]);
+    expect(args[2]).toBe(accepted);
+    // No `newSession`: the session row already exists in the record.
+    expect(args[5]).toBeUndefined();
+  });
+
+  it("writes an implicitly created session and its events in ONE frame", () => {
+    // A publish for a session nobody declared facts for creates it. Two calls
+    // (sessionSaved then eventsAppended) would be two transactions, and a
+    // crash between them leaves events attached to a session no row mentions.
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    store.attach("lap-1", "acme", "lap-1", [decl("k")], T);
+    r.clear();
+
+    const accepted = store.publish("lap-1", "auth", "run-a", [ev(0), ev(1)]);
+    expect(r.names()).toEqual(["eventsAppended"]);
+    const args = r.calls[0].args;
+    expect(args.slice(0, 5)).toEqual(["acme", "auth", accepted, "run-a", 1]);
+    expect(args[5]).toEqual({ uplinkId: "lap-1", facts: EMPTY_FACTS });
+    // And the facts the frame carried are the ones memory now shows.
+    expect(store.snapshot("acme").sessions[0].repoKey).toBeNull();
+    expect(store.ownerOf("acme", "auth")).toBe("lap-1");
+  });
+
+  it("persists nothing for a publish frame that accepted no events", () => {
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    store.attach("lap-1", "acme", "lap-1", [decl("k")], T);
+    store.publish("lap-1", "auth", "run-a", [ev(0), ev(1)]);
+    r.clear();
+
+    // A resume overshoot: history the hub already holds, so nothing to write.
+    expect(store.publish("lap-1", "auth", "run-a", [ev(0), ev(1)])).toEqual([]);
+    expect(r.calls).toEqual([]);
+
+    // An all-malformed batch for a session the hub does not hold: nothing
+    // durable, therefore nothing in memory either. Memory and the record stay
+    // in lockstep, so a restart cannot lose a session the hub was showing.
+    expect(store.publish("lap-1", "fresh", "run-a", [null as any, { ...ev(0), seq: -1 } as any])).toEqual([]);
+    expect(r.calls).toEqual([]);
+    expect(store.ownerOf("acme", "fresh")).toBeNull();
+
+    // Same for a session owned by another machine.
+    store.attach("lap-2", "acme", "lap-2", [decl("k2")], T);
+    r.clear();
+    expect(store.publish("lap-2", "auth", "run-z", [ev(5)])).toEqual([]);
+    expect(r.calls).toEqual([]);
+  });
+
+  it("leaves memory untouched when the persister refuses a publish frame", () => {
+    // Durable before visible (spec §3.3). A refused commit must not become
+    // history in memory: browsers would see events a restarted hub forgot,
+    // and `resumeOffsets` would tell the laptop not to re-send them.
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    store.attach("lap-1", "acme", "lap-1", [decl("k")], T);
+    store.publish("lap-1", "auth", "run-a", [ev(0), ev(1)]);
+    r.clear();
+    r.state.throwOn = "eventsAppended";
+
+    expect(() => store.publish("lap-1", "auth", "run-a", [ev(2), ev(3)])).toThrow(
+      /persister refused eventsAppended/,
+    );
+    expect(r.names()).toEqual(["eventsAppended"]);
+    expect(store.eventsFor("acme", "auth", 0).map((e) => e.event.seq)).toEqual([0, 1]);
+    expect(store.resumeOffsets("lap-1")).toEqual({ auth: { runId: "run-a", lastSeq: 1 } });
+  });
+
+  it("does not create the session when the frame that would have created it is refused", () => {
+    const r = recorder();
+    const store = new HubStore(r.persister);
+    store.attach("lap-1", "acme", "lap-1", [decl("k")], T);
+    r.state.throwOn = "eventsAppended";
+
+    expect(() => store.publish("lap-1", "auth", "run-a", [ev(0), ev(1)])).toThrow(
+      /persister refused eventsAppended/,
+    );
+    expect(store.ownerOf("acme", "auth")).toBeNull();
+    expect(store.snapshot("acme").sessions).toEqual([]);
+    expect(store.eventsFor("acme", "auth", 0)).toEqual([]);
+    expect(store.resumeOffsets("lap-1")).toEqual({});
+  });
+
+  it("defaults to a no-op persister, so a store built with no arguments still works", () => {
+    // The shape the hub itself constructs today (hub.ts:61) and every other
+    // test in this file uses. The seam must cost nothing when nobody injects a
+    // persister — no calls to make, and no crash from a missing one.
+    const store = new HubStore();
+    expect(store.createProject("acme", "Acme", "ana", T)).toEqual({ ok: true });
+    expect(store.joinProject("acme", "bo")).toBe(true);
+    expect(store.leaveProject("acme", "bo")).toBe(true);
+    expect(store.setLifecycle("acme", "closed")).toEqual({ ok: true });
+    store.ensureProject("other", T);
+    store.attach("lap-1", "acme", "lap-1", [decl("github.com/acme/api")], T);
+    store.setRepos("lap-1", [decl("github.com/acme/web")]);
+    expect(store.setFacts("lap-1", "auth", "run-a", facts())).toEqual({ ok: true });
+    expect(store.publish("lap-1", "auth", "run-a", [ev(0), ev(1)])).toHaveLength(2);
+    expect(store.publish("lap-1", "chat", "run-a", [ev(0)])).toHaveLength(1);
+
+    expect(store.eventsFor("acme", "auth", 0).map((e) => e.id)).toEqual([1, 2]);
+    expect(store.resumeOffsets("lap-1")).toEqual({
+      auth: { runId: "run-a", lastSeq: 1 },
+      chat: { runId: "run-a", lastSeq: 0 },
+    });
+    expect(store.lifecycleOf("acme")).toBe("closed");
+    expect(store.lifecycleOf("other")).toBe("active");
+    expect(store.machinesIn("acme")[0].repos).toEqual([decl("github.com/acme/web")]);
   });
 });
