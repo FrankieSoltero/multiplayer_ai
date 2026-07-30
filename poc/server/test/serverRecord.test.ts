@@ -42,8 +42,8 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function fakeWorkspace() {
   return {
-    provision(slug: string) {
-      return { ok: true as const, workdir: `/tmp/wt/${slug}` };
+    provision(projectId: string, slug: string) {
+      return { ok: true as const, workdir: `/tmp/wt/${projectId}/${slug}` };
     },
     defaultBranch: () => "main",
     repoKey: () => "local:test:000000000000",

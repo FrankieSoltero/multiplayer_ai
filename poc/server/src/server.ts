@@ -416,7 +416,11 @@ export async function startServer(opts: {
           // Deep-link join to a not-yet-provisioned session: same core as
           // create_session, branched off the default branch (spec §3).
           const only = attached[0];
-          const result = only.workspace.provision(sessionId, only.defaultBranch ?? "main");
+          const result = only.workspace.provision(
+            project.id,
+            sessionId,
+            only.defaultBranch ?? "main",
+          );
           if (!result.ok) return { error: result.error };
           workdir = result.workdir;
           repoKey = only.key;
@@ -1038,7 +1042,7 @@ export async function startServer(opts: {
           typeof msg.baseRef === "string" && msg.baseRef.length > 0
             ? msg.baseRef.slice(0, 100)
             : resolved.defaultBranch ?? "main";
-        const result = resolved.workspace.provision(slug, baseRef);
+        const result = resolved.workspace.provision(projectId, slug, baseRef);
         if (!result.ok) return sendError(result.error);
         const entry = getOrCreateSession(project, slug, {
           workdir: result.workdir,

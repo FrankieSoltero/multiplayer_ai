@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { SLUG } from "./project.js";
 import { repoKeyFor } from "./repoKey.js";
 
 export type ProvisionResult =
@@ -36,7 +37,7 @@ export function ensureExcluded(repoRoot: string): void {
 
 /** Structural interface so server tests can inject a fake. */
 export interface WorkspaceLike {
-  provision(slug: string, baseRef: string): ProvisionResult;
+  provision(projectId: string, slug: string, baseRef: string): ProvisionResult;
   defaultBranch(): string;
   /** Stable cross-machine identity for this repo (spec §3.3). */
   repoKey(): string;
@@ -59,8 +60,25 @@ export class WorkspaceManager implements WorkspaceLike {
     }).trim();
   }
 
-  provision(slug: string, baseRef: string): ProvisionResult {
-    const workdir = path.join(this.worktreesRoot, slug);
+  /** Worktrees are PROJECT-SCOPED (spec §7, §8a.3): the same session slug in
+   *  two projects must never collide on one checkout, so the project id is
+   *  part of the path (`<worktreesRoot>/<projectId>/<slug>`), the branch
+   *  (`mpai/<projectId>/<slug>`) and therefore the identity used for
+   *  idempotent reuse — the key is the `${projectId}/${slug}` pair, not the
+   *  slug alone. Worktrees created by the older flat scheme
+   *  (`<worktreesRoot>/<slug>`) are never reused, deleted or migrated: they
+   *  are orphaned on disk by design (spec §8a ruling 7, accepted POC
+   *  breakage), and no legacy-key compatibility read exists here.
+   *
+   *  `projectId` is validated HERE, as the first statement, rather than at the
+   *  call sites: this is the function that turns the value into a filesystem
+   *  path and a git branch name, so one guard at the point of use covers every
+   *  caller and cannot be forgotten by a future one. A bad projectId is a
+   *  caller bug (and `../` style traversal is exactly what `SLUG` rejects), so
+   *  it throws rather than sanitising or falling back. */
+  provision(projectId: string, slug: string, baseRef: string): ProvisionResult {
+    if (!SLUG.test(projectId)) throw new Error(`invalid projectId: ${projectId}`);
+    const workdir = path.join(this.worktreesRoot, projectId, slug);
     // Idempotent reuse — join semantics; the worktree's existing state wins.
     if (fs.existsSync(workdir)) return { ok: true, workdir };
     try {
@@ -68,7 +86,7 @@ export class WorkspaceManager implements WorkspaceLike {
     } catch {
       return { ok: false, error: `unknown base ref: ${baseRef}` };
     }
-    const branch = `mpai/${slug}`;
+    const branch = `mpai/${projectId}/${slug}`;
     let branchExists = true;
     try {
       this.git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
@@ -79,7 +97,7 @@ export class WorkspaceManager implements WorkspaceLike {
       return { ok: false, error: `session name taken (branch ${branch} exists)` };
     }
     try {
-      fs.mkdirSync(this.worktreesRoot, { recursive: true });
+      fs.mkdirSync(path.dirname(workdir), { recursive: true });
       this.git(["worktree", "add", workdir, "-b", branch, baseRef]);
       return { ok: true, workdir };
     } catch (err) {

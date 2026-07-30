@@ -42,12 +42,12 @@ function collect(ws: WebSocket, sink: unknown[]): void {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function fakeWorkspace() {
-  const calls: { slug: string; baseRef: string }[] = [];
+  const calls: { projectId: string; slug: string; baseRef: string }[] = [];
   return {
     calls,
-    provision(slug: string, baseRef: string) {
-      calls.push({ slug, baseRef });
-      return { ok: true as const, workdir: `/tmp/wt/${slug}` };
+    provision(projectId: string, slug: string, baseRef: string) {
+      calls.push({ projectId, slug, baseRef });
+      return { ok: true as const, workdir: `/tmp/wt/${projectId}/${slug}` };
     },
     defaultBranch: () => "main",
     repoKey: () => "local:test:000000000000",
@@ -55,12 +55,12 @@ function fakeWorkspace() {
 }
 
 function keyedWorkspace(key: string) {
-  const calls: { slug: string; baseRef: string }[] = [];
+  const calls: { projectId: string; slug: string; baseRef: string }[] = [];
   return {
     calls,
-    provision(slug: string, baseRef: string) {
-      calls.push({ slug, baseRef });
-      return { ok: true as const, workdir: `/tmp/wt/${key}/${slug}` };
+    provision(projectId: string, slug: string, baseRef: string) {
+      calls.push({ projectId, slug, baseRef });
+      return { ok: true as const, workdir: `/tmp/wt/${key}/${projectId}/${slug}` };
     },
     defaultBranch: () => "main",
     repoKey: () => key,
@@ -1116,7 +1116,7 @@ describe("session initiation", () => {
     await vi.waitFor(() => {
       expect(seen.some((m) => m.type === "session_created" && m.sessionId === "fix-auth")).toBe(true);
     });
-    expect(workspace.calls).toEqual([{ slug: "fix-auth", baseRef: "dev" }]);
+    expect(workspace.calls).toEqual([{ projectId: "default", slug: "fix-auth", baseRef: "dev" }]);
     await vi.waitFor(() => {
       expect(
         seen.some((m) => m.type === "project" && m.sessions.some((s: any) => s.id === "fix-auth")),
@@ -1202,7 +1202,7 @@ describe("session initiation", () => {
     await vi.waitFor(() => {
       expect(seen.some((m) => m.event?.type === "presence_join")).toBe(true);
     });
-    expect(workspace.calls).toEqual([{ slug: "adhoc", baseRef: "main" }]);
+    expect(workspace.calls).toEqual([{ projectId: "default", slug: "adhoc", baseRef: "main" }]);
     ws.close();
   });
 
@@ -1332,7 +1332,7 @@ describe("solo-mode entrance protocol", () => {
       await vi.waitFor(() => {
         expect(seen.some((m) => m.type === "session_created")).toBe(true);
       });
-      expect(workspace.calls).toEqual([{ slug: "s1", baseRef: "main" }]);
+      expect(workspace.calls).toEqual([{ projectId: "ghost", slug: "s1", baseRef: "main" }]);
       ws.close();
     });
 
@@ -3039,7 +3039,7 @@ describe("repo set", () => {
     ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1" }));
     await wait(200);
     expect(seen.some((m) => m.type === "session_created")).toBe(true);
-    expect(cwd.calls).toEqual([{ slug: "s1", baseRef: "main" }]);
+    expect(cwd.calls).toEqual([{ projectId: "default", slug: "s1", baseRef: "main" }]);
     ws.close();
   });
 
@@ -3073,7 +3073,7 @@ describe("repo set", () => {
     collect(ws, []);
     ws.send(JSON.stringify({ type: "join", sessionId: "fresh", userId: "u1", name: "Ana" }));
     await wait(200);
-    expect(cwd.calls).toEqual([{ slug: "fresh", baseRef: "main" }]);
+    expect(cwd.calls).toEqual([{ projectId: "default", slug: "fresh", baseRef: "main" }]);
     ws.close();
   });
 
@@ -3186,7 +3186,7 @@ describe("attach and detach repos", () => {
     expect(seen.some((m) => m.type === "session_created" && m.sessionId === "s1")).toBe(true);
     // The proof the attach really built a usable workspace: the session was
     // provisioned in it, at the default branch the attach path computed.
-    expect(f.web.calls).toEqual([{ slug: "s1", baseRef: "origin/main" }]);
+    expect(f.web.calls).toEqual([{ projectId: "default", slug: "s1", baseRef: "origin/main" }]);
     expect(f.api.calls).toEqual([]);
     ws.close();
   });
