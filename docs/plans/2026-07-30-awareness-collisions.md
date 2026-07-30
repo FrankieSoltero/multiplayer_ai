@@ -2,7 +2,7 @@
 
 > **For executors:** execute with soltero-skills:lean-sdd. The Task Dependency Table is the
 > scheduling and review-depth contract. Spec of record:
-> `docs/specs/2026-07-30-awareness-collisions-design.md` (its §8a rulings 1–6 and §2 banked
+> `docs/specs/2026-07-30-awareness-collisions-design.md` (its §8a rulings 1–8 and §2 banked
 > decisions 1–7 are LOCKED) — where this plan is silent or wrong and the spec is explicit,
 > the spec governs (standing ruling).
 
@@ -19,16 +19,18 @@ existing 1s project push. Worktree provisioning becomes project-scoped first (ki
 `cd poc/hub && npx vitest run` · `cd poc/client && npx vitest run`. Typecheck: server/hub
 `npx tsc --noEmit`; client **`npx tsc -b`**. **No Verify in this plan depends on an npm
 lifecycle hook firing:** `npx vitest run` does not run `pretest`, so every hub and client Verify
-below builds `poc/server` with an EXPLICIT command of its own — hub tasks open with
-`cd poc/server && npm run build && cd ../hub && …`, client tasks open with
+below builds `poc/server` with an EXPLICIT command of its own — **every hub task's Verify builds
+`poc/server` BEFORE any hub command runs** (`cd poc/server && … && npm run build` → `cd ../hub &&
+…`), and every client task's Verify opens with
 `cd poc/client && npm --prefix ../server run build && …`.
 
 ## Global Constraints
 
 - Rebuild `poc/server` (`npm --prefix poc/server run build`) after changing anything it
   exports — hub and client typecheck/bundle against its built `dist/`. **Every implementing
-  task (1–10b) builds:** each server task's Verify ends in `npm run build`, each hub task's
-  Verify BEGINS with `cd poc/server && npm run build`, and each client task's Verify begins with
+  task (1–10b) builds:** each server task's Verify ends in `npm run build`, **each hub task's
+  Verify builds `poc/server` BEFORE any hub command runs** (the build is the last step of the
+  Verify's server leg, which precedes `cd ../hub`), and each client task's Verify begins with
   `npm --prefix ../server run build`. There is no build carve-out and no task whose artifact is
   published by a later task's build. Since no two implementing tasks may be in flight together
   (1–10b are one exclusion group), no build is ever concurrent with a consumer's read.
@@ -47,23 +49,32 @@ below builds `poc/server` with an EXPLICIT command of its own — hub tasks open
 - **Advisory only (spec §2.2):** no code path may block, queue, or lock a write because of a
   collision; tier (b) downgrades an AUTO approval to a HUMAN question, nothing more.
 - Exact values used across tasks:
-  - `TOUCH_CAP = 500`; truncation sentinel literal `"…"` (single U+2026 char); per-path wire
-    cap 512 chars. **Canonical home:** both constants are DECLARED in
-    `poc/server/src/collisions.ts` (Task 5 — the isomorphic module) and re-exported unchanged
-    from `poc/server/src/touched.ts` (Task 1), so the isomorphic module never imports the
-    node-only one and no consumer sees two copies of the literal.
+  - `TOUCH_CAP = 500`; truncation sentinel literal `"…"` (single U+2026 char);
+    `PATH_WIRE_CAP = 512` (per-path wire cap, chars). **Canonical home:** ALL THREE constants are
+    DECLARED in `poc/server/src/collisions.ts` (Task 5 — the isomorphic module) and re-exported
+    unchanged from `poc/server/src/touched.ts` (Task 1), so the isomorphic module never imports
+    the node-only one and no consumer sees two copies of a literal. The same
+    single-source-of-truth rule therefore governs `PATH_WIRE_CAP` as governs `TOUCH_CAP`: Task 3's
+    facts validator and Task 6's frame validator both import it
+    (`import { PATH_WIRE_CAP, TOUCH_CAP } from "./collisions.js"` in `relayProtocol.ts`) and
+    neither may re-state `512` as a bare literal. (`relayProtocol.ts` cannot import it from
+    `touched.ts` — that module is node-only; `collisions.ts` is the isomorphic home precisely so
+    both sides can import it.) The `sessionIds` bounds in Task 6's frame validator (each id ≤ 128
+    chars, ≤ 100 ids per entry) are plan-authored inbound-array bounds with no cross-task
+    consumer, so they stay inline literals in `relayProtocol.ts` beside the existing
+    `MAX_REPOS = 100`.
   - **producer-side per-path rule (plan-authored; spec §3.1/§3.3 set the wire cap but no
     producer rule — resolved here so the two do not contradict):** `touchedFiles` DROPS any
-    path longer than the 512-char wire cap before the cap/sentinel step. A single pathological
+    path longer than `PATH_WIRE_CAP` (512 chars) before the cap/sentinel step. A single pathological
     path therefore costs that path, never the session's whole facts frame (Task 3's validator
     rejects the entire frame on one over-long path). Truncating instead was rejected: a
     truncated path is a *different* path and would false-collide. Owner may override.
   - facts field `touched: string[] | null`.
   - down-frame (spec §8a ruling 6, amends §6a):
     `{ type: "contested", sessionId: string, paths: string[], collisions: { path: string; sessionIds: string[] }[] }`
-    — `paths` bound identically to `facts.touched`: length ≤ `TOUCH_CAP + 1`, each ≤ 512 chars;
-    `collisions` length ≤ `TOUCH_CAP + 1` (one entry per retained path, so it can never exceed
-    `paths`), each entry's `path` ≤ 512 chars, each `sessionIds` a NON-EMPTY array of strings,
+    — `paths` bound identically to `facts.touched`: length ≤ `TOUCH_CAP + 1`, each ≤
+    `PATH_WIRE_CAP`; `collisions` length ≤ `TOUCH_CAP + 1` (one entry per retained path, so it can
+    never exceed `paths`), each entry's `path` ≤ `PATH_WIRE_CAP`, each `sessionIds` a NON-EMPTY array of strings,
     each ≤ 128 chars, **at most 100 ids per entry** — plan-authored bound, same posture and
     same number as `relayProtocol.ts`'s existing `MAX_REPOS = 100` inbound-array cap. These are
     the validator's bounds, and Task 6's validator rows assert each one.
@@ -98,11 +109,19 @@ below builds `poc/server` with an EXPLICIT command of its own — hub tasks open
   filesystem/process access — the client imports it at RUNTIME (unlike `record`'s type-only
   imports). Task 9a's Verify includes a bundle check.
 - **Done criteria (plan-level):** every per-task Verify passed; on the final tree all three
-  suites + typechecks green; Task 11's walk record in the execution ledger with steps 4, 6, 7
-  and the solo leg 8d/8e/8f recorded **PASS**, and step 5 (agent tier (a)) recorded either
-  PASS or FAIL — a FAIL is admissible only with the verbatim `digestFor` dump for that turn in
-  the ledger (the `[digest-dump]` stderr line produced under `MPAI_DIGEST_DUMP=1`, Task 7b) AND
-  a follow-up filed in `docs/tech-debt.md`. A bare "recorded" is not done.
+  suites + typechecks green; Task 11a's and Task 11b's walk records in the execution ledger with
+  steps 4, 6, 7 (11a) and the solo leg 8d/8e/8f (11b) recorded **PASS**, and step 5 (agent tier
+  (a), 11a) recorded either PASS or FAIL — a FAIL is admissible only with the verbatim
+  `digestFor` dump for that turn in the ledger (the `[digest-dump]` stderr line produced under
+  `MPAI_DIGEST_DUMP=1`, Task 7b) AND a follow-up filed in `docs/tech-debt.md`. A bare "recorded"
+  is not done.
+  - **Scope of step 5's admissible FAIL (resolves the step-5 / step-8e tension explicitly).**
+    Step 5 has two halves: (i) the `[digest-dump]` line for that turn CONTAINS `notes.txt`, and
+    (ii) the agent's ANSWER names the file. Only half (ii) — the LLM-dependent half — may be
+    recorded FAIL-with-evidence. Half (i) is REQUIRED at step 5 exactly as it is at step 8e: a
+    dump line that does not contain the file is a defect in this plan's own code, not model
+    variance, and it fails the plan-level Done criteria at both steps. Step 8e asserts half (i)
+    only, which is why it is listed "(Required PASS.)" with no FAIL allowance.
 
 ## Task Dependency Table
 
@@ -120,26 +139,39 @@ below builds `poc/server` with an EXPLICIT command of its own — hub tasks open
 | 8a. gate reason carrier | `poc/server/src/pendingGate.ts`, `poc/server/src/relayProtocol.ts`, `poc/server/test/pendingGate.test.ts`, `poc/server/test/relayProtocol.test.ts` | — | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8p, 8b, 9a, 9b, 10a, 10b | standard |
 | 8p. `contestedWrite` pure predicate | `poc/server/src/permissions.ts`, `poc/server/test/permissions.test.ts` | 7a | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8b, 9a, 9b, 10a, 10b | standard |
 | 8b. auto-approve withdrawal (wiring + bookkeeping + kill switch) | `poc/server/src/server.ts`, `poc/server/src/project.ts` (`contestedAsked`), `poc/server/test/serverGateContested.test.ts` | 4, 7a, 8a, 8p | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8p, 9a, 9b, 10a, 10b | judgment |
-| 9a. collisionView adapter | `poc/client/src/collisionView.ts`, `poc/client/src/collisionView.test.ts` | 3, 5 | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8p, 8b, 9b, 10a, 10b | standard |
+| 9a. collisionView adapter | `poc/client/src/collisionView.ts`, `poc/client/src/collisionView.test.ts`, `poc/client/src/types.ts` | 3, 5 | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8p, 8b, 9b, 10a, 10b | standard |
 | 9b. client: session-list surfaces | `poc/client/src/components/SessionPicker.tsx`, `poc/client/src/components/SessionPicker.test.tsx`, `poc/client/src/terminal.css` | 9a | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8p, 8b, 9a, 10a, 10b | standard |
 | 10a. client: header badge + App wiring | `poc/client/src/components/Header.tsx`, `poc/client/src/App.tsx`, `poc/client/src/components/Header.test.tsx` | 5, 9a | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8p, 8b, 9a, 9b, 10b | standard |
 | 10b. client: party-pane share rows | `poc/client/src/components/PartyPane.tsx`, `poc/client/src/components/PartyPane.test.tsx` | 9a | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8p, 8b, 9a, 9b, 10a | standard |
-| 11. two-session browser walk | ledger record; `docs/tech-debt.md` ONLY on a step-5 FAIL (no source files) | 4, 6, 7b, 8b, 9b, 10a, 10b | — | standard |
-| 12. docs sweep | `docs/PRD.md`, `docs/tech-debt.md` | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8p, 8b, 9a, 9b, 10a, 10b, 11 | — | mechanical |
+| 11a. browser walk — hub-attached leg (steps 0–7) | ledger record; `docs/tech-debt.md` ONLY on a step-5 FAIL (no source files) | 4, 6, 7b, 8b, 9b, 10a, 10b | — | standard |
+| 11b. browser walk — solo parity leg (steps 8a–8f, shutdown 9) | ledger record (no source files, no docs writes) | 11a | — | standard |
+| 12. docs sweep | `docs/PRD.md`, `docs/tech-debt.md` | 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8p, 8b, 9a, 9b, 10a, 10b, 11a, 11b | — | mechanical |
 
 The table alone is the scheduling contract: a task may start when its Depends-on tasks are
 complete AND no Conflicts-with task is in flight (implementation OR verification — a
 whole-package-suite run, a whole-package `tsc --noEmit`, or an `npm run build` counts).
 Conflicts are **total and symmetric**: the 16 implementing rows (1, 2a, 2b, 3, 4, 5, 6, 7a, 7b,
 8a, 8p, 8b, 9a, 9b, 10a, 10b) form ONE exclusion group, so each row's Conflicts cell lists the
-other 15 — no exceptions, no dependency-ordered omissions. Re-verified mechanically after this
-revision's edits: every row has exactly 15 entries, every entry appears on both rows, no
-self-reference, no unknown label; 11 and 12 are serialized by their Depends-on cells and carry
-no conflicts. This plan therefore permits NO concurrent writers at all, and 11/12 depend on the
-whole group, so tasks execute serially. lean-sdd's pipelining still applies in its read-only
+other 15 — no exceptions, no dependency-ordered omissions. Re-verified mechanically again after
+the cycle-2 edits (which added `poc/client/src/types.ts` to 9a and split Task 11 into 11a/11b —
+neither changes the implementing group): every row has exactly 15 entries, every entry appears on
+both rows, no
+self-reference, no unknown label; 11a, 11b and 12 are serialized by their Depends-on cells and
+carry no conflicts. This plan therefore permits NO concurrent writers at all, and 11a/11b/12
+depend on the whole group, so tasks execute serially. lean-sdd's pipelining still applies in its read-only
 form — a reviewer that only reads the diff and the tree (no suite run, no `tsc`, no build) may
 run concurrently with the next task's implementer; a reviewer that executes any verify command
 may not.
+
+**Serial execution order (verbatim — the task NUMBERING is not a topological order; do not
+execute top-to-bottom).** Task 1 and Task 3 both depend on Task 5, so document order starts with
+an unrunnable task. Execute in exactly this sequence, which satisfies every Depends-on cell
+above:
+
+`5 → 1 → 2a → 2b → 3 → 4 → 6 → 7a → 7b → 8a → 8p → 8b → 9a → 9b → 10a → 10b → 11a → 11b → 12`
+
+(Numbers were deliberately NOT reassigned: every cross-reference in this plan, in the spec's
+§8a rulings and in the two earlier residual reports cites the existing labels.)
 
 **Rationale (server/hub group).** Tasks 1, 2a, 2b, 3, 4, 5, 6, 7a, 7b, 8a, 8p and 8b all write
 `poc/server/src` and verify with a whole-package `tsc --noEmit` / whole suite / `npm run build`
@@ -180,12 +212,13 @@ a half-written `dist/` is a scheduling violation to be fixed by serialising, not
 **Interfaces — produces (verbatim):**
 
 ```ts
-// TOUCH_CAP / TOUCH_SENTINEL are DECLARED in collisions.ts (Task 5 — the isomorphic module)
-// and re-exported here unchanged, so the isomorphic module never imports this node-only one.
-// This is why Task 1 depends on Task 5 in the dependency table.
-export { TOUCH_CAP, TOUCH_SENTINEL } from "./collisions.js";
+// TOUCH_CAP / TOUCH_SENTINEL / PATH_WIRE_CAP are DECLARED in collisions.ts (Task 5 — the
+// isomorphic module) and re-exported here unchanged, so the isomorphic module never imports this
+// node-only one and no consumer sees two copies of a literal. `PATH_WIRE_CAP` lives there rather
+// than here because relayProtocol.ts (Tasks 3 and 6) must import it too and cannot import a
+// node-only module. This is why Task 1 depends on Task 5 in the dependency table.
+export { TOUCH_CAP, TOUCH_SENTINEL, PATH_WIRE_CAP } from "./collisions.js";
 
-export const PATH_WIRE_CAP = 512;   // producer-side drop threshold (Global Constraints)
 export function touchedFiles(workdir: string, baseRef: string): string[];
 // Synchronous; shells out to git in `workdir` via execFileSync with `{ timeout: 5000 }` —
 // EXACTLY 5000 ms per git invocation, because Task 4 puts this call on the permission-gate
@@ -201,10 +234,11 @@ session's websocket traffic, the 1s throttled project push, the uplink heartbeat
 other pending permission gate. The 5000 ms figure is therefore a **whole-server** freeze bound,
 not a per-gate one. Accepted at this posture because a laptop process serves one developer's
 handful of sessions and a healthy `git status`/`git diff` on a working repo returns in tens of
-milliseconds — the timeout is the pathological ceiling, not the expected cost. **Owner call, not
-settled here:** lowering the timeout to a value acceptable as a full-process stall (e.g. 1500 ms)
-or moving to async `execFile` with Task 4's callers awaiting it (which re-sequences the gate
-path) — logged in "Round-3 residuals — owner attention".
+milliseconds — the timeout is the pathological ceiling, not the expected cost. **Ruled accepted
+(spec §8a.8): "a worst-case whole-daemon freeze of 5s at a turn boundary/gate is ACCEPTED …
+revisit only on an observed freeze."** The 5000 ms value is therefore binding on this task; no
+executor decision, no alternative to weigh. (Lowering the timeout or moving to async `execFile`
+would re-sequence Task 4's gate path and is out of scope unless a freeze is actually observed.)
 
 **Behavior:**
 
@@ -215,21 +249,23 @@ path) — logged in "Round-3 residuals — owner attention".
 | union + dedupe + sort | a path both committed and re-modified | appears once; output sorted ascending |
 | rename | `git mv a.ts b.ts` committed (or staged) | BOTH `a.ts` and `b.ts` present |
 | repo-relative | file in a subdirectory | path exactly as git emits (posix separators, no leading `./`, relative to repo root) |
-| over-long path (producer rule) | a changed path longer than `PATH_WIRE_CAP` (512) chars | DROPPED before the cap/sentinel step; every returned path is ≤ 512 chars, so this session's facts frame can never be rejected wholesale by Task 3's validator (paired with Task 3's "producer never emits a rejectable path" row). Not truncated — a truncated path is a different path and would false-collide |
+| over-long path (producer rule) | a changed path longer than `PATH_WIRE_CAP` (512) chars | DROPPED before the cap/sentinel step; every returned path is ≤ `PATH_WIRE_CAP`, so this session's facts frame can never be rejected wholesale by Task 3's validator (paired with Task 3's "producer never emits a rejectable path" row). Not truncated — a truncated path is a different path and would false-collide |
 | cap + sentinel | > TOUCH_CAP distinct paths (after the over-long drop) | first TOUCH_CAP after sort, then final element exactly `TOUCH_SENTINEL`; length = TOUCH_CAP + 1 |
 | clean worktree | no divergence, nothing uncommitted | `[]` |
 | git failure | `workdir` is not a git repo / git exits non-zero | throws (Error carries git's stderr) |
 | git timeout | a git invocation exceeds the 5000 ms `execFileSync` timeout | throws, on the same path as any other git failure — Task 4 then keeps the previous `entry.touched` and the gate proceeds |
 
-**Exact values:** `TOUCH_CAP = 500`; `TOUCH_SENTINEL = "…"` (U+2026) — both DECLARED in
-`collisions.ts` (Task 5) and re-exported here; `PATH_WIRE_CAP = 512`; git timeout `5000` ms.
+**Exact values:** `TOUCH_CAP = 500`; `TOUCH_SENTINEL = "…"` (U+2026); `PATH_WIRE_CAP = 512` — all
+three DECLARED in `collisions.ts` (Task 5) and re-exported here, never re-declared; git timeout
+`5000` ms.
 Status parsing must handle the porcelain rename format (`R  old -> new`, both sides
 contribute).
 
 **Verify:** `cd poc/server && npx vitest run test/touched.test.ts && npx tsc --noEmit &&
-npm run build` → tests green (they build real temp git repos; no mocking of git), typecheck
-clean, and the build exits 0 with `poc/server/dist/touched.js` present. This task exports new
-symbols, so the build is mandatory under Global Constraints, not optional.
+npm run build && test -f dist/touched.js` → tests green (they build real temp git repos; no
+mocking of git), typecheck clean, and the whole chain exits 0 — the trailing `test -f` is the
+command that asserts the artifact, so artifact presence is never an eyeball step. This task
+exports new symbols, so the build is mandatory under Global Constraints, not optional.
 **Commit:** `feat(server): touchedFiles — repo-relative divergence set for a session worktree`
 
 ---
@@ -248,12 +284,13 @@ sites ONLY — the session-creation binding is Task 2b); test
   only, so a session provisioned under the flat `<repoRoot>/.mpai/worktrees/<slug>` scheme is
   **orphaned**: its directory and `mpai/<slug>` branch persist, unreferenced by any new-scheme
   key, and the disk they occupy is never reclaimed by this code. Nothing is deleted, but nothing
-  cleans up either. **This is BROADER than what spec §7 accepts** — §7 accepts non-migration and
-  asserts "old sessions keep working until closed; new sessions provision under the new scheme".
-  Orphaning-on-restart is an expansion of that accepted cost, so this plan does NOT cite §7 as
-  having accepted it: it is escalated in "Round-3 residuals — owner attention" (bank it as a
-  ruling, or require a legacy-key compat read on restart so old sessions really do keep working
-  until closed). Whatever the owner decides, it is disclosed in the PR.
+  cleans up either. This is broader than §7's prose ("old sessions keep working until closed"),
+  and the governing authority is **spec §8a ruling 7**, which rules on exactly this case:
+  "pre-branch flat-scheme sessions do NOT survive a daemon restart under project-scoped
+  provisioning — their worktrees/branches sit unreferenced on disk. Accepted POC breakage; PR
+  discloses; no legacy compat path." So: no legacy-key compat read is to be written, nothing is
+  migrated, and **the PR text for this task MUST disclose the orphaning** — that disclosure is
+  mandatory per the ruling, not conditional on any further decision.
 - **Rollback.** `git revert` of this commit restores the flat scheme but does NOT remove
   anything the new scheme created. The manual undo, per provisioned pair, is:
   `git worktree remove <repoRoot>/.mpai/worktrees/<projectId>/<slug>` then
@@ -347,17 +384,32 @@ to `entry.baseRef` introduces a `"main"` literal or a `defaultBranch()` call tha
 `poc/server/test/relayProtocol.test.ts`, `poc/server/test/project.test.ts` (extend both;
 `project.test.ts` is shared with Tasks 2b and 7a, both of which conflict with this task).
 
-**Depends on Task 5** — the validator's length bound is `TOUCH_CAP + 1`, and `TOUCH_CAP` has a
-single canonical home: `relayProtocol.ts` imports it with
-`import { TOUCH_CAP } from "./collisions.js"` (Task 5 declares it). Task 3 must not re-declare
-the literal, which is why it cannot be scheduled before Task 5.
+**Depends on Task 5** — the validator's bounds are `TOUCH_CAP + 1` and `PATH_WIRE_CAP`, and both
+constants have a single canonical home: `relayProtocol.ts` imports them with
+`import { PATH_WIRE_CAP, TOUCH_CAP } from "./collisions.js"` (Task 5 declares them). Task 3 must
+not re-declare either literal, which is why it cannot be scheduled before Task 5.
 
-**Interfaces — produces:** `SessionFacts.touched: string[] | null` (relayProtocol.ts, beside
-`repoKey`); `ProjectSessionEntry.touched: string[] | null` storage field (project.ts, default
-null) + `sessionFactsOf` copies it into facts. Validation in the facts validator: absent/null
-accepted (→ null); else array of strings, each length ≤ 512, array length ≤ TOUCH_CAP + 1
-(`TOUCH_CAP` imported from `./collisions.js`, never re-declared here); anything else rejects the
-frame exactly like other malformed facts fields.
+**Interfaces — produces (all three sites, character-exact):**
+
+```ts
+// poc/server/src/relayProtocol.ts — on SessionFacts, beside `repoKey`
+touched: string[] | null;
+
+// poc/server/src/project.ts — on ProjectSessionEntry (storage, default null)
+touched: string[] | null;
+
+// poc/server/src/project.ts — on ProjectMessage.sessions[]'s INLINE row type (project.ts:136-165)
+// This row type enumerates its fields explicitly and does NOT inherit from SessionFacts, even
+// though `projectSnapshot` (project.ts:194) builds each row by spreading `sessionFactsOf(...)`.
+// Adding the field to SessionFacts alone leaves the snapshot row type without it and the
+// client's own `ProjectSessionInfo` (Task 9a) with nothing to mirror.
+touched: string[] | null;
+```
+
+`sessionFactsOf` copies `entry.touched` into facts. Validation in the facts validator:
+absent/null accepted (→ null); else array of strings, each length ≤ `PATH_WIRE_CAP`, array length
+≤ `TOUCH_CAP + 1` (both imported from `./collisions.js`, never re-declared here); anything else
+rejects the frame exactly like other malformed facts fields.
 
 **Downgrade note (journal records outlive a revert; referenced by Task 6).** Once `touched`
 ships, hub journal rows carry it inside `facts_json`. If Tasks 3/6 are later reverted, those
@@ -367,7 +419,7 @@ rejected** — hydration reads `facts: JSON.parse(row.facts_json) as SessionFact
 hydration path, so an unknown key rides through in memory and is re-serialized unchanged. The
 guaranteeing code path is that cast; the row below verifies it. **No journal backup is
 taken or needed at this posture:** the walk runs the hub on a disposable
-`HUB_DB=$(mktemp -d)/hub.db` (Task 11 step 1), and no production journal exists yet.
+`HUB_DB=$(mktemp -d)/hub.db` (Task 11a step 1), and no production journal exists yet.
 
 **Exposure note (spec §8a ruling 5 — ACCEPTED, do not re-litigate).** This field widens what
 project participants can see: `facts.touched` is a session's FULL changed-path list (up to
@@ -385,8 +437,9 @@ membership — asserted by the discriminating row below.
 | default | fresh session entry | facts.touched = null |
 | carried | entry.touched = ["a.ts","b.ts"] | sessionFactsOf output has exactly that array (copied, not aliased — mutation of the returned facts never mutates the entry) |
 | validation accepts | facts frame with touched: [] / ["a.ts"] / absent / null | accepted; absent normalizes to null |
-| validation rejects | touched: "x" / [1] / [513-char string] / TOUCH_CAP+2 entries | frame rejected with the existing malformed-facts error path |
-| producer never emits a rejectable path (paired with Task 1) | facts built by `sessionFactsOf` from a `touchedFiles` result computed in a repo that contains a path longer than 512 chars | the over-long path was already DROPPED producer-side (Task 1's over-long-path row), so the frame VALIDATES and the session's other paths survive — one pathological path never costs a session its whole facts frame |
+| validation rejects | touched: "x" / [1] / [a `PATH_WIRE_CAP + 1` = 513-char string] / TOUCH_CAP+2 entries | frame rejected with the existing malformed-facts error path |
+| snapshot row carries it (discriminating) | a session with `entry.touched = ["a.ts"]` rendered through `projectSnapshot` | the emitted `ProjectMessage.sessions[0].touched` deep-equals `["a.ts"]` and TYPECHECKS against the inline row type — a change that adds the field to `SessionFacts` only must fail this row |
+| producer never emits a rejectable path (paired with Task 1) | facts built by `sessionFactsOf` from a `touchedFiles` result computed in a repo that contains a path longer than `PATH_WIRE_CAP` chars | the over-long path was already DROPPED producer-side (Task 1's over-long-path row), so the frame VALIDATES and the session's other paths survive — one pathological path never costs a session its whole facts frame |
 | project bound (exposure, discriminating) | two projects on one server, each with sessions carrying touched | a project push to project A's members contains touched for A's sessions ONLY — no session of project B appears in it at all |
 | protocol stability | RELAY_PROTOCOL_VERSION | UNCHANGED (additive optional field, spec §3.3); a v2 peer without the field still validates |
 
@@ -422,8 +475,8 @@ exports — behavior only.
 | null baseRef | `entry.baseRef === null` (session with no repo, or never provisioned) | touched stays null; NO git invocation, no error, no log spam |
 | no workdir | `entry.workdir === undefined` | touched stays null; no git invocation |
 | pre-gate | a `permission_request` for a write tool (Edit/Write/NotebookEdit) arrives | recompute BEFORE the gate is offered/answered, so Task 8b judges fresh data |
-| git failure | touchedFiles throws | previous `entry.touched` value KEPT (stale beats absent); logged once per session, not per event |
-| git hangs (bounded stall) | git exceeds `touchedFiles`' 5000 ms timeout (Task 1) during a PRE-GATE recompute | treated exactly as a git failure: previous `entry.touched` KEPT, the gate PROCEEDS (never blocked, never delayed past the timeout), logged once per session. **Accepted blast radius, stated plainly (Task 1's "Blast radius of the synchronous call"):** `execFileSync` blocks the whole laptop process for that interval — every session's socket traffic, the 1s project push and every other pending gate are frozen, not just this gate. 5000 ms is the whole-process ceiling; owner may lower it or move to async `execFile` (residuals) |
+| git failure | touchedFiles throws | previous `entry.touched` value KEPT (stale beats absent); logged once per session, not per event, with this EXACT line on stderr: ``process.stderr.write(`[touched] session=${sessionId} recompute failed: ${err.message}\n`)`` — asserted verbatim by `serverTouched.test.ts` (prefix `[touched] session=` plus the session id), and a second failure for the same session id emits NOTHING |
+| git hangs (bounded stall) | git exceeds `touchedFiles`' 5000 ms timeout (Task 1) during a PRE-GATE recompute | treated exactly as a git failure: previous `entry.touched` KEPT, the gate PROCEEDS (never blocked, never delayed past the timeout), logged once per session. **Accepted blast radius, stated plainly (Task 1's "Blast radius of the synchronous call"):** `execFileSync` blocks the whole laptop process for that interval — every session's socket traffic, the 1s project push and every other pending gate are frozen, not just this gate. 5000 ms is the whole-process ceiling. **Ruled accepted (spec §8a.8); revisit only on an observed freeze** — not an executor decision |
 | no recompute storms | non-write tools, non-boundary events | no git invocation (discriminate: a `tool_call` Read appends → no recompute) |
 
 **Verify:** `cd poc/server && npx vitest run && npx tsc --noEmit && npm run build` → WHOLE
@@ -440,17 +493,23 @@ modify `poc/server/package.json` (add `"./collisions"` export, same shape as `".
 **Interfaces — produces (verbatim; isomorphic pure ESM per Global Constraints):**
 
 ```ts
+// The ONLY import in this file, and it is type-only (see the isomorphism check in Verify):
+import type { SessionFacts } from "./relayProtocol.js";
+
 export const COLLISIONS_MODULE_ID = "collisionsFrom/v1";
 // PLAN-AUTHORED — verification anchor, no spec requirement. Spec §4 fixes this module's surface
 // as CollisionInput / Collision / collisionsFrom; this constant (and the TypeError input guard
 // whose message carries it) exists ONLY as Task 9a's minification-stable bundle-check anchor.
 // The owner may drop both and rely on Task 9a's node smoke check alone. Listed with the other
 // plan-authored decisions in the residuals section.
-// Canonical declaration site for both constants (Global Constraints). They live HERE, in the
-// isomorphic module, and touched.ts (Task 1) re-exports them — the reverse would drag a
-// node-only module into the client bundle through Task 5's own `sentinel inert` rule.
+// Canonical declaration site for ALL THREE constants (Global Constraints). They live HERE, in
+// the isomorphic module, and touched.ts (Task 1) re-exports them — the reverse would drag a
+// node-only module into the client bundle through Task 5's own `sentinel inert` rule, and
+// relayProtocol.ts (Tasks 3 and 6) could not import PATH_WIRE_CAP from a node-only module at all.
 export const TOUCH_CAP = 500;
 export const TOUCH_SENTINEL = "…";      // single U+2026 char
+export const PATH_WIRE_CAP = 512;       // per-path wire cap, chars — producer drop threshold
+                                        // (Task 1) AND validator bound (Tasks 3, 6)
 export interface CollisionInput {
   sessionId: string;
   repoKey: string | null;
@@ -485,16 +544,19 @@ green. Isomorphism check — **transitive, not direct-only** (a direct `node:` g
 while a relative import dragged a node-only module in behind it):
 
 - `command grep -n "from \"node:" poc/server/src/collisions.ts` → empty, AND
-- `command grep -nE "^\s*import " poc/server/src/collisions.ts` → every hit (if any) begins
-  `import type ` — type-only imports are erased at build, so nothing this module names can
-  reach the client bundle. A value import of ANY module, relative or not, fails this check.
+- `command grep -nE "^\s*import " poc/server/src/collisions.ts` → exactly one hit, and it is
+  `import type { SessionFacts } from "./relayProtocol.js";`. Every hit must begin `import type `
+  — type-only imports are erased at build, so nothing this module names can reach the client
+  bundle. A value import of ANY module, relative or not, fails this check.
 
-This is also why `TOUCH_CAP`/`TOUCH_SENTINEL` are declared in this file rather than imported
-from `touched.ts` (Task 1 re-exports them instead).
+This is also why `TOUCH_CAP` / `TOUCH_SENTINEL` / `PATH_WIRE_CAP` are declared in this file rather
+than imported from `touched.ts` (Task 1 re-exports them instead).
 
-Then **`npm run build`** (same command, same position as every other server task in this plan —
-there is no carve-out): exits 0 and `poc/server/dist/collisions.js` exists, published by THIS
-task rather than by an unpinned successor. Tasks 1, 3 and 9a all consume it and every one of
+Then **`npm run build && test -f dist/collisions.js`** (same build command, same position as
+every other server task in this plan — there is no carve-out; the trailing `test -f` is the
+command that asserts the artifact rather than eyeballing it): the chain exits 0 and
+`poc/server/dist/collisions.js` exists, published by THIS task rather than by an unpinned
+successor. Tasks 1, 3 and 9a all consume it and every one of
 them is in this task's exclusion group, so the publish is never concurrent with a read.
 **Commit:** `feat(server): collisionsFrom — pure per-repo intersection of touched sets`
 
@@ -512,7 +574,7 @@ validator); tests `poc/hub/test/contested.test.ts` (new, on the uplink harness),
 ```ts
 { type: "contested",
   sessionId: string,
-  paths: string[],                                        // ≤ TOUCH_CAP + 1, each ≤ 512 chars
+  paths: string[],                                        // ≤ TOUCH_CAP + 1, each ≤ PATH_WIRE_CAP
   collisions: { path: string; sessionIds: string[] }[] }  // the colliding peers, so the
                                                           // laptop can NAME them (spec §6)
 ```
@@ -526,7 +588,8 @@ truncated after sort and flagged with a final literal entry `"…"`)" — and §
 cap explicitly as "length ≤ TOUCH_CAP + 1". §6a uses the identical phrase for the identical
 list, so `paths` ≤ `TOUCH_CAP + 1` (500 real paths + the sentinel slot) is the spec's bound read
 consistently with §3.1/§3.3, not a plan-authored amendment. One validator shape therefore serves
-both frames, and no ruling 7 is required. The earlier revision's "harmonization" caveat — and
+both frames, and no additional ruling is required (§8a ruling 7 exists and is about a different
+subject — old-scheme worktree orphaning). The earlier revision's "harmonization" caveat — and
 its executor trap, where the standing "spec governs" rule pointed at a bound the plan's own
 frames would violate — is **withdrawn**. (Reading recorded in the residuals section; if the
 owner reads §6a as a flat 500 INCLUDING the sentinel, say so and this task drops to
@@ -557,6 +620,17 @@ value (paths AND collisions) on the next push, and DELETED when the session leav
 snapshot. It is in-memory only — never journaled — which is exactly why the restart row below
 tolerates one duplicate frame after a hub restart.
 
+**Laptop restart / uplink reconnect (the symmetric case — an explicit rule, not a gap).** The
+hub's change detection is per-session state the LAPTOP cannot see. When a laptop process restarts
+or its uplink reconnects, the laptop loses `entry.contestedFrame` (Task 7a, in-memory) while the
+hub still holds a matching `lastContestedSent` entry, so change detection would suppress the
+resend and hub-sourced contested state would stay silently empty until the collision set happened
+to change. **Rule: on uplink disconnect AND on uplink re-registration, the hub DELETES the
+`lastContestedSent` entry of every session owned by that uplink**, so the next `pushProject`
+re-sends that session's current frame unconditionally. One redundant frame after a reconnect is
+acceptable (same posture as the hub-restart duplicate); a silently missing one is not. Asserted
+by the reconnect row below.
+
 **Behavior:**
 
 | Case | Input / state | Expected |
@@ -565,22 +639,34 @@ tolerates one duplicate frame after a hub restart.
 | change-only | same collision state across two pushes | no duplicate frame on the second push (state compared on paths AND collisions) |
 | clear | one session's touched update removes the overlap | affected uplinks receive `paths: []`, `collisions: []` exactly once |
 | over-cap | a session's contested path set exceeds TOUCH_CAP | truncated after sort to TOUCH_CAP entries plus a final `TOUCH_SENTINEL` element (length = TOUCH_CAP + 1, same semantics as Task 1/Task 3); `collisions` truncated to the retained paths |
-| validation rejects — `paths` (relayProtocol) | inbound `contested` frame with `paths: "x"` / a 513-char path / TOUCH_CAP+2 entries | frame rejected with the existing malformed-frame error path — never partially applied |
-| validation rejects — `collisions` (relayProtocol, explicit bounds) | inbound frame with `collisions: "x"` / TOUCH_CAP+2 collision entries / an entry missing `sessionIds` / `sessionIds: [1]` / `sessionIds: []` (empty) / a `sessionIds` string > 128 chars / 101 ids in one entry / an entry whose `path` is 513 chars | each rejected with the same malformed-frame error path. Bounds are the Global-Constraints ones: `collisions` length ≤ `TOUCH_CAP + 1`, `path` ≤ 512, `sessionIds` non-empty, each id a string ≤ 128 chars, ≤ 100 ids per entry |
+| validation rejects — `paths` (relayProtocol) | inbound `contested` frame with `paths: "x"` / a `PATH_WIRE_CAP + 1` = 513-char path / TOUCH_CAP+2 entries | frame rejected with the existing malformed-frame error path — never partially applied |
+| validation rejects — `collisions` (relayProtocol, explicit bounds) | inbound frame with `collisions: "x"` / TOUCH_CAP+2 collision entries / an entry missing `sessionIds` / `sessionIds: [1]` / `sessionIds: []` (empty) / a `sessionIds` string > 128 chars / 101 ids in one entry / an entry whose `path` is 513 chars | each rejected with the same malformed-frame error path. Bounds are the Global-Constraints ones: `collisions` length ≤ `TOUCH_CAP + 1`, `path` ≤ `PATH_WIRE_CAP` (imported, never re-stated as `512`), `sessionIds` non-empty, each id a string ≤ 128 chars, ≤ 100 ids per entry (these two are inline literals beside the existing `MAX_REPOS = 100`, per Global Constraints) |
 | offline uplink | collision involves a session whose uplink is offline | no send, no error; frame delivered on next change after reconnect (no replay obligation — the next push recomputes) |
+| uplink reconnect / laptop restart (discriminating) | an uplink with a contested session disconnects and re-registers; the collision set is UNCHANGED throughout | that session's `lastContestedSent` entry was deleted on disconnect/re-registration, so the first `pushProject` after re-registration RE-SENDS the identical frame — an implementation that only compares by value must fail this row (it would send nothing and leave the reconnected laptop with no hub-sourced contested state) |
 | restart preserves touched | hub restarts and hydrates from the journal (extends `poc/hub/test/hubRestart.test.ts`) | each hydrated `SessionFacts.touched` deep-equals what was journaled before the restart; the first post-restart push recomputes collisions from it and emits frames matching pre-restart state (change-detection state MAY reset — one duplicate frame after restart is acceptable and documented) |
-| old laptop / unknown down-frame (compat) | a laptop built before this task receives a `type: "contested"` frame | the frame is IGNORED by the unknown-frame path; the uplink is NOT disconnected and no error surfaces. `RELAY_PROTOCOL_VERSION` stays **UNCHANGED** (additive frame type — same posture as Task 3's additive optional field). Bumping the version instead would be an owner decision, not this task's |
+| old laptop / unknown down-frame (compat) | a laptop built before this task receives a `type: "contested"` frame | the frame is IGNORED by the unknown-frame path; the uplink is NOT disconnected and no error surfaces. `RELAY_PROTOCOL_VERSION` stays **UNCHANGED** — a PLAN-AUTHORED reading (spec §3.3 grants the no-bump exemption to an additive optional FIELD; applying it to a whole new frame type is this plan's extension, registered with the other plan-authored decisions and justified by exactly this row's unknown-frame ignore path). Bumping the version instead would be an owner override |
 | thesis bound | frame contents | ONLY sessionId, paths and colliding session ids — no transcript data, no prompts, no names |
 
 **Risk / rollback (no runtime switch — deliberate).** `MPAI_CONTESTED_GATE` (Task 8b) covers
 tier (b) on the laptop ONLY. The hub's `collisionsFrom` computation and the `contested`
 down-frame have **no runtime switch**: their disable path is a `git revert` of this task's
-commit followed by `npm --prefix poc/hub run build` and a hub restart (the hub is a long-lived
-process; a revert does not take effect in a running one). Reverting does NOT remove `touched`
-values already written to the hub journal — those rows keep the field and are ignored by the
-field-unaware reader (Task 3's downgrade note). If this hub is ever run as a shared/deployed
-process rather than the local :4000 walk process, the revert is a redeploy, not a restart, and
-every attached laptop keeps its last-received contested state until it reconnects.
+commit followed by a rebuild, a restart, and a laptop-side step. The full procedure, in order:
+
+1. `git revert` this task's commit, then `npm --prefix poc/hub run build`, then restart the hub
+   (the hub is a long-lived process; a revert does not take effect in a running one). If the hub
+   is ever run as a shared/deployed process rather than the local :4000 walk process, this step
+   is a redeploy rather than a restart.
+2. **Laptop side (required — the revert alone does not restore prior behavior).** Every attached
+   laptop keeps its last-received `entry.contestedFrame` (Task 7a, in-memory) and would go on
+   withdrawing auto-approve on stale hub-sourced peers. Set `MPAI_CONTESTED_GATE=0` on every
+   attached laptop — or restart the laptop process — so tier (b) stops acting on the last
+   received frame.
+3. Tier (a) surfaces need no separate step: local derivation is computed on read, so hub-sourced
+   contested state clears on the next laptop restart and locally-derived state remains correct
+   throughout.
+
+Reverting does NOT remove `touched` values already written to the hub journal — those rows keep
+the field and are ignored by the field-unaware reader (Task 3's downgrade note).
 
 **Verify (server build FIRST — the hub resolves `relayProtocol` through the package exports map
 from `dist/`, so a hub suite run before the build would exercise the pre-task `dist/`):**
@@ -647,7 +733,7 @@ stale. `TOUCH_SENTINEL` is never a member of either accessor's output.
 | union | hub frame has `src/a.ts` (peer `s9`) and local derivation has `src/b.ts` (peer `s2`) | `contestedFor` = {`src/a.ts`,`src/b.ts`}; each path's peers come from its own source |
 | union dedupe | the SAME path collides in both sources with an overlapping peer id | path appears once; `contestedSessionsFor` returns each peer id once, ascending |
 | unknown session (accessor side) | `contestedFor(project, "nope")` | empty set; never throws |
-| frame for unknown session (inbound side, discriminating) | a validated `contested` frame arrives whose `sessionId` is not in this laptop's project map — e.g. it raced a session removal, or names a session owned by another uplink | frame **DROPPED**: no `ProjectSessionEntry` is created, nothing is stored anywhere, no throw, no uplink disconnect, and at most one log line per session id. A later `contested` frame for a session that DOES exist is still applied normally |
+| frame for unknown session (inbound side, discriminating) | a validated `contested` frame arrives whose `sessionId` is not in this laptop's project map — e.g. it raced a session removal, or names a session owned by another uplink | frame **DROPPED**: no `ProjectSessionEntry` is created, nothing is stored anywhere, no throw, no uplink disconnect, and at most one log line per session id — that line EXACTLY: ``process.stderr.write(`[contested] session=${sessionId} unknown session, frame dropped\n`)``, asserted verbatim, with a second frame for the same unknown id emitting NOTHING. A later `contested` frame for a session that DOES exist is still applied normally |
 | thesis bound | accessor outputs | paths and session ids only — no prompts, no transcript, no file contents |
 
 **Verify:** `cd poc/server && npx vitest run && npx tsc --noEmit && npm run build` → WHOLE
@@ -686,7 +772,7 @@ whole format lives where Task 7b's tests are). `server.ts`'s `digestFor` supplie
 `contested` array from the Task 7a accessors; the optional 4th parameter keeps `project.ts`'s
 existing `summarizeSession` call sites compiling untouched.
 
-**`MPAI_DIGEST_DUMP` — the capture mechanism Task 11 steps 5 and 8e depend on.** Today
+**`MPAI_DIGEST_DUMP` — the capture mechanism Task 11a step 5 and Task 11b step 8e depend on.** Today
 `digestFor` is a non-exported local (`server.ts:510`) whose output is never logged, so "record
 the `digestFor` output for that turn" named no mechanism that exists. This task adds one,
 env-gated and off by default, in `server.ts` immediately before `digestFor` returns:
@@ -705,6 +791,11 @@ prints the line to paste verbatim into the ledger. Env var read per call, never 
 unset the emit is one comparison and no output, so default behavior is byte-identical to today.
 It is a debug facility, not a product surface: it writes to the laptop's OWN stderr, crosses no
 session boundary, and is listed with the plan-authored decisions in the residuals section.
+**Handling of the capture file.** The dump line contains peer paths, session ids and driver names
+(the same class of content as the walk ledger itself), so wherever that stderr is REDIRECTED to a
+file — Task 11a step 1 and Task 11b step 8a send it to `/tmp/mpai-walk-*.log` — the capture file
+inherits the ledger's handling: it is read, its evidence line is pasted into the ledger, and the
+file is deleted at walk shutdown (Task 11b step 9). Never leave a walk log on a shared machine.
 
 **Behavior:**
 
@@ -762,7 +853,7 @@ reason?: string | null;  // additive OPTIONAL field; absent and null are the sam
 | default null | any gate opened by today's code paths | `PendingGate.reason === null`; the emitted gate frame is byte-identical to today's apart from the optional field being absent/null |
 | carried to the client | a gate whose `reason` is `contested with session alpha` | the gate frame carries that exact string, character-for-character, to the client |
 | validation accepts | inbound gate frame with `reason` absent / null / a string | accepted; absent normalizes to null |
-| validation rejects | `reason: 7` / `reason: {}` / a string longer than 512 chars | frame rejected with the existing malformed-frame error path — never partially applied |
+| validation rejects | `reason: 7` / `reason: {}` / a string longer than 512 chars (the gate-reason cap — a SEPARATE bound from `PATH_WIRE_CAP`, deliberately the same number; it stays an inline literal in `pendingGate.ts`/`relayProtocol.ts` because no other task consumes it) | frame rejected with the existing malformed-frame error path — never partially applied |
 | protocol stability | `RELAY_PROTOCOL_VERSION` | UNCHANGED (additive optional field, same posture as Task 3); a peer that ignores `reason` still validates and still renders the gate |
 | no policy yet (discriminating) | the whole server suite on this commit | no gate anywhere sets a non-null reason — this task ships the carrier only; Task 8b supplies the first writer |
 
@@ -878,24 +969,57 @@ npx tsc --noEmit` → the new file green; then `npx vitest run` → WHOLE server
 
 ## Task 9a: collisionView — client adapter over `collisionsFrom` *(spec §5)*
 
-**Files:** create `poc/client/src/collisionView.ts`, `poc/client/src/collisionView.test.ts`.
+**Files:** create `poc/client/src/collisionView.ts`, `poc/client/src/collisionView.test.ts`;
+modify `poc/client/src/types.ts` (ONE added field — see below).
 
-**Interfaces — consumes (RUNTIME import — first non-type client import of the server pkg):**
-`collisionsFrom`, `COLLISIONS_MODULE_ID`, `Collision`, `CollisionInput` from
-`multiplayer-ai-server/collisions`. Produces (verbatim — 9b, 10a and 10b depend on these):
+**The client's snapshot row is FLAT — this task's input type is that row, not a `facts` wrapper.**
+`ProjectSessionInfo` (`poc/client/src/types.ts:61`) is the client's mirror of
+`ProjectMessage.sessions[]`: `id`, `participants`, `driverName`, …, `repoKey?`, `lifecycle?` —
+there is no `facts` member on it and nothing in the client builds one. This task therefore adds
+the mirrored field and consumes the row type directly. The exact addition to
+`poc/client/src/types.ts`, on `ProjectSessionInfo`, beside `lifecycle?`:
 
 ```ts
-export function projectCollisions(sessions: { sessionId: string; facts: SessionFacts }[]): Collision[];
+  /** Repo-relative paths this session has changed (spec §3.3). Optional so a
+   *  snapshot from an older server still parses — same posture as `repoKey`. */
+  touched?: string[] | null;
+```
+
+Server-side counterpart: Task 3 adds `touched: string[] | null` to `ProjectMessage.sessions[]`'s
+inline row type, which is what this field mirrors.
+
+**Interfaces — consumes.** Exact import lines in `poc/client/src/collisionView.ts` (the RUNTIME
+import is the first non-type client import of the server package):
+
+```ts
+import { collisionsFrom, COLLISIONS_MODULE_ID } from "multiplayer-ai-server/collisions";
+import type { Collision, CollisionInput } from "multiplayer-ai-server/collisions";
+import type { ProjectSessionInfo } from "./types";
+```
+
+Produces (verbatim — 9b, 10a and 10b depend on these three signatures, character-exact):
+
+```ts
+export function projectCollisions(sessions: ProjectSessionInfo[]): Collision[];
+// Maps each row to CollisionInput: sessionId ← row.id, repoKey ← row.repoKey ?? null,
+// lifecycle ← row.lifecycle ?? "open", touched ← row.touched ?? null. Then delegates to
+// collisionsFrom — no reimplementation of the intersection.
 export function contestedCountFor(sessionId: string, collisions: Collision[]): number;
 export function sharedWith(sessionId: string, otherSessionId: string, collisions: Collision[]): string[];
 ```
+
+**Callers (so no client task has to invent its data source).** 9b passes its component-local
+`sessions` state; 10b passes its existing `sessions` prop; 10a passes App's `projectSessions`.
+All three are already `ProjectSessionInfo[]` — that is why this signature takes the row type
+rather than an adapter shape nothing constructs.
 
 **Behavior:**
 
 | Case | Input / state | Expected |
 |------|---------------|----------|
-| adapter | snapshot session rows | projectCollisions maps facts → CollisionInput and delegates to collisionsFrom (no reimplementation — asserted by deep-equal against direct collisionsFrom output) |
-| missing field | a session row whose facts lack `touched` (older peer) | mapped to `touched: null`; contributes nothing; never throws |
+| adapter | snapshot session rows (`ProjectSessionInfo[]`) | projectCollisions maps each row to CollisionInput by the mapping above and delegates to collisionsFrom (no reimplementation — asserted by deep-equal against direct collisionsFrom output) |
+| mapping pinned (discriminating) | a row `{ id: "s1", repoKey: "r", lifecycle: "closed", touched: ["a.ts"] }` and a row `{ id: "s2", repoKey: "r", touched: ["a.ts"] }` with `lifecycle` and `touched` ABSENT on a third row `{ id: "s3", repoKey: "r" }` | the `CollisionInput[]` handed to `collisionsFrom` is exactly `[{sessionId:"s1",repoKey:"r",lifecycle:"closed",touched:["a.ts"]}, {sessionId:"s2",repoKey:"r",lifecycle:"open",touched:["a.ts"]}, {sessionId:"s3",repoKey:"r",lifecycle:"open",touched:null}]` — absent/undefined `touched` becomes `null` (never `[]`, never `undefined`), absent `repoKey` becomes `null`, absent `lifecycle` becomes `"open"` |
+| missing field | a session row with no `touched` (older peer) | mapped to `touched: null`; contributes nothing; never throws |
 | count | a session in 3 distinct collision paths | contestedCountFor = 3 (distinct paths involving that session) |
 | shared | two sessions sharing 2 paths | sharedWith returns both, ascending; unrelated pair → `[]` |
 | none | no collisions | `[]` from all three (discriminating row) |
@@ -911,8 +1035,13 @@ an identifier is NOT valid). **Every command in this block runs from `poc/client
 prints one `file:count` line per matched file, so the expected result is **at least one line
 whose count is ≥ 1** (equivalently, `command grep -l "collisionsFrom/v1" dist/assets/*.js`
 prints at least one path) — proving Task 5's runtime-reachable module-id literal actually
-bundled. If NO line has a non-zero count, fall back to the smoke check below before concluding a
-bundling failure. It imports through the **package specifier the real client code uses**, not a
+bundled. **Verdict rule (no judgement call):** at least one non-zero count = **PASS** of the
+bundle check. NO non-zero count = **FAIL of the bundle check, even if the node smoke check below
+is green** — a green smoke check with an absent literal means the module resolves under node but
+did not reach the browser bundle, which is precisely the failure this check exists to catch. On
+that FAIL, do not proceed to 9b/10a/10b; fix the bundling first. (The smoke check is run in every
+case, as a second, independent assertion — never as an escape hatch from this one.) It imports
+through the **package specifier the real client code uses**, not a
 relative file path, so it also proves Task 5's new `"./collisions"` entry in
 `poc/server/package.json` resolves — the exports-map failure a `../server/dist/...` import would
 silently pass. Run it from `poc/client`, the cwd this block established, where the
@@ -935,6 +1064,15 @@ fixtures, spec §9 "UI: render tests …").
 
 **Interfaces — consumes:** Task 9a's `projectCollisions` / `contestedCountFor` / `sharedWith`.
 
+**Data path (no App edit — `App.tsx` is outside this task's file list and Global Constraints
+forbid staging outside it).** `SessionPicker` already owns its session list in component-local
+state (`poc/client/src/components/SessionPicker.tsx:33`,
+`const [sessions, setSessions] = useState<ProjectSessionInfo[]>([])`) and its props are only
+`{ projectId; userId; name }`. This task computes collisions IN THE COMPONENT from that local
+state — `const collisions = useMemo(() => projectCollisions(sessions), [sessions]);` — and adds
+NO new prop, so nothing in `App.tsx` needs to change and `npx tsc -b` cannot fail on an unpassed
+required prop.
+
 **Behavior:**
 
 | Case | Input / state | Expected |
@@ -949,9 +1087,12 @@ src/components/SessionPicker.test.tsx` → server build exits 0 (explicit — no
 fires under `npx vitest run`), then the new file's cases green (each shown RED on pre-task code
 first, per the TDD constraint); then `npx vitest run` → WHOLE client suite green. Plus
 `command grep -n "contested-calm" poc/client/src/terminal.css` → the class is DEFINED (a rule
-body, not just a class reference), and
-`command grep -n "amber" poc/client/src/terminal.css | command grep -n "contested"` → empty (no
-amber token inside the contested rule).
+body, not just a class reference), and — anchored to the RULE BODY, not to a single line, because
+a one-line pipeline passes vacuously the moment the rule is formatted across several lines —
+`command grep -A3 '^\.contested-calm' poc/client/src/terminal.css | command grep -c 'amber'` →
+prints exactly `0` (the rule's declaration line plus its next 3 lines contain no amber token).
+The rule is authored as ≤ 4 lines (selector + the three declarations in Global Constraints), so
+`-A3` covers its whole body; a longer rule must widen the `-A` count to match.
 **Commit:** `feat(client): contested chips on the session list`
 
 ---
@@ -966,13 +1107,41 @@ Task 9b; this task only applies the class name.
 
 **Interfaces — consumes:** Task 9a's `projectCollisions` / `contestedCountFor`.
 
+**Data path and the exact new prop.** `App.tsx` already holds `projectSessions`
+(`ProjectSessionInfo[]`, the same array it passes to `PartyPane` at `poc/client/src/App.tsx:564`).
+This task adds, in `App.tsx`,
+`const collisions = useMemo(() => projectCollisions(projectSessions), [projectSessions]);` and
+passes ONE new named prop to `Header`:
+
+```tsx
+// poc/client/src/components/Header.tsx
+import type { Collision } from "multiplayer-ai-server/collisions";   // type-only — no runtime
+                                                                     // import is added here
+// … Header's props object gains, beside `pulls?: number`:
+  /** Contested paths across the project, from Task 9a. Optional so a caller
+   *  that has not computed them renders no badge rather than crashing. */
+  contested?: Collision[];
+```
+
+`Header` renders the badge from `contestedCountFor(props.sessionId, props.contested ?? [])`. The
+prop is OPTIONAL, so no other `Header` call site has to change. No other component receives a
+`collisions` prop: 9b and 10b each compute their own (see their Data-path notes) and neither
+touches `App.tsx`.
+
+**Memoization is deliberately NOT test-asserted.** The `useMemo` above exists so a git-scale
+array is not re-intersected on every render, but the client has no App-level test file
+(`poc/client/src/App.test.tsx` does not exist) and this task does not add one — an App render
+harness is a larger piece of work than the wiring it would guard. So the memo is stated as a
+requirement of the diff and verified by review of that diff, and this task's Verify makes no
+claim about it. Every row in the table below IS asserted by `Header.test.tsx`.
+
 **Behavior:**
 
 | Case | Input / state | Expected |
 |------|---------------|----------|
-| header badge | current session has N > 0 contested paths | badge exactly `⚠ CONTESTED ▸ ${N}` beside the PULLS badge; class `contested-calm`, not the gate amber |
+| header badge | `contested` prop puts the current session in N > 0 contested paths | badge exactly `⚠ CONTESTED ▸ ${N}` beside the PULLS badge; class `contested-calm`, not the gate amber |
 | badge hidden at 0 (discriminating) | current session has 0 contested paths | NO badge node rendered at all — not an empty one |
-| wiring (via the App-level render) | App.tsx | collisions computed once per project push (useMemo over project sessions), passed down as props — assert the memo is not recomputed when unrelated props change; no per-render recompute of git-scale arrays |
+| prop absent | `Header` rendered with no `contested` prop at all (every pre-existing call site) | renders exactly as today — no badge node, no crash |
 
 **Verify:** `cd poc/client && npm --prefix ../server run build && npx tsc -b && npx vitest run
 src/components/Header.test.tsx` → server build exits 0 (explicit — `npx vitest run` fires no
@@ -989,6 +1158,12 @@ src/components/Header.test.tsx` → server build exits 0 (explicit — `npx vite
 same pattern as above). Render tests over `collisionsFrom` fixtures (spec §9).
 
 **Interfaces — consumes:** Task 9a's `projectCollisions` / `sharedWith`.
+
+**Data path (no App edit, no new prop).** `PartyPane` already receives
+`sessions: ProjectSessionInfo[]` (`poc/client/src/App.tsx:564` passes `sessions={projectSessions}`),
+so this task computes collisions IN THE COMPONENT from that existing prop —
+`const collisions = useMemo(() => projectCollisions(props.sessions), [props.sessions]);` — and
+adds no prop and no `App.tsx` edit. (10a's `Header` prop is separate and does not reach here.)
 
 **Behavior:**
 
@@ -1010,14 +1185,20 @@ green (each shown RED on pre-task code first); then `npx vitest run` → WHOLE c
 
 ---
 
-## Task 11: two-session browser walk *(verification only, no source changes; spec §9 walk row —
-steps beyond it are house verification convention)*
+## Task 11a: browser walk — hub-attached leg, steps 0–7 *(verification only, no source changes;
+spec §9 walk row — steps beyond it are house verification convention)*
 
 **Files:** none in the normal case (deliverable = walk record in the execution ledger). The ONE
 exception is step 5: a FAIL there requires a follow-up entry in `docs/tech-debt.md` — that is
 the only file this task may write, and it is why the dependency table's Files cell reads
 "ledger record; `docs/tech-debt.md` ONLY on a step-5 FAIL". Task 12 also edits that file and
 depends on this task, so it must expect a step-5 entry to be present already.
+
+**Split note (11a / 11b).** The walk is two tasks because it is two product modes with a full
+process teardown between them: 11a is the hub-attached leg (steps 0–7), 11b is the solo parity
+leg (steps 8a–8f) plus shutdown (step 9). 11b depends on 11a and inherits 11a's process/PID
+hygiene rules verbatim; Task 12 depends on both. The step text and numbering are unchanged from
+the single-task version, so every cross-reference elsewhere in this plan still resolves.
 
 Each numbered step — including every lettered sub-step — is INDEPENDENTLY ledgered; a later
 failure does not invalidate earlier recorded results.
@@ -1050,11 +1231,18 @@ Two rules, both mandatory:
    `ps -p $(cat <pidfile>) -o command=` and confirm the output contains the expected entrypoint
    — `poc/hub/dist/main.js` for the hub pidfile, `poc/server/bin/mpai.js` for the laptop and
    solo pidfiles. If it does not match (or `ps` prints nothing), **do not kill**: ledger the
-   mismatch, `rm -f` the stale file, and continue. This check is binding at steps 8a and 9.
+   mismatch and `rm -f` the stale file. This check is binding at steps 8a and 9. A mismatch is
+   NOT by itself permission to proceed into the solo leg — step 8a's absence gate below decides
+   that, because the walk's own hub/laptop may still be alive under a PID the file no longer
+   names, which would make steps 8d/8e/8f non-discriminating.
 
 **Steps (verbatim):**
 
-0. **Port pre-flight (before anything is launched).** From the repo root run
+0. **Port pre-flight + repo-root capture (before anything is launched).** From the repo root run
+   `REPO_ROOT=$(git rev-parse --show-toplevel)` and ledger the printed value (`echo $REPO_ROOT`)
+   — every later `node …/poc/server/bin/mpai.js` invocation in this walk uses `$REPO_ROOT`, and
+   step 8a runs from a `mktemp -d` scratch repo where a relative path would resolve to nothing.
+   The variable must be exported into (or re-captured in) whatever shell runs step 8a. Then run
    `lsof -ti :4000; lsof -ti :3002`. PASS = BOTH commands print nothing (both ports free). A
    non-empty result means the port belongs to someone else on this shared machine: pick another
    free port, ledger the substitution, and use it for the rest of the walk — **never kill the
@@ -1079,9 +1267,9 @@ Two rules, both mandatory:
    name is load-bearing, steps 4/5/6 and 8d/8e/8f all assert on `notes.txt` literally — and wait
    for turn end. PASS = the turn ends, `notes.txt` is present in alpha's worktree, and alpha is
    listed in the session list. (Ledgered; not a plan-level Done-criteria step.)
-3. Create session `beta` in the SAME repo, drive a turn editing the SAME file (`notes.txt`).
-   PASS = the turn ends and `notes.txt` is modified in beta's worktree. (Ledgered; not a
-   plan-level Done-criteria step.)
+3. Create session `beta` in the SAME repo, drive a turn editing the SAME file with the exact
+   prompt `add a second line to notes.txt`. PASS = the turn ends and `notes.txt` is modified in
+   beta's worktree. (Ledgered; not a plan-level Done-criteria step.)
 4. PASS = after beta's turn ends: header badge `⚠ CONTESTED ▸ 1` in beta's session view; the
    project screen's repo group head shows the chip `⚠ 1 contested`; alpha's OTHER PARTIES row
    (from beta's view) shows `⚠ shares: notes.txt`. (Required PASS for plan-level done.)
@@ -1095,48 +1283,94 @@ Two rules, both mandatory:
    FAIL is admissible ONLY with (a) the verbatim `digestFor` dump pasted into the ledger and
    (b) a follow-up entry filed in `docs/tech-debt.md`; a bare "FAIL recorded" does not satisfy
    the plan-level Done criteria.
-6. Agent tier (b): with auto-approve on in beta (and `MPAI_CONTESTED_GATE` unset), ask the agent
-   to edit notes.txt again — PASS = the gate ASKS with reason text `contested with session
-   alpha` observed verbatim; approve it; a subsequent edit auto-approves (once-per-file proven
-   live). (Required PASS.)
+6. Agent tier (b): with auto-approve on in beta (and `MPAI_CONTESTED_GATE` unset), drive a turn
+   with the exact prompt `append a second line to notes.txt` — PASS = the gate ASKS with reason
+   text `contested with session alpha` observed verbatim; approve it; then drive one more turn
+   with the exact prompt `append a third line to notes.txt`, which auto-approves (once-per-file
+   proven live). (Required PASS.)
 7. Close alpha; PASS = collision persists and alpha shows CLOSED + contested (spec §2.6).
    (Required PASS.)
+
+**Verify (11a):** ledger contains steps 0–7 each independently recorded, with steps 4, 6 and 7
+PASS, step 6's gate-reason text `contested with session alpha` pasted verbatim, and step 5's
+`[digest-dump]` line pasted verbatim (PASS, or FAIL under the Done-criteria allowance). The hub
+and laptop processes are LEFT RUNNING for Task 11b, which stops them at its step 8a; their PID
+files stay in place.
+**Commit:** none.
+
+---
+
+## Task 11b: browser walk — solo parity leg, steps 8a–8f + shutdown *(verification only, no
+source changes; spec §9 "solo-mode parity leg")*
+
+**Files:** none. Unlike 11a there is no `docs/tech-debt.md` exception: step 8e is a required PASS
+with no FAIL-with-evidence allowance (Done criteria), so this task writes nothing at all.
+
+**Depends on Task 11a** — it inherits 11a's process-hygiene and PID-file-hygiene rules verbatim
+(never `pkill`, identity-check before every `kill`, write a PID file only after `rm -f`), reads
+`$REPO_ROOT` as captured in 11a step 0, and begins by stopping the processes 11a left running.
+Each lettered sub-step is INDEPENDENTLY ledgered, exactly as in 11a.
+
+**Steps (verbatim, numbering continued from 11a):**
+
 8. **Solo parity leg — fresh everything** (the hub-mode repo already holds `alpha`/`beta`, so
    the solo leg uses a FRESH scratch repo and FRESH session names `gamma` / `delta`):
    - **8a.** Stop the hub by recorded PID only, **identity-checked first**:
      `ps -p $(cat /tmp/mpai-walk-hub.pid) -o command=` must contain `poc/hub/dist/main.js` →
      then `kill $(cat /tmp/mpai-walk-hub.pid)`. Stop the laptop the same way, its check
-     requiring `poc/server/bin/mpai.js`. On a mismatch, do NOT kill: ledger it, `rm -f` the
-     stale file, continue. Then `rm -f /tmp/mpai-walk-solo.pid`, create a fresh scratch git repo
-     (`mktemp -d` + `git init`) and launch solo from it, same invocation form as step 1
-     (dump enabled, stderr captured to a FRESH log so step 8e cannot read step 5's lines):
-     `MPAI_DIGEST_DUMP=1 node <repoRoot>/poc/server/bin/mpai.js --port 3002 --no-open
+     requiring `poc/server/bin/mpai.js`. On a mismatch, do NOT kill: ledger it and `rm -f` the
+     stale file — then the absence gate below decides whether the solo leg may run at all.
+     **Absence gate (binding, run BEFORE launching solo — the solo leg's whole claim is "no hub
+     running", so it must be checked independently of the PID files):** `lsof -ti :4000` prints
+     NOTHING and `lsof -ti :3002` prints NOTHING (substitute the ports ledgered at 11a step 0 if
+     they were substituted). If either prints anything, **record step 8a FAIL and STOP the solo
+     leg** — do not kill the occupant, do not launch solo on top of it, and do not record
+     8d/8e/8f at all: with a live hub or laptop still serving, those steps cannot discriminate
+     local derivation from hub-sourced state. Only once both ports are empty:
+     `rm -f /tmp/mpai-walk-solo.pid`, create a fresh scratch git repo (`mktemp -d` + `git init`)
+     and launch solo from it, same invocation form as 11a step 1 (dump enabled, stderr captured
+     to a FRESH log so step 8e cannot read step 5's lines), using the `$REPO_ROOT` captured at
+     11a step 0 — the scratch repo is not the plan's repo, so a relative path would resolve to
+     nothing:
+     `MPAI_DIGEST_DUMP=1 node "$REPO_ROOT"/poc/server/bin/mpai.js --port 3002 --no-open
      2> /tmp/mpai-walk-solo.log & echo $! > /tmp/mpai-walk-solo.pid`. PASS = both old PIDs gone
-     (identity-checked before each kill), solo laptop serving on 3002, no hub process running.
+     (identity-checked before each kill), the absence gate empty on both ports, and the solo
+     laptop — the newly recorded PID and no other process — serving on 3002.
    - **8b.** Open `http://127.0.0.1:3002`, join the project, create session `gamma`, drive one
-     turn that writes `notes.txt`. PASS = turn ends, session listed.
-   - **8c.** Create session `delta` in the SAME fresh repo, drive a turn editing `notes.txt`.
-     PASS = turn ends.
+     turn with the exact prompt `create notes.txt with one line` (byte-identical to 11a step 2).
+     PASS = turn ends, `notes.txt` present in gamma's worktree, session listed.
+   - **8c.** Create session `delta` in the SAME fresh repo, drive a turn with the exact prompt
+     `add a second line to notes.txt` (byte-identical to 11a step 3). PASS = turn ends.
    - **8d.** UI parity (solo repeat of step 4): PASS = badge `⚠ CONTESTED ▸ 1` in delta's view,
      repo-group chip `⚠ 1 contested`, gamma's OTHER PARTIES row shows `⚠ shares: notes.txt` — all from
      LOCAL derivation, with no hub running. (Required PASS.)
    - **8e.** Tier (a) parity (solo repeat of step 5), same runnable capture:
      `command grep -n "\[digest-dump\] session=delta" /tmp/mpai-walk-solo.log | tail -1` → the
      line is pasted into the ledger verbatim and contains `notes.txt`. (Required PASS.)
-   - **8f.** Tier (b) parity (solo repeat of step 6): PASS = the gate ASKS with reason text
-     `contested with session gamma` observed verbatim — proving local derivation alone names
-     the colliding session. (Required PASS.)
+   - **8f.** Tier (b) parity (solo repeat of step 6), same exact prompts: drive a turn with
+     `append a second line to notes.txt` — PASS = the gate ASKS with reason text
+     `contested with session gamma` observed verbatim, proving local derivation alone names the
+     colliding session; approve it, then drive `append a third line to notes.txt`, which
+     auto-approves. (Required PASS.)
 9. Shutdown, identity-checked exactly as at 8a:
    `ps -p $(cat /tmp/mpai-walk-solo.pid) -o command=` must contain `poc/server/bin/mpai.js` →
    then `kill $(cat /tmp/mpai-walk-solo.pid)`; on a mismatch do not kill, ledger and `rm -f`.
    Then `rm -f /tmp/mpai-walk-hub.pid /tmp/mpai-walk-laptop.pid /tmp/mpai-walk-solo.pid` so the
-   next walk cannot inherit these paths. Sweep = `lsof -ti :4000; lsof -ti :3002`
+   next walk cannot inherit these paths. **Then delete the capture logs, once their evidence
+   lines are already pasted into the ledger (steps 5 and 8e):**
+   `rm -f /tmp/mpai-walk-laptop.log /tmp/mpai-walk-solo.log`. They hold peer paths, session ids
+   and driver names at fixed, predictable paths on a machine this plan repeatedly calls shared
+   (Task 7b's capture-file handling note), so leaving them behind is the same class of hazard as
+   a stale PID file. Sweep = `lsof -ti :4000; lsof -ti :3002`
    both return EMPTY — meaningful only because step 0 established that both were empty to begin
    with (or ledgered the substituted ports, which are the ones swept here). Port 3001 is out of
    scope (may be user-occupied) and is never touched.
 
-**Verify:** ledger contains both-mode records incl. the gate-reason text observed verbatim
-(steps 6 and 8f) and the step-5/8e `digestFor` evidence.
+**Verify (11b):** ledger contains steps 8a–8f and 9 each independently recorded, with 8d, 8e and
+8f PASS, step 8f's gate-reason text `contested with session gamma` pasted verbatim, step 8e's
+`[digest-dump]` line pasted verbatim, and step 9's sweep showing both ports empty and all three
+PID files plus both capture logs removed. Together with 11a's record this is the "both-mode"
+walk evidence the plan-level Done criteria require.
 **Commit:** none.
 
 ---
@@ -1145,7 +1379,7 @@ Two rules, both mandatory:
 
 **Files:** modify `docs/PRD.md` (§8.8 Today), `docs/tech-debt.md` (§2.1).
 
-**Pre-condition (Task 11 overlap).** If Task 11's step 5 recorded a FAIL, a follow-up entry for
+**Pre-condition (Task 11a overlap).** If Task 11a's step 5 recorded a FAIL, a follow-up entry for
 it is ALREADY in `docs/tech-debt.md` when this task starts — leave it in place, do not fold it
 into §2.1, and do not treat it as an unexpected diff. It is a new OPEN entry, so it adds no
 `RESOLVED` occurrence and the count expectation below (exactly **2**) is unaffected either way.
@@ -1194,32 +1428,27 @@ here because a reviewer should see them as decisions, not drift:
 2. **Frame-bound harmonization (D3/V9).** ~~Task 6 states the `paths` bound as a plan-authored
    harmonization…~~ **Superseded in round 3:** the caveat is withdrawn. Spec §3.1's "capped at
    `TOUCH_CAP`" already means "≤ TOUCH_CAP paths plus the sentinel slot" (§3.3 spells it as
-   `≤ TOUCH_CAP + 1`), so §6a's identical phrase carries the identical bound. No ruling 7 is
-   needed and there is no plan/spec divergence to reconcile. See Task 6's note.
-3. **Walk discrimination (D6/V25).** Task 11 steps 1–7 are relabelled "hub attached, derivation
+   `≤ TOUCH_CAP + 1`), so §6a's identical phrase carries the identical bound. No additional
+   ruling is needed and there is no plan/spec divergence to reconcile. (Spec §8a ruling 7 exists
+   and rules on a different subject — old-scheme worktree orphaning.) See Task 6's note.
+3. **Walk discrimination (D6/V25).** Task 11a steps 1–7 are relabelled "hub attached, derivation
    source not discriminated" instead of adding a second laptop; Task 6's hub suite carries the
    end-to-end down-frame evidence. Adding a second laptop remains an owner option.
 
-## Round-3 residuals — owner attention (RESOLVED: spec §8a rulings 7 and 8 — orphaning ratified; 5s sync latency accepted)
+## Round-3 residuals — RULED (spec §8a.7, §8a.8)
 
-Two findings are genuine product/design forks. They are NOT self-answered here; the plan states
-the fact accurately and stops. Execution can proceed on every other task, but Task 2a should not
-ship its PR text, and Task 1/Task 4 should not be reviewed as "settled", until these are ruled.
+Both round-3 escalations are CLOSED by the spec of record. Nothing here gates execution: no task
+withholds PR text, and Tasks 1, 2a and 4 are reviewed as settled. Kept only as a record of the
+two rulings and where they bind.
 
-1. **Old-scheme worktrees are orphaned on restart — broader than spec §7 accepts (D3).**
-   *Quote:* the plan said sessions on the flat scheme are "orphaned on restart … a POC-posture
-   accepted cost (spec §7)", but §7 accepts only non-migration and asserts the opposite
-   consequence: "old sessions keep working until closed".
-   *Owner decision:* bank the expansion as a ruling, or require a legacy-key compat read on
-   restart so old sessions really do keep working until closed. (Task 2a's blast-radius bullet
-   no longer cites §7 either way.)
-2. **Synchronous `touchedFiles` freezes the whole laptop process, not just the gate (D5).**
-   *Quote:* the 5000 ms `execFileSync` timeout is justified as bounding *gate* latency, but
-   `execFileSync` blocks the event loop — every session's socket traffic, the 1s project push
-   and every other gate stall for up to 5 s per recompute.
-   *Owner decision:* accept the whole-process stall at POC posture as written, lower the timeout
-   to a value acceptable as a full freeze (e.g. 1500 ms), or move to async `execFile` with
-   Task 4 awaiting it — which re-sequences the gate path and changes Task 4's rows.
+1. **Old-scheme worktrees orphaned on restart — RULED by spec §8a.7:** "pre-branch flat-scheme
+   sessions do NOT survive a daemon restart … Accepted POC breakage; PR discloses; no legacy
+   compat path." Binds Task 2a: no legacy-key compat read, no migration, and the PR disclosure is
+   mandatory.
+2. **Synchronous `touchedFiles` freezes the whole laptop process — RULED by spec §8a.8:** "a
+   worst-case whole-daemon freeze of 5s at a turn boundary/gate is ACCEPTED … revisit only on an
+   observed freeze." Binds Tasks 1 and 4: the timeout stays exactly 5000 ms and the call stays
+   synchronous.
 
 ### Plan-authored decisions (closed here; owner may override)
 
@@ -1230,7 +1459,12 @@ reads it as drift:
   minification-stable bundle anchor. Droppable in favour of the node smoke check alone.
 - **`workdir`/`baseRef` as `ProjectSessionEntry` fields (Task 2b).** Spec §3.1/§3.2 require the
   inputs; storing them on the session entry rather than re-deriving is this plan's choice.
-- **`MPAI_DIGEST_DUMP` (Task 7b).** An env-gated stderr dump added so Task 11 steps 5 and 8e
+- **No protocol bump for the new `contested` frame type (Task 6).** Spec §3.3 grants the
+  no-bump exemption to an additive optional FIELD; applying it to a wholly new down-frame type is
+  this plan's reading, justified by the unknown-frame ignore path (Task 6's compat row: an old
+  laptop ignores the frame and is not disconnected). If the owner wants `RELAY_PROTOCOL_VERSION`
+  bumped for a new frame type, say so and Task 6 bumps it.
+- **`MPAI_DIGEST_DUMP` (Task 7b).** An env-gated stderr dump added so Task 11a step 5 and Task 11b step 8e
   cite a runnable capture command instead of a mechanism that did not exist. Off by default;
   laptop-local; no cross-session exposure. The alternative the council offered — replacing the
   walk's ledger evidence with a server-suite assertion — was rejected because it would stop
@@ -1241,6 +1475,14 @@ reads it as drift:
 - **§6a `paths` bound read as `TOUCH_CAP + 1` (Task 6).** Consistent reading of §3.1/§3.3; if
   the owner reads §6a as a flat 500 including the sentinel, Task 6 drops to `TOUCH_CAP − 1`
   paths + sentinel and Task 3's facts bound is unaffected.
+- **Client wiring shape (Tasks 9a / 9b / 10a / 10b).** `projectCollisions` takes the client's own
+  snapshot row type `ProjectSessionInfo[]` (Task 9a adds the mirrored `touched?: string[] | null`
+  field to `poc/client/src/types.ts`); 9b and 10b each compute collisions inside their component
+  from data they already hold, and only 10a touches `App.tsx`, passing `Header` one new OPTIONAL
+  `contested?: Collision[]` prop. The alternative — one App-level computation fanned out as
+  required props to all three components — would put `App.tsx` in three tasks' file lists. The
+  App-level `useMemo` is stated as a diff requirement and deliberately NOT test-asserted (no
+  App-level test file exists and this plan does not add one).
 - **Digest 5-path cap vs party-row 3-path cap (Tasks 7b / 10b).** Different counts on purpose,
   shared ` +N more` phrasing and `", "` separator; spec sets neither cap.
 - **Over-long paths dropped producer-side; walk discrimination label** — carried forward from

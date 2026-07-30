@@ -47,3 +47,14 @@ depends on — the verifies don't run the build the plan claims). Minors: Task 1
 split, 8b predicate extraction (8p), Task 5 build carve-out deleted. All dispatched to the
 round-3 fix pass; per the skill's cap rule the revision feeds a FRESH cycle (record-branch
 precedent, owner process ruling).
+
+# Cycle 2 (post-round-3 revision, 0.19.1 gate)
+
+## Cycle 2, Round 1 — **BLOCKED** (overall 83.9; zero floor breaches; 3 blocking violations)
+
+Run `wf_82565634-6ad`. D1 85 · D2 86 · D3 83 · D4 82 · D5 87 · D6 80. 29 violations (3
+blocking, 26 minor). Blockings: (×2) the controller's own round-3 residuals edit left a stale
+body contradicting its RULED header and holding Task 2a hostage — fixed to match rulings 7-8;
+(×1) client `ProjectSessionInfo` has no `touched` member and no task added it, so Task 9a's
+signature could not typecheck — types.ts joins Task 9a with `touched?: string[] | null`. All
+29 dispatched to a fix pass → round 2.
