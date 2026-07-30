@@ -366,12 +366,16 @@ something better than "knows the URL."
 
 *What:* the container — create, name, invite, join, leave, close, archive.
 
-*Today:* `projectId` exists as the hub's top-level key with **no name, no members, no lifecycle**,
-and reaches the client as a hidden URL parameter defaulting to `default`
-(`SessionPicker.tsx:11,140`).
+*Today:* **shipped (PR #22).** Projects are first-class on the hub: display name, member list,
+lifecycle (open/closed/archived at the store level), `create_project`/`list_projects`/
+`join_project`/`leave_project` over the browser protocol, and the entrance screen listing
+projects with member counts. The standalone server answers the same entrance messages so solo
+mode lands on a one-item entrance. Known plan gap, disclosed in PR #22: `close_project`/
+`archive_project` exist and are tested hub-side but have **no client surface** yet, so archived
+state is unreachable from the UI.
 
-*Final state:* a first-class object with a display name, a member list, an invite flow, and a
-lifecycle. The entrance screen lists yours.
+*Final state:* the invite flow scoped to projects (invites today predate projects), and the
+close/archive client controls. Everything else here is done.
 
 ### 8.3 Machines & repos
 
