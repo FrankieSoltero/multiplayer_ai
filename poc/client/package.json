@@ -8,9 +8,11 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
+    "pretest": "npm --prefix ../server run build",
     "test": "vitest run"
   },
   "dependencies": {
+    "multiplayer-ai-server": "file:../server",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },

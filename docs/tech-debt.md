@@ -307,6 +307,33 @@ starts attached instead of starting as a candidate the operator has to re-attach
 design call on ordering (persisted state vs. a candidate the scan no longer finds, or a candidate
 whose root moved) before it is a patch rather than a decision.
 
+### 2.8 No retention/compaction/backup — the events table grows without bound
+
+The-record branch (PRD §8.7, spec `docs/specs/2026-07-29-the-record-design.md` §6 non-goal 2)
+made the hub's SQLite store (`HUB_DB`, default `~/.mpai/hub.db`) durable, and durability means the
+`events` table now accumulates every event of every session forever — nothing prunes, compacts, or
+backs it up. Deliberately deferred: retention/compaction/size caps and a backup mechanism are
+explicitly named as §8.10's job (operating a hub), not this branch's.
+
+**Failure mode:** unbounded growth trends toward disk-full, whose documented consequence is a
+crash-loop — the hub's write path is fail-stop by design (spec §3.6): any runtime write failure
+propagates and the process exits rather than run with memory ahead of disk, so a full disk means
+the hub dies on the next write and crash-loops on every restart until space is freed. Recovery is
+spec §8a ruling 7 — **back up the `hub.db`/`hub.db-wal`/`hub.db-shm` trio first** (it is the
+product's sole record; move the trio together or strand committed WAL data), then free disk space
+/ move the trio / run degraded with `HUB_DB=:memory:`. A corrupt DB has no recovery before §8.10
+ships backups — the record to that point is lost absent copies the operator kept. The same
+backup-before-upgrade convention applies to schema bumps.
+
+**Related, smaller:** `defaultFatal` (`poc/hub/src/hub.ts`, Task 7) logs via a bare
+`console.error(err)` immediately before `process.exit(1)`; under a supervisor with piped stderr,
+that write is not guaranteed to flush before the process dies, so the crash-loop's one diagnostic
+line can be lost exactly when an operator most needs it.
+
+**Fixed looks like:** §8.10 — a retention/compaction policy (age- or size-bounded), an operator
+backup mechanism (scheduled or triggered trio copy), and hardening `defaultFatal`'s log write (or
+draining stderr) before exit so the crash-loop is diagnosable from the first restart.
+
 ---
 
 ## 3. Test coverage gaps

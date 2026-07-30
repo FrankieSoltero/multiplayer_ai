@@ -41,8 +41,9 @@ export function ProjectPicker(props: { userId: string; name: string }) {
         return;
       }
     };
-    // This screen's own copy says the hub is ephemeral and will restart (spec
-    // P8), so losing the socket is the EXPECTED case, not an exotic one.
+    // A dev hub gets restarted often, so losing the socket is the EXPECTED
+    // case, not an exotic one — what a restart no longer costs is the projects
+    // themselves, only this tab's connection to them.
     // Without these handlers the list went silently stale and `send()` threw
     // InvalidStateError inside the click handler — CREATE did nothing, with no
     // feedback. `mounted` guards the close our own cleanup causes.
@@ -60,8 +61,8 @@ export function ProjectPicker(props: { userId: string; name: string }) {
     const ws = wsRef.current;
     // readyState, not null: a socket that has closed is still a non-null
     // object, and sending on it throws rather than failing quietly. No
-    // reconnect loop — the hub holds everything in memory, so a restart has
-    // nothing to re-attach to and a reload is the honest instruction.
+    // reconnect loop — this screen's whole state is one `list_projects` reply,
+    // so a reload is a cheaper and more honest recovery than a retry ladder.
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setLink("down");
       setError(DISCONNECTED_TEXT);
@@ -130,7 +131,7 @@ export function ProjectPicker(props: { userId: string; name: string }) {
             </button>
           </div>
           <div className="line dim">
-            nothing here survives a hub restart yet — projects are held in memory.
+            projects and their records persist in the hub's store (HUB_DB).
           </div>
           {error && <div className="line red">{error}</div>}
         </div>

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { startHub } from "../src/hub.js";
 import { RELAY_PROTOCOL_VERSION, type RepoDecl } from "multiplayer-ai-server/relayProtocol";
+import { projectRecordFrom } from "multiplayer-ai-server/record";
 
 const decl = (key: string, over: Partial<RepoDecl> = {}): RepoDecl => ({
   key,
@@ -1251,5 +1252,191 @@ describe("hub routed attach_repo/detach_repo", () => {
     expect(seen).toEqual([{ type: "repo_attached", repoKey: "k" }]);
     up.close();
     ws.close();
+  });
+});
+
+/** Hub `get_record` (spec §4.3, §8a.1). The wire pair is byte-shape identical to
+ *  the standalone server's (`server/test/serverRecord.test.ts`); the deliberate
+ *  asymmetry is the gate — the hub requires `identify` where the laptop reuses
+ *  `denyUnauthed()` (owner ruling, spec §8a.1) — and `machineId`, which here is
+ *  the OWNING uplink per session rather than one machine for the whole project,
+ *  because only the hub sees more than one laptop. */
+describe("hub get_record", () => {
+  const rec = (
+    seq: number,
+    over: Record<string, unknown>,
+  ): Record<string, unknown> => ({
+    seq,
+    ts: `2026-07-27T00:00:${String(seq).padStart(2, "0")}.000Z`,
+    ...over,
+  });
+
+  /** One closed turn: a prompt, an edit, and the `turn_end` that closes it. */
+  const turnLog = (userId: string, text: string, path: string) => [
+    rec(0, { type: "user_message", userId, text }),
+    rec(1, { type: "tool_call", toolName: "Edit", input: { file_path: path } }),
+    rec(2, { type: "turn_end" }),
+  ];
+
+  it("answers with the whole project record, stamping each session's OWNING machine", async () => {
+    // Two laptops, one project: the case a standalone server cannot answer at
+    // all. Every session must carry its own owner's uplinkId, so a single
+    // shared machineId (or the asker's) would fail here.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up: lap1 } = await attachedUplink(hub.port, "auth", "lap-1");
+    const { up: lap2 } = await attachedUplink(hub.port, "chat", "lap-2");
+    const authLog = turnLog("ana", "ship the record", "/src/record.ts");
+    const chatLog = turnLog("bo", "now the panel", "/src/panel.ts");
+    lap1.send(JSON.stringify({ t: "publish", sessionId: "auth", runId: "run-a", events: authLog }));
+    lap2.send(JSON.stringify({ t: "publish", sessionId: "chat", runId: "run-a", events: chatLog }));
+    await wait(50);
+
+    const { ws, seen } = await member(hub.port, "default");
+    ws.send(JSON.stringify({ type: "get_record", projectId: "default" }));
+    await vi.waitFor(() => expect(seen.some((m) => m.type === "record")).toBe(true));
+
+    // The whole reply, against `projectRecordFrom` run over the very inputs the
+    // hub holds: the hub derives the record and publishes that answer
+    // unaltered, rather than assembling a second, drift-prone version of it.
+    const reply = seen.find((m) => m.type === "record");
+    expect(reply).toEqual({
+      type: "record",
+      projectId: "default",
+      record: projectRecordFrom("default", [
+        { facts: facts("auth") as any, machineId: "lap-1", events: authLog as any },
+        { facts: facts("chat") as any, machineId: "lap-2", events: chatLog as any },
+      ]),
+    });
+    // Spelled out too, so a change to `projectRecordFrom` cannot make the
+    // assertion above pass by moving both sides at once.
+    expect(reply.record.sessions.map((s: any) => [s.sessionId, s.machineId])).toEqual([
+      ["auth", "lap-1"],
+      ["chat", "lap-2"],
+    ]);
+    expect(reply.record.rollup).toEqual({
+      perUser: [
+        { userId: "ana", turnsDriven: 1, approvalsGiven: 0, denialsGiven: 0 },
+        { userId: "bo", turnsDriven: 1, approvalsGiven: 0, denialsGiven: 0 },
+      ],
+      totalTurns: 2,
+      totalSessions: 2,
+    });
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+    ws.close(); lap1.close(); lap2.close();
+  });
+
+  it("refuses a get_record from a channel that has not identified", async () => {
+    // Same gate and the same string as `create_project` (hub.ts:409) — the hub
+    // pins the identity line here for v7b2's real auth (spec §8a.1).
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const ws = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "get_record", projectId: "default" }));
+    await wait(60);
+    expect(seen).toEqual([{ type: "error", message: "identify first" }]);
+    ws.close(); up.close();
+  });
+
+  it("answers an identified channel that has joined no project and no session", async () => {
+    // Membership is deliberately NOT required: visibility is hub-wide, exactly
+    // as it is for `watch_project` and `list_projects` (spec P2).
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    up.send(JSON.stringify({
+      t: "publish", sessionId: "auth", runId: "run-a",
+      events: turnLog("ana", "members only?", "/src/a.ts"),
+    }));
+    await wait(40);
+
+    const ws = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId: "cy", name: "Cy" }));
+    ws.send(JSON.stringify({ type: "get_record", projectId: "default" }));
+    await vi.waitFor(() => expect(seen.some((m) => m.type === "record")).toBe(true));
+
+    const reply = seen.find((m) => m.type === "record");
+    expect(reply.record.sessions.map((s: any) => s.sessionId)).toEqual(["auth"]);
+    expect(reply.record.rollup.totalTurns).toBe(1);
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+    ws.close(); up.close();
+  });
+
+  it("rejects a projectId that is missing or fails SLUG, with the standalone server's string", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { ws, seen } = await member(hub.port, "default");
+
+    ws.send(JSON.stringify({ type: "get_record", projectId: "BAD SLUG" }));
+    ws.send(JSON.stringify({ type: "get_record" }));
+    ws.send(JSON.stringify({ type: "get_record", projectId: 7 }));
+    await wait(60);
+
+    expect(seen.filter((m) => m.type === "error").map((m) => m.message)).toEqual([
+      "get_record requires a valid projectId",
+      "get_record requires a valid projectId",
+      "get_record requires a valid projectId",
+    ]);
+    expect(seen.some((m) => m.type === "record")).toBe(false);
+    ws.close();
+  });
+
+  it("answers an unknown project with an empty record and creates nothing", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const { ws, seen } = await member(hub.port, "default");
+
+    ws.send(JSON.stringify({ type: "get_record", projectId: "ghost" }));
+    await vi.waitFor(() => expect(seen.some((m) => m.type === "record")).toBe(true));
+    expect(seen.find((m) => m.type === "record")).toEqual({
+      type: "record",
+      projectId: "ghost",
+      record: {
+        projectId: "ghost",
+        sessions: [],
+        rollup: { perUser: [], totalTurns: 0, totalSessions: 0 },
+      },
+    });
+
+    // The `readSessionsOf` discipline (hubStore.ts): a read never grows the
+    // registry, or an unidentified-to-identified caller could fill it by asking
+    // for records that do not exist. `list_projects` is where that shows.
+    ws.send(JSON.stringify({ type: "list_projects" }));
+    await vi.waitFor(() => expect(seen.some((m) => m.type === "projects")).toBe(true));
+    expect(seen.at(-1).projects.map((p: any) => p.id)).toEqual(["default"]);
+    ws.close(); up.close();
+  });
+
+  it("answers a joined channel without re-homing it", async () => {
+    // `fanOut` keys on projectId AND sessionId, so re-homing a joined channel
+    // would silently cut its event stream — the same rule `watch_project`
+    // observes (hub.ts:656).
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    browser.send(join());
+    await wait(40);
+
+    browser.send(JSON.stringify({ type: "get_record", projectId: "elsewhere" }));
+    await vi.waitFor(() => expect(seen.some((m) => m.type === "record")).toBe(true));
+
+    up.send(JSON.stringify({
+      t: "publish", sessionId: "auth", runId: "run-a",
+      events: [{ type: "intent_update", text: "still mine", seq: 0, ts: "2026-07-27T00:00:00.000Z" }],
+    }));
+    await wait(50);
+    expect(seen.filter((m) => m.type === "event").map((m) => m.event.text)).toEqual(["still mine"]);
+    browser.close(); up.close();
   });
 });

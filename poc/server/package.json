@@ -8,6 +8,7 @@
     "./staticFiles": { "types": "./dist/staticFiles.d.ts", "default": "./dist/staticFiles.js" },
     "./project": { "types": "./dist/project.d.ts", "default": "./dist/project.js" },
     "./events": { "types": "./dist/events.d.ts", "default": "./dist/events.js" },
+    "./record": { "types": "./dist/record.d.ts", "default": "./dist/record.js" },
     "./pendingGate": { "types": "./dist/pendingGate.d.ts", "default": "./dist/pendingGate.js" },
     "./lifecycle": { "types": "./dist/lifecycle.d.ts", "default": "./dist/lifecycle.js" },
     "./auth": { "types": "./dist/auth.d.ts", "default": "./dist/auth.js" },

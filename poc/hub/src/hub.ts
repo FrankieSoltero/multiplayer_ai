@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { staticHandler } from "multiplayer-ai-server/staticFiles";
 import { slugify } from "multiplayer-ai-server/workspace";
+import { projectRecordFrom } from "multiplayer-ai-server/record";
 import {
   MAX_FRAME_BYTES,
   RELAY_PROTOCOL_VERSION,
@@ -10,6 +11,7 @@ import {
   type DownFrame,
 } from "multiplayer-ai-server/relayProtocol";
 import { HubStore, type MachineInfo } from "./hubStore.js";
+import { HubDb } from "./hubDb.js";
 
 const SLUG = /^[a-z0-9-]{1,40}$/;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
@@ -50,6 +52,49 @@ export interface HubOptions {
   /** Built client directory. The hub serves the browser surface; laptops
    *  serve nothing once they are hub-attached. */
   staticDir?: string;
+  /** Where the record lives (spec §3.1). Absent → no record at all: the hub is
+   *  the ephemeral in-memory one it has always been. `":memory:"` is the
+   *  explicit way to ask for that on purpose (spec §3.6). */
+  dbPath?: string;
+  /** Test seam: an already-open record. Takes precedence over `dbPath`, which
+   *  is then never even opened. Production wiring passes `dbPath` and lets this
+   *  function do the opening — that is what keeps `hubDb.ts`'s lock-skipping
+   *  crash-test option out of every path a real hub takes (this file must never
+   *  name it; a repo-wide grep pins that). */
+  db?: HubDb;
+  /** How the hub dies when a write to the record fails. Defaults to
+   *  `defaultFatal`; a test passes a spy so the failure is observable without
+   *  killing the runner. */
+  fatal?: (err: Error) => void;
+}
+
+/** Fail-stop (spec §3.6): log the error and stop the process. No catch-and-
+ *  carry-on, because carrying on means memory ahead of the record — the hub
+ *  would keep serving and fanning out history the record cannot back, and
+ *  `resumeOffsets` would tell the owning laptop not to re-send it.
+ *
+ *  **Blast radius, deliberately (spec §8a.7, recorded policy).** One failed
+ *  write takes the whole hub down — every connected uplink and every browser,
+ *  not just the session that was publishing. Disk-full (the endpoint of the
+ *  unbounded journal) therefore crash-loops on the first publish after each
+ *  restart. Operator recovery, in this order (spec §8a ruling 7):
+ *
+ *  1. **BACK UP FIRST** — copy the `hub.db` + `hub.db-wal` + `hub.db-shm` trio
+ *     to safe storage. The journal is the product's sole record; a botched
+ *     recovery loses it permanently.
+ *  2. Free disk space, or move/compact the trio TOGETHER — moving `hub.db`
+ *     alone strands committed WAL data.
+ *  3. `HUB_DB=:memory:` for degraded, ephemeral service while the record is
+ *     being repaired.
+ *
+ *  A CORRUPT `hub.db` has no recovery before §8.10's backups land: the record
+ *  to that point is lost unless the operator kept copies. A newer-schema
+ *  refusal (a hub version rollback) recovers by running the newer hub again or
+ *  restoring the pre-upgrade backup — the back-up-before-upgrade convention,
+ *  ruling 7 again. */
+export function defaultFatal(err: Error): void {
+  console.error(err);
+  process.exit(1);
 }
 
 export interface RunningHub {
@@ -58,7 +103,31 @@ export interface RunningHub {
 }
 
 export async function startHub(opts: HubOptions): Promise<RunningHub> {
-  const store = new HubStore();
+  const fatal = opts.fatal ?? defaultFatal;
+  // `opts.db` first, and `new HubDb(dbPath)` with NO SECOND ARGUMENT: the
+  // constructor's options object is the crash-test seam only (hubDb.ts), and a
+  // production hub that opted out of the PID lock would let two writers
+  // interleave one journal.
+  //
+  // Anything thrown here — unopenable file, corrupt file, newer schema, lock
+  // held by a live hub — rejects this promise before a socket is created, so a
+  // hub that cannot honor the record it was pointed at never serves (spec §3.6).
+  const db = opts.db ?? (opts.dbPath === undefined ? null : new HubDb(opts.dbPath));
+  let store: HubStore;
+  if (db) {
+    try {
+      store = new HubStore(db, db.load());
+    } catch (err) {
+      // A read that fails AFTER the handle opened still refuses the boot — and
+      // must not leave the lock behind, or an in-process retry would report a
+      // holder that is this very process. Only what this function opened is
+      // closed; a caller's `db` stays the caller's to close.
+      if (!opts.db) db.close();
+      throw err;
+    }
+  } else {
+    store = new HubStore();
+  }
   const uplinks = new Map<string, WebSocket>();
   const channels = new Map<string, BrowserChannel>();
   const lastPush = new Map<string, number>();
@@ -254,7 +323,22 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         // A laptop may publish only for sessions it owns; the store checks
         // ownership and returns nothing for a session it does not own
         // (spec §3.5 rule 2).
-        const accepted = store.publish(uplinkId, frame.sessionId, frame.runId, frame.events);
+        //
+        // The one guarded write path, because it is the one with a fan-out
+        // waiting on the other side of it. `HubStore.publish` is durable before
+        // visible — a persister that throws leaves the store exactly as it was —
+        // so catching HERE is what keeps that true of the WIRE too: `fatal` runs
+        // and this handler returns, so no `event` frame reaches a browser, no
+        // `{type:"error"}` frame invites a retry, and no snapshot is scheduled.
+        // Exactly one `fatal` call per failed frame; a `fatal` that returns
+        // (only a test's does — `defaultFatal` exits) still fans nothing out.
+        let accepted: readonly { event: unknown }[];
+        try {
+          accepted = store.publish(uplinkId, frame.sessionId, frame.runId, frame.events);
+        } catch (err) {
+          fatal(err instanceof Error ? err : new Error(String(err)));
+          return;
+        }
         if (accepted.length > 0) {
           fanOut(projectId, frame.sessionId, accepted);
           schedulePush(projectId);
@@ -658,6 +742,37 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         return;
       }
 
+      /** The project record (spec §4.3). Hub-answered for the same reason as
+       *  `HUB_HANDLED` above — only the hub sees every laptop, so only the hub
+       *  can stamp each session with the machine that owns it — but its own
+       *  branch rather than a member of that set, because `HUB_HANDLED` replies
+       *  with a snapshot and this replies with a record.
+       *
+       *  `identify` is required (owner ruling, spec §8a.1), which is where this
+       *  deliberately differs from the standalone handler's `denyUnauthed()`:
+       *  the hub has no auth of its own until v7b2, so this pins the line the
+       *  hub's cookie-verified login will replace. Membership is deliberately
+       *  NOT required — visibility is hub-wide, exactly as for `watch_project`
+       *  and `list_projects` (spec P2). Everything else — the validation, the
+       *  error string, the reply's shape — is the standalone handler's, byte for
+       *  byte (server.ts's `get_record`), because one browser bundle talks to
+       *  both. */
+      if (msg?.type === "get_record") {
+        if (!channel.identity) return error("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) return error("get_record requires a valid projectId");
+        // Never re-homed, for the same reason `watch_project` above never
+        // re-homes a joined channel: this is a read, and `fanOut` keys on
+        // projectId AND sessionId, so touching either would cut a joined
+        // session's event stream.
+        send(socket, {
+          type: "record",
+          projectId,
+          record: projectRecordFrom(projectId, store.recordInputs(projectId)),
+        });
+        return;
+      }
+
       tunnel(msg);
     });
 
@@ -697,7 +812,23 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         // server owns the socket, so this is not what stops the listening —
         // it just leaves nothing attached to reason about.
         wss.close();
-        httpServer.close((err) => (err ? reject(err) : resolve()));
+        httpServer.close((err) => {
+          // The record's handle and its lock go LAST, after the server has
+          // stopped accepting and every client socket is gone: nothing can
+          // arrive needing a write once the DB is closed. Closed even when the
+          // server's own close failed — a held lock would keep the next hub off
+          // this record. `HubDb.close()` is idempotent, so a caller that also
+          // closes its own `db` seam is fine.
+          let dbErr: unknown;
+          try {
+            db?.close();
+          } catch (thrown) {
+            dbErr = thrown;
+          }
+          const failure = err ?? dbErr;
+          if (failure) reject(failure);
+          else resolve();
+        });
       }),
   };
 }
