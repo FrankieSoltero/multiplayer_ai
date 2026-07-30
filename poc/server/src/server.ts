@@ -25,6 +25,7 @@ import { ARCADE_GAMES } from "./events.js";
 import { lifecycleOf } from "./lifecycle.js";
 import { ensureExcluded, slugify, WorkspaceManager, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
+import { touchedFiles } from "./touched.js";
 import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
 import { InviteStore } from "./invites.js";
 import { authRoutes, requireAuth, type AuthConfig } from "./auth.js";
@@ -384,6 +385,34 @@ export async function startServer(opts: {
     pushTimers.set(project, timer);
   }
 
+  /** Session ids whose recompute has already failed once. A git failure is a
+   *  standing condition (a deleted worktree, a broken repo), so logging it per
+   *  event would fill the operator's terminal with the same line every turn and
+   *  every gate. */
+  const touchedFailureLogged = new Set<string>();
+
+  /** The SINGLE recompute entry point (spec §3.2) — nothing else in the server
+   *  calls `touchedFiles` directly. Reads the session's OWN persisted workdir
+   *  and baseRef (never `defaultBranch()`, never a literal "main"), and never
+   *  throws: git failing — including the 5000 ms timeout — KEEPS the previous
+   *  `entry.touched` (stale beats absent, spec §3.1) and logs once per session.
+   *  A session with no workdir or no baseRef is not a failure and shells out to
+   *  nothing: `touched` stays null, which is the honest "never measured". */
+  function recomputeTouched(project: Project, sessionId: string): void {
+    const entry = project.sessions.get(sessionId);
+    if (!entry) return;
+    const { workdir, baseRef } = entry;
+    if (workdir === undefined || baseRef === null) return;
+    try {
+      entry.touched = touchedFiles(workdir, baseRef);
+    } catch (err) {
+      if (touchedFailureLogged.has(sessionId)) return;
+      touchedFailureLogged.add(sessionId);
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[touched] session=${sessionId} recompute failed: ${message}\n`);
+    }
+  }
+
   function getOrCreateProject(projectId: string): Project {
     let project = projects.get(projectId);
     if (!project) {
@@ -461,6 +490,7 @@ export async function startServer(opts: {
           },
           undefined,
           () => oversightToolText(overseer.isEnabled(project.id), overseer.latest(project.id)),
+          () => recomputeTouched(project, sessionId),
         ),
         skills,
         pendingSuggests: new Map(),
@@ -475,6 +505,10 @@ export async function startServer(opts: {
       entry = newEntry;
       project.sessions.set(sessionId, entry);
       session.subscribe((event) => {
+        // Turn boundary (spec §3.2): measure BEFORE the push this same event
+        // may schedule, so the push already carries the new set rather than
+        // the previous turn's.
+        if (event.type === "turn_end") recomputeTouched(project, sessionId);
         if (INTERESTING.has(event.type)) schedulePush(project);
         if (OVERSEER_EVENTS.has(event.type)) overseer.notify(project.id);
         relay?.publishEvent(sessionId, event);

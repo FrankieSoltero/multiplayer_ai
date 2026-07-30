@@ -52,7 +52,7 @@ export function isAutoApprovedBash(command: string): boolean {
  * would touch the operator's filesystem outside the worktree still requires
  * explicit driver approval.
  */
-const FILE_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
+export const FILE_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
 
 /**
  * The agent's own task-tracking bookkeeping — TodoWrite in the documented SDK
@@ -138,8 +138,16 @@ export function buildCanUseTool(hooks: DriverHooks): CanUseTool {
     if (toolName === "Bash" && typeof command === "string" && isAutoApprovedBash(command)) {
       return { behavior: "allow" };
     }
-    if (FILE_WRITE_TOOLS.has(toolName) && isContainedWrite(hooks.workdir, input)) {
-      return { behavior: "allow" };
+    if (FILE_WRITE_TOOLS.has(toolName)) {
+      // Decision site 3 (spec §3.2, Task 4). The recompute is deliberately
+      // INSIDE the write-tool test and BEFORE the containment test: whatever
+      // judges this write next reads a touched set measured one statement ago,
+      // and a Read/Grep/Bash decision never shells out to git. Synchronous —
+      // it cannot race the early-allow below.
+      hooks.recomputeTouched?.();
+      if (isContainedWrite(hooks.workdir, input)) {
+        return { behavior: "allow" };
+      }
     }
     try {
       const decision = await Promise.race([

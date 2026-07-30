@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AsyncQueue } from "./asyncQueue.js";
 import { MODELS, DEFAULT_MODEL, type ModelKey } from "./models.js";
-import { buildCanUseTool } from "./permissions.js";
+import { buildCanUseTool, FILE_WRITE_TOOLS } from "./permissions.js";
 import type { Session } from "./session.js";
 import type { SessionEvent, SkillInfo, TodoItem } from "./events.js";
 
@@ -78,6 +78,11 @@ export interface DriverHooks {
   /** Latest team oversight summary text, or the spec §6 fallback strings.
    *  Absent on drivers constructed without oversight wiring. */
   getOversight?: () => string;
+  /** Recompute this session's touched set NOW, synchronously, before a write-tool
+   *  permission decision is made (spec §3.2 pre-gate freshness, Task 4).
+   *  Absent on drivers constructed without collision wiring — then no recompute
+   *  runs and the decision sites judge the last turn-boundary set. */
+  recomputeTouched?: () => void;
 }
 
 export type RunQueryResult = AsyncIterable<SdkMessage> & {
@@ -243,7 +248,15 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
 export class AgentDriver {
   private prompts = new AsyncQueue<SdkUserMessage>();
   private toolNamesById = new Map<string, string>();
-  private pendingPermissions = new Map<string, (d: "allow" | "deny") => void>();
+  // The tool name rides alongside the resolver because entering auto mode has
+  // to know whether ANY pending request is a file write before it decides to
+  // recompute the touched set (decision site 2, Task 4). Kept in the same map
+  // rather than a parallel one so a request can never be deleted from one and
+  // leak in the other.
+  private pendingPermissions = new Map<
+    string,
+    { toolName: string; resolve: (d: "allow" | "deny") => void }
+  >();
   private pendingPlans = new Map<string, (d: "approve" | "reject") => void>();
   private dead = false;
   // Relay-level permission mode. "auto" is enforced HERE, not in the SDK:
@@ -285,11 +298,18 @@ export class AgentDriver {
     private onRoster?: (skills: SkillInfo[]) => void,
     private progressThrottleMs = 2000,
     private getOversight?: () => string,
+    private recomputeTouched?: () => void,
   ) {
     this.stream = run(this.prompts, {
       onIntent: (text) =>
         this.session.append({ type: "intent_update", text: text.slice(0, 200) }),
       onPermissionRequest: (toolName, input, signal) => {
+        // Decision site 1 (spec §3.2, Task 4). FIRST statement, so the touched
+        // set is fresh before the auto branch below resolves the gate — a
+        // recompute hung off the appended `permission_request` event would run
+        // strictly too late. Write tools only: a Read/Grep/Bash gate must not
+        // shell out to git.
+        if (FILE_WRITE_TOOLS.has(toolName)) this.recomputeTouched?.();
         const requestId = randomUUID();
         if (this.permissionMode === "auto") {
           this.session.append({
@@ -313,7 +333,7 @@ export class AgentDriver {
         });
         // Register the resolver BEFORE appending, so a subscriber that
         // decides synchronously on seeing the event still finds it.
-        this.pendingPermissions.set(requestId, resolve);
+        this.pendingPermissions.set(requestId, { toolName, resolve });
         this.session.append({
           type: "permission_request",
           requestId,
@@ -378,6 +398,9 @@ export class AgentDriver {
       workdir,
       pluginPaths,
       getOversight: this.getOversight,
+      // Site 3 (`buildCanUseTool`) reads it off THIS object; sites 1 and 2 call
+      // `this.recomputeTouched` — the same closure either way.
+      recomputeTouched: this.recomputeTouched,
     });
     void this.consume(this.stream);
     void this.refreshRoster();
@@ -468,11 +491,11 @@ export class AgentDriver {
     decision: "allow" | "deny",
     userId: string,
   ): boolean {
-    const resolve = this.pendingPermissions.get(requestId);
-    if (!resolve) return false;
+    const pending = this.pendingPermissions.get(requestId);
+    if (!pending) return false;
     this.pendingPermissions.delete(requestId);
     this.session.append({ type: "permission_decision", requestId, decision, userId });
-    resolve(decision);
+    pending.resolve(decision);
     return true;
   }
 
@@ -528,7 +551,19 @@ export class AgentDriver {
     );
     this.permissionMode = mode;
     this.session.append({ type: "permission_mode_change", mode, userId });
-    if (mode === "auto") this.allowAllPending(userId);
+    if (mode === "auto") {
+      // Decision site 2 (spec §3.2, Task 4). ONE recompute for the whole batch,
+      // immediately before `allowAllPending` decides them — never one per
+      // pending request, and never at all unless a file write is among them.
+      if (
+        [...this.pendingPermissions.values()].some((p) =>
+          FILE_WRITE_TOOLS.has(p.toolName),
+        )
+      ) {
+        this.recomputeTouched?.();
+      }
+      this.allowAllPending(userId);
+    }
     return { ok: true };
   }
 
@@ -622,7 +657,7 @@ export class AgentDriver {
    * decision.
    */
   private denyAllPending(_reason: string): void {
-    for (const [requestId, resolve] of this.pendingPermissions) {
+    for (const [requestId, pending] of this.pendingPermissions) {
       this.pendingPermissions.delete(requestId);
       this.session.append({
         type: "permission_decision",
@@ -630,7 +665,7 @@ export class AgentDriver {
         decision: "deny",
         userId: "system",
       });
-      resolve("deny");
+      pending.resolve("deny");
     }
     for (const [requestId, resolve] of this.pendingPlans) {
       this.pendingPlans.delete(requestId);
@@ -653,7 +688,7 @@ export class AgentDriver {
    * checkpoint, not a tool gate.
    */
   private allowAllPending(userId: string): void {
-    for (const [requestId, resolve] of this.pendingPermissions) {
+    for (const [requestId, pending] of this.pendingPermissions) {
       this.pendingPermissions.delete(requestId);
       this.session.append({
         type: "permission_decision",
@@ -662,7 +697,7 @@ export class AgentDriver {
         userId,
         auto: true,
       });
-      resolve("allow");
+      pending.resolve("allow");
     }
   }
 
