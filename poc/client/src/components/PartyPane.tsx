@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { hashIdentity } from "../identity";
+import { projectCollisions, sharedWith } from "../collisionView";
 import type { ProjectSessionInfo } from "../types";
 import type { Participant } from "../derive";
 import { THRESHOLD_OPTIONS, waitedLabel, type Pull } from "../pulls";
@@ -26,6 +27,11 @@ export function PartyPane(props: {
   const here = [...props.participants.entries()];
   const others = props.sessions.filter((s) => s.id !== props.sessionId);
   const pullBySession = new Map((props.pulls ?? []).map((p) => [p.sessionId, p]));
+  // Derived here, not threaded in: the pane already receives the whole project
+  // snapshot, so an extra prop would only be a second copy of a value this
+  // component can compute — and memoising on `props.sessions` keeps the
+  // intersection off every unrelated re-render.
+  const collisions = useMemo(() => projectCollisions(props.sessions), [props.sessions]);
 
   return (
     <aside className={"party panel" + (open ? " open" : "")}>
@@ -91,6 +97,7 @@ export function PartyPane(props: {
         const facts = { ...s, participantCount: s.participants.length };
         const stateClass = sessionStateClass(facts);
         const stateLabel = sessionStateLabel(facts);
+        const shared = sharedWith(props.sessionId, s.id, collisions);
         return (
           <a
             key={s.id}
@@ -115,6 +122,17 @@ export function PartyPane(props: {
               {s.driverName ? ` · 🛞 ${s.driverName}` : ""}
               {s.lastActivityTs ? ` · ${ago(s.lastActivityTs)}` : ""}
             </div>
+            {/* The peer-overlap line, last in the row: reuses `member-meta` for
+                layout and adds `contested-calm` for the tone — awareness, not
+                an alarm. Rendered only when the intersection is non-empty, so a
+                peer you share nothing with is byte-identical to before. */}
+            {shared.length > 0 && (
+              <div className="member-meta contested-calm">
+                {`⚠ shares: ${shared.slice(0, 3).join(", ")}${
+                  shared.length > 3 ? ` +${shared.length - 3} more` : ""
+                }`}
+              </div>
+            )}
           </a>
         );
       })}
