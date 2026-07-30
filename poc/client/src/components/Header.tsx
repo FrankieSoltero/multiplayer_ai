@@ -1,4 +1,6 @@
 import { browserSignOut } from "../signOut";
+import { contestedCountFor } from "../collisionView";
+import type { Collision } from "multiplayer-ai-server/collisions";
 
 export const MODEL_LABELS: Record<string, string> = {
   opus: "opus 4.8", sonnet: "sonnet 5", haiku: "haiku 4.5",
@@ -38,9 +40,18 @@ export function Header(props: {
    *  threshold. 0 renders nothing — an always-present PULLS ▸ 0 would train
    *  people to ignore the one place this feature speaks. */
   pulls?: number;
+  /** Contested paths across the project, derived once in `App` from the shared
+   *  `collisionsFrom` (spec §5). Optional so a caller that has not computed
+   *  them renders no badge rather than crashing — and so no other call site
+   *  has to change. */
+  contested?: Collision[];
   hud?: HudData;
 }) {
   const hud = props.hud ?? {};
+  // How many contested paths involve THIS session — not the project's total.
+  // 0 renders nothing, for the same reason PULLS does: a badge that is always
+  // on screen is a badge nobody reads.
+  const contestedCount = contestedCountFor(props.sessionId, props.contested ?? []);
   const pct =
     hud.contextUsed !== undefined && hud.contextMax
       ? Math.min(100, Math.round((hud.contextUsed / hud.contextMax) * 100))
@@ -151,6 +162,14 @@ export function Header(props: {
         {(props.pulls ?? 0) > 0 && (
           <span className="conn pull-badge" title="sessions waiting on an approval">
             🔐 PULLS ▸ {props.pulls}
+          </span>
+        )}
+        {contestedCount > 0 && (
+          <span
+            className="conn contested-calm"
+            title="files this session is changing that another session is changing too"
+          >
+            {`⚠ CONTESTED ▸ ${contestedCount}`}
           </span>
         )}
         {props.signedInAs && (
