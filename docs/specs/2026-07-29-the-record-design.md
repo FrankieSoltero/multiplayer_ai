@@ -222,6 +222,19 @@ Exact TypeScript types live in `record.ts` and are the contract; the plan pins t
    boot. Blast radius accepted and documented: a fooled liveness check (PID reuse) would admit
    a second writer; the dual failure (false-alive → boot refused though nobody holds the DB)
    recovers by deleting `<dbPath>.lock`.
+6. **§3.3 naming:** the SQLite persister class is named `HubDb`, not `SqlitePersister` — it is
+   a DB wrapper (open/load/close + single-writer lock), not only a persister. Deliberate
+   rename, ratified.
+7. **§3.6 operator policy:** recovery from any storage failure is backup-FIRST — copy the
+   `hub.db`/`hub.db-wal`/`hub.db-shm` trio to safe storage before any recovery attempt (the
+   journal is the product's sole record; move the trio TOGETHER or strand committed WAL data);
+   schema upgrades follow a backup-before-upgrade convention. At-rest posture accepted for
+   v7b1: unencrypted local file (prompts, userIds, file paths) in a `0700` home dotdir, no
+   retention or backup mechanism until §8.10.
+8. **§4.2 rollup:** auto decisions (`auto: true`) are EXCLUDED from per-user
+   `approvalsGiven`/`denialsGiven` tallies — the rollup answers "who approved what", and an
+   auto-approval is the system's act, not the user's. The decision still appears on its turn,
+   marked auto.
 
 ## 8. Open questions (not blocking this branch)
 

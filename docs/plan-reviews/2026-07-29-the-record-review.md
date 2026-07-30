@@ -146,4 +146,23 @@ sub-deliverables independently ledgered; mechanical no-logic-edited check on Tas
 extraction; pass/fail criterion for the styling-consistency walk step; named assertion for Task
 12's "rendering" row.
 
-**Next session:** apply the 26 mechanical fixes + get the 2 owner rulings → cycle 2 round 2.
+**Owner answered (2026-07-29, session #22):** `HubDb` rename RATIFIED (spec §8a ruling 6);
+backup posture (backup-first recovery ordering, backup-before-upgrade convention, at-rest
+posture) RATIFIED (spec §8a ruling 7); and the auto-decision rollup exclusion — flagged in the
+minors with an "or get a ruling" option — RATIFIED too (spec §8a ruling 8) rather than left as
+`(proposed — confirm)`.
+
+**All 26 mechanical fixes + 2 blocking fixes applied** to the plan: Conflicts-with column added
+to the dependency table (table alone now schedules; whole-package-suite verifies encoded);
+Tasks 2/3/9 verifies widened to the whole hub suite; Task 7 fusion recorded as deliberate;
+Task 13 steps independently ledgered, step-4 pass/fail criterion, citations split
+(§5/§4.3/house convention); `captureHydration` helper named and shared (Task 3 → Task 4
+round-trip restated); driver rows aligned to spec §4.1's "opening"/"at that point" wording with
+a discriminating in-turn control_change row; lock/schema error-string templates; mulberry32 /
+seed 1337 pinned; better-sqlite3 native blast radius + rebuild verify + npm-install first step
++ package-lock staged; skipLock test-only made checkable (row + grep); get_record exposure
+delta recorded; rollupLines/sessionBlocks signatures and rendered-line templates pinned;
+RecordPanel props final; Task 12 rendering row named assertion; Task 14 citations fixed to
+"§6 non-goals 2–3" and the tech-debt grep matched to the file's real `### N.M` format.
+
+→ cycle 2 round 2 convened on the revised plan.
