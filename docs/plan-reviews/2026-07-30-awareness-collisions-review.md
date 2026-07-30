@@ -58,3 +58,13 @@ body contradicting its RULED header and holding Task 2a hostage — fixed to mat
 (×1) client `ProjectSessionInfo` has no `touched` member and no task added it, so Task 9a's
 signature could not typecheck — types.ts joins Task 9a with `touched?: string[] | null`. All
 29 dispatched to a fix pass → round 2.
+
+## Cycle 2, Round 2 — **BLOCKED** (overall 83.6; zero floor breaches; 3 blocking violations)
+
+Run `wf_9a96a2b6-d35`. D1 86 · D2 85 · D3 80 · D4 84 · D5 84 · D6 83. Blockings SUBSTANTIVE:
+(1) the gate reason had NO client render task — spec §6b's "UI line names why" was unimplemented
+(→ new Task 8c); (2) the real auto-approve decision sites (agentDriver.ts:294, allowAllPending
+:531, permissions.ts:141) were absent from Task 8b's files — agentDriver.ts wasn't in the plan
+at all; (3) walk step-1/8a env inconsistency. Controller checkpoint given the 6-round plateau
+(82.3→84.2→83.6→83.9→83.6): one more fix pass + round 3 (cycle cap); if round 3 still blocks,
+adjudicate-and-execute (lean-sdd's per-task + final reviews remain the deeper net).
