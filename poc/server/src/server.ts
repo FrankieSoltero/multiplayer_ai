@@ -537,6 +537,17 @@ export async function startServer(opts: {
           undefined,
           () => oversightToolText(overseer.isEnabled(project.id), overseer.latest(project.id)),
           () => recomputeTouched(project, sessionId),
+          // The contested wiring (spec §6b, Task 8b). All four close over data
+          // this call site already holds; `server.ts` is the only module with a
+          // `Project` handle, which is why the three decision sites reach it
+          // through callbacks rather than importing `contested.ts` themselves.
+          // Read on every gate decision, never cached: `contestedFor` derives
+          // the local half from live session state, so a cached set would go
+          // stale the moment any teammate's touched set moved.
+          () => contestedFor(project, sessionId),
+          () => newEntry.contestedAsked,
+          (contestedPath) => contestedSessionsFor(project, sessionId, contestedPath),
+          (contestedPath) => void newEntry.contestedAsked.add(contestedPath),
         ),
         skills,
         pendingSuggests: new Map(),
@@ -550,6 +561,9 @@ export async function startServer(opts: {
         // No hub frame has arrived for this session (spec §6a) — null, not an
         // empty frame, which would claim the hub has spoken and found nothing.
         contestedFrame: null,
+        // Nobody has been asked about anything yet (spec §6b). Lives for the
+        // session's lifetime and is never cleared — see the field's note.
+        contestedAsked: new Set<string>(),
       };
       entry = newEntry;
       project.sessions.set(sessionId, entry);

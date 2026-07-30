@@ -67,6 +67,27 @@ export interface ProjectSessionEntry {
     paths: string[];
     collisions: { path: string; sessionIds: string[] }[];
   } | null;
+  /** Repo-relative paths this session has ALREADY asked a human about, because
+   *  a write to them was contested (spec §6b, Task 8b). Membership means "do
+   *  not withdraw auto-approve for this file again" — the promise is once per
+   *  (file, session), so a teammate is interrupted the first time the agent
+   *  touches a shared file and never again for that file.
+   *
+   *  A path is added when a human ANSWERS the gate — allow or deny, both are
+   *  answers. System-attributed decisions (abort, stream death) are not: nobody
+   *  saw those, so nothing was learned.
+   *
+   *  NEVER cleared while the session lives, deliberately. Clearing it when the
+   *  path drops out of the contested set would re-ask the moment the peer's
+   *  next commit lands, which is exactly the pattern that trains people to
+   *  click through gates. The only reset is the session ending — or the process
+   *  restarting, which is what the `MPAI_CONTESTED_GATE` rollback note costs.
+   *
+   *  Mutable and owned by the entry: `server.ts` hands the driver a closure over
+   *  THIS set, so the gate reads and writes one object rather than a copy. Not
+   *  in `sessionFactsOf` — it is local bookkeeping, not a fact about the
+   *  session, and nothing on the wire needs it. */
+  contestedAsked: Set<string>;
 }
 
 /** Minimal structural type so tests don't need real sockets. */

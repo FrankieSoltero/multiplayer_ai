@@ -36,8 +36,8 @@ const idleRun: RunQuery = async function* (prompts) {
 };
 
 /** One session on this laptop's project map. Every field of the real entry is
- *  present — a fixture that omitted `contestedFrame` would compile only while
- *  the field is optional, which it is not. */
+ *  present — a fixture that omitted `contestedFrame` or `contestedAsked` would
+ *  compile only while the field is optional, which neither is. */
 function addSession(
   project: Project,
   id: string,
@@ -55,6 +55,7 @@ function addSession(
     baseRef: null,
     touched: null,
     contestedFrame: null,
+    contestedAsked: new Set<string>(),
     ...over,
   };
   project.sessions.set(id, entry);
@@ -82,6 +83,13 @@ describe("contestedFor / contestedSessionsFor — hub frame", () => {
     expect(contestedSessionsFor(project, "auth", "src/a.ts")).toEqual(["s9"]);
     // A path nobody is contesting answers empty rather than guessing.
     expect(contestedSessionsFor(project, "auth", "src/z.ts")).toEqual([]);
+
+    // The GATE's bookkeeping (`contestedAsked`, Task 8b) is not an input to
+    // either accessor: a file a human has already been asked about is still a
+    // contested file, it is only no longer a reason to ask again.
+    project.sessions.get("auth")!.contestedAsked.add("src/a.ts");
+    expect([...contestedFor(project, "auth")]).toEqual(["src/a.ts"]);
+    expect(contestedSessionsFor(project, "auth", "src/a.ts")).toEqual(["s9"]);
   });
 
   it("loses the hub-sourced paths when a clearing frame lands, and keeps the local ones", () => {

@@ -145,6 +145,76 @@ export function contestedWrite(
   return contested.has(repoRelative) ? repoRelative : null;
 }
 
+/** Allocated once: every gate that is not a contested write reads an empty set,
+ *  and a fresh `new Set()` per decision would be pure garbage. Never handed out
+ *  — `contestedWrite` only reads it. */
+const NO_CONTESTED: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Why this write must stop being auto-approved, or `null` to leave every
+ * existing auto-approval exactly as it was (spec §6b, §8a ruling 4).
+ *
+ * The ONE policy behind all three decision sites — `agentDriver.ts`'s auto
+ * branch and `allowAllPending`, and `buildCanUseTool` below. Each site calls
+ * this; none reimplements the membership test, so "the three sites consult the
+ * same set" is true by construction rather than by three matching edits.
+ *
+ * Four gates, in order, each of which returns `null` (= behave exactly as
+ * today):
+ *
+ *  1. `MPAI_CONTESTED_GATE === "0"` — the kill switch (spec §8a ruling 4).
+ *     Read HERE, per decision, never cached at module load: that is what makes
+ *     it honoured per-gate in tests and effective on the first gate after a
+ *     relaunch. It does NOT make it flippable on a live process — `process.env`
+ *     cannot be changed from outside a running node process, so a live laptop
+ *     still needs a restart (and that restart costs every in-flight turn, every
+ *     unanswered gate, and all three per-session in-memory sets, `contestedAsked`
+ *     included). Tier (a) surfaces are deliberately NOT behind this switch.
+ *  2. the write is not to a contested path — `contestedWrite`, which also
+ *     absorbs the no-workdir, non-write-tool, non-object-input and
+ *     outside-the-worktree cases and never throws.
+ *  3. the human has already answered for this file in this session
+ *     (`contestedAsked`) — the once-per-(file, session) promise.
+ *  4. nothing is wired (`getContested` absent on older call sites and test
+ *     fakes) — the optional chains below make that the empty set.
+ *
+ * ADVISORY, never blocking: the strongest thing a non-null answer causes is
+ * auto-approve → ask a human, once. No caller may turn it into a deny.
+ *
+ * The peer id is interpolated VERBATIM — never re-parsed, escaped or truncated
+ * here. Safe because Task 6a validates every peer id with `SLUG`
+ * (`/^[a-z0-9-]{1,40}$/`) before it can reach a frame this laptop stores, which
+ * also puts the 512-char gate-reason cap out of reach by construction:
+ * `"contested with session "` (23) + ≤ 40.
+ *
+ * `contestedSessionsFor` answers `[]` for a path the hub listed in `paths` with
+ * no matching `collisions` entry (the two lists are bounded independently, see
+ * `contested.ts`). Withdrawal still applies — the path IS contested — but there
+ * is no peer to name, so the reason degrades to the bare `"contested"` rather
+ * than naming a session nobody reported.
+ */
+export function contestedWriteReason(
+  toolName: string,
+  input: unknown,
+  hooks: Pick<DriverHooks, "workdir" | "getContested" | "contestedAsked" | "contestedSessions">,
+): { path: string; reason: string } | null {
+  if (process.env.MPAI_CONTESTED_GATE === "0") return null;
+  const contestedPath = contestedWrite(
+    toolName,
+    input,
+    hooks.workdir,
+    hooks.getContested?.() ?? NO_CONTESTED,
+  );
+  if (contestedPath === null) return null;
+  if (hooks.contestedAsked?.().has(contestedPath)) return null;
+  const peers = hooks.contestedSessions?.(contestedPath) ?? [];
+  const peer = peers[0];
+  return {
+    path: contestedPath,
+    reason: peer === undefined ? "contested" : `contested with session ${peer}`,
+  };
+}
+
 /**
  * Bridge the SDK's canUseTool callback to the driver-approval hook.
  * MUST always resolve to a PermissionResult — returning null tells the SDK
@@ -196,7 +266,17 @@ export function buildCanUseTool(hooks: DriverHooks): CanUseTool {
       // and a Read/Grep/Bash decision never shells out to git. Synchronous —
       // it cannot race the early-allow below.
       hooks.recomputeTouched?.();
-      if (isContainedWrite(hooks.workdir, input)) {
+      // Decision site 3 (spec §6b, Task 8b). The contained-write early allow
+      // fires regardless of permission mode, so it is the ONLY site that can
+      // let a contested write through in `default` mode — and it runs BEFORE
+      // any `permission_request` event exists, which is why the freshness
+      // recompute above had to move here. A withdrawal falls straight through
+      // to the driver ask below; that ask is site 1's hook, which re-derives
+      // the same answer and puts the reason on the event.
+      if (
+        isContainedWrite(hooks.workdir, input) &&
+        contestedWriteReason(toolName, input, hooks) === null
+      ) {
         return { behavior: "allow" };
       }
     }

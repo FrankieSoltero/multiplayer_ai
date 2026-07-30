@@ -62,7 +62,9 @@ function addSession(
   contestedFrame: import("../src/project.js").ProjectSessionEntry["contestedFrame"] = null,
 ): Session {
   const session = new Session(id);
-  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map(), pendingOversight: false, repoKey, workdir, baseRef, touched, contestedFrame });
+  // Every field of the real entry, `contestedAsked` (Task 8b) included: the
+  // snapshot must not grow a field just because the entry did.
+  project.sessions.set(id, { session, driver: new AgentDriver(session, idleRun), skills, pendingSuggests: new Map(), pendingOversight: false, repoKey, workdir, baseRef, touched, contestedFrame, contestedAsked: new Set<string>() });
   return session;
 }
 
