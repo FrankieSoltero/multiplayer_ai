@@ -245,6 +245,10 @@ describe("laptop ↔ hub, real Relay against a real hub", () => {
       browser.on("error", reject);
     });
     browser.on("message", (raw) => seen.push(JSON.parse(raw.toString())));
+    // watch_project/peek are members-only now (spec A5): identify and join the
+    // project before peeking it.
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    browser.send(JSON.stringify({ type: "join_project", projectId: "default" }));
     browser.send(JSON.stringify({ type: "peek", projectId: "default" }));
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline && !seen.some((m) => m.type === "project")) await wait(10);

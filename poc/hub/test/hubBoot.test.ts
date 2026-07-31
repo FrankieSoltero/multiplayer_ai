@@ -270,6 +270,10 @@ describe("runtime fail-stop", () => {
     const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
     const seen: any[] = [];
     collect(browser, seen);
+    // Participation is membership-gated now (spec A4): identify and join the
+    // project before joining a session in it.
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    browser.send(JSON.stringify({ type: "join_project", projectId: "default" }));
     browser.send(
       JSON.stringify({
         type: "join",

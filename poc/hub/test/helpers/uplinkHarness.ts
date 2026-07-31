@@ -172,6 +172,12 @@ export async function browserReplay(port: number, sessionId = "auth"): Promise<a
     ws.on("error", reject);
   });
   ws.on("message", (raw) => seen.push(JSON.parse(raw.toString())));
+  // Participation is membership-gated now (spec A4): a browser must identify and
+  // join the project before joining a session in it. Sent on the same socket in
+  // order, so the hub commits the membership before it processes the join — no
+  // wait needed between them.
+  ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+  ws.send(JSON.stringify({ type: "join_project", projectId: "default" }));
   ws.send(
     JSON.stringify({ type: "join", sessionId, projectId: "default", userId: "ana", name: "ana" }),
   );
@@ -213,6 +219,11 @@ export async function snapshotVia(
   const ws = await connect(`ws://127.0.0.1:${port}/`);
   const seen: any[] = [];
   collect(ws, seen);
+  // watch_project/peek are members-only now (spec A5): identify and join the
+  // project on the same socket first, in order, so the snapshot request clears
+  // the membership gate.
+  ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+  ws.send(JSON.stringify({ type: "join_project", projectId }));
   ws.send(JSON.stringify({ type, projectId }));
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline && !seen.some((m) => m.type === "project")) await wait(10);

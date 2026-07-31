@@ -192,7 +192,14 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     }
     const payload = store.snapshot(projectId);
     for (const channel of channels.values()) {
-      if (channel.projectId === projectId) send(channel.socket, payload);
+      if (channel.projectId !== projectId) continue;
+      // Membership is re-checked at fan-out, not just at watch/join time (spec
+      // A5): a `leave_project` leaves `channel.projectId` set but drops the
+      // membership, so a departed member is silenced here — pushes stop without
+      // the socket being disconnected. `channel.identity` is always set once a
+      // channel is homed onto a project (watch and join both require it).
+      if (!channel.identity || !store.isMember(projectId, channel.identity.userId)) continue;
+      send(channel.socket, payload);
     }
     lastPush.set(projectId, Date.now());
     // Last, on the same throttled beat as the browser snapshot and off the
@@ -645,6 +652,13 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     channels.set(channelId, channel);
 
     const error = (message: string) => send(socket, { type: "error", message });
+    // The membership refusal (spec A4/A5). Carries `code: "not_a_member"` on top
+    // of the standard `{type:"error", message}` shape (spec §4.2) so the browser
+    // can turn "you are not in this project" into a join affordance rather than a
+    // generic failure — the ONLY refusal that adds a code, and only where a
+    // membership gate rejects.
+    const denyMember = (message: string) =>
+      send(socket, { type: "error", message, code: "not_a_member" });
 
     const tunnel = (payload: unknown): void => {
       if (!channel.projectId || !channel.sessionId || !channel.identity) {
@@ -807,6 +821,18 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         // A verified login is never empty, so this only guards the auth-off arm.
         if (!userId) return error("join requires userId");
 
+        // Participation is membership-scoped (spec A4). Checked AFTER the
+        // identity stamp above and BEFORE any binding, replay, snapshot or
+        // tunnel, so a non-member's join dies here having touched nothing —
+        // and, with auth on, the check sees the VERIFIED login, never the
+        // browser's claim. This is the gate provisioning already has
+        // (`create_session` hub.ts, `attach_repo`, `set_project_lifecycle`);
+        // participation was the one hole (relayProtocol's "bound is project
+        // membership" note, now true).
+        if (!store.isMember(projectId, userId)) {
+          return denyMember("join this project before joining its sessions");
+        }
+
         const owner = store.ownerOf(projectId, sessionId);
         if (!owner || !uplinks.has(owner)) {
           return error(`no machine is running session "${sessionId}" right now`);
@@ -962,12 +988,23 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       }
 
       if (HUB_HANDLED.has(msg?.type)) {
+        // Identity then membership (spec A5): a snapshot carries every session's
+        // full `touched` change-list, so it is members-only, exactly as
+        // participation is. The list itself stays hub-wide (`list_projects`) —
+        // it is the join affordance — but everything deeper is gated.
+        if (!channel.identity) return error("identify first");
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
         if (!SLUG.test(projectId)) return error(`${msg.type} requires a valid projectId`);
+        if (!store.isMember(projectId, channel.identity.userId)) {
+          return denyMember("join this project to see it");
+        }
         // Never re-home a channel that has joined a session: `fanOut` keys on
         // projectId AND sessionId, so re-homing would silently cut the joined
         // session's event stream. Such a socket still gets the snapshot it
         // asked for; it just keeps receiving pushes for its session's project.
+        // A refused (non-member) watch above never reaches this line, so it
+        // never re-homes — the browser cannot subscribe to a project it is not
+        // in.
         if (msg.type === "watch_project" && !channel.sessionId) channel.projectId = projectId;
         send(socket, store.snapshot(projectId));
         return;
@@ -982,16 +1019,21 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
        *  `identify` is required (owner ruling, spec §8a.1), which is where this
        *  deliberately differs from the standalone handler's `denyUnauthed()`:
        *  the hub has no auth of its own until v7b2, so this pins the line the
-       *  hub's cookie-verified login will replace. Membership is deliberately
-       *  NOT required — visibility is hub-wide, exactly as for `watch_project`
-       *  and `list_projects` (spec P2). Everything else — the validation, the
-       *  error string, the reply's shape — is the standalone handler's, byte for
-       *  byte (server.ts's `get_record`), because one browser bundle talks to
-       *  both. */
+       *  hub's cookie-verified login will replace. Membership is ALSO required
+       *  now (spec A5, APPROVED — it supersedes P2's "visibility is hub-wide"):
+       *  the record carries every session's `filesChanged`, the same exposure
+       *  class as the snapshot's `touched`, so it is members-only, exactly like
+       *  `watch_project`/`peek`. Only the project LIST stays hub-wide, as the
+       *  join affordance. Everything else — the validation, the error string,
+       *  the reply's shape — is the standalone handler's, byte for byte
+       *  (server.ts's `get_record`), because one browser bundle talks to both. */
       if (msg?.type === "get_record") {
         if (!channel.identity) return error("identify first");
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
         if (!SLUG.test(projectId)) return error("get_record requires a valid projectId");
+        if (!store.isMember(projectId, channel.identity.userId)) {
+          return denyMember("join this project to see its record");
+        }
         // Never re-homed, for the same reason `watch_project` above never
         // re-homes a joined channel: this is a read, and `fanOut` keys on
         // projectId AND sessionId, so touching either would cut a joined
