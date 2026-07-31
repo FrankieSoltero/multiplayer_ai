@@ -41,6 +41,24 @@ const CONTESTED_PATH_CAP = 5;
  *  would be worse than one that shows the name without it. */
 const CONTROL_CHARS = new RegExp(CONTROL_CHARS_SOURCE, "g");
 
+/** The one strip every free-text value crosses on its way into a prompt.
+ *
+ *  Audit finding M2 (`docs/audit-2026-07-30.md`) found the `driverName`
+ *  treatment below applied to that field ALONE, while `intent` and tool-call
+ *  `target` — both agent-authored, both steerable by whatever untrusted content
+ *  the agent happened to read — reached a PEER session's prompt with their
+ *  newlines intact. The reasoning in `contestedLineFor` was never specific to
+ *  names: it applies verbatim to any value whose producers bound LENGTH and
+ *  nothing else, which is all of them. So the filter moved here and every such
+ *  value now crosses it.
+ *
+ *  At the INTERPOLATION boundary, never on the way into storage: the event log
+ *  is the record of what actually happened and stays byte-exact, and a value
+ *  that never reaches a prompt is never altered. */
+function stripControls(value: string): string {
+  return value.replace(CONTROL_CHARS, "");
+}
+
 /** The spec §6a line: `session X (driven by Y) has also changed: a, b`.
  *
  *  WHAT IS BOUNDED, AND WHERE. Peer ids and paths are interpolated VERBATIM and
@@ -132,12 +150,19 @@ export function buildTeammateDigest(others: TeammateSummary[]): string {
   const lines: string[] = ["<teammates>"];
   for (const o of others) {
     const status = o.ended ? " (ended)" : "";
+    // `intent` and `target` are stripped HERE, on the way into the prompt
+    // (audit M2). Both are agent-authored — `set_intent`'s schema is a bare
+    // `z.string()` and the tool target is the SDK's raw `file_path`, appended
+    // before any permission gate resolves — so both can carry a newline, and
+    // one newline forges a whole peer entry in the block below. `o.id` stays
+    // verbatim for the reason the header comment gives: `SLUG` already bounds
+    // its characters upstream.
     lines.push(
-      `- session "${o.id}"${status}: ${o.intent ?? "no declared intent yet"}`,
+      `- session "${o.id}"${status}: ${stripControls(o.intent ?? "no declared intent yet")}`,
     );
     if (o.recentToolCalls.length > 0) {
       const activity = o.recentToolCalls
-        .map((c) => `${c.toolName}(${c.target})`)
+        .map((c) => `${stripControls(c.toolName)}(${stripControls(c.target)})`)
         .join(", ");
       lines.push(`  recent activity: ${activity}`);
     }
@@ -168,7 +193,14 @@ export interface OversightSessionDigest {
 
 /** Structured per-session digest for the oversight summarizer (spec §3).
  *  Reads event metadata only — never agent_text_delta/tool_result content:
- *  the overseer must not see transcript prose. */
+ *  the overseer must not see transcript prose.
+ *
+ *  Every free-text field is control-stripped as it is assembled (audit M2).
+ *  This struct exists for exactly one consumer — `runOversightSummarize`, which
+ *  interpolates each field into a line of an LLM prompt whose output is then
+ *  spliced into other sessions' prompts — so assembly IS the interpolation
+ *  boundary here, and stripping once at the producer is what keeps a second
+ *  consumer from having to remember. The source events are untouched. */
 export function oversightSessionDigest(
   id: string,
   events: LoggedEvent[],
@@ -182,12 +214,14 @@ export function oversightSessionDigest(
   let errorCount = 0;
   const openGates = new Set<string>();
   for (const ev of events) {
-    if (ev.type === "intent_update") intent = ev.text;
+    if (ev.type === "intent_update") intent = stripControls(ev.text);
     if (ev.type === "tool_call") {
       const input = (ev.input ?? {}) as Record<string, unknown>;
       toolCalls.push({
-        toolName: ev.toolName,
-        target: String(input.file_path ?? input.pattern ?? input.path ?? ""),
+        toolName: stripControls(ev.toolName),
+        target: stripControls(
+          String(input.file_path ?? input.pattern ?? input.path ?? ""),
+        ),
       });
     }
     if (ev.type === "user_message") promptCount++;
@@ -198,8 +232,8 @@ export function oversightSessionDigest(
   return {
     id,
     intent,
-    driverName,
-    participants,
+    driverName: driverName === null ? null : stripControls(driverName),
+    participants: participants.map(stripControls),
     recentToolCalls: toolCalls.slice(-5),
     promptCount,
     pendingGates: openGates.size,

@@ -1,4 +1,5 @@
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import fs from "node:fs";
 import path from "node:path";
 import type { DriverHooks } from "./agentDriver.js";
 
@@ -71,36 +72,90 @@ const AGENT_BOOKKEEPING_TOOLS = new Set([
 ]);
 
 /**
- * True if the write target — `input.file_path` for Write/Edit, or
- * `input.notebook_path` for NotebookEdit (the SDK's NotebookEdit input uses
- * a different field name) — is a string that resolves (relative to
- * `workdir`, or as-is if already absolute) to a path inside `workdir`.
- * Fails toward `false` (→ ask the driver) for any ambiguous case: no
- * workdir, missing/non-string path, or a resolved path outside the worktree
- * (including `../` traversal).
+ * The REAL path of `p` — symlinks resolved — for a path that may not exist yet.
+ *
+ * `fs.realpathSync` needs the whole path to exist, and the common case for a
+ * `Write` is a file that does not (which is why containment was lexical to
+ * begin with). So: realpath the deepest ancestor that DOES exist and re-join
+ * the segments below it. Every symlink on the existing part is resolved, and
+ * the part that does not exist cannot be a symlink — nothing is there.
+ *
+ * `null` means "could not resolve" (ELOOP, EACCES, a vanished parent), and
+ * every caller reads that as NOT contained: a path this function cannot
+ * describe is a path no auto-approval should be granted on. Never throws.
  */
-function isContainedWrite(workdir: string | undefined, input: unknown): boolean {
-  if (!workdir) return false;
+function realPathOf(p: string): string | null {
+  let current = path.resolve(p);
+  const below: string[] = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(current), ...below);
+    } catch (err) {
+      // ENOENT is the ordinary "not created yet" case — keep walking up. Any
+      // other errno is a resolution failure and must not be walked past.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return null;
+      const parent = path.dirname(current);
+      if (parent === current) return null; // reached the root, nothing resolved
+      below.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * The write target's real path and the worktree's real root, or `null` when
+ * the target is not a contained write.
+ *
+ * The target is `input.file_path` for Write/Edit, or `input.notebook_path` for
+ * NotebookEdit (the SDK's NotebookEdit input uses a different field name),
+ * resolved relative to `workdir` or taken as-is when already absolute.
+ *
+ * SYMLINKS ARE RESOLVED ON BOTH SIDES (audit finding M3). The lexical check
+ * this replaced compared `path.resolve` output, which is pure string algebra:
+ * a symlink inside the worktree pointing outside it — one `git checkout` away,
+ * since git materializes committed symlinks — made every write beneath it
+ * "contained" and therefore silently auto-approved, landing on the operator's
+ * filesystem. Both sides go through `realPathOf` so a worktree that itself
+ * lives under a symlinked ancestor (`/tmp` → `/private/tmp` on macOS) still
+ * compares like with like.
+ *
+ * Fails toward `null` (→ ask the driver) for every ambiguous case: no workdir,
+ * missing/non-string path, unresolvable path, or a real path outside the
+ * worktree (including `../` traversal). ADVISORY, never a block: the caller's
+ * answer to `null` is a human approval round-trip, not a denial.
+ */
+function containedWriteTarget(
+  workdir: string | undefined,
+  input: unknown,
+): { base: string; target: string } | null {
+  if (!workdir) return null;
   const { file_path, notebook_path } = input as {
     file_path?: unknown;
     notebook_path?: unknown;
   };
   const filePath = file_path ?? notebook_path;
-  if (typeof filePath !== "string") return false;
-  const workdirResolved = path.resolve(workdir);
-  const resolved = path.resolve(workdir, filePath);
-  return (
-    resolved === workdirResolved || resolved.startsWith(workdirResolved + path.sep)
-  );
+  if (typeof filePath !== "string") return null;
+  const base = realPathOf(workdir);
+  if (base === null) return null;
+  const target = realPathOf(path.resolve(workdir, filePath));
+  if (target === null) return null;
+  if (target !== base && !target.startsWith(base + path.sep)) return null;
+  return { base, target };
+}
+
+function isContainedWrite(workdir: string | undefined, input: unknown): boolean {
+  return containedWriteTarget(workdir, input) !== null;
 }
 
 /**
  * The repo-relative path this tool call would write, IF that path is one the
  * session is contesting — otherwise `null` (spec §6b).
  *
- * Pure: no env, no filesystem, no gate state, and neither argument is
- * mutated. Path resolution is lexical, so a target that does not exist on disk
- * yet (the common case for Write) answers exactly like one that does.
+ * No env, no gate state, and neither argument is mutated. Path resolution
+ * READS the filesystem (`realPathOf`, audit M3) but writes nothing and throws
+ * nothing: a target that does not exist on disk yet — the common case for
+ * Write — still answers exactly like one that does, because resolution stops
+ * at the deepest existing ancestor.
  *
  * `contested` is the caller's set of repo-relative POSIX paths (Task 7a's
  * `contestedFor` output); the tool input is a path relative to `workdir` or an
@@ -125,19 +180,16 @@ export function contestedWrite(
   if (!FILE_WRITE_TOOLS.has(toolName)) return null;
   if (contested.size === 0) return null;
   if (!workdir) return null;
-  // `isContainedWrite` destructures `input`, which throws on null/undefined —
-  // this predicate's contract is "never throws", so non-objects stop here.
+  // `containedWriteTarget` destructures `input`, which throws on null/undefined
+  // — this predicate's contract is "never throws", so non-objects stop here.
   if (typeof input !== "object" || input === null) return null;
-  if (!isContainedWrite(workdir, input)) return null;
-
-  const { file_path, notebook_path } = input as {
-    file_path?: unknown;
-    notebook_path?: unknown;
-  };
-  const filePath = file_path ?? notebook_path;
-  // Already proved a string by the containment check; re-narrowed for the type.
-  if (typeof filePath !== "string") return null;
-  const relative = path.relative(path.resolve(workdir), path.resolve(workdir, filePath));
+  // The SAME resolved pair the containment check used, not a second lexical
+  // derivation of it: the repo-relative path must be measured against the same
+  // real root, or an alias inside the worktree would map to a path git has
+  // never heard of and the contested test would silently miss it.
+  const resolved = containedWriteTarget(workdir, input);
+  if (resolved === null) return null;
+  const relative = path.relative(resolved.base, resolved.target);
   // The worktree root itself relativizes to "" — not a file, and never a
   // contested path, even if an upstream list somehow carried an empty string.
   if (relative === "") return null;

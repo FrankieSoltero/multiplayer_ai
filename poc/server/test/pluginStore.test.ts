@@ -57,6 +57,47 @@ describe("PluginStore.add", () => {
     expect(cloned).toBe(false);
   });
 
+  /** Audit findings M1/M6 (`docs/audit-2026-07-30.md`): every https URL was
+   *  cloned, so `add_plugin` was an outbound-request primitive aimed at any
+   *  host the server process can reach — and git's differentiated error text
+   *  came back to the caller as an internal-network recon oracle. Fail closed:
+   *  an explicit host allowlist, checked before any network or git activity. */
+  it("rejects an https url whose host is not on the allowlist, without cloning", async () => {
+    const rejected = [
+      "https://internal.corp.example/team/plugin.git",
+      "https://127.0.0.1:9000/x.git",
+      "https://[::1]/x.git",
+      "https://169.254.169.254/latest/meta-data",
+      "https://10.0.0.5/x.git",
+      // Look-alikes: a suffix, a subdomain, a path, and a userinfo prefix all
+      // resolve to a host that is NOT github.com.
+      "https://github.com.evil.example/x.git",
+      "https://raw.githubusercontent.com/x/y",
+      "https://evil.example/github.com/x.git",
+      "https://github.com@evil.example/x.git",
+      "https://",
+    ];
+    for (const url of rejected) {
+      let cloned = false;
+      const store = new PluginStore(root, async () => { cloned = true; });
+      const result = await store.add("proj", url, "u1");
+      expect(result, url).toEqual({
+        ok: false,
+        error: "plugin url host must be one of: github.com",
+      });
+      expect(cloned, url).toBe(false);
+      // Nothing was created on disk for a refused url.
+      expect(fs.existsSync(path.join(root, "proj"))).toBe(false);
+    }
+  });
+
+  it("still clones an allowlisted host, host-matched case-insensitively", async () => {
+    const store = new PluginStore(root, fakeClone(SOLTERO));
+    const result = await store.add("proj", "https://GitHub.com/x/soltero-skills.git", "u1");
+    expect(result.ok).toBe(true);
+    expect(store.list("proj")).toHaveLength(1);
+  });
+
   it("rejects a clone that is not a plugin and removes the clone dir", async () => {
     const store = new PluginStore(root, fakeClone({ "README.md": "just a repo" }));
     const result = await store.add("proj", "https://github.com/x/notaplugin", "u1");

@@ -1,4 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterAll } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { isAutoApprovedBash } from "../src/permissions.js";
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import { buildCanUseTool, contestedWrite } from "../src/permissions.js";
@@ -297,13 +300,16 @@ describe("buildCanUseTool worktree containment (file-writing tools)", () => {
   });
 });
 
-/** `contestedWrite` — the pure predicate (spec §6b). Pure: no env, no
- *  filesystem, no gate state, no mutation of its arguments. Nothing calls it
- *  on this commit; Task 8b supplies the first caller.
+/** `contestedWrite` — the predicate (spec §6b). No env, no gate state, no
+ *  mutation of its arguments. Nothing calls it on this commit; Task 8b supplies
+ *  the first caller.
  *
  *  Every path below lives under a worktree root that does NOT exist on disk,
- *  which is deliberate: an implementation that stat'ed or realpath'ed the
- *  target instead of resolving lexically would throw here rather than answer. */
+ *  which is deliberate and outlived its original reason. It was written to
+ *  catch an implementation that stat'ed the target and threw; since audit M3
+ *  the predicate DOES read the filesystem, so what these cases now pin is the
+ *  other half of that contract — resolution stops at the deepest existing
+ *  ancestor, so a not-yet-created target still answers instead of throwing. */
 describe("contestedWrite", () => {
   const WD = "/tmp/wt/ana";
 
@@ -450,5 +456,111 @@ describe("contestedWrite", () => {
     expect(clear).not.toHaveBeenCalled();
     expect([...contested]).toEqual(["src/x.ts"]);
     expect(input).toEqual({ file_path: "src/x.ts" });
+  });
+});
+
+/** Audit finding M3 (`docs/audit-2026-07-30.md`): containment was purely
+ *  lexical, so a symlink INSIDE the worktree pointing outside it turned every
+ *  subsequent write under that path into a silently auto-approved write landing
+ *  on the operator's filesystem. Git materializes committed symlinks on
+ *  checkout, so planting one costs zero approvals.
+ *
+ *  Real directories on disk, unlike every other block in this file: a symlink
+ *  is the thing under test and it cannot be faked lexically. */
+describe("worktree containment resolves symlinks (audit M3)", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mpai-containment-")));
+  const workdir = path.join(root, "wt");
+  const outside = path.join(root, "outside");
+  fs.mkdirSync(path.join(workdir, "src"), { recursive: true });
+  fs.mkdirSync(outside, { recursive: true });
+  // (a) escapes the worktree, (b) stays inside it, (c) resolves to nothing.
+  fs.symlinkSync(outside, path.join(workdir, "escape"));
+  fs.symlinkSync(path.join(workdir, "src"), path.join(workdir, "alias"));
+  fs.symlinkSync(path.join(workdir, "loop"), path.join(workdir, "loop"));
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("routes a Write addressed through an escaping symlink to the driver", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = workdir;
+    const result = await buildCanUseTool(hooks)(
+      "Write",
+      { file_path: "escape/pwned.ts" },
+      opts(),
+    );
+    expect(result?.behavior).toBe("deny");
+    expect(calls.length).toBe(1);
+    expect(calls[0].toolName).toBe("Write");
+  });
+
+  it("routes an Edit of an EXISTING file reached through an escaping symlink to the driver", async () => {
+    fs.writeFileSync(path.join(outside, "secret.ts"), "// operator's file");
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = workdir;
+    const result = await buildCanUseTool(hooks)(
+      "Edit",
+      { file_path: path.join(workdir, "escape", "secret.ts") },
+      opts(),
+    );
+    expect(result?.behavior).toBe("deny");
+    expect(calls.length).toBe(1);
+  });
+
+  it("still auto-approves an ordinary write inside a REAL worktree", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = workdir;
+    expect(
+      await buildCanUseTool(hooks)("Write", { file_path: "src/new.ts" }, opts()),
+    ).toEqual({ behavior: "allow" });
+    expect(
+      await buildCanUseTool(hooks)(
+        "Write",
+        { file_path: path.join(workdir, "src", "deep", "nested.ts") },
+        opts(),
+      ),
+    ).toEqual({ behavior: "allow" });
+    expect(calls.length).toBe(0);
+  });
+
+  it("still auto-approves a write through a symlink that stays inside the worktree", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = workdir;
+    const result = await buildCanUseTool(hooks)(
+      "Write",
+      { file_path: "alias/x.ts" },
+      opts(),
+    );
+    expect(result).toEqual({ behavior: "allow" });
+    expect(calls.length).toBe(0);
+  });
+
+  it("falls through to the driver — never throws — when the path cannot be resolved", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    hooks.workdir = workdir;
+    const result = await buildCanUseTool(hooks)(
+      "Write",
+      { file_path: "loop/x.ts" },
+      opts(),
+    );
+    expect(result?.behavior).toBe("deny");
+    expect(calls.length).toBe(1);
+  });
+
+  it("maps a through-symlink target to its REAL repo-relative path for the contested test", () => {
+    // The alias and the real directory are one file to git, so they must be one
+    // path to the contested set — otherwise the gate is bypassable by spelling.
+    const contested = new Set(["src/x.ts"]);
+    expect(contestedWrite("Write", { file_path: "alias/x.ts" }, workdir, contested)).toBe(
+      "src/x.ts",
+    );
+    expect(contestedWrite("Write", { file_path: "src/x.ts" }, workdir, contested)).toBe(
+      "src/x.ts",
+    );
+    // Outside the worktree is never a contested match, symlinked or not.
+    expect(
+      contestedWrite("Write", { file_path: "escape/x.ts" }, workdir, new Set(["x.ts"])),
+    ).toBeNull();
   });
 });

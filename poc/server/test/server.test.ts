@@ -8,7 +8,7 @@ import { startServer } from "../src/server.js";
 import type { RunQuery, SdkMessage } from "../src/agentDriver.js";
 import { PluginStore, type CloneFn } from "../src/pluginStore.js";
 import { signSession, SESSION_COOKIE } from "../src/auth.js";
-import { RELAY_PROTOCOL_VERSION, parseUpFrame } from "../src/relayProtocol.js";
+import { MAX_FRAME_BYTES, RELAY_PROTOCOL_VERSION, parseUpFrame } from "../src/relayProtocol.js";
 
 const echoRun: RunQuery = async function* (prompts) {
   for await (const prompt of prompts) {
@@ -904,16 +904,20 @@ describe("plugin registry", () => {
     "skills/agent-handoff/SKILL.md":
       "---\nname: agent-handoff\ndescription: resume packets\n---\n",
   };
-  function storeWithFakeClone(): { store: PluginStore; root: string } {
+  function storeWithFakeClone(): { store: PluginStore; root: string; clones: string[] } {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "plugins-e2e-"));
-    const clone: CloneFn = async (_url, dest) => {
+    // Every url the store actually tried to fetch — a refused url must never
+    // appear here (audit M1/M6).
+    const clones: string[] = [];
+    const clone: CloneFn = async (url, dest) => {
+      clones.push(url);
       for (const [rel, content] of Object.entries(skeleton)) {
         const p = path.join(dest, rel);
         fs.mkdirSync(path.dirname(p), { recursive: true });
         fs.writeFileSync(p, content);
       }
     };
-    return { store: new PluginStore(root, clone), root };
+    return { store: new PluginStore(root, clone), root, clones };
   }
 
   it("add_plugin appends plugin_change and pushes the registry; later sessions get the paths", async () => {
@@ -1012,6 +1016,30 @@ describe("plugin registry", () => {
     expect(errs).toContain("add_plugin requires url");
     expect(errs).toContain("plugin url must be https://");
     expect(errs).toContain('unknown plugin "ghost"');
+    expect(seen.some((m) => m.event?.type === "plugin_change")).toBe(false);
+    ws.close();
+  });
+
+  /** Audit M1/M6: an off-allowlist host is refused through the SAME error
+   *  reply as every other bad `add_plugin`, and appends no plugin_change. */
+  it("refuses an off-allowlist plugin host over the wire", async () => {
+    const { store, clones } = storeWithFakeClone();
+    const server = await startServer({ port: 0, runQuery: echoRun, plugins: store });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "ph", projectId: "prj9", userId: "u1", name: "Ana" }));
+    await wait(50);
+    ws.send(JSON.stringify({ type: "add_plugin", url: "https://169.254.169.254/latest/meta-data" }));
+    ws.send(JSON.stringify({ type: "add_plugin", url: "https://internal.corp.example/x.git" }));
+    await wait(200);
+    const errs = seen.filter((m) => m.type === "error").map((m) => m.message);
+    expect(errs).toEqual([
+      "plugin url host must be one of: github.com",
+      "plugin url host must be one of: github.com",
+    ]);
+    expect(clones).toEqual([]);
     expect(seen.some((m) => m.event?.type === "plugin_change")).toBe(false);
     ws.close();
   });
@@ -3734,6 +3762,55 @@ describe("attach excludes .mpai/ from git (Finding 2)", () => {
     const excludeFile = path.join(candidateRoot, ".git", "info", "exclude");
     const lines = fs.readFileSync(excludeFile, "utf8").split("\n").filter((l) => l === ".mpai/");
     expect(lines).toHaveLength(1);
+    ws.close();
+  });
+});
+
+/** Audit finding M5 (`docs/audit-2026-07-30.md`): the hub applies
+ *  `MAX_FRAME_BYTES` as `maxPayload`, the standalone server did not, and
+ *  inherited `ws`'s 100MB default — 100MB reaching `JSON.parse` on a socket
+ *  that has passed no gate, since `denyUnauthed` runs INSIDE `handleMessage`. */
+describe("WebSocket frame cap", () => {
+  it("closes a connection that sends a frame over the cap instead of parsing it", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    const closed = new Promise<number>((resolve) => ws.on("close", (code) => resolve(code)));
+
+    // Unauthenticated, and `identify` is one of the two messages deliberately
+    // never gated — so nothing but `maxPayload` stands between this frame and
+    // the parser.
+    const oversized = JSON.stringify({
+      type: "identify",
+      userId: "u1",
+      name: "a".repeat(MAX_FRAME_BYTES),
+    });
+    expect(Buffer.byteLength(oversized)).toBeGreaterThan(MAX_FRAME_BYTES);
+    ws.send(oversized);
+
+    // 1009 = "message too big" — `ws`'s own answer, raised before the frame is
+    // handed to the message handler. Raced so a server without the cap fails
+    // the assertion rather than hanging out the suite timeout.
+    const code = await Promise.race([closed, wait(1000).then(() => -1)]);
+    expect(code).toBe(1009);
+    expect(seen).toEqual([]);
+  });
+
+  it("still accepts an ordinary frame under the cap", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "cap1", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "prompt", text: "hello" }));
+    await wait(200);
+
+    expect(seen.map((m) => m.event?.type)).toContain("user_message");
     ws.close();
   });
 });

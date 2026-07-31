@@ -25,7 +25,7 @@ import {
 import { projectRecordFrom, type RecordSessionInput } from "./record.js";
 import { Relay, type ConnectFn, type ContestedFrame } from "./relay.js";
 import { defaultBaseRefFor, type RepoCandidate } from "./machineRepos.js";
-import { clampRepoDecl, MAX_REPOS, type RepoDecl } from "./relayProtocol.js";
+import { clampRepoDecl, MAX_FRAME_BYTES, MAX_REPOS, type RepoDecl } from "./relayProtocol.js";
 import { Session } from "./session.js";
 import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
@@ -796,7 +796,13 @@ export async function startServer(opts: {
     res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     res.end("not found");
   });
-  const wss = new WebSocketServer({ server: httpServer });
+  // maxPayload is applied here, before any gate, because the upgrade completes
+  // before authentication — a limit that only protects authenticated peers
+  // protects nothing (spec §10.2). `ws` otherwise defaults to 100MB. Same
+  // option, same constant and same reasoning as the hub's listener
+  // (`poc/hub/src/hub.ts`); this server was the one place missing it (audit M5),
+  // and `denyUnauthed` runs INSIDE `handleMessage`, i.e. after `JSON.parse`.
+  const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_FRAME_BYTES });
 
   /** The whole per-connection protocol, independent of what is carrying it.
    *  Closes over everything `startServer` already has in scope, so both the
