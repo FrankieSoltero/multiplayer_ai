@@ -96,6 +96,13 @@ export class WorkspaceManager implements WorkspaceLike {
     if (branchExists) {
       return { ok: false, error: `session name taken (branch ${branch} exists)` };
     }
+    const blocker = this.namespaceBlocker(branch);
+    if (blocker !== null) {
+      return {
+        ok: false,
+        error: `cannot create branch ${branch}: existing branch ${blocker} occupies its namespace (rename or delete that branch, then retry)`,
+      };
+    }
     try {
       fs.mkdirSync(path.dirname(workdir), { recursive: true });
       this.git(["worktree", "add", workdir, "-b", branch, baseRef]);
@@ -106,6 +113,39 @@ export class WorkspaceManager implements WorkspaceLike {
         (typeof stderr === "string" && stderr.trim()) ||
         (err instanceof Error ? err.message : String(err));
       return { ok: false, error: message.slice(0, 300) };
+    }
+  }
+
+  /** Git's ref store cannot hold a ref at a path AND refs below it: a branch
+   *  `mpai/<x>` (a loose-ref FILE) blocks every `mpai/<x>/...` (a DIRECTORY),
+   *  and vice versa. New-scheme branches are always exactly three SLUG-bound
+   *  segments, so they never collide with each other — the blockers are
+   *  legacy flat-scheme branches (`mpai/<slug>`, pre-§8.2) sitting at a
+   *  project's prefix, or hand-made refs. Those are the operator's to rename
+   *  or delete (spec §8a ruling 7: legacy is never migrated or deleted here),
+   *  so this refuses with the blocker's name instead of leaking git's
+   *  `cannot lock ref` stderr through the UI. */
+  private namespaceBlocker(branch: string): string | null {
+    const parts = branch.split("/");
+    for (let i = 1; i < parts.length; i++) {
+      const prefix = parts.slice(0, i).join("/");
+      try {
+        this.git(["rev-parse", "--verify", "--quiet", `refs/heads/${prefix}`]);
+        return prefix;
+      } catch {
+        /* no ref at this prefix — keep walking */
+      }
+    }
+    try {
+      const below = this.git([
+        "for-each-ref",
+        "--count=1",
+        "--format=%(refname:short)",
+        `refs/heads/${branch}/`,
+      ]);
+      return below === "" ? null : below;
+    } catch {
+      return null;
     }
   }
 

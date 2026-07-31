@@ -106,6 +106,41 @@ describe("WorkspaceManager", () => {
     expect(other.ok).toBe(true);
   });
 
+  it("refuses cleanly when a legacy flat branch blocks the project's namespace", () => {
+    const repo = makeRepo();
+    // Pre-§8.2 flat naming created `mpai/<slug>` branches. One of those at the
+    // project's own name (`mpai/acme`) occupies the ref namespace every
+    // new-scheme branch of project "acme" (`mpai/acme/<slug>`) needs — git
+    // cannot hold a ref at a path and refs below it at once.
+    execFileSync("git", ["branch", "mpai/acme"], { cwd: repo });
+    const wm = new WorkspaceManager(repo, path.join(repo, ".mpai", "worktrees"));
+    const result = wm.provision("acme", "auth", "main");
+    expect(result).toEqual({
+      ok: false,
+      error:
+        "cannot create branch mpai/acme/auth: existing branch mpai/acme occupies its namespace (rename or delete that branch, then retry)",
+    });
+    // Refused before touching git or the filesystem — no raw stderr, no dir.
+    expect(fs.existsSync(path.join(repo, ".mpai", "worktrees", "acme"))).toBe(false);
+    expect(mpaiBranches(repo)).toEqual(["mpai/acme"]);
+    // Other projects are unaffected.
+    expect(wm.provision("beta", "auth", "main").ok).toBe(true);
+  });
+
+  it("refuses cleanly when a deeper branch occupies the target's namespace", () => {
+    const repo = makeRepo();
+    // The reverse direction: a ref BELOW the target path also blocks it.
+    execFileSync("git", ["branch", "mpai/acme/auth/sub"], { cwd: repo });
+    const wm = new WorkspaceManager(repo, path.join(repo, ".mpai", "worktrees"));
+    const result = wm.provision("acme", "auth", "main");
+    expect(result).toEqual({
+      ok: false,
+      error:
+        "cannot create branch mpai/acme/auth: existing branch mpai/acme/auth/sub occupies its namespace (rename or delete that branch, then retry)",
+    });
+    expect(fs.existsSync(path.join(repo, ".mpai", "worktrees", "acme"))).toBe(false);
+  });
+
   it("never reuses, deletes or migrates an old flat-scheme worktree dir", () => {
     const repo = makeRepo();
     const worktreesRoot = path.join(repo, ".mpai", "worktrees");
