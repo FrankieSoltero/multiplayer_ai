@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { startHub } from "../src/hub.js";
+import { HubDb } from "../src/hubDb.js";
+import { hashToken } from "../src/pairing.js";
 import { RELAY_PROTOCOL_VERSION, type RepoDecl } from "multiplayer-ai-server/relayProtocol";
 import { projectRecordFrom } from "multiplayer-ai-server/record";
 import { signSession } from "multiplayer-ai-server/auth";
@@ -39,15 +41,49 @@ const facts = (id: string, over: Record<string, unknown> = {}) => ({
   lifecycle: "open", ...over,
 });
 
+/** The bearer the auth-on fixtures present. Its hash is what `seededDeviceDb`
+ *  installs against the paired machineId, so a hub built with that db admits an
+ *  uplink helloing as that machineId (spec A2/A3). */
+const UPLINK_BEARER = "device-bearer-lap-1";
+
+/** A `:memory:` device record pre-paired for `attachedUplink`'s default
+ *  uplinkId, handed to `startHub` via the `db` seam so an auth-on hub has a
+ *  DeviceStore to authenticate the uplink against (without one it fails closed
+ *  and refuses every uplink). Only the token HASH is stored — the plaintext
+ *  bearer lives solely in `UPLINK_BEARER` (spec §10.5). */
+function seededDeviceDb(machineId = "lap-1"): HubDb {
+  const db = new HubDb(":memory:");
+  db.deviceApproved({
+    machineId,
+    name: machineId,
+    tokenHash: hashToken(UPLINK_BEARER),
+    approvedBy: "alice",
+    approvedAt: new Date().toISOString(),
+  });
+  return db;
+}
+
 /** An attached laptop with one declared session — the precondition of most
- *  tests below. */
+ *  tests below. `token` is passed only by the auth-on fixtures: with auth on the
+ *  hub refuses a bare uplink (spec A2), so the bearer travels in the upgrade's
+ *  `Authorization` header (which `connect` cannot set). Auth off → no token, a
+ *  bare connect, exactly as before. */
 async function attachedUplink(
   port: number,
   sessionId = "auth",
   uplinkId = "lap-1",
   repos: RepoDecl[] = [decl("k")],
+  token?: string,
 ) {
-  const up = await connect(`ws://127.0.0.1:${port}/uplink`);
+  const up = token
+    ? await new Promise<WebSocket>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/uplink`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        ws.on("open", () => resolve(ws));
+        ws.on("error", reject);
+      })
+    : await connect(`ws://127.0.0.1:${port}/uplink`);
   const seen: any[] = [];
   collect(up, seen);
   up.send(JSON.stringify({
@@ -895,9 +931,9 @@ describe("hub verified identity stamping", () => {
     // The join path's stamp is what the laptop's relay arm trusts
     // (server.ts's `io.mode === "relay"` branch): the tunnelled `identity`
     // must carry the verified login, not the `mallory` the payload claims.
-    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH, db: seededDeviceDb() });
     close = hub.close;
-    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")], UPLINK_BEARER);
     const browser = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("alice"));
     // alice (the verified login) joins the project so the membership gate on
     // `join` passes; the claim in the payload stays "mallory" to prove the
@@ -961,9 +997,9 @@ describe("hub verified identity stamping", () => {
     // The already-joined guard runs BEFORE the auth gate, so the refusal is
     // "already joined" (not re-verification), and the join-bound identity
     // holds — the auth wiring must not disturb this existing guard.
-    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH, db: seededDeviceDb() });
     close = hub.close;
-    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")], UPLINK_BEARER);
     const browser = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("alice"));
     const seen: any[] = [];
     collect(browser, seen);
@@ -1907,9 +1943,9 @@ describe("hub membership gates on participation", () => {
     // Auth on: alice is allowlisted and verified, but not a member of "default".
     // The gate must run on the stamped login (alice), refusing even though the
     // payload claims a different user — the whole point of stamping first.
-    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH, db: seededDeviceDb() });
     close = hub.close;
-    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")], UPLINK_BEARER);
     const browser = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("alice"));
     const seen: any[] = [];
     collect(browser, seen);
