@@ -52,6 +52,10 @@ const { port: actual } = await startHub({
   // opted in (HUB_TRUST_PROXY=1). Off, an untrusted client cannot forge XFF to
   // choose its own per-IP bucket (spec B2).
   trustProxy: config.trustProxy,
+  // Allowed browser Origin (spec B3): null (unset) becomes undefined, which
+  // startHub reads as "no origin check". A set value refuses cross-site WS
+  // upgrades whose Origin header does not match exactly.
+  origin: config.origin ?? undefined,
 });
 
 console.log(`multiplayer-ai hub listening on http://${host}:${actual}`);

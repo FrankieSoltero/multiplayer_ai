@@ -147,6 +147,11 @@ export interface HubOptions {
    *  sits behind a proxy that overwrites this header. Consumes
    *  `HubOpsConfig.trustProxy`. */
   trustProxy?: boolean;
+  /** Allowed browser Origin (spec B3). When set, a WS upgrade that carries an
+   *  `Origin` header not exactly equal to this is refused — the cross-site
+   *  browser-hijack defense. Unset → no check (today's behavior). Consumes
+   *  `HubOpsConfig.origin`. */
+  origin?: string;
 }
 
 /** Only `hub-YYYYMMDD-HHmmssZ.db` files — the exact names `backupFileName`
@@ -781,6 +786,24 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     // cannot exhaust the hub's connection budget.
     if (!upgradeBucket.take(clientIpOf(req))) {
       socket.close(1013, "rate limited");
+      return;
+    }
+    // Origin check (spec B3): AFTER the Task 6 caps (cheapest checks first) and
+    // BEFORE uplink/browser dispatch. When an allowed origin is configured and a
+    // browser presents an `Origin` header that is not it (exact string compare),
+    // the cross-site upgrade is refused with 1008 — a protocol/policy violation,
+    // the same family as the frame-shape faults, distinct from the 1013 overload
+    // refusals above. A connection carrying NO Origin header — every uplink, the
+    // CLI, and non-browser tools — is ADMITTED: this check defends against a
+    // browser on another site being driven to open this socket, and a non-browser
+    // can forge any Origin it likes, so refusing the header-less case buys no
+    // security and would break every uplink. `origin` unset → no check at all.
+    if (
+      opts.origin !== undefined &&
+      req.headers.origin !== undefined &&
+      req.headers.origin !== opts.origin
+    ) {
+      socket.close(1008, "origin not allowed");
       return;
     }
     // Admitted: count the slot and reclaim it on close. Registered here (not in

@@ -1064,3 +1064,44 @@ describe("backpressure — bufferedAmount ceiling (spec B2)", () => {
     ws.close();
   }, 20_000);
 });
+
+describe("origin check on the WS upgrade (spec B3)", () => {
+  const ORIGIN = "https://hub.example.com";
+
+  it("closes a mismatched Origin with 1008 'origin not allowed'", async () => {
+    const hub = await hubOn({ port: 0, host: "127.0.0.1", origin: ORIGIN });
+    const kept: WebSocket[] = [];
+    const refused = await probeWs(`ws://127.0.0.1:${hub.port}/`, kept, {
+      origin: "https://evil.example.com",
+    });
+    expect(refused.code).toBe(1008);
+    expect(refused.reason).toBe("origin not allowed");
+    for (const ws of kept) ws.close();
+  });
+
+  it("admits an Origin that matches the configured value exactly", async () => {
+    const hub = await hubOn({ port: 0, host: "127.0.0.1", origin: ORIGIN });
+    const kept: WebSocket[] = [];
+    const admitted = await probeWs(`ws://127.0.0.1:${hub.port}/`, kept, { origin: ORIGIN });
+    expect(admitted.code).toBeNull(); // stayed open
+    for (const ws of kept) ws.close();
+  });
+
+  it("admits a connection with NO Origin header (uplinks, CLI, non-browser tools)", async () => {
+    const hub = await hubOn({ port: 0, host: "127.0.0.1", origin: ORIGIN });
+    const kept: WebSocket[] = [];
+    const admitted = await probeWs(`ws://127.0.0.1:${hub.port}/`, kept);
+    expect(admitted.code).toBeNull(); // stayed open — non-browsers carry no Origin
+    for (const ws of kept) ws.close();
+  });
+
+  it("does not check when origin is unset — a mismatched Origin is admitted", async () => {
+    const hub = await hubOn({ port: 0, host: "127.0.0.1" });
+    const kept: WebSocket[] = [];
+    const admitted = await probeWs(`ws://127.0.0.1:${hub.port}/`, kept, {
+      origin: "https://evil.example.com",
+    });
+    expect(admitted.code).toBeNull(); // stayed open — no check configured
+    for (const ws of kept) ws.close();
+  });
+});
