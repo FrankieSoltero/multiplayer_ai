@@ -359,8 +359,9 @@ all built and merged, all against the standalone server. The hub currently takes
 for identity, which is why it must not be exposed.
 
 *Final state:* the hub verifies identity itself; a machine trusts the hub's stamp rather than the
-browser's claim (today `hub.ts:337-338` simply truncates whatever the browser sent). Project membership is the access unit. Machines authenticate to the hub with
-something better than "knows the URL."
+browser's claim (today `hub.ts` simply truncates whatever the browser sent — at `identify`
+(`:670-671`) and again at `join` (`:766-767`)). Project membership is the access unit. Machines
+authenticate to the hub with something better than "knows the URL."
 
 ### 8.2 Projects
 
@@ -527,8 +528,9 @@ by accident.
 *What:* running a hub for real — deployment, TLS, payload limits, rate limiting, retention,
 audit, host settings.
 
-*Today:* deployment wiring exists in-repo; nothing is deployed. **The hub has no
-pre-authentication payload limit** (`docs/tech-debt.md` §1.1).
+*Today:* deployment wiring exists in-repo; nothing is deployed. The hub already enforces a
+pre-authentication payload limit, and the standalone server now matches it (`docs/tech-debt.md`
+§1.1, resolved) — TLS, rate limiting, retention/backup and host settings are what remain open.
 
 *Final state:* a hub that can be exposed to a network beyond a trusted one. **This section is the
 gate on that exposure** (D12) and on nothing else.
