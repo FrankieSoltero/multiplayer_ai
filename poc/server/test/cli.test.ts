@@ -314,7 +314,13 @@ describe("prepareHubAuth", () => {
     if (!result.ok) expect(result.error).toContain("http://hub.test");
   });
 
-  it("drops the stored token on a 4401 uplink close, but leaves it on any other close", async () => {
+  it("exposes an onUnauthorized that drops the stored token, threaded into the relay's own 4401 path", async () => {
+    // The relay fires `onUnauthorized` ONLY on a 4401 credential refusal (its
+    // close handler already discriminates the code), so this callback is
+    // unconditional: invoking it drops the token so the next launch re-pairs
+    // instead of re-presenting a bearer the hub rejects. This replaces the old
+    // `hubConnect` conduit — the bearer now rides `headers` and the token-drop
+    // rides `onUnauthorized`, both handed straight to `startServer`'s hub option.
     const home = freshHome();
     saveHubToken(home, "ws://hub.test", "tok-stored");
     const boom = (() => {
@@ -323,9 +329,11 @@ describe("prepareHubAuth", () => {
     const result = await prepareHubAuth("ws://hub.test", home, identity, { fetchImpl: boom });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    result.onUplinkClose(1006); // an ordinary drop
+    // The bearer is carried as a header (spec §10.1), never a query string.
+    expect(result.headers).toEqual({ authorization: "Bearer tok-stored" });
+    // Token still on file until the refusal fires.
     expect(loadHubToken(home, "ws://hub.test")).toBe("tok-stored");
-    result.onUplinkClose(4401); // credential refusal
+    result.onUnauthorized();
     expect(loadHubToken(home, "ws://hub.test")).toBeNull();
   });
 });

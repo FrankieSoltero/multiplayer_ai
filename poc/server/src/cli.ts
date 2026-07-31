@@ -13,8 +13,6 @@ import {
 import { loadMachineIdentity, mpaiHome, type MachineIdentity } from "./machineIdentity.js";
 import { MAX_REPO_CANDIDATES, scanRepoRoots, type RepoCandidate } from "./machineRepos.js";
 import { SLUG } from "./project.js";
-import type { ConnectFn, RelaySocket } from "./relay.js";
-import { MAX_FRAME_BYTES } from "./relayProtocol.js";
 import { startServer } from "./server.js";
 import { ensureExcluded, WorkspaceManager } from "./workspace.js";
 
@@ -193,27 +191,28 @@ export interface HubAuthDeps {
  *  token, `pairWithHub` prints the code and polls; a returned token is persisted
  *  so the next launch skips pairing, and an auth-off hub (404 on `/pair/request`)
  *  yields no header at all so the dev flow stays zero-config (Task 8 accepts a
- *  bare uplink). The returned `onUplinkClose` drops the stored token on a 4401
- *  close — the hub refusing this bearer — so the next launch re-pairs cleanly
- *  rather than re-presenting a credential the hub rejects. */
+ *  bare uplink). The returned `onUnauthorized` drops the stored token — the
+ *  relay fires it ONLY on a 4401 close (the hub refusing this bearer), so the
+ *  next launch re-pairs cleanly rather than re-presenting a rejected credential.
+ *  `headers` and `onUnauthorized` are threaded straight into `startServer`'s hub
+ *  option, which forwards them into the relay's own conduit — no bespoke socket
+ *  wrapper needed on the CLI side. */
 export async function prepareHubAuth(
   hubUrl: string,
   home: string,
   identity: { machineId: string; name: string },
   deps: HubAuthDeps = {},
 ): Promise<
-  | { ok: true; headers?: Record<string, string>; onUplinkClose: (code: number) => void }
+  | { ok: true; headers?: Record<string, string>; onUnauthorized: () => void }
   | { ok: false; error: string }
 > {
-  const onUplinkClose = (code: number): void => {
-    // 4401 is the hub refusing THIS machine's credentials (spec A2 / relay.ts's
-    // close handler). Drop the token so the next launch re-pairs instead of
-    // re-presenting a bearer that is refused on every reconnect.
-    if (code === 4401) clearHubToken(home, hubUrl);
-  };
+  // The relay's 4401 close handler is the only caller (spec A2), so this is
+  // unconditional: drop the token so the next launch re-pairs instead of
+  // re-presenting a bearer that is refused on every reconnect.
+  const onUnauthorized = (): void => clearHubToken(home, hubUrl);
   const stored = loadHubToken(home, hubUrl);
   if (stored) {
-    return { ok: true, headers: { authorization: `Bearer ${stored}` }, onUplinkClose };
+    return { ok: true, headers: { authorization: `Bearer ${stored}` }, onUnauthorized };
   }
   const result = await pairWithHub({
     httpBase: httpBaseOf(hubUrl),
@@ -226,42 +225,10 @@ export async function prepareHubAuth(
   if (!result.ok) return { ok: false, error: result.error };
   if (result.token) {
     saveHubToken(home, hubUrl, result.token);
-    return { ok: true, headers: { authorization: `Bearer ${result.token}` }, onUplinkClose };
+    return { ok: true, headers: { authorization: `Bearer ${result.token}` }, onUnauthorized };
   }
   // Auth-off hub: a bare uplink, no Authorization header.
-  return { ok: true, headers: undefined, onUplinkClose };
-}
-
-/** A production `ConnectFn` for the uplink. Mirrors `relay.ts`'s `defaultConnect`
- *  — same `maxPayload` bound on inbound frames — and adds the two things the
- *  paired uplink needs that the relay's own default cannot supply: the bearer on
- *  the `Authorization` header (spec §10.1 — a header, never a query string), and
- *  a token-drop on a 4401 close. It is the CLI's conduit into the relay: the
- *  hub option's `connect` seam is threaded straight to `Relay.connect` and is
- *  re-invoked on every reconnect, so the bearer rides every attempt. */
-export function hubConnect(
-  headers: Record<string, string> | undefined,
-  onUplinkClose: (code: number) => void,
-): ConnectFn {
-  return (url): RelaySocket => {
-    const socket = new WebSocket(url, { maxPayload: MAX_FRAME_BYTES, headers });
-    return {
-      send: (data) => socket.send(data),
-      close: () => socket.close(),
-      on: (event, fn) => {
-        if (event === "close") {
-          // Inspect the close code for the credential refusal, then hand the
-          // frame on unchanged so the relay's own 4401/1008 handling is intact.
-          socket.on("close", (code: number) => {
-            onUplinkClose(code);
-            fn(code);
-          });
-          return;
-        }
-        socket.on(event, fn as (...fnArgs: unknown[]) => void);
-      },
-    };
-  };
+  return { ok: true, headers: undefined, onUnauthorized };
 }
 
 async function launch(args: CliArgs): Promise<number | null> {
@@ -310,9 +277,11 @@ async function launch(args: CliArgs): Promise<number | null> {
   const candidates = resolved.candidates;
   // Pair (or load the stored bearer) BEFORE binding the port, so a hub that
   // refuses or cannot be reached exits non-zero without ever standing up a
-  // half-attached server. `connect` carries the bearer into the relay and drops
-  // the token on a 4401 refusal; it stays undefined for a solo launch.
-  let hubConnectFn: ConnectFn | undefined;
+  // half-attached server. The bearer (`headers`) and the 4401 token-drop
+  // (`onUnauthorized`) ride the relay's own conduit via the hub option below;
+  // both stay undefined for a solo launch.
+  let hubHeaders: Record<string, string> | undefined;
+  let hubOnUnauthorized: (() => void) | undefined;
   if (args.hub) {
     const auth = await prepareHubAuth(args.hub, home, {
       machineId: identity.machineId,
@@ -322,7 +291,8 @@ async function launch(args: CliArgs): Promise<number | null> {
       console.error(auth.error);
       return 1;
     }
-    hubConnectFn = hubConnect(auth.headers, auth.onUplinkClose);
+    hubHeaders = auth.headers;
+    hubOnUnauthorized = auth.onUnauthorized;
   }
   try {
     const { port } = await startServer({
@@ -340,7 +310,8 @@ async function launch(args: CliArgs): Promise<number | null> {
               url: args.hub,
               projectId: args.project,
               uplinkId: identity.machineId,
-              connect: hubConnectFn,
+              headers: hubHeaders,
+              onUnauthorized: hubOnUnauthorized,
             },
           }
         : {}),

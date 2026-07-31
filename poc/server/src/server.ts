@@ -210,6 +210,13 @@ export async function startServer(opts: {
     projectId: string;
     uplinkId?: string;
     connect?: ConnectFn;
+    /** The paired bearer, sent on the `Authorization` header (spec §10.1),
+     *  forwarded straight into the relay's own conduit (`defaultConnect`) so the
+     *  CLI needs no bespoke socket wrapper. Absent for a solo / auth-off launch. */
+    headers?: Record<string, string>;
+    /** Fired by the relay on a 4401 credential refusal — where the CLI drops the
+     *  stored token so the next launch re-pairs. Forwarded into `new Relay`. */
+    onUnauthorized?: () => void;
   };
 }) {
   const runQuery = opts.runQuery ?? runAgentQuery;
@@ -1682,6 +1689,12 @@ export async function startServer(opts: {
           // a stable id the store's takeover rule re-owns them silently.
           uplinkId: opts.hub.uplinkId ?? opts.machine?.machineId ?? randomUUID(),
           connect: opts.hub.connect,
+          // The bearer and the token-drop ride the relay's OWN conduit
+          // (`headers` → `defaultConnect`; `onUnauthorized` → the 4401 close
+          // handler), which is what lets the CLI drop its duplicate `hubConnect`
+          // wrapper entirely.
+          headers: opts.hub.headers,
+          onUnauthorized: opts.hub.onUnauthorized,
         },
         { createConnection, onContested: applyContested },
       )
