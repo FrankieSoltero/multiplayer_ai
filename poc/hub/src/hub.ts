@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { staticHandler } from "multiplayer-ai-server/staticFiles";
+import { authRoutes, type AuthConfig } from "multiplayer-ai-server/auth";
 import { slugify } from "multiplayer-ai-server/workspace";
 import { projectRecordFrom } from "multiplayer-ai-server/record";
 import { collisionsFrom, TOUCH_CAP, TOUCH_SENTINEL } from "multiplayer-ai-server/collisions";
@@ -69,6 +70,10 @@ export interface HubOptions {
    *  `defaultFatal`; a test passes a spy so the failure is observable without
    *  killing the runner. */
   fatal?: (err: Error) => void;
+  /** GitHub auth (spec §4). Undefined → auth off: `authRoutes` is still mounted
+   *  so /auth/me answers `{enabled:false}` instead of the SPA fallback. The
+   *  hub reuses the server package's auth module unchanged. */
+  auth?: AuthConfig;
 }
 
 /** Fail-stop (spec §3.6): log the error and stop the process. No catch-and-
@@ -168,6 +173,11 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
   const lastPush = new Map<string, number>();
   const pushTimers = new Map<string, NodeJS.Timeout>();
   const serveStatic = opts.staticDir ? staticHandler(opts.staticDir) : null;
+  // Mounted even when `opts.auth` is undefined: `authRoutes` then answers
+  // /auth/me with `{enabled:false}` rather than letting it fall through to the
+  // SPA fallback, which would return index.html with a 200 and leave the
+  // client unable to tell "auth is off" from "auth is broken" (spec §4.2).
+  const handleAuth = authRoutes(opts.auth);
 
   const send = (socket: WebSocket, msg: unknown) => {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
@@ -397,6 +407,10 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       res.end(req.method === "HEAD" ? undefined : JSON.stringify({ status: "ok" }));
       return;
     }
+    // AFTER /healthz, BEFORE serveStatic (spec §4.2): a returned `true` means
+    // authRoutes consumed the request. Any /auth/* path is answered here — with
+    // auth on or off — so none reaches the SPA fallback below.
+    if (handleAuth(req, res)) return;
     if (serveStatic) {
       serveStatic(req, res);
       return;
