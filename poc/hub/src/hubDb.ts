@@ -201,6 +201,11 @@ export class HubDb implements HubPersister, DeviceStore {
         // WAL is what makes "committed" mean "survives process death" for a
         // reader that opens the file afterwards. Meaningless for `:memory:`.
         this.db.pragma("journal_mode = WAL");
+        // The other half of B1's unbounded-journal blast radius (the prune is
+        // the first): cap the WAL at 64 MiB so a burst between checkpoints
+        // cannot grow the journal without bound. Only meaningful in WAL, so it
+        // rides alongside the pragma above and skips `:memory:`.
+        this.db.pragma("journal_size_limit = 67108864");
       }
       this.db.exec(SCHEMA_DDL);
       this.db
@@ -502,6 +507,33 @@ export class HubDb implements HubPersister, DeviceStore {
         `eventsAppended for unknown session "${sessionId}" in "${projectId}" with no newSession`,
       );
     }
+  }
+
+  /** Retention prune (spec B1, OPT-IN): delete every event row whose payload
+   *  timestamp is strictly older than `cutoffIso`, returning how many rows went.
+   *  Called ONCE at boot, after open/migration and BEFORE `load()`, so memory
+   *  hydrates from the already-pruned record and never diverges from it.
+   *
+   *  `events` ONLY — `sessions` rows (facts, last_run_id, last_seq) are left
+   *  exactly as they were, so a pruned session still reports its offsets and
+   *  `resumeOffsets` does not ask its laptop to re-send a run it already has.
+   *
+   *  Two guards make the comparison fail-safe TOWARD retention (a doubtful row
+   *  is kept, never dropped): `json_type(...) = 'text'` is required, so a row
+   *  with NO `ts` (`json_type` → NULL) and a row with a NON-STRING `ts` (a
+   *  number sorts BELOW any string in SQLite and would otherwise delete) are
+   *  both kept; only a real ISO string is ever compared. Comparisons are
+   *  lexicographic, which is exactly chronological for the zero-padded ISO-8601
+   *  the log writes. */
+  pruneEventsBefore(cutoffIso: string): number {
+    const result = this.db
+      .prepare(
+        `DELETE FROM events
+           WHERE json_type(event_json, '$.ts') = 'text'
+             AND json_extract(event_json, '$.ts') < ?`,
+      )
+      .run(cutoffIso);
+    return result.changes;
   }
 
   /** Approve or re-pair a device (spec §A2). `ON CONFLICT DO UPDATE`, never

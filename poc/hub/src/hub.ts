@@ -96,6 +96,14 @@ export interface HubOptions {
    *  so /auth/me answers `{enabled:false}` instead of the SPA fallback. The
    *  hub reuses the server package's auth module unchanged. */
   auth?: AuthConfig;
+  /** Retention window in days (spec B1, OPT-IN). Undefined → keep forever, the
+   *  default: the record is the product (§8.7), so nothing prunes unless this is
+   *  set. When set, the hub deletes event rows older than the cutoff ONCE at
+   *  boot, after open/migration and BEFORE hydration. */
+  retentionDays?: number;
+  /** Injectable clock for the retention cutoff (test seam). Defaults to
+   *  `Date.now`; a test pins it so the cutoff is deterministic. */
+  now?: () => number;
 }
 
 /** Fail-stop (spec §3.6): log the error and stop the process. No catch-and-
@@ -156,6 +164,19 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
   let store: HubStore;
   if (db) {
     try {
+      // Canonical boot order (spec B1): open/migrate (done in the constructor)
+      // → backup (Task 4, later) → PRUNE → load(). The prune runs BEFORE
+      // hydration so memory boots from the already-pruned record and the two
+      // never diverge; opt-in, so nothing deletes unless `retentionDays` is set.
+      // One-shot — a long-running hub prunes only at its next restart.
+      if (opts.retentionDays !== undefined) {
+        const now = opts.now ?? Date.now;
+        const cutoff = new Date(now() - opts.retentionDays * 86_400_000).toISOString();
+        const pruned = db.pruneEventsBefore(cutoff);
+        // Prints even for 0 rows, so an operator can see the prune ran and its
+        // window took effect (in addition to main.ts's config-announce line).
+        console.log(`retention: pruned ${pruned} event row(s) older than ${opts.retentionDays}d`);
+      }
       store = new HubStore(db, db.load());
     } catch (err) {
       // A read that fails AFTER the handle opened still refuses the boot — and

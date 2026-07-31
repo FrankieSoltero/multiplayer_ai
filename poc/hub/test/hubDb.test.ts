@@ -866,3 +866,115 @@ describe("HubDb — DeviceStore", () => {
     expect(Object.keys(h).sort()).toEqual(["machines", "projects", "sessions"]);
   });
 });
+
+/** A StoredEvent whose `ts` is set VERBATIM to whatever the caller passes —
+ *  a real ISO string, a missing field, or a non-string — so the prune's
+ *  json_extract behavior can be probed at each shape. */
+const storedAt = (id: number, seq: number, ts: unknown): StoredEvent => {
+  const event: Record<string, unknown> = { type: "user_message", seq, userId: "ana", text: "x" };
+  if (ts !== undefined) event.ts = ts;
+  return { id, runId: "run-a", event: event as never };
+};
+
+describe("HubDb — journal_size_limit (spec B1)", () => {
+  it("caps the WAL journal at 64 MiB on open — the other half of the B1 blast radius", () => {
+    // journal_size_limit is a per-CONNECTION setting SQLite does not persist to
+    // the file, so a second reader would only ever see the -1 default. The
+    // honest test of "issued at open" is that the open path issues exactly this
+    // statement — asserted on the same connection that then reports the value.
+    const spy = vi.spyOn(Database.prototype, "pragma");
+    try {
+      const dbPath = path.join(tmp(), "hub.db");
+      openDb(dbPath);
+      expect(spy).toHaveBeenCalledWith("journal_size_limit = 67108864");
+      const set = spy.mock.instances[
+        spy.mock.calls.findIndex((c) => c[0] === "journal_size_limit = 67108864")
+      ] as Database.Database;
+      expect(set.pragma("journal_size_limit", { simple: true })).toBe(67108864);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("HubDb — pruneEventsBefore (spec B1)", () => {
+  /** Seeds one session's events with caller-chosen `ts` values, via the real
+   *  append path (newSession on the first frame), so the rows land exactly as a
+   *  running hub would have written them. */
+  function seedEvents(db: HubDb, events: StoredEvent[]): void {
+    db.eventsAppended("acme", "auth", events, "run-a", events.length - 1, {
+      uplinkId: "lap-1",
+      facts: facts(),
+    });
+  }
+
+  it("deletes rows older than the cutoff and leaves newer ones — returns the count deleted", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    const db = openDb(dbPath);
+    seedEvents(db, [
+      storedAt(1, 0, "2026-07-01T00:00:00.000Z"),
+      storedAt(2, 1, "2026-07-10T00:00:00.000Z"),
+      storedAt(3, 2, "2026-07-20T00:00:00.000Z"),
+    ]);
+
+    const deleted = db.pruneEventsBefore("2026-07-15T00:00:00.000Z");
+    expect(deleted).toBe(2);
+
+    const survivors = db.load().sessions[0]?.events.map((e) => e.id);
+    expect(survivors).toEqual([3]);
+  });
+
+  it("KEEPS a row whose event has no ts — json_extract → NULL, fail-safe toward retention", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    const db = openDb(dbPath);
+    seedEvents(db, [
+      storedAt(1, 0, undefined), // no ts field at all
+      storedAt(2, 1, "2026-07-20T00:00:00.000Z"),
+    ]);
+
+    // A cutoff far in the future would delete everything with a comparable ts.
+    const deleted = db.pruneEventsBefore("2099-01-01T00:00:00.000Z");
+    expect(deleted).toBe(1);
+    expect(db.load().sessions[0]?.events.map((e) => e.id)).toEqual([1]);
+  });
+
+  it("KEEPS a row whose ts is non-string — a numeric ts must not sort under the cutoff", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    const db = openDb(dbPath);
+    seedEvents(db, [
+      storedAt(1, 0, 1720000000000), // number, not an ISO string
+      storedAt(2, 1, "2026-07-20T00:00:00.000Z"),
+    ]);
+
+    const deleted = db.pruneEventsBefore("2099-01-01T00:00:00.000Z");
+    expect(deleted).toBe(1);
+    expect(db.load().sessions[0]?.events.map((e) => e.id)).toEqual([1]);
+  });
+
+  it("touches events ONLY — the session row's facts and offsets are never pruned", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    const db = openDb(dbPath);
+    seedEvents(db, [
+      storedAt(1, 0, "2026-07-01T00:00:00.000Z"),
+      storedAt(2, 1, "2026-07-02T00:00:00.000Z"),
+    ]);
+
+    db.pruneEventsBefore("2099-01-01T00:00:00.000Z");
+
+    const session = db.load().sessions[0];
+    expect(session?.events).toEqual([]); // every event pruned
+    expect(session?.sessionId).toBe("auth"); // but the session row survives
+    expect(session?.lastRunId).toBe("run-a"); // offsets intact
+    expect(session?.lastSeq).toBe(1);
+    expect(session?.facts.repoKey).toBe("github.com/acme/api");
+  });
+
+  it("returns 0 when nothing is older than the cutoff, deleting nothing", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    const db = openDb(dbPath);
+    seedEvents(db, [storedAt(1, 0, "2026-07-20T00:00:00.000Z")]);
+
+    expect(db.pruneEventsBefore("2026-07-01T00:00:00.000Z")).toBe(0);
+    expect(db.load().sessions[0]?.events.map((e) => e.id)).toEqual([1]);
+  });
+});

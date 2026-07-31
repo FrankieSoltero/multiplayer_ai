@@ -15,6 +15,12 @@ interface HubSession {
   uplinkId: string;
   facts: SessionFacts;
   events: StoredEvent[];
+  /** The id the NEXT accepted event takes. Seeded at hydration from the max
+   *  STORED id + 1 (not the surviving COUNT + 1), so retention can prune the
+   *  head of a session's log without the next publish re-using a survivor's id
+   *  and colliding with the `events` PRIMARY KEY (spec B1). `1` for a fresh
+   *  session; incremented once per accepted event. */
+  nextEventId: number;
   /** Last (runId, seq) accepted, so a reconnecting laptop that resumes from a
    *  stale offset re-sends without duplicating the log for every watcher. */
   lastRunId: string | null;
@@ -186,12 +192,24 @@ export class HubStore {
       });
     }
     for (const s of h.sessions) {
+      const events = [...s.events];
+      // From the max STORED id, not the count: a retention prune may have
+      // dropped the head of this log, so `events.length + 1` would re-use a
+      // survivor's id and collide with the `events` PRIMARY KEY on the next
+      // publish (spec B1). load() returns events in id order, so the last is the
+      // max — reduced here rather than assumed, so an unordered hydration is
+      // still safe. `1` when the log is empty.
+      let nextEventId = 1;
+      for (const stored of events) {
+        if (stored.id >= nextEventId) nextEventId = stored.id + 1;
+      }
       this.sessionsOf(s.projectId).set(s.sessionId, {
         uplinkId: s.uplinkId,
         facts: s.facts,
         // The array is the store's own from here; its events are `StoredEvent`s
         // and read-only for everyone, exactly as after a `publish`.
-        events: [...s.events],
+        events,
+        nextEventId,
         lastRunId: s.lastRunId,
         lastSeq: s.lastSeq,
       });
@@ -453,6 +471,7 @@ export class HubStore {
       uplinkId,
       facts,
       events: [],
+      nextEventId: 1,
       lastRunId: null,
       lastSeq: -1,
     });
@@ -486,7 +505,13 @@ export class HubStore {
     // directly: `nextId` is the id the next accepted event takes, and
     // `lastRunId`/`lastSeq` are the high-water mark each element is deduped
     // against as the batch walks forward.
-    let nextId = (existing?.events.length ?? 0) + 1;
+    //
+    // From `nextEventId`, NOT `events.length + 1`: after a retention prune the
+    // in-memory log holds fewer events than ids were ever issued, so the count
+    // would re-use a survivor's id and the persister's INSERT would collide with
+    // the `events` PRIMARY KEY → fatal crash-loop (spec B1). `1` for a session
+    // this frame is about to create.
+    let nextId = existing?.nextEventId ?? 1;
     let lastRunId = existing?.lastRunId ?? null;
     let lastSeq = existing?.lastSeq ?? -1;
     const accepted: StoredEvent[] = [];
@@ -524,7 +549,14 @@ export class HubStore {
     if (accepted.length === 0) return accepted;
 
     const session: HubSession =
-      existing ?? { uplinkId, facts: emptyFacts(sessionId), events: [], lastRunId: null, lastSeq: -1 };
+      existing ?? {
+        uplinkId,
+        facts: emptyFacts(sessionId),
+        events: [],
+        nextEventId: 1,
+        lastRunId: null,
+        lastSeq: -1,
+      };
     // ONE call, carrying the session row too when this frame created it: two
     // calls would be two transactions, and a crash between them would leave
     // events behind a session nothing mentions. The facts handed over are the
@@ -540,6 +572,9 @@ export class HubStore {
 
     // Durable. Only now is any of it visible.
     for (const stored of accepted) session.events.push(stored);
+    // The high-water id moves with the batch — so the id survives a prune that
+    // later drops these very rows, and the NEXT publish never re-issues one.
+    session.nextEventId = nextId;
     session.lastRunId = runId;
     session.lastSeq = lastSeq;
     if (!existing) this.sessionsOf(uplink.projectId).set(sessionId, session);

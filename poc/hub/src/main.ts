@@ -37,6 +37,9 @@ const { port: actual } = await startHub({
   staticDir: process.env.CLIENT_DIST,
   dbPath,
   auth,
+  // OPT-IN retention (spec B1): null (keep forever) becomes undefined, which
+  // startHub reads as "never prune". A set value prunes once at boot.
+  retentionDays: config.retentionDays ?? undefined,
 });
 
 console.log(`multiplayer-ai hub listening on http://${host}:${actual}`);
