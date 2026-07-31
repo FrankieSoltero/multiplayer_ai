@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deriveState, deriveTranscriptGroups } from "./derive";
+import { deriveState, deriveTranscriptGroups, deriveSubSessions, subSessionEvents } from "./derive";
 import type { LoggedEvent } from "./types";
 
 const ev = (partial: Partial<LoggedEvent> & { type: string }, seq: number): LoggedEvent =>
@@ -203,5 +203,174 @@ describe("workflow tasks", () => {
       ev({ type: "task_event", taskId: "T4", subtype: "done", status: "stopped" }, 2),
     ]);
     expect(s.tasks.get("T4")).toMatchObject({ status: "stopped", stoppedBy: "u2" });
+  });
+});
+
+describe("deriveSubSessions", () => {
+  it("T2-discovery + order: two top-level Task/Agent calls list in spawn order", () => {
+    const subs = deriveSubSessions([
+      ev({ type: "tool_call", toolName: "Task", toolUseId: "A", input: {} }, 0),
+      ev({ type: "tool_call", toolName: "Agent", toolUseId: "B", input: {} }, 1),
+    ]);
+    expect(subs.map((s) => s.key)).toEqual(["A", "B"]);
+  });
+
+  it("T2-label precedence: input.description wins, else joined subagentType, else key", () => {
+    const subs = deriveSubSessions([
+      // description present
+      ev({ type: "tool_call", toolName: "Task", toolUseId: "A", input: { description: "scan tests" } }, 0),
+      // description absent -> subagentType from joined task_event started
+      ev({ type: "tool_call", toolName: "Agent", toolUseId: "B", input: {} }, 1),
+      ev({ type: "task_event", subtype: "started", toolUseId: "B", taskId: "t2", subagentType: "security-auditor" }, 2),
+      // both absent -> key itself
+      ev({ type: "tool_call", toolName: "Task", toolUseId: "C", input: {} }, 3),
+    ]);
+    const byKey = new Map(subs.map((s) => [s.key, s.label]));
+    expect(byKey.get("A")).toBe("scan tests");
+    expect(byKey.get("B")).toBe("security-auditor");
+    expect(byKey.get("C")).toBe("C");
+  });
+
+  it("T2-status: done when top-level tool_result present, else running", () => {
+    const subs = deriveSubSessions([
+      ev({ type: "tool_call", toolName: "Task", toolUseId: "A", input: {} }, 0),
+      ev({ type: "tool_call", toolName: "Agent", toolUseId: "B", input: {} }, 1),
+      ev({ type: "tool_result", toolUseId: "A", output: "ok" }, 2),
+    ]);
+    const byKey = new Map(subs.map((s) => [s.key, s.status]));
+    expect(byKey.get("A")).toBe("done");
+    expect(byKey.get("B")).toBe("running");
+  });
+
+  it("T2-heartbeat-only chip: parentToolUseId with no spawning call still listed, running", () => {
+    const subs = deriveSubSessions([
+      ev({ type: "agent_text_delta", parentToolUseId: "C", text: "..." }, 0),
+    ]);
+    expect(subs).toHaveLength(1);
+    expect(subs[0]).toMatchObject({ key: "C", label: "C", status: "running" });
+  });
+
+  it("T2-gatePending true: undecided permission_request attributed to key", () => {
+    const subs = deriveSubSessions([
+      ev({ type: "tool_call", toolName: "Task", toolUseId: "A", input: {} }, 0),
+      ev({ type: "permission_request", requestId: "r1", parentToolUseId: "A", toolName: "Bash", input: {} }, 1),
+    ]);
+    expect(subs.find((s) => s.key === "A")!.gatePending).toBe(true);
+  });
+
+  it("T2-gatePending false: a matching decision exists (any decider, incl. auto)", () => {
+    const subs = deriveSubSessions([
+      ev({ type: "tool_call", toolName: "Task", toolUseId: "A", input: {} }, 0),
+      ev({ type: "permission_request", requestId: "r1", parentToolUseId: "A", toolName: "Bash", input: {} }, 1),
+      ev({ type: "permission_decision", requestId: "r1", decision: "allow", userId: "u1", auto: true }, 2),
+    ]);
+    expect(subs.find((s) => s.key === "A")!.gatePending).toBe(false);
+  });
+
+  it("T2-task join: task_event started toolUseId A + taskId t1 sets A.taskId", () => {
+    const subs = deriveSubSessions([
+      ev({ type: "tool_call", toolName: "Task", toolUseId: "A", input: {} }, 0),
+      ev({ type: "task_event", subtype: "started", toolUseId: "A", taskId: "t1" }, 1),
+    ]);
+    expect(subs.find((s) => s.key === "A")!.taskId).toBe("t1");
+  });
+
+  it("T2-no sub-sessions (the \"old-event fixture\"): TODAY's shapes derive to [] and leave existing derive unchanged", () => {
+    // A log captured from today's event shapes: no parentToolUseId on gates,
+    // no toolUseId on task_events, no subagent markers.
+    const oldLog: LoggedEvent[] = [
+      ev({ type: "presence_join", userId: "u1", name: "ana" }, 0),
+      ev({ type: "user_message", userId: "u1", text: "go" }, 1),
+      ev({ type: "tool_call", toolName: "Read", input: { file: "x" } }, 2),
+      ev({ type: "permission_request", requestId: "r1", toolName: "Bash", input: {} }, 3),
+      ev({ type: "permission_decision", requestId: "r1", decision: "allow", userId: "u1" }, 4),
+      ev({ type: "task_event", taskId: "T1", subtype: "started", description: "audit" }, 5),
+      ev({ type: "task_event", taskId: "T1", subtype: "done", status: "completed" }, 6),
+      ev({ type: "turn_end" }, 7),
+    ];
+    expect(deriveSubSessions(oldLog)).toEqual([]);
+    // Existing derive outputs are unaffected by the new code paths.
+    expect(deriveState(oldLog).tasks.get("T1")).toMatchObject({ status: "completed", description: "audit" });
+    expect(deriveTranscriptGroups(oldLog).every((g) => g.kind === "main")).toBe(true);
+  });
+});
+
+describe("subSessionEvents", () => {
+  it("T2-projection: nested: every event with parentToolUseId === A, in log order", () => {
+    const events: LoggedEvent[] = [
+      ev({ type: "tool_call", toolName: "Task", toolUseId: "A", input: {} }, 0),
+      ev({ type: "agent_text_delta", parentToolUseId: "A", text: "one" }, 1),
+      ev({ type: "permission_request", requestId: "r1", parentToolUseId: "A", toolName: "Bash", input: {} }, 2),
+      ev({ type: "agent_text_delta", parentToolUseId: "A", text: "two" }, 3),
+    ];
+    const proj = subSessionEvents(events, "A");
+    expect(proj.map((e) => e.seq)).toEqual([1, 2, 3]);
+  });
+
+  it("T2-projection: task rows: joined taskId pulls in its task_event/task_stop rows, merged in seq order", () => {
+    const events: LoggedEvent[] = [
+      ev({ type: "tool_call", toolName: "Task", toolUseId: "A", input: {} }, 0),
+      ev({ type: "task_event", subtype: "started", toolUseId: "A", taskId: "t1" }, 1),
+      ev({ type: "agent_text_delta", parentToolUseId: "A", text: "one" }, 2),
+      ev({ type: "task_event", taskId: "t1", subtype: "progress", tokens: 10 }, 3),
+      ev({ type: "task_stop", taskId: "t1", userId: "u2" }, 4),
+    ];
+    const proj = subSessionEvents(events, "A");
+    expect(proj.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("T2-projection: exclusion: main-agent events, other sub-sessions, and unattributed gates never included", () => {
+    const events: LoggedEvent[] = [
+      ev({ type: "tool_call", toolName: "Task", toolUseId: "A", input: {} }, 0),
+      ev({ type: "task_event", subtype: "started", toolUseId: "A", taskId: "t1" }, 1),
+      ev({ type: "agent_text_delta", parentToolUseId: "A", text: "mine" }, 2),
+      // main-agent event
+      ev({ type: "agent_text_delta", text: "main" }, 3),
+      // other sub-session's event
+      ev({ type: "agent_text_delta", parentToolUseId: "B", text: "other" }, 4),
+      // unattributed gate
+      ev({ type: "permission_request", requestId: "r9", toolName: "Bash", input: {} }, 5),
+      // another sub-session's task rows
+      ev({ type: "task_event", taskId: "t2", subtype: "progress" }, 6),
+    ];
+    const proj = subSessionEvents(events, "A");
+    expect(proj.map((e) => e.seq)).toEqual([1, 2]);
+  });
+
+  it("T2-note-1: both functions are pure filters exposing nothing not already in the log", () => {
+    const events: LoggedEvent[] = [
+      ev({ type: "tool_call", toolName: "Task", toolUseId: "A", input: { description: "d" } }, 0),
+      ev({ type: "task_event", subtype: "started", toolUseId: "A", taskId: "t1" }, 1),
+      ev({ type: "agent_text_delta", parentToolUseId: "A", text: "x" }, 2),
+    ];
+    // Every projected event is one of the input events (same reference) — a
+    // filter, never a synthesized/fabricated event.
+    const proj = subSessionEvents(events, "A");
+    expect(proj.length).toBeGreaterThan(0);
+    for (const e of proj) {
+      expect(events).toContain(e);
+    }
+    // deriveSubSessions is a pure function of the log — same input, same output,
+    // and no mutation of the input array.
+    const before = [...events];
+    expect(deriveSubSessions(events)).toEqual(deriveSubSessions(events));
+    expect(events).toEqual(before);
+  });
+
+  it("T2-note-2: a nested sub-agent's events carry the OUTER parent's key and render flat under it", () => {
+    // The SDK stamps the top-level spawning call's id, so a nested sub-agent's
+    // events carry the OUTER key A (not a distinct inner key). They render flat
+    // inside A's view, and no separate inner sub-session is created (§4).
+    const events: LoggedEvent[] = [
+      ev({ type: "tool_call", toolName: "Task", toolUseId: "A", input: { description: "outer" } }, 0),
+      ev({ type: "agent_text_delta", parentToolUseId: "A", text: "outer work" }, 1),
+      // a nested Agent spawn + its work, all stamped with outer key A
+      ev({ type: "tool_call", toolName: "Agent", toolUseId: "INNER", parentToolUseId: "A", input: { description: "inner" } }, 2),
+      ev({ type: "agent_text_delta", parentToolUseId: "A", text: "inner work" }, 3),
+    ];
+    // Only one sub-session (A); the inner spawn does not become its own chip.
+    expect(deriveSubSessions(events).map((s) => s.key)).toEqual(["A"]);
+    // The nested events render flat inside A's view.
+    expect(subSessionEvents(events, "A").map((e) => e.seq)).toEqual([1, 2, 3]);
   });
 });

@@ -149,6 +149,113 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
   return s;
 }
 
+export interface SubSessionInfo {
+  key: string; // spawning Task/Agent tool_use id
+  label: string; // input.description ?? subagentType ?? key
+  status: "running" | "done";
+  gatePending: boolean; // undecided permission_request attributed to key
+  taskId?: string; // joined via task_event started.toolUseId === key
+}
+
+/**
+ * Summarise the sub-sessions present in a flat event log (spec §2.1/§2.5).
+ * A sub-session is keyed by the tool_use id of its spawning top-level
+ * Task/Agent call (`Agent` in the live SDK, `Task` accepted too — mirrors
+ * `deriveTranscriptGroups`). Any event carrying a `parentToolUseId` also
+ * surfaces that key: a heartbeat-only stream whose spawning call never
+ * arrived still lists (degraded label, running), never dropped. Attribution
+ * is display metadata — a log with none of the new fields derives to `[]`
+ * and leaves existing derives untouched. Pure filter over `events`; nothing
+ * here is not already in the shared log every participant holds (constraint 5).
+ */
+export function deriveSubSessions(events: LoggedEvent[]): SubSessionInfo[] {
+  const order: string[] = [];
+  const register = (key: string) => {
+    if (!order.includes(key)) order.push(key);
+  };
+
+  const descriptions = new Map<string, string>(); // key -> spawning input.description
+  const subagentTypes = new Map<string, string>(); // key -> joined task_event subagentType
+  const taskIds = new Map<string, string>(); // key -> joined taskId
+  const done = new Set<string>(); // keys whose top-level tool_result arrived
+  const requestKey = new Map<string, string>(); // permission requestId -> attributed key
+  const decided = new Set<string>(); // permission requestIds with a decision
+
+  for (const ev of events) {
+    if (
+      ev.type === "tool_call" &&
+      (ev.toolName === "Task" || ev.toolName === "Agent") &&
+      ev.toolUseId &&
+      !ev.parentToolUseId
+    ) {
+      register(ev.toolUseId);
+      const desc = (ev.input as { description?: unknown } | undefined)?.description;
+      if (typeof desc === "string" && desc) descriptions.set(ev.toolUseId, desc);
+    }
+    if (ev.type === "tool_result" && ev.toolUseId && !ev.parentToolUseId) {
+      done.add(ev.toolUseId);
+    }
+    if (ev.type === "task_event" && ev.subtype === "started" && ev.toolUseId) {
+      register(ev.toolUseId);
+      if (ev.taskId) taskIds.set(ev.toolUseId, ev.taskId);
+      if (ev.subagentType) subagentTypes.set(ev.toolUseId, ev.subagentType);
+    }
+    if (ev.parentToolUseId) register(ev.parentToolUseId);
+    if (ev.type === "permission_request" && ev.parentToolUseId && ev.requestId) {
+      requestKey.set(ev.requestId, ev.parentToolUseId);
+    }
+    if (ev.type === "permission_decision" && ev.requestId) {
+      decided.add(ev.requestId);
+    }
+  }
+
+  const gatePending = new Set<string>();
+  for (const [requestId, key] of requestKey) {
+    if (!decided.has(requestId)) gatePending.add(key);
+  }
+
+  return order.map((key) => {
+    const info: SubSessionInfo = {
+      key,
+      label: descriptions.get(key) ?? subagentTypes.get(key) ?? key,
+      status: done.has(key) ? "done" : "running",
+      gatePending: gatePending.has(key),
+    };
+    const taskId = taskIds.get(key);
+    if (taskId !== undefined) info.taskId = taskId;
+    return info;
+  });
+}
+
+/**
+ * Project the flat log down to one sub-session's view (spec §2.3): every
+ * event attributed to `key` via `parentToolUseId` (streaming AND attributed
+ * gate events), plus the joined task's `task_event`/`task_stop` rows when the
+ * sub-session has a `taskId`, all in log (seq) order. Main-agent events, other
+ * sub-sessions' events, and unattributed gates are excluded. A pure filter —
+ * projection is display filtering, never access control (constraint 5).
+ */
+export function subSessionEvents(events: LoggedEvent[], key: string): LoggedEvent[] {
+  let taskId: string | undefined;
+  for (const ev of events) {
+    if (ev.type === "task_event" && ev.subtype === "started" && ev.toolUseId === key && ev.taskId) {
+      taskId = ev.taskId;
+      break;
+    }
+  }
+  return events.filter((ev) => {
+    if (ev.parentToolUseId === key) return true;
+    if (
+      taskId !== undefined &&
+      (ev.type === "task_event" || ev.type === "task_stop") &&
+      ev.taskId === taskId
+    ) {
+      return true;
+    }
+    return false;
+  });
+}
+
 export type TranscriptGroup =
   | { kind: "main"; events: LoggedEvent[] }
   | {
