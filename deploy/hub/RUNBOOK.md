@@ -94,6 +94,14 @@ newest `HUB_BACKUP_KEEP` files named `hub-YYYYMMDD-HHmmssZ.db`. Each snapshot is
 a single self-contained file — it sidesteps the `.db`/`-wal`/`-shm` trio-copy
 hazard (spec §8a ruling 7), so you restore from one file, not three.
 
+At boot, the hub always takes its backup snapshot BEFORE running any configured
+retention prune (the canonical boot order, spec §8.7), so a pruned row is never
+lost before a backup exists to recover it — that boot-order guarantee is what
+makes the recoverability claim in §4 and env.example true. It also means the
+double opt-in below is real: with `HUB_RETENTION_DAYS` set but NO
+`HUB_BACKUP_DIR`, there is no pre-prune snapshot, so the prune deletes
+unrecoverably (§8.7) — the operator's explicit choice, not a default.
+
 To restore from a snapshot:
 
 1. Stop the hub:  `sudo systemctl stop multiplayer-ai-hub`
