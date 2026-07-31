@@ -34,7 +34,10 @@ const UPLINK_UNAUTHORIZED = 4401;
  *  (spec §10.5). */
 function bearerToken(header: string | undefined): string | null {
   if (typeof header !== "string") return null;
-  const match = /^Bearer (.+)$/.exec(header);
+  // Case-insensitive scheme per RFC 6750 §2.1: `bearer`, `Bearer`, `BEARER`
+  // all carry the same credential, so a client whose HTTP stack lower-cases the
+  // scheme must not be silently refused.
+  const match = /^Bearer (.+)$/i.exec(header);
   return match ? match[1] : null;
 }
 

@@ -286,6 +286,16 @@ export function pairingRoutes(deps: {
         return;
       }
       json(404, { error: "unknown device" });
+    }).catch(() => {
+      // A throw inside the async handler — a DeviceStore call hitting a disk
+      // error is the realistic case — would otherwise become an unhandled
+      // rejection and leave the client's request hanging with no status. Answer
+      // 500 instead, but only if nothing has been written yet: a failure after
+      // the response began cannot be turned into a clean status.
+      if (!res.headersSent) {
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "internal error" }));
+      }
     });
 
     return true;

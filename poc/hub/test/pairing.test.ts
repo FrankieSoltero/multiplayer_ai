@@ -206,6 +206,33 @@ describe("pairing routes — approve", () => {
     expect(call.approvedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
+  it("answers 500 and never leaves an unhandled rejection when deviceApproved throws", async () => {
+    // A throw inside the async body of `void readBody(req).then(...)` (a disk
+    // error in deviceApproved is the realistic case) must be caught and turned
+    // into a 500 — otherwise it becomes an unhandled promise rejection and the
+    // client's POST hangs forever with no status.
+    class ThrowingDevices extends FakeDevices {
+      deviceApproved(): void {
+        throw new Error("disk on fire");
+      }
+    }
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const { base } = await serve({ auth: AUTH, devices: new ThrowingDevices(), onRevoked: () => {} });
+      const code = await requestCode(base);
+      const res = await post(base, "/pair/approve", { code }, cookieFor("alice"));
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: "internal error" });
+      // Give any stray rejection a tick to surface before asserting none did.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
   it("accepts a lowercased, dash-grouped code (normalised before compare)", async () => {
     const devices = new FakeDevices();
     const { base } = await serve({ auth: AUTH, devices, onRevoked: () => {} });

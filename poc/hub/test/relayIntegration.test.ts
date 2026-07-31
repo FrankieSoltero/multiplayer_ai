@@ -1069,6 +1069,33 @@ describe("uplink bearer enforcement, across the wire", () => {
     ws.close();
   }, TIMEOUT);
 
+  it("auth ON, lowercased `bearer` scheme: accepted per RFC 6750 case-insensitivity", async () => {
+    // RFC 6750 §2.1: the auth-scheme token is case-insensitive, so
+    // `Authorization: bearer <token>` presents exactly the same valid
+    // credential as `Bearer <token>` and must be welcomed, not 4401'd. A
+    // case-sensitive `bearerToken` regex would silently refuse a spec-compliant
+    // client whose HTTP library lower-cases the scheme.
+    const db = seededDevices([{ machineId: "m1", token: "tok-m1" }]);
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: UPLINK_AUTH, db });
+    close = hub.close;
+
+    const ws = new WebSocket(`ws://127.0.0.1:${hub.port}/uplink`, {
+      maxPayload: MAX_FRAME_BYTES,
+      headers: { authorization: "bearer tok-m1" },
+    });
+    ws.on("error", () => {});
+    const frames: any[] = [];
+    collect(ws, frames);
+    let closeCode: number | null = null;
+    ws.on("close", (code) => (closeCode = code));
+    await new Promise<void>((resolve) => ws.on("open", () => resolve()));
+    ws.send(JSON.stringify(helloFrame("m1")));
+    await until(frames, (f) => f.t === "welcome");
+    expect(frames.find((f) => f.t === "welcome")?.v).toBe(RELAY_PROTOCOL_VERSION);
+    expect(closeCode).toBeNull();
+    ws.close();
+  }, TIMEOUT);
+
   it("auth ON, valid token for m1 but hello for m2: closes 4401 (A3 identity binding)", async () => {
     // A bearer authenticates EXACTLY the machineId it was approved for. m1's
     // token helloing as m2 is a hijack attempt, refused before any welcome.
