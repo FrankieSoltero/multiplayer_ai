@@ -128,7 +128,7 @@ export default function App() {
       case "invite-landing":
         return <InviteLanding token={inviteToken!} onAccept={setInviteTarget} />;
       case "entrance":
-        return <ProjectPicker userId={selfId} name={profile?.name ?? "anon"} />;
+        return <ProjectPicker userId={selfId} name={profile?.name ?? "anon"} signedInAs={auth?.status === "signed-in" ? auth.login : null} />;
       case "picker":
         return (
           <SessionPicker

@@ -11,13 +11,23 @@ const DISCONNECTED_TEXT =
   "lost the hub — it may have restarted. this list is stale; reload to reconnect.";
 
 /** The hub entrance (spec §4.1): every project on the hub, not only yours.
- *  Visibility is hub-wide; membership only governs acting (spec P2), so this
- *  screen never filters by membership. */
-export function ProjectPicker(props: { userId: string; name: string }) {
+ *  The LIST is hub-wide — a non-member still SEES every project; depth is
+ *  membership-gated, so what a non-member sees is redacted and acting is
+ *  refused (spec A5). This screen therefore never filters the list by
+ *  membership; the redaction shapes each row, not the roster's presence.
+ *
+ *  `signedInAs` is the verified GitHub login, or null when the viewer is
+ *  anonymous / auth is off (App.tsx derives it from auth state, mirroring how
+ *  SessionView is wired). The pair-a-machine affordance is gated on it: only a
+ *  signed-in browser can approve a device, and the hub rejects the POST from
+ *  anyone else — so it is never offered to a viewer who cannot use it. */
+export function ProjectPicker(props: { userId: string; name: string; signedInAs: string | null }) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState<LinkState>("connecting");
   const [name, setName] = useState("");
+  const [pairCode, setPairCode] = useState("");
+  const [pairResult, setPairResult] = useState<PairResult | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -72,6 +82,15 @@ export function ProjectPicker(props: { userId: string; name: string }) {
     ws.send(JSON.stringify({ type: "create_project", name: name.trim() }));
   };
 
+  const approve = async () => {
+    if (!pairCode.trim()) return;
+    const result = await browserApprovePairing(pairCode);
+    setPairResult(result);
+    // Clear only on success — a rejected code stays put so it can be corrected
+    // and retried without retyping.
+    if (result.ok) setPairCode("");
+  };
+
   return (
     <div className="screen">
       <div className="screen-head">
@@ -109,9 +128,91 @@ export function ProjectPicker(props: { userId: string; name: string }) {
           </div>
           {error && <div className="line red">{error}</div>}
         </div>
+        {props.signedInAs !== null && (
+          <>
+            <div className="panel pix top">PAIR A MACHINE</div>
+            <div className="panel">
+              <div className="spform">
+                <input
+                  className="spinput"
+                  placeholder="pairing code"
+                  value={pairCode}
+                  onChange={(e) => setPairCode(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") approve();
+                  }}
+                />
+                <button className="btn" disabled={!pairCode.trim()} onClick={approve}>
+                  APPROVE ▸
+                </button>
+              </div>
+              <div className="line dim">
+                approve a machine you started with `cli pair` — the code is shown on that machine.
+              </div>
+              {pairResult && (
+                <div className={pairResult.ok ? "line" : "line red"}>{pairMessage(pairResult)}</div>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
+}
+
+/** The pairing-approval core, kept pure and fetch-injected (same seam as
+ *  `signOut.ts`) so the wire contract and both outcomes are testable in a
+ *  project with no DOM test environment. */
+export type PairResult =
+  | { ok: true; name: string }
+  | { ok: false; error: string };
+
+/** Canonicalize a typed code the way the hub's own `normalizeCode` does —
+ *  uppercase and strip dashes — so any grouping/casing the user types still
+ *  matches the code the hub minted. */
+export function normalizePairCode(raw: string): string {
+  return raw.toUpperCase().replace(/-/g, "");
+}
+
+/** POST a pairing code to `/pair/approve` and reduce the response to a result.
+ *
+ *  Same-origin and relative: the URL is not prefixed with any API origin so
+ *  the session cookie (which authorizes the approval) rides on the request and
+ *  is read back on the origin it was set for. On 200 the hub returns the paired
+ *  machine's name; any non-200 carries an `error` string this surfaces verbatim
+ *  (401 authentication required / 403 not on the allowlist / 404 unknown or
+ *  expired code — spec A2). */
+export async function approvePairing(
+  fetchImpl: (url: string, init: RequestInit) => Promise<{ status: number; json: () => Promise<unknown> }>,
+  rawCode: string,
+): Promise<PairResult> {
+  const code = normalizePairCode(rawCode);
+  const res = await fetchImpl("/pair/approve", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  const body = (await res.json().catch(() => null)) as
+    | { machineId?: unknown; name?: unknown; error?: unknown }
+    | null;
+  if (res.status === 200 && body && typeof body.name === "string") {
+    return { ok: true, name: body.name };
+  }
+  const error =
+    body && typeof body.error === "string" ? body.error : "pairing failed — try again";
+  return { ok: false, error };
+}
+
+/** The browser-wired default, beside the pure core so the component does not
+ *  re-derive it (mirrors `browserSignOut`). */
+export const browserApprovePairing = (rawCode: string): Promise<PairResult> =>
+  approvePairing((url, init) => globalThis.fetch(url, init), rawCode);
+
+/** The one line the entrance shows for a pairing result: the paired machine's
+ *  name on success, or the hub's error text inline on failure. */
+export function pairMessage(result: PairResult): string {
+  return result.ok ? `paired: ${result.name}` : result.error;
 }
 
 /** The entrance's project list, taken as a prop.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ProjectPicker, ProjectRows } from "./ProjectPicker";
+import { ProjectPicker, ProjectRows, normalizePairCode, approvePairing, pairMessage } from "./ProjectPicker";
 import type { ProjectSummary } from "../types";
 
 /** The hub entrance's own copy.
@@ -30,8 +30,12 @@ const textLines = (markup: string): string[] =>
     .map((chunk) => chunk.trim())
     .filter((chunk) => chunk.length > 0);
 
-const pickerText = (): string[] =>
-  textLines(renderToStaticMarkup(<ProjectPicker userId="frank" name="Frank" />));
+const pickerText = (signedInAs: string | null = null): string[] =>
+  textLines(
+    renderToStaticMarkup(
+      <ProjectPicker userId="frank" name="Frank" signedInAs={signedInAs} />,
+    ),
+  );
 
 describe("ProjectPicker — NEW PROJECT hint", () => {
   it("says where projects live: the hub's store, not memory", () => {
@@ -116,5 +120,105 @@ describe("ProjectRows — SPECTATING badge from isMember (spec A5)", () => {
     const specP = project({ id: "p2", name: "Beta", members: ["someone"] });
     expect(rowsText([memberP], "frank")).not.toContain("SPECTATING");
     expect(rowsText([specP], "frank")).toContain("SPECTATING");
+  });
+});
+
+/** The pairing-approval affordance on the entrance (spec A2).
+ *
+ *  The normalize/POST/result core is a pure, fetch-injected function so it is
+ *  testable in a project with no DOM test env — same seam as `signOut.ts`. The
+ *  component's job is only to gate visibility on sign-in and render the result;
+ *  the wire contract and both outcomes are proven here against the core. */
+
+describe("normalizePairCode — matches the hub's normalizeCode (spec A2)", () => {
+  it("uppercases and strips dashes so any typed form reaches the hub canonical", () => {
+    expect(normalizePairCode("abcd-1234")).toBe("ABCD1234");
+    expect(normalizePairCode("AbCd-1234")).toBe("ABCD1234");
+    expect(normalizePairCode("ab-cd-12-34")).toBe("ABCD1234");
+    expect(normalizePairCode("ABCD1234")).toBe("ABCD1234");
+  });
+});
+
+/** A minimal fetch stand-in that records the one call and answers with a fixed
+ *  status + body, structurally what `globalThis.fetch` returns (status + json). */
+const fakeFetch = (status: number, body: unknown) => {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const fn = async (url: string, init: RequestInit) => {
+    calls.push({ url, init });
+    return { status, json: async () => body };
+  };
+  return { fn, calls };
+};
+
+describe("approvePairing — normalize, POST, result (spec A2)", () => {
+  it("POSTs the normalized code to /pair/approve same-origin with the cookie", async () => {
+    const { fn, calls } = fakeFetch(200, { machineId: "m1", name: "my-laptop" });
+    await approvePairing(fn, "abcd-1234");
+    expect(calls).toHaveLength(1);
+    const [{ url, init }] = calls;
+    expect(url).toBe("/pair/approve");
+    expect(init.method).toBe("POST");
+    // same-origin: the session cookie must ride, and the URL is relative so it
+    // lands on the origin the cookie was set for.
+    expect(init.credentials).toBe("include");
+    expect(JSON.parse(init.body as string)).toEqual({ code: "ABCD1234" });
+  });
+
+  it("on 200 returns the paired machine name from the response", async () => {
+    const { fn } = fakeFetch(200, { machineId: "m1", name: "my-laptop" });
+    expect(await approvePairing(fn, "abcd-1234")).toEqual({ ok: true, name: "my-laptop" });
+  });
+
+  it("on a non-200 returns the response's error text", async () => {
+    const { fn } = fakeFetch(404, { error: "unknown or expired code" });
+    expect(await approvePairing(fn, "nope")).toEqual({
+      ok: false,
+      error: "unknown or expired code",
+    });
+  });
+
+  it("surfaces the allowlist refusal text verbatim on 403", async () => {
+    const { fn } = fakeFetch(403, { error: "not on the allowlist" });
+    expect(await approvePairing(fn, "abcd1234")).toEqual({
+      ok: false,
+      error: "not on the allowlist",
+    });
+  });
+
+  it("degrades to a generic message when a failure carries no error text", async () => {
+    const { fn } = fakeFetch(500, null);
+    const result = await approvePairing(fn, "abcd1234");
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("pairMessage — what the entrance shows for a result (spec A2)", () => {
+  it("shows `paired: <name>` on success", () => {
+    expect(pairMessage({ ok: true, name: "my-laptop" })).toBe("paired: my-laptop");
+  });
+
+  it("shows the error text inline on failure", () => {
+    expect(pairMessage({ ok: false, error: "unknown or expired code" })).toBe(
+      "unknown or expired code",
+    );
+  });
+});
+
+describe("ProjectPicker — pairing input visibility is signed-in-only (spec A2)", () => {
+  it("shows the pair-a-machine affordance to a signed-in user", () => {
+    const text = pickerText("frank");
+    expect(text).toContain("PAIR A MACHINE");
+  });
+
+  it("never shows it to an anonymous / auth-off user (signedInAs null)", () => {
+    const text = pickerText(null);
+    expect(text).not.toContain("PAIR A MACHINE");
+  });
+
+  it("still renders the rest of the entrance for the signed-in user", () => {
+    // Not vacuous: the pairing panel is one block of a screen that really rendered.
+    const text = pickerText("frank");
+    expect(text).toContain("PROJECTS");
+    expect(text).toContain("NEW PROJECT");
   });
 });
