@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { deriveState } from "../derive";
 import type { LoggedEvent } from "../types";
@@ -125,5 +126,246 @@ describe("Transcript — the permission gate names why", () => {
     expect(joined).toContain("DECIDED");
     expect(joined).toContain("approved");
     expect(text).toContain(REASON);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 3 — sub-session compact rows, view projection, attributed gate prefix.
+// ---------------------------------------------------------------------------
+
+/** Static markup drops event handlers, and this repo adds no DOM/renderer
+ *  (docs/tech-debt.md). To exercise the compact-row and gate-decide onClick
+ *  WIRING as an action (not just display), we install a minimal hooks
+ *  dispatcher and call the component directly, then walk the returned React
+ *  element tree for host nodes. `useEffect` is a no-op here — matching the
+ *  static-render semantics the display tests above rely on (no scroll, no
+ *  keydown listener). Transcript returns a pure tree of host elements
+ *  (div/span/button), so one call yields every node. */
+const H_KEY = "__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE";
+
+type HostNode = { type: unknown; props: Record<string, unknown> };
+
+const renderTree = (element: React.ReactElement): HostNode[] => {
+  const internals = (React as unknown as Record<string, { H: unknown }>)[H_KEY];
+  const prev = internals.H;
+  internals.H = {
+    useRef: (v: unknown) => ({ current: v }),
+    useState: (v: unknown) => [typeof v === "function" ? (v as () => unknown)() : v, () => {}],
+    useEffect: () => {},
+    useMemo: (f: () => unknown) => f(),
+    useCallback: (f: unknown) => f,
+    useContext: () => undefined,
+  };
+  try {
+    const type = element.type as (props: unknown) => unknown;
+    const rendered = type(element.props);
+    const out: HostNode[] = [];
+    const visit = (node: unknown) => {
+      if (node == null || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        node.forEach(visit);
+        return;
+      }
+      const n = node as HostNode;
+      if (n.props) {
+        out.push(n);
+        visit(n.props.children);
+      }
+    };
+    visit(rendered);
+    return out;
+  } finally {
+    internals.H = prev;
+  }
+};
+
+const hasClass = (n: HostNode, cls: string): boolean =>
+  typeof n.props.className === "string" && (n.props.className as string).split(" ").includes(cls);
+
+const ts = "2026-07-30T10:00:00Z";
+
+/** Spawning top-level Agent call for sub-session key "A" (a MAIN event: it
+ *  carries no parentToolUseId). Its input.description is the label. */
+const SPAWN_A: LoggedEvent = {
+  seq: 10,
+  ts,
+  type: "tool_call",
+  toolName: "Agent",
+  toolUseId: "A",
+  input: { description: "scan tests" },
+};
+
+/** Seven streamed rows attributed to key "A". */
+const BODY_A: LoggedEvent[] = Array.from({ length: 7 }, (_, i) => ({
+  seq: 20 + i,
+  ts,
+  type: "agent_text_delta",
+  text: `sub row ${i}`,
+  parentToolUseId: "A",
+}));
+
+/** Top-level tool_result for key "A" — flips the sub-session to done. */
+const DONE_A: LoggedEvent = { seq: 100, ts, type: "tool_result", toolUseId: "A", output: "sub finished" };
+
+interface Over {
+  events: LoggedEvent[];
+  view?: string | null;
+  isDriver?: boolean;
+  onPermission?: (requestId: string, decision: "allow" | "deny") => void;
+  onOpenSubSession?: (key: string) => void;
+}
+
+const element = (over: Over): React.ReactElement => (
+  <Transcript
+    events={over.events}
+    derived={deriveState(over.events)}
+    isDriver={over.isDriver ?? false}
+    selfId="frank"
+    onPermission={over.onPermission ?? (() => {})}
+    onDecideSkill={() => {}}
+    onDecidePlan={() => {}}
+    view={over.view}
+    onOpenSubSession={over.onOpenSubSession}
+  />
+);
+
+const markupOfEl = (over: Over): string => renderToStaticMarkup(element(over));
+
+describe("Transcript — Task 3 sub-session views", () => {
+  it("T3-MAIN compact row renders one clickable row for a running sub-session", () => {
+    const events = [JOIN, SPAWN_A, ...BODY_A];
+    const text = textLines(markupOfEl({ events })).join("\n");
+    expect(text).toContain("⚒ SUB-QUEST");
+    expect(text).toContain("scan tests");
+    expect(text).toContain("running…");
+    expect(text).toContain("7 rows");
+    expect(text).toContain("open ▸");
+    // ONE row, no expanded body: none of the seven streamed rows render.
+    expect(text).not.toContain("sub row 0");
+
+    const onOpenSubSession = vi.fn();
+    const row = renderTree(element({ events, onOpenSubSession })).find((n) => hasClass(n, "subagent-row"));
+    expect(row).toBeDefined();
+    (row!.props.onClick as () => void)();
+    expect(onOpenSubSession).toHaveBeenCalledWith("A");
+  });
+
+  it("T3-MAIN done row shows done and stays clickable", () => {
+    const events = [JOIN, SPAWN_A, ...BODY_A, DONE_A];
+    const markup = markupOfEl({ events });
+    const text = textLines(markup).join("\n");
+    expect(text).toContain("done");
+    expect(text).not.toContain("running…");
+    expect(markup).toContain('class="lamp done"');
+
+    const onOpenSubSession = vi.fn();
+    const row = renderTree(element({ events, onOpenSubSession })).find((n) => hasClass(n, "subagent-row"));
+    expect(row).toBeDefined();
+    (row!.props.onClick as () => void)();
+    expect(onOpenSubSession).toHaveBeenCalledWith("A");
+  });
+
+  it("T3-no handler renders the row and click is a harmless no-op", () => {
+    const events = [JOIN, SPAWN_A, ...BODY_A];
+    expect(markupOfEl({ events })).toContain("subagent-row");
+    const row = renderTree(element({ events })).find((n) => hasClass(n, "subagent-row"));
+    expect(row).toBeDefined();
+    // onOpenSubSession undefined (pre-Task-4 App): clicking throws nothing.
+    expect(() => (row!.props.onClick as () => void)()).not.toThrow();
+  });
+
+  it("T3-sub-session view renders the projected events flat", () => {
+    const MAIN_MSG: LoggedEvent = { seq: 5, ts, type: "user_message", userId: "frank", text: "MAIN ONLY MSG" };
+    const events = [JOIN, MAIN_MSG, SPAWN_A, ...BODY_A];
+    const text = textLines(markupOfEl({ events, view: "A" })).join("\n");
+    // The sub-session's own rows render, flat…
+    expect(text).toContain("sub row 0");
+    expect(text).toContain("sub row 6");
+    // …and NOTHING else: no main event, no compact row, no nesting.
+    expect(text).not.toContain("MAIN ONLY MSG");
+    expect(text).not.toContain("⚒ SUB-QUEST");
+    expect(markupOfEl({ events, view: "A" })).not.toContain("subagent-row");
+  });
+
+  it("T3-view of unknown key renders an empty body without crashing", () => {
+    const events = [JOIN, SPAWN_A, ...BODY_A];
+    const markup = markupOfEl({ events, view: "does-not-exist" });
+    expect(markup).toContain("transcript-body");
+    const text = textLines(markup).join("\n");
+    expect(text).not.toContain("sub row 0");
+    expect(text).not.toContain("⚒ SUB-QUEST");
+  });
+
+  it("T3-gate prefix prefixes an attributed gate card with its sub-session label", () => {
+    const attributedGate: LoggedEvent = {
+      seq: 30,
+      ts,
+      type: "permission_request",
+      requestId: "rg",
+      toolName: "Write",
+      input: { command: "rm -rf tmp" },
+      parentToolUseId: "A",
+    };
+    const events = [JOIN, SPAWN_A, attributedGate];
+    const text = textLines(markupOfEl({ events, view: "A" }));
+    const prefixAt = text.indexOf("⚒ scan tests");
+    const gateAt = text.findIndex((l) => l.includes(EXISTING_LINE));
+    expect(prefixAt).toBeGreaterThanOrEqual(0);
+    expect(gateAt).toBeGreaterThan(prefixAt); // prefix comes BEFORE the existing gate text
+  });
+
+  it("T3-unattributed gate renders byte-identical to today", () => {
+    // A gate with no parentToolUseId must render exactly as before. Checked by
+    // subtraction (same technique as the perm-why byte-identity test above):
+    // the attributed card minus its prefix node equals the unattributed card,
+    // both isolated to the same wrappers.
+    const base: Partial<LoggedEvent> = {
+      seq: 30,
+      ts,
+      type: "permission_request",
+      requestId: "rg",
+      toolName: "Write",
+      input: { command: "rm -rf tmp" },
+    };
+    const attributed = markupOfEl({ events: [SPAWN_A, { ...base, parentToolUseId: "A" } as LoggedEvent], view: "A" });
+    const unattributed = markupOfEl({ events: [{ ...base } as LoggedEvent] });
+    expect(unattributed).not.toContain("perm-sub");
+    expect(attributed.replace('<div class="perm-sub">⚒ scan tests</div>', "")).toBe(unattributed);
+  });
+
+  it("T3-gate decidable in view invokes the decision callback from a sub-session view", () => {
+    const attributedGate: LoggedEvent = {
+      seq: 30,
+      ts,
+      type: "permission_request",
+      requestId: "rg",
+      toolName: "Write",
+      input: { command: "rm -rf tmp" },
+      parentToolUseId: "A",
+    };
+    const events = [JOIN, SPAWN_A, attributedGate];
+    const onPermission = vi.fn();
+    const nodes = renderTree(element({ events, view: "A", isDriver: true, onPermission }));
+    const approve = nodes.find((n) => hasClass(n, "btn") && hasClass(n, "green"));
+    const deny = nodes.find((n) => hasClass(n, "btn") && hasClass(n, "red"));
+    expect(approve).toBeDefined();
+    expect(deny).toBeDefined();
+    (approve!.props.onClick as () => void)();
+    expect(onPermission).toHaveBeenCalledWith("rg", "allow");
+    (deny!.props.onClick as () => void)();
+    expect(onPermission).toHaveBeenCalledWith("rg", "deny");
+  });
+
+  it("T3-existing rendering regression leaves a main-only log unchanged", () => {
+    const MSG: LoggedEvent = { seq: 5, ts, type: "user_message", userId: "frank", text: "hi there" };
+    const DELTA: LoggedEvent = { seq: 6, ts, type: "agent_text_delta", text: "working on it" };
+    const events = [JOIN, MSG, DELTA];
+    const markup = markupOfEl({ events });
+    // Main events render flat, exactly as today — no sub-session artifacts.
+    expect(markup).not.toContain("subagent-row");
+    expect(markup).not.toContain("SUB-QUEST");
+    expect(markup).not.toContain("perm-sub");
+    const text = textLines(markup);
+    expect(text).toEqual(["▸ Frank:", "hi there", "⏺ working on it"]);
   });
 });
