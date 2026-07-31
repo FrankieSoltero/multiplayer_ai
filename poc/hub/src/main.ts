@@ -40,6 +40,9 @@ const { port: actual } = await startHub({
   // OPT-IN retention (spec B1): null (keep forever) becomes undefined, which
   // startHub reads as "never prune". A set value prunes once at boot.
   retentionDays: config.retentionDays ?? undefined,
+  // OPT-IN backups (spec B1): null (no backups) becomes undefined. A set value
+  // takes one backup at boot (before the prune) and one every intervalMs.
+  backup: config.backup ?? undefined,
 });
 
 console.log(`multiplayer-ai hub listening on http://${host}:${actual}`);

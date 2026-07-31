@@ -140,6 +140,11 @@ interface DeviceRowOut {
  *  two event streams into one journal (spec §3.1, §8a.3). */
 export class HubDb implements HubPersister, DeviceStore {
   private readonly db: Database.Database;
+  /** `true` for a `:memory:` record — nothing durable, so there is nothing to
+   *  back up (spec B1). Read by the hub to decide whether a configured backup
+   *  runs at all; `lockPath` can't answer this, since `{ skipLock: true }` is
+   *  also lock-less yet very much file-backed. */
+  readonly inMemory: boolean;
   /** null for `:memory:` and for `{ skipLock: true }` — the only two ways to
    *  run without one. */
   private readonly lockPath: string | null;
@@ -166,6 +171,7 @@ export class HubDb implements HubPersister, DeviceStore {
    *  live writers on one record is the failure the lock exists to prevent. */
   constructor(dbPath: string, opts?: { skipLock?: boolean }) {
     const inMemory = dbPath === MEMORY_PATH;
+    this.inMemory = inMemory;
     if (!inMemory) {
       const dir = path.dirname(dbPath);
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -364,6 +370,21 @@ export class HubDb implements HubPersister, DeviceStore {
     }));
 
     return { projects, machines, sessions };
+  }
+
+  /** A hot, atomic backup of the live record to `destPath` (spec B1, §8a
+   *  ruling 7). `VACUUM INTO` runs against the open handle — no lock conflict
+   *  with a concurrent publish — and writes ONE self-contained database file,
+   *  sidestepping the `.db`/`-wal`/`-shm` trio-copy hazard a plain file copy
+   *  would have. The copy is tightened to `0600`: it holds the same prompts,
+   *  userIds and file paths the live record does (spec §8a.7).
+   *
+   *  THROWS if `destPath` already exists — that is SQLite's own refusal to
+   *  overwrite, surfaced here rather than swallowed; the caller (the hub) treats
+   *  a failed backup as non-fatal and logs it. */
+  backupTo(destPath: string): void {
+    this.db.prepare("VACUUM INTO ?").run(destPath);
+    fs.chmodSync(destPath, 0o600);
   }
 
   /** Closes the handle and releases the lock, in that order, so the file is

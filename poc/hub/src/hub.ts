@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { createServer, type IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
@@ -101,9 +102,39 @@ export interface HubOptions {
    *  set. When set, the hub deletes event rows older than the cutoff ONCE at
    *  boot, after open/migration and BEFORE hydration. */
   retentionDays?: number;
-  /** Injectable clock for the retention cutoff (test seam). Defaults to
-   *  `Date.now`; a test pins it so the cutoff is deterministic. */
+  /** Injectable clock for the retention cutoff AND the backup filename (test
+   *  seam). Defaults to `Date.now`; a test pins it so both are deterministic. */
   now?: () => number;
+  /** Backups (spec B1, OPT-IN). Undefined → no backup, no timer, no directory:
+   *  the record is still the live product, backups are the operator's belt.
+   *  When set on a FILE-backed record, one backup is taken at boot BEFORE the
+   *  retention prune (so a prune's deletions stay recoverable, §8.7) and then
+   *  every `intervalMs` on the live handle; only the `keep` newest are retained.
+   *  A `:memory:` record (or none) has nothing durable to copy, so a configured
+   *  backup is silently disabled with one boot line. Backup failure is NEVER
+   *  fatal — logged once per attempt, the hub keeps serving. */
+  backup?: { dir: string; intervalMs: number; keep: number };
+}
+
+/** Only `hub-YYYYMMDD-HHmmssZ.db` files — the exact names `backupFileName`
+ *  emits — are ever eligible for keep-N deletion. A hand-dropped note or a
+ *  manually-named copy in the same directory is left strictly alone. */
+const BACKUP_NAME = /^hub-\d{8}-\d{6}Z\.db$/;
+
+/** The one boot line printed when a backup is configured but the record is not
+ *  durable (`:memory:`, or no record at all): there is nothing to copy, so the
+ *  operator is told the setting had no effect rather than left guessing. */
+const BACKUPS_DISABLED = "backups: disabled — no durable record to back up";
+
+/** The backup filename for a UTC instant: `hub-${YYYYMMDD}-${HHmmss}Z.db`
+ *  (spec B1). UTC and zero-padded so the lexicographic filename sort is exactly
+ *  chronological — which is what keep-N relies on to delete the oldest. */
+function backupFileName(ms: number): string {
+  const d = new Date(ms);
+  const p2 = (n: number): string => String(n).padStart(2, "0");
+  const date = `${d.getUTCFullYear()}${p2(d.getUTCMonth() + 1)}${p2(d.getUTCDate())}`;
+  const time = `${p2(d.getUTCHours())}${p2(d.getUTCMinutes())}${p2(d.getUTCSeconds())}`;
+  return `hub-${date}-${time}Z.db`;
 }
 
 /** Fail-stop (spec §3.6): log the error and stop the process. No catch-and-
@@ -161,14 +192,65 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
   // held by a live hub — rejects this promise before a socket is created, so a
   // hub that cannot honor the record it was pointed at never serves (spec §3.6).
   const db = opts.db ?? (opts.dbPath === undefined ? null : new HubDb(opts.dbPath));
+  let backupTimer: NodeJS.Timeout | undefined;
+
+  /** One backup of the live record: ensure the dir (0700 when first created),
+   *  VACUUM INTO a timestamped file, then keep only the `keep` newest matching
+   *  files. Wrapped so NOTHING here is fatal — a same-name collision, an
+   *  unwritable dir, a full disk: each is logged once (naming the path) and the
+   *  hub keeps serving, because the record is still live (spec B1, §8.7). */
+  function takeBackup(backup: { dir: string; keep: number }): void {
+    const nowFn = opts.now ?? Date.now;
+    const dest = path.join(backup.dir, backupFileName(nowFn()));
+    try {
+      if (!fs.existsSync(backup.dir)) {
+        fs.mkdirSync(backup.dir, { recursive: true, mode: 0o700 });
+        fs.chmodSync(backup.dir, 0o700);
+      }
+      // db is non-null and file-backed on every path that reaches here.
+      db!.backupTo(dest);
+      // keep-N: filename sort is chronological (UTC, zero-padded), so the
+      // oldest are the first, and ONLY pattern-matching files are candidates —
+      // a hand-dropped note in the same dir is never deleted.
+      const matches = fs.readdirSync(backup.dir).filter((f) => BACKUP_NAME.test(f)).sort();
+      for (const stale of matches.slice(0, Math.max(0, matches.length - backup.keep))) {
+        fs.rmSync(path.join(backup.dir, stale), { force: true });
+      }
+    } catch (err) {
+      console.error(
+        `hub backup to ${dest} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   let store: HubStore;
   if (db) {
+    // Backup (spec B1) — BEFORE the prune, per the canonical boot order
+    // (open/migrate → BACKUP → prune → load), so every deletion the prune makes
+    // is already captured in this boot's backup and stays recoverable (§8.7).
+    // Outside the hydration try below: a backup failure is never fatal, so it
+    // must not join the block that refuses the boot.
+    if (opts.backup) {
+      if (db.inMemory) {
+        // Nothing durable to copy — the setting had no effect, and silence would
+        // read as "it worked". No dir is created and no timer is armed.
+        console.log(BACKUPS_DISABLED);
+      } else {
+        takeBackup(opts.backup);
+        // Subsequent hot backups on the live handle. `unref()` so a hub with
+        // nothing else to do can still exit and a test never hangs on it;
+        // cleared in close().
+        const { intervalMs } = opts.backup;
+        backupTimer = setInterval(() => takeBackup(opts.backup!), intervalMs);
+        backupTimer.unref();
+      }
+    }
     try {
       // Canonical boot order (spec B1): open/migrate (done in the constructor)
-      // → backup (Task 4, later) → PRUNE → load(). The prune runs BEFORE
-      // hydration so memory boots from the already-pruned record and the two
-      // never diverge; opt-in, so nothing deletes unless `retentionDays` is set.
-      // One-shot — a long-running hub prunes only at its next restart.
+      // → BACKUP (above) → PRUNE → load(). The prune runs BEFORE hydration so
+      // memory boots from the already-pruned record and the two never diverge;
+      // opt-in, so nothing deletes unless `retentionDays` is set. One-shot — a
+      // long-running hub prunes only at its next restart.
       if (opts.retentionDays !== undefined) {
         const now = opts.now ?? Date.now;
         const cutoff = new Date(now() - opts.retentionDays * 86_400_000).toISOString();
@@ -188,6 +270,9 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     }
   } else {
     store = new HubStore();
+    // No record at all: a configured backup has nothing durable to copy, said
+    // once so the operator knows the setting had no effect.
+    if (opts.backup) console.log(BACKUPS_DISABLED);
   }
   const uplinks = new Map<string, WebSocket>();
   /** The last `contested` frame sent for each session, so a push only writes
@@ -1214,6 +1299,7 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     port,
     close: () =>
       new Promise<void>((resolve, reject) => {
+        if (backupTimer) clearInterval(backupTimer);
         for (const timer of pushTimers.values()) clearTimeout(timer);
         pushTimers.clear();
         for (const client of wss.clients) client.terminate();

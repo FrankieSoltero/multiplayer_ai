@@ -897,6 +897,80 @@ describe("HubDb — journal_size_limit (spec B1)", () => {
   });
 });
 
+describe("HubDb — backupTo (spec B1)", () => {
+  /** Seeds one session's events via the real append path so the backup covers
+   *  exactly the rows a running hub would have written. */
+  function seedEvents(db: HubDb, events: StoredEvent[]): void {
+    db.eventsAppended("acme", "auth", events, "run-a", events.length - 1, {
+      uplinkId: "lap-1",
+      facts: facts(),
+    });
+  }
+
+  it("writes a self-contained copy at dest that reloads the same rows", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    const db = openDb(dbPath);
+    seedEvents(db, [stored(1, 0), stored(2, 1), stored(3, 2)]);
+
+    const dest = path.join(tmp(), "hub-20260731-140509Z.db");
+    db.backupTo(dest);
+
+    // A single output file — no -wal/-shm trio to copy (spec §8a ruling 7).
+    expect(fs.existsSync(dest)).toBe(true);
+    expect(fs.existsSync(`${dest}-wal`)).toBe(false);
+    expect(fs.existsSync(`${dest}-shm`)).toBe(false);
+    // And it is a real DB holding exactly the seeded rows.
+    raw(dest, (bak) => {
+      const ids = (bak.prepare("SELECT id FROM events ORDER BY id").all() as { id: number }[]).map(
+        (r) => r.id,
+      );
+      expect(ids).toEqual([1, 2, 3]);
+    });
+  });
+
+  it("tightens the backup file to 0600 — it holds the same prompts and ids (spec §8a.7)", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    const db = openDb(dbPath);
+    seedEvents(db, [stored(1, 0)]);
+
+    const dest = path.join(tmp(), "hub-20260731-140509Z.db");
+    db.backupTo(dest);
+
+    expect((fs.statSync(dest).mode & 0o777).toString(8)).toBe("600");
+  });
+
+  it("throws if the destination already exists — SQLite's own behavior, surfaced", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    const db = openDb(dbPath);
+    seedEvents(db, [stored(1, 0)]);
+
+    const dest = path.join(tmp(), "hub-20260731-140509Z.db");
+    db.backupTo(dest);
+    // A second backup to the same path must not silently overwrite — it throws.
+    expect(() => db.backupTo(dest)).toThrow();
+  });
+
+  it("is hot — a write after the backup still lands, and the backup holds the pre-backup state", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    const db = openDb(dbPath);
+    seedEvents(db, [stored(1, 0), stored(2, 1)]);
+
+    const dest = path.join(tmp(), "hub-20260731-140509Z.db");
+    db.backupTo(dest);
+
+    // The live handle is not locked by the VACUUM INTO: a further append lands.
+    db.eventsAppended("acme", "auth", [stored(3, 2)], "run-a", 2);
+    expect(db.load().sessions[0]?.events.map((e) => e.id)).toEqual([1, 2, 3]);
+    // The backup is a point-in-time snapshot: it holds only what existed then.
+    raw(dest, (bak) => {
+      const ids = (bak.prepare("SELECT id FROM events ORDER BY id").all() as { id: number }[]).map(
+        (r) => r.id,
+      );
+      expect(ids).toEqual([1, 2]);
+    });
+  });
+});
+
 describe("HubDb — pruneEventsBefore (spec B1)", () => {
   /** Seeds one session's events with caller-chosen `ts` values, via the real
    *  append path (newSession on the first frame), so the rows land exactly as a
