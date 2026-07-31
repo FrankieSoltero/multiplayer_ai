@@ -54,6 +54,7 @@ function addSession(
     workdir: undefined,
     baseRef: null,
     touched: null,
+    touchedDirty: true,
     contestedFrame: null,
     contestedAsked: new Set<string>(),
     ...over,

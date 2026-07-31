@@ -585,6 +585,48 @@ describe("pre-gate recompute at the decision sites", () => {
     expect(gitAt).toBeLessThan(exit);
   });
 
+  it("sites 3→1 in one chain: ONE git spawn, not two", async () => {
+    // A write OUTSIDE the worktree: site 3 recomputes, fails the containment
+    // test, and falls straight through to site 1's hook — which recomputes
+    // again. This is the PRODUCTION chain (`buildCanUseTool` →
+    // `onPermissionRequest`), and it is synchronous end to end: nothing can
+    // append to the session between the two calls, so the second call can only
+    // ever re-measure what the first just measured. Both sites still CALL the
+    // recompute; the recompute itself declines to shell out when nothing has
+    // been appended since it last succeeded.
+    const chainRun: RunQuery = async function* (prompts, hooks) {
+      const canUseTool = buildCanUseTool(hooks);
+      for await (const _p of prompts) {
+        const result = await canUseTool(
+          "Write",
+          { file_path: "/tmp/mpai-outside-chain.txt" },
+          { signal: new AbortController().signal } as never,
+        );
+        probe.timeline.push(`probe:chain:${(result as any).behavior}`);
+        yield { type: "assistant", content: [{ type: "text", text: "ok" }] } as never;
+      }
+    };
+    const repo = seedRepo();
+    tmpDirs.push(repo);
+    const live = await liveSession({ runQuery: chainRun, repo });
+    send(live.ws, { type: "set_permission_mode", mode: "auto" });
+    await vi.waitFor(() => {
+      expect(probe.timeline).toContain("append:permission_mode_change");
+    });
+    probe.timeline.length = 0;
+
+    send(live.ws, { type: "prompt", text: "write outside" });
+    await vi.waitFor(() => {
+      expect(probe.timeline).toContain("probe:chain:allow");
+    });
+    await wait(50);
+
+    // Both sites ran (the write reached site 1's auto-approval), and the touched
+    // set was measured — once.
+    expect(probe.timeline).toContain("append:permission_request");
+    expect(recomputes()).toBe(1);
+  });
+
   it("site 3: an auto-approved Bash command triggers no recompute", async () => {
     const bashRun: RunQuery = async function* (prompts, hooks) {
       const canUseTool = buildCanUseTool(hooks);

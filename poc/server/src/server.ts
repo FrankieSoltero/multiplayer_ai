@@ -5,9 +5,15 @@ import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { AgentDriver, runAgentQuery, type RunQuery } from "./agentDriver.js";
 import { contestedFor, contestedSessionsFor } from "./contested.js";
-import { buildTeammateDigest, oversightSessionDigest, summarizeSession } from "./digest.js";
+import {
+  buildTeammateDigest,
+  oversightSessionDigest,
+  remoteTeammateSummary,
+  summarizeSession,
+} from "./digest.js";
 import { isModelKey } from "./models.js";
 import {
+  driverNameOf,
   Project,
   projectSnapshot,
   projectSummaryOf,
@@ -337,7 +343,7 @@ export async function startServer(opts: {
           id,
           entry.session.eventsFrom(0),
           entry.driver.isDead,
-          participants.find((p) => p.userId === driverId)?.name ?? null,
+          driverNameOf(participants, driverId),
           participants.map((p) => p.name),
         );
       });
@@ -413,8 +419,20 @@ export async function startServer(opts: {
     if (!entry) return;
     const { workdir, baseRef } = entry;
     if (workdir === undefined || baseRef === null) return;
+    // Nothing has been appended since the last successful measurement, so git
+    // would be asked the question it was just asked and would answer the same
+    // thing (`ProjectSessionEntry.touchedDirty`). Every decision site still
+    // calls this function; this is the one place that decides whether the call
+    // costs a process. The flag is NOT cleared on the paths above: a session
+    // with no worktree has nothing to measure, and one that is gone cannot be
+    // asked again.
+    if (!entry.touchedDirty) return;
     try {
       entry.touched = touchedFiles(workdir, baseRef);
+      // AFTER the assignment, and only on success: a throw below keeps the flag
+      // set so the next site retries rather than inheriting a skip on top of a
+      // kept-previous value.
+      entry.touchedDirty = false;
     } catch (err) {
       if (touchedFailureLogged.has(sessionId)) return;
       touchedFailureLogged.add(sessionId);
@@ -567,6 +585,9 @@ export async function startServer(opts: {
         // Never measured yet (spec §3.3) — null, not [], which would claim this
         // worktree has been inspected and found clean.
         touched: null,
+        // TRUE at creation, for exactly that reason: nothing has been measured,
+        // so the first decision site to ask must actually shell out.
+        touchedDirty: true,
         // No hub frame has arrived for this session (spec §6a) — null, not an
         // empty frame, which would claim the hub has spoken and found nothing.
         contestedFrame: null,
@@ -577,6 +598,12 @@ export async function startServer(opts: {
       entry = newEntry;
       project.sessions.set(sessionId, entry);
       session.subscribe((event) => {
+        // FIRST, before the turn-boundary recompute below can read it: any
+        // appended event may accompany a change on disk (a tool call and its
+        // result both land here), so this is the invalidation signal for the
+        // measured touched set. `turn_end` is itself an append, which is why
+        // the recompute one line down always finds a dirty entry.
+        newEntry.touchedDirty = true;
         // Turn boundary (spec §3.2). ORDER IS LOAD-BEARING: the recompute
         // completes BEFORE the push for this same event is scheduled below —
         // `turn_end` is in INTERESTING precisely so that push exists — so the
@@ -671,18 +698,16 @@ export async function startServer(opts: {
     const others = [...project.sessions.entries()]
       .filter(([id]) => id !== sessionId)
       .map(([id, entry]) => {
-        // Resolved from participants (spec §6a), the same way `sessionFactsOf`
-        // resolves it — null when the peer has no driver or the driver has
-        // left, which degrades the line to its bare `session X` form.
-        const driverId = entry.session.driverId;
-        const driverName =
-          entry.session.participantList.find((p) => p.userId === driverId)?.name ?? null;
+        // Resolved from participants (spec §6a) through the SAME helper
+        // `sessionFactsOf` uses — null when the peer has no driver or the
+        // driver has left, which degrades the line to its bare `session X`
+        // form.
         return summarizeSession(
           id,
           entry.session.eventsFrom(0),
           entry.driver.isDead,
           byPeer.get(id) ?? [],
-          driverName,
+          driverNameOf(entry.session.participantList, entry.session.driverId),
         );
       });
     // Peers named ONLY by the hub's frame — sessions on ANOTHER machine, which
@@ -699,19 +724,9 @@ export async function startServer(opts: {
       .filter((peerId) => !project.sessions.has(peerId))
       .sort();
     for (const peerId of remoteIds) {
-      // Everything but the id and the paths is unknown BY CONSTRUCTION: the
-      // frame carries session ids and paths only (thesis §1.1), so no name is
-      // invented — the line degrades to its bare `session X has also changed:`
-      // form — and the summary line states what this laptop knows, which is
-      // nothing beyond the id.
-      others.push({
-        id: peerId,
-        intent: null,
-        recentToolCalls: [],
-        ended: false,
-        contested: [...byPeer.get(peerId)!],
-        driverName: null,
-      });
+      // The remote-peer shape, built by `digest.ts` beside `summarizeSession`:
+      // id and paths only, everything else unknown by construction.
+      others.push(remoteTeammateSummary(peerId, byPeer.get(peerId)!));
     }
     const digest = buildTeammateDigest(others);
     // Debug facility, not a product surface (Task 11a step 5 / 11b step 8e

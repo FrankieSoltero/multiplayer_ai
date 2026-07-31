@@ -8,7 +8,7 @@ import { SLUG } from "./project.js";
 /** The two wire bounds for `touched`. Imported, never re-declared: `collisions.ts`
  *  is the single canonical home for both (it is the isomorphic module, so the
  *  browser and this parser agree on the same numbers by construction). */
-import { PATH_WIRE_CAP, TOUCH_CAP } from "./collisions.js";
+import { GATE_REASON_CAP, PATH_WIRE_CAP, TOUCH_CAP } from "./collisions.js";
 
 /** Bumped whenever a frame's meaning changes. A mismatch is rejected at the
  *  frame boundary (see parseUpFrame/parseDownFrame) rather than tolerated:
@@ -166,8 +166,15 @@ function str(v: unknown, re: RegExp): string | null {
  *  own porcelain output escapes them — while a newline is exactly the character
  *  needed to forge a line boundary inside the agent's `<teammates>` block or a
  *  human-read gate reason, both of which render these strings verbatim. Bounding
- *  the CHARACTERS as well as the length is the untrusted-peer-strings rule. */
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+ *  the CHARACTERS as well as the length is the untrusted-peer-strings rule.
+ *
+ *  EXPORTED as a source string, not as this RegExp: `digest.ts` strips the same
+ *  class with a `/g` variant, and a shared `/g` instance carries `lastIndex`
+ *  between calls, which would make the `.test` calls below answer differently on
+ *  alternate invocations. One class, spelled once; each consumer owns its
+ *  flags. */
+export const CONTROL_CHARS_SOURCE = "[\\u0000-\\u001f\\u007f]";
+const CONTROL_CHARS = new RegExp(CONTROL_CHARS_SOURCE);
 
 /** `touched` on a facts frame (spec §3.3). Absent and null both yield null: the
  *  field is additive, so a peer that predates it must validate rather than be
@@ -183,12 +190,6 @@ function touchedList(raw: unknown): { ok: true; value: string[] | null } | { ok:
   const paths = pathList(raw);
   return paths ? { ok: true, value: paths } : { ok: false };
 }
-
-/** The longest gate reason accepted on the wire. A SEPARATE bound from
- *  `PATH_WIRE_CAP` that deliberately carries the same number, spelled inline
- *  here and in `pendingGate.ts` (which clamps producers to it) rather than
- *  exported, because nothing else consumes it. */
-const GATE_REASON_CAP = 512;
 
 /** `pendingGate.reason` on a facts frame (spec §6b). Additive and OPTIONAL, the
  *  same posture as `touched`: absent and null both yield null, so a peer built

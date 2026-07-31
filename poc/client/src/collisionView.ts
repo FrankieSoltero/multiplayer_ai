@@ -1,4 +1,4 @@
-import { collisionsFrom, COLLISIONS_MODULE_ID } from "multiplayer-ai-server/collisions";
+import { cmp, collisionsFrom, COLLISIONS_MODULE_ID } from "multiplayer-ai-server/collisions";
 import type { Collision, CollisionInput } from "multiplayer-ai-server/collisions";
 import type { ProjectSessionInfo } from "./types";
 
@@ -14,13 +14,9 @@ import type { ProjectSessionInfo } from "./types";
  *
  *  The import above is the client's first RUNTIME (non-type) import of the
  *  server package, which is why `collisions.ts` is pure ESM with no `node:`
- *  dependencies. */
-
-/** Code-unit order — locale-independent, so every browser sorts a shares list
- *  the same way `collisionsFrom` sorted its output. */
-function cmp(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
+ *  dependencies. `cmp` rides along on it for the same reason the derivation
+ *  does: it is code-unit order, locale-independent, so every browser sorts a
+ *  shares list exactly the way `collisionsFrom` sorted its own output. */
 
 /** One snapshot row → one `CollisionInput`.
  *

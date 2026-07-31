@@ -6,7 +6,7 @@ import { sessionBadgeLabel, sessionStateClass } from "../sessionState";
 import { groupByRepo } from "../repoGroups";
 import { choiceValue, chooseRepo, parseChoiceValue, repoChoices, repoLabels } from "../repoChoices";
 import { canAct, refusalText } from "../projectAccess";
-import { contestedCountFor, projectCollisions } from "../collisionView";
+import { projectCollisions } from "../collisionView";
 import { freeSessionName } from "../sessionNames";
 import { entranceUrl, sessionUrlFrom } from "../pickerUrl";
 import { MachinesPanel } from "./MachinesPanel";
@@ -343,6 +343,30 @@ export function SessionGroups(props: {
   // the one shared implementation (Task 9a) — the hub, the laptop and every
   // browser must name the same contested set, so nothing is recomputed here.
   const collisions = useMemo(() => projectCollisions(props.sessions), [props.sessions]);
+  // Both surfaces' lookups, built in ONE pass over that list: the group chip's
+  // per-repo path set (previously a `filter` per group) and the per-session
+  // marker's count (previously a `contestedCountFor` rescan per ROW). The
+  // derivations in `collisionView.ts` are untouched — this is the same answer
+  // computed once per snapshot rather than once per group and once per row.
+  const { pathsByRepo, countBySession } = useMemo(() => {
+    const byRepo = new Map<string, Set<string>>();
+    const bySession = new Map<string, number>();
+    for (const collision of collisions) {
+      let paths = byRepo.get(collision.repoKey);
+      if (paths === undefined) {
+        paths = new Set<string>();
+        byRepo.set(collision.repoKey, paths);
+      }
+      paths.add(collision.path);
+      // `collisionsFrom` emits one entry per (repo, path) and a session appears
+      // at most once in an entry's `sessionIds`, so counting entries counts
+      // DISTINCT paths — the claim `contestedCountFor`'s Set makes.
+      for (const id of collision.sessionIds) {
+        bySession.set(id, (bySession.get(id) ?? 0) + 1);
+      }
+    }
+    return { pathsByRepo: byRepo, countBySession: bySession };
+  }, [collisions]);
 
   return (
     <>
@@ -350,12 +374,10 @@ export function SessionGroups(props: {
         // A COUNT of contended paths, never the paths themselves: the group
         // head is one line, and a repo with forty shared files would push the
         // list off the screen. `collisionsFrom` already emits one Collision per
-        // (repo, path), so the Set is belt-and-braces — it states the claim the
-        // number makes rather than trusting the upstream shape to keep making
-        // it true.
-        const contestedPaths = new Set(
-          collisions.filter((c) => c.repoKey === group.repoKey).map((c) => c.path),
-        );
+        // (repo, path), so the Set behind this number is belt-and-braces — it
+        // states the claim the number makes rather than trusting the upstream
+        // shape to keep making it true.
+        const contestedCount = pathsByRepo.get(group.repoKey)?.size ?? 0;
         return (
           <div key={group.repoKey || "unknown"}>
             {showRepoHeads && (
@@ -368,8 +390,8 @@ export function SessionGroups(props: {
                  *  case, since `??` does not treat "" as nullish. `||` on the terminal
                  *  fallback keeps that case reading "unknown repo" as it always has. */}
                 {labels.get(group.repoKey) ?? (group.repoKey || "unknown repo")}
-                {contestedPaths.size > 0 && (
-                  <span className="contested-calm">{`⚠ ${contestedPaths.size} contested`}</span>
+                {contestedCount > 0 && (
+                  <span className="contested-calm">{`⚠ ${contestedCount} contested`}</span>
                 )}
               </div>
             )}
@@ -388,7 +410,7 @@ export function SessionGroups(props: {
                      *  word, with no count and no glyph: the ⚠ and the number
                      *  belong to the group chip above, which is where a reader
                      *  goes to ask how much. */}
-                    {contestedCountFor(s.id, collisions) > 0 && (
+                    {(countBySession.get(s.id) ?? 0) > 0 && (
                       <span className="contested-calm">contested</span>
                     )}
                   </div>

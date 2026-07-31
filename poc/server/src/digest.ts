@@ -1,3 +1,4 @@
+import { CONTROL_CHARS_SOURCE } from "./relayProtocol.js";
 import type { LoggedEvent } from "./events.js";
 
 export interface TeammateSummary {
@@ -28,12 +29,17 @@ export interface TeammateSummary {
 const CONTESTED_PATH_CAP = 5;
 
 /** C0 controls plus DEL — the SAME class `relayProtocol.ts`'s `CONTROL_CHARS`
- *  rejects paths and gate reasons on. Spelled here rather than imported to keep
- *  this module a leaf (it value-imports nothing), and applied as a STRIP rather
- *  than a rejection: this is a render boundary, and a digest that threw or
- *  vanished because a teammate typed a tab into their name would be worse than
- *  one that shows the name without it. */
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+ *  rejects paths and gate reasons on, built here from that module's exported
+ *  source so the two can never name different characters. The `/g` variant is
+ *  built rather than shared because a global RegExp carries `lastIndex` between
+ *  calls and the validator's `.test` calls must not see it. Importing
+ *  `relayProtocol.ts` costs this module nothing it was protecting: that module
+ *  is node-only, and so is every consumer of this one.
+ *
+ *  Applied as a STRIP rather than a rejection: this is a render boundary, and a
+ *  digest that threw or vanished because a teammate typed a tab into their name
+ *  would be worse than one that shows the name without it. */
+const CONTROL_CHARS = new RegExp(CONTROL_CHARS_SOURCE, "g");
 
 /** The spec §6a line: `session X (driven by Y) has also changed: a, b`.
  *
@@ -94,6 +100,30 @@ export function summarizeSession(
     // an in-place truncation of it.
     contested: [...contested],
     driverName,
+  };
+}
+
+/** The summary for a peer named ONLY by the hub's `contested` frame — a session
+ *  on ANOTHER machine, which this laptop holds no event log for.
+ *
+ *  Everything but the id and the paths is unknown BY CONSTRUCTION: the frame
+ *  carries session ids and paths only (thesis §1.1), so no name is invented —
+ *  the line degrades to its bare `session X has also changed:` form — and the
+ *  summary states what this laptop knows, which is nothing beyond the id. Homed
+ *  beside `summarizeSession` because it is the other producer of this exact
+ *  shape, and a literal spelled at the call site is one field-addition away from
+ *  the two disagreeing.
+ *
+ *  `contested` is COPIED for the same reason `summarizeSession` copies it: the
+ *  caller's array is live state assembled per digest build. */
+export function remoteTeammateSummary(id: string, contested: string[]): TeammateSummary {
+  return {
+    id,
+    intent: null,
+    recentToolCalls: [],
+    ended: false,
+    contested: [...contested],
+    driverName: null,
   };
 }
 

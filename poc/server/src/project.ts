@@ -48,6 +48,24 @@ export interface ProjectSessionEntry {
    *  previous value (stale beats absent, spec §3.1), which only a stored field
    *  can express. */
   touched: string[] | null;
+  /** Has anything been APPENDED to this session since `touched` was last
+   *  measured successfully?
+   *
+   *  The recompute is a synchronous `git` spawn on the permission-gate path, and
+   *  the production chain runs it twice for one write: `buildCanUseTool`'s
+   *  decision site 3 measures, fails the containment test, and falls through to
+   *  `onPermissionRequest`'s site 1, which measures again. That chain is
+   *  synchronous end to end — nothing can append between the two calls — so the
+   *  second spawn can only re-measure what the first just measured. Every site
+   *  still CALLS the recompute; this flag is what lets the recompute decline.
+   *
+   *  Set on session creation (never measured, so the first call must run) and on
+   *  EVERY appended event, which is the same signal `schedulePush` and the
+   *  turn-boundary recompute already ride: an agent that changed a file did so
+   *  through a tool call, and both the call and its result are appended. Cleared
+   *  only by a SUCCESSFUL recompute — a git failure leaves it set, so the next
+   *  call retries rather than inheriting a skip. */
+  touchedDirty: boolean;
   /** The last hub `contested` frame for this session, stored VERBATIM (spec
    *  §6a) — `null` until one arrives, which is not the same claim as an empty
    *  frame ("the hub says nothing is contested any more"); `contested.ts` reads
@@ -165,6 +183,21 @@ function arcadeRecords(project: Project): ArcadeRecord[] {
   );
 }
 
+/** The display name of the participant currently driving, or `null`.
+ *
+ *  ONE resolution, shared by all three readers (this module's snapshot row,
+ *  `server.ts`'s oversight digest and its `digestFor`): live driver state lives
+ *  on `Session`, so every surface that renders "driven by Y" resolves it from a
+ *  participant list plus a driver id, and three copies of the same lookup is
+ *  three places for the null-handling to drift. `null` covers all of it — no
+ *  driver, a driver who has left, and a participant carrying no name. */
+export function driverNameOf(
+  participants: { userId: string; name: string }[],
+  driverId: string | null,
+): string | null {
+  return participants.find((p) => p.userId === driverId)?.name ?? null;
+}
+
 /** The single producer of a session's snapshot row (spec §3.2). `presence` is
  *  deliberately NOT here: it is the one fact only the hub can know, so the
  *  standalone path adds a constant "online" and the hub adds the real value.
@@ -182,7 +215,7 @@ export function sessionFactsOf(
   return {
     id,
     participants: participants.map((p) => p.name),
-    driverName: participants.find((p) => p.userId === driverId)?.name ?? null,
+    driverName: driverNameOf(participants, driverId),
     intent: summary.intent,
     lastActivityTs: events.at(-1)?.ts ?? null,
     ended: summary.ended,

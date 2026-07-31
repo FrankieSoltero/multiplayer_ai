@@ -2,14 +2,15 @@
  *  has changed (spec §3.1). NODE-ONLY: it shells out to git, so nothing that
  *  the browser bundles may import it.
  *
- *  The three shared wire constants are DECLARED in `collisions.ts` (the
- *  isomorphic module) and re-exported here unchanged, so the isomorphic module
- *  never imports this node-only one and no consumer sees two copies of a
- *  literal. `PATH_WIRE_CAP` lives there rather than here because
+ *  The three shared wire constants — and `cmp`, the code-unit comparator that
+ *  decides which paths survive the cap — are DECLARED in `collisions.ts` (the
+ *  isomorphic module) and re-exported/imported here unchanged, so the isomorphic
+ *  module never imports this node-only one and no consumer sees two copies of a
+ *  literal or a second sort order. `PATH_WIRE_CAP` lives there rather than here because
  *  `relayProtocol.ts` must import it too and cannot import a node-only
  *  module. */
 import { execFileSync } from "node:child_process";
-import { PATH_WIRE_CAP, TOUCH_CAP, TOUCH_SENTINEL } from "./collisions.js";
+import { cmp, PATH_WIRE_CAP, TOUCH_CAP, TOUCH_SENTINEL } from "./collisions.js";
 
 export { TOUCH_CAP, TOUCH_SENTINEL, PATH_WIRE_CAP } from "./collisions.js";
 
@@ -29,12 +30,6 @@ const GIT_TIMEOUT_MS = 5000;
  *  pathological repo fails loudly (and is treated as any other git failure)
  *  rather than being silently truncated mid-path. */
 const GIT_MAX_BUFFER = 32 * 1024 * 1024;
-
-/** Code-unit order — locale-independent, matching `collisions.ts`, so the
- *  laptop and every browser agree on which paths survive the cap. */
-function cmp(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
 
 /** One git invocation in `workdir`. argv-only (never shell-interpolated).
  *  THROWS on any failure, INCLUDING the timeout — the caller owns

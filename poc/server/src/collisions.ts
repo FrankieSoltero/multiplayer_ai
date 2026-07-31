@@ -25,6 +25,15 @@ export const TOUCH_SENTINEL = "…";
  *  validator's bound. */
 export const PATH_WIRE_CAP = 512;
 
+/** The longest gate reason a producer may emit and the validator will accept.
+ *  A SEPARATE bound from `PATH_WIRE_CAP` that deliberately carries the same
+ *  number — the two describe different things (one path vs one human-read line)
+ *  and are free to diverge, which is why they are two constants and not one.
+ *  Homed here, beside its twin, because both of its consumers (`pendingGate.ts`
+ *  clamping producers, `relayProtocol.ts` validating the wire) already import
+ *  from this module and neither may import the other. */
+export const GATE_REASON_CAP = 512;
+
 /** One session's contribution. `lifecycle` is carried because a closed session
  *  still collides (spec §2.6) — the field exists so callers cannot quietly
  *  filter on a shape that does not travel. */
@@ -42,9 +51,26 @@ export interface Collision {
   sessionIds: string[];
 }
 
-/** Code-unit order — locale-independent, so the hub and every browser agree. */
-function cmp(a: string, b: string): number {
+/** Code-unit order — locale-independent, so the hub and every browser agree.
+ *  EXPORTED and shared (`touched.ts`, `contested.ts`, the client's
+ *  `collisionView.ts`): every list these modules sort has to order the same way
+ *  as `collisionsFrom`'s own output, and a second copy of this two-line function
+ *  is a second thing that can drift. Isomorphic-safe, like the rest of this
+ *  module — it closes over nothing and touches no `node:` API. */
+export function cmp(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** A string this module is willing to call a path: a non-empty string that is
+ *  not the "…and more" sentinel.
+ *
+ *  Shared with `contested.ts`, which reads it at the boundary the digest and the
+ *  gate render from. `TOUCH_SENTINEL` is the producer's over-cap marker, not a
+ *  file, and the frame validator bounds path length from above but not from
+ *  below, so `""` reaches these consumers too — both would otherwise surface as
+ *  a line about a file nobody can open. */
+export function isRealPath(p: unknown): p is string {
+  return typeof p === "string" && p !== "" && p !== TOUCH_SENTINEL;
 }
 
 /** Per-repo intersection of touched sets. Pure: inputs are read, never
@@ -71,7 +97,7 @@ export function collisionsFrom(sessions: CollisionInput[]): Collision[] {
     }
 
     for (const path of touched) {
-      if (typeof path !== "string" || path === "" || path === TOUCH_SENTINEL) continue;
+      if (!isRealPath(path)) continue;
       let ids = paths.get(path);
       if (ids === undefined) {
         ids = new Set<string>();

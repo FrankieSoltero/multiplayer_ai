@@ -21,31 +21,25 @@
  *  ids. Nothing else on the entry — prompts, transcript, file contents — is
  *  read by either of them. */
 import {
+  cmp,
   collisionsFrom,
-  TOUCH_SENTINEL,
+  isRealPath,
   type Collision,
   type CollisionInput,
 } from "./collisions.js";
 import type { Project } from "./project.js";
 
-/** Code-unit order, the same comparator `collisions.ts` sorts with, so a peer
- *  list assembled from the two sources orders exactly as one from either. */
-function cmp(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-/** A string this module is willing to call a path.
+/** `cmp` is the comparator `collisions.ts` itself sorts with, so a peer list
+ *  assembled from the two sources orders exactly as one from either.
  *
- *  Defensive on purpose. `TOUCH_SENTINEL` is the producer's "…and more"
+ *  `isRealPath` is the shared "is this a file anyone could open" filter, applied
+ *  here defensively on purpose. `TOUCH_SENTINEL` is the producer's "…and more"
  *  marker, not a file (Task 6b's over-cap frame ends its `paths` with it and
  *  this laptop stores that frame verbatim), and the frame validator bounds path
  *  LENGTH from above but not from below, so `""` reaches here too. Both would
  *  otherwise surface as a digest line about a file nobody can open (Task 7b) or
  *  a gate reason naming one (Task 8b) — this filter is the only thing standing
  *  between the wire and those two surfaces. */
-function usablePath(path: unknown): path is string {
-  return typeof path === "string" && path !== "" && path !== TOUCH_SENTINEL;
-}
 
 /** `collisionsFrom` over this laptop's own sessions — the local half of both
  *  accessors. Recomputed per call from `entry.touched`, which is the point:
@@ -95,7 +89,7 @@ export function contestedFor(project: Project, sessionId: string): ReadonlySet<s
   // sentinel that appears in no collision entry), so treating either as
   // derivable from the other is a guess about a hub this laptop does not run.
   for (const path of entry.contestedFrame?.paths ?? []) {
-    if (usablePath(path)) paths.add(path);
+    if (isRealPath(path)) paths.add(path);
   }
 
   // (b) The local half: only collisions this session is actually part of.
@@ -104,7 +98,7 @@ export function contestedFor(project: Project, sessionId: string): ReadonlySet<s
     // `collisionsFrom` already drops the sentinel and the empty string; the
     // check is repeated rather than assumed, because this is the boundary the
     // digest and the gate read.
-    if (usablePath(collision.path)) paths.add(collision.path);
+    if (isRealPath(collision.path)) paths.add(collision.path);
   }
 
   return paths;
@@ -124,7 +118,7 @@ export function contestedSessionsFor(
   sessionId: string,
   path: string,
 ): string[] {
-  if (!usablePath(path)) return [];
+  if (!isRealPath(path)) return [];
   const entry = project.sessions.get(sessionId);
   if (entry === undefined) return [];
 

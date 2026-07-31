@@ -579,6 +579,10 @@ function SessionView(props: {
           pulls={pulls}
           pullThresholdMs={pullThresholdMs}
           onPullThresholdChange={setPullThreshold}
+          // The SAME memo the header badge reads (`contested` above): one
+          // intersection per snapshot, and the two surfaces cannot disagree
+          // about which files are contested.
+          collisions={collisions}
         />
         <TodoPanel todos={derived.todos} />
       </div>

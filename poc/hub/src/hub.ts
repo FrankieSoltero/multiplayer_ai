@@ -5,6 +5,7 @@ import { staticHandler } from "multiplayer-ai-server/staticFiles";
 import { slugify } from "multiplayer-ai-server/workspace";
 import { projectRecordFrom } from "multiplayer-ai-server/record";
 import { collisionsFrom, TOUCH_CAP, TOUCH_SENTINEL } from "multiplayer-ai-server/collisions";
+import type { Collision } from "multiplayer-ai-server/collisions";
 import type { ProjectMessage } from "multiplayer-ai-server/project";
 import {
   MAX_FRAME_BYTES,
@@ -196,27 +197,16 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
    *  distinct ids can ever collide on one key. */
   const contestedKey = (projectId: string, sessionId: string) => `${projectId}\u0000${sessionId}`;
 
+  /** PRECONDITION, and the reason a stringify is enough: both sides are built
+   *  by the SAME construction below, off `collisionsFrom` output that is fully
+   *  sorted (repoKey, then path, then sessionIds) with a fixed key order and no
+   *  optional fields. Equality is therefore positional — a reordering would be a
+   *  real change in what the hub computed, not a formatting difference — and two
+   *  frames are the same frame exactly when their JSON is. */
   const sameContested = (
     a: { paths: string[]; collisions: { path: string; sessionIds: string[] }[] },
     b: { paths: string[]; collisions: { path: string; sessionIds: string[] }[] },
-  ): boolean => {
-    if (a.paths.length !== b.paths.length || a.collisions.length !== b.collisions.length) {
-      return false;
-    }
-    for (let i = 0; i < a.paths.length; i += 1) if (a.paths[i] !== b.paths[i]) return false;
-    // Both lists are fully sorted by `collisionsFrom` (repoKey, then path, then
-    // sessionIds), so equality is positional — no set comparison needed, and a
-    // reordering would be a real change in what the hub computed.
-    for (let i = 0; i < a.collisions.length; i += 1) {
-      const x = a.collisions[i]!;
-      const y = b.collisions[i]!;
-      if (x.path !== y.path || x.sessionIds.length !== y.sessionIds.length) return false;
-      for (let j = 0; j < x.sessionIds.length; j += 1) {
-        if (x.sessionIds[j] !== y.sessionIds[j]) return false;
-      }
-    }
-    return true;
-  };
+  ): boolean => JSON.stringify(a) === JSON.stringify(b);
 
   /** The `contested` down-frame (spec §6a as amended by §8a ruling 6): which of
    *  a session's files ANOTHER live session is also touching, and whose. Only
@@ -240,6 +230,19 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         touched: session.touched,
       })),
     );
+    // One pass over the collision list instead of one filter PER SESSION: the
+    // per-session `mine` below was O(sessions × collisions) on every push. The
+    // insertion order of each list is `collisions`' own order, which is already
+    // (repoKey, path) ascending — the property the `paths` construction below
+    // relies on — because a Map preserves the order values were appended in.
+    const mineBySession = new Map<string, Collision[]>();
+    for (const collision of collisions) {
+      for (const id of collision.sessionIds) {
+        const list = mineBySession.get(id);
+        if (list === undefined) mineBySession.set(id, [collision]);
+        else list.push(collision);
+      }
+    }
     const live = new Set<string>();
     for (const session of payload.sessions) {
       const key = contestedKey(projectId, session.id);
@@ -255,7 +258,7 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       // exactly one repo, so this is already the distinct path set in
       // ascending order — no second sort, and no chance the two lists disagree
       // about which paths were retained.
-      const mine = collisions.filter((c) => c.sessionIds.includes(session.id));
+      const mine = mineBySession.get(session.id) ?? [];
       const over = mine.length > TOUCH_CAP;
       const kept = over ? mine.slice(0, TOUCH_CAP) : mine;
       const paths = kept.map((c) => c.path);

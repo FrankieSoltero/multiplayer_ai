@@ -1,3 +1,4 @@
+import { GATE_REASON_CAP } from "./collisions.js";
 import type { LoggedEvent } from "./events.js";
 
 /** A permission request nobody has answered yet. `sinceTs` is when the agent
@@ -19,16 +20,10 @@ export interface PendingGate {
   reason: string | null;
 }
 
-/** The longest reason that may ride on a gate. A SEPARATE bound from
- *  `PATH_WIRE_CAP` that deliberately carries the same number — the two describe
- *  different things (one path vs one human-read line) and are free to diverge.
- *  Spelled inline here and in `relayProtocol.ts` rather than exported from a
- *  shared module, because nothing else consumes it.
- *
- *  Applied on the PRODUCING side as a clamp, not a rejection, for the same
- *  reason `clampRepoDecl` exists: this one choke point must never emit a gate
- *  the relay's own parser would reject on the far end. */
-const GATE_REASON_CAP = 512;
+/** `GATE_REASON_CAP` (declared in `collisions.ts`, beside the path cap it
+ *  deliberately matches) is applied here on the PRODUCING side as a clamp, not a
+ *  rejection, for the same reason `clampRepoDecl` exists: this one choke point
+ *  must never emit a gate the relay's own parser would reject on the far end. */
 
 /** The oldest unanswered permission request in this log, or null.
  *
