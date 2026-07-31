@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ProjectPicker } from "./ProjectPicker";
+import { ProjectPicker, ProjectRows } from "./ProjectPicker";
+import type { ProjectSummary } from "../types";
 
 /** The hub entrance's own copy.
  *
@@ -52,5 +53,68 @@ describe("ProjectPicker — NEW PROJECT hint", () => {
     expect(text).toContain("PROJECTS");
     expect(text).toContain("NEW PROJECT");
     expect(text).toContain("no projects yet — create one below.");
+  });
+});
+
+/** The picker fills `projects` from a socket in `useEffect`, and static
+ *  rendering never runs effects (`SessionPicker.test.tsx` explains the same
+ *  seam), so `ProjectPicker` itself can only ever draw an EMPTY list here.
+ *  `ProjectRows` is that row block taken as a prop — the seam that lets these
+ *  assertions run against real redaction-shaped fixtures. */
+const project = (
+  over: Partial<ProjectSummary> & { id: string; name: string },
+): ProjectSummary => ({
+  lifecycle: "active",
+  members: [],
+  sessionCount: 0,
+  liveSessionCount: 0,
+  machines: [],
+  ...over,
+});
+
+const rowsText = (projects: ProjectSummary[], userId = "frank"): string =>
+  textLines(
+    renderToStaticMarkup(<ProjectRows projects={projects} userId={userId} />),
+  ).join("\n");
+
+describe("ProjectRows — redaction-safe member count (spec A5)", () => {
+  it("prefers memberCount over the possibly-redacted roster length", () => {
+    // A redacted project: not a member, roster blanked to [], true count 5.
+    const p = project({ id: "p1", name: "Alpha", isMember: false, members: [], memberCount: 5 });
+    const text = rowsText([p]);
+    expect(text).toContain("5 members");
+    expect(text).not.toContain("0 members");
+  });
+
+  it("falls back to members.length when memberCount is absent — old-server tolerance", () => {
+    const p = project({ id: "p1", name: "Alpha", members: ["a", "b"] });
+    expect(rowsText([p])).toContain("2 members");
+  });
+
+  it("pluralizes off the true count, not the roster length", () => {
+    const p = project({ id: "p1", name: "Alpha", isMember: false, members: [], memberCount: 1 });
+    const text = rowsText([p]);
+    expect(text).toContain("1 member ");
+    expect(text).not.toContain("1 members");
+  });
+});
+
+describe("ProjectRows — SPECTATING badge from isMember (spec A5)", () => {
+  it("shows SPECTATING from isMember:false even when the roster is redacted to empty", () => {
+    const p = project({ id: "p1", name: "Alpha", isMember: false, members: [], memberCount: 5 });
+    expect(rowsText([p], "frank")).toContain("SPECTATING");
+  });
+
+  it("hides SPECTATING from isMember:true even when userId is not in the roster", () => {
+    // Proves the badge reads isMember, not members.includes(userId).
+    const p = project({ id: "p1", name: "Alpha", isMember: true, members: ["someone-else"] });
+    expect(rowsText([p], "frank")).not.toContain("SPECTATING");
+  });
+
+  it("falls back to members.includes when isMember is absent — old server", () => {
+    const memberP = project({ id: "p1", name: "Alpha", members: ["frank"] });
+    const specP = project({ id: "p2", name: "Beta", members: ["someone"] });
+    expect(rowsText([memberP], "frank")).not.toContain("SPECTATING");
+    expect(rowsText([specP], "frank")).toContain("SPECTATING");
   });
 });

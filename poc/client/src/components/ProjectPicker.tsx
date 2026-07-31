@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { SERVER_URL } from "../types";
+import { SERVER_URL, isProjectMember, projectMemberCount } from "../types";
 import type { ProjectSummary } from "../types";
 import { sortProjects, projectSummaryLine } from "../projectList";
 
@@ -72,8 +72,6 @@ export function ProjectPicker(props: { userId: string; name: string }) {
     ws.send(JSON.stringify({ type: "create_project", name: name.trim() }));
   };
 
-  const rows = sortProjects(projects);
-
   return (
     <div className="screen">
       <div className="screen-head">
@@ -88,31 +86,7 @@ export function ProjectPicker(props: { userId: string; name: string }) {
           </div>
         )}
         <div className="panel">
-          {rows.length === 0 && (
-            <div className="line dim">no projects yet — create one below.</div>
-          )}
-          {rows.map((p) => (
-            <div className="sprow" key={p.id}>
-              <div className="spbody">
-                <div className="spname">
-                  {p.name}
-                  {p.lifecycle === "closed" && (
-                    <span className="spstate pix sm closed">CLOSED</span>
-                  )}
-                  {!p.members.includes(props.userId) && (
-                    <span className="spstate pix sm">SPECTATING</span>
-                  )}
-                </div>
-                <div className="spwho pix sm">
-                  {p.members.length} {p.members.length === 1 ? "member" : "members"} ·{" "}
-                  {projectSummaryLine(p)}
-                </div>
-              </div>
-              <button className="btn" onClick={() => enterProject(p.id)}>
-                ENTER ▸
-              </button>
-            </div>
-          ))}
+          <ProjectRows projects={projects} userId={props.userId} />
         </div>
         <div className="panel pix top">NEW PROJECT</div>
         <div className="panel">
@@ -137,6 +111,54 @@ export function ProjectPicker(props: { userId: string; name: string }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/** The entrance's project list, taken as a prop.
+ *
+ *  Exported and props-only for the same reason as `SessionGroups`: the picker
+ *  fills `projects` from a socket in `useEffect`, static rendering never runs
+ *  effects, so the picker itself can only ever draw an EMPTY list in a test.
+ *  This seam is what lets `ProjectPicker.test.tsx` assert the redaction-safe
+ *  count and the isMember-driven SPECTATING badge against real fixtures.
+ *
+ *  Both read through the `types.ts` helpers, never off `members` directly: a
+ *  redacted non-member sees `members: []` but a true `memberCount`, and its
+ *  membership is `isMember: false` — so the count stays honest and the badge
+ *  no longer flips on an empty roster (spec A5). */
+export function ProjectRows(props: { projects: ProjectSummary[]; userId: string }) {
+  const rows = sortProjects(props.projects);
+  return (
+    <>
+      {rows.length === 0 && (
+        <div className="line dim">no projects yet — create one below.</div>
+      )}
+      {rows.map((p) => {
+        const count = projectMemberCount(p);
+        return (
+          <div className="sprow" key={p.id}>
+            <div className="spbody">
+              <div className="spname">
+                {p.name}
+                {p.lifecycle === "closed" && (
+                  <span className="spstate pix sm closed">CLOSED</span>
+                )}
+                {!isProjectMember(p, props.userId) && (
+                  <span className="spstate pix sm">SPECTATING</span>
+                )}
+              </div>
+              <div className="spwho pix sm">
+                {count} {count === 1 ? "member" : "members"} ·{" "}
+                {projectSummaryLine(p)}
+              </div>
+            </div>
+            <button className="btn" onClick={() => enterProject(p.id)}>
+              ENTER ▸
+            </button>
+          </div>
+        );
+      })}
+    </>
   );
 }
 
