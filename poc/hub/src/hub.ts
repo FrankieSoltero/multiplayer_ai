@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { staticHandler } from "multiplayer-ai-server/staticFiles";
@@ -16,9 +16,27 @@ import {
 } from "multiplayer-ai-server/relayProtocol";
 import { HubStore, type MachineInfo } from "./hubStore.js";
 import { HubDb } from "./hubDb.js";
+import { pairingRoutes, hashToken } from "./pairing.js";
 
 const SLUG = /^[a-z0-9-]{1,40}$/;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
+
+/** The WebSocket close code an uplink is refused with when its bearer is
+ *  missing, unknown, revoked, or bound to a different machineId (spec A2, A3).
+ *  Deliberately NOT 1008: the relay reads 1008 as a protocol/version mismatch
+ *  (`relayIntegration.test.ts`'s v1 refusal) and this application code as
+ *  "stop and re-pair". */
+const UPLINK_UNAUTHORIZED = 4401;
+
+/** The plaintext bearer from an `Authorization: Bearer <token>` header, or null
+ *  when the header is absent or not a bearer. The token is never stored or
+ *  logged — only its `hashToken` digest is compared against the device record
+ *  (spec §10.5). */
+function bearerToken(header: string | undefined): string | null {
+  if (typeof header !== "string") return null;
+  const match = /^Bearer (.+)$/.exec(header);
+  return match ? match[1] : null;
+}
 
 /** Answered from the hub's own store rather than tunnelled: only the hub sees
  *  every laptop, so only the hub can answer them (spec §3.2). */
@@ -178,6 +196,20 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
   // SPA fallback, which would return index.html with a 200 and leave the
   // client unable to tell "auth is off" from "auth is broken" (spec §4.2).
   const handleAuth = authRoutes(opts.auth);
+  /** A device was revoked (via `/pair/revoke`): if it has a live uplink, drop it
+   *  now with the same 4401 an unauthenticated connection gets. The socket's
+   *  existing close handler runs `store.detach`, so the machine flips offline —
+   *  no separate teardown path, and the guard there (`uplinks.get(id) !== socket`)
+   *  keeps a superseded socket's late close from touching a live one. */
+  const onRevoked = (machineId: string): void => {
+    uplinks.get(machineId)?.close(UPLINK_UNAUTHORIZED, "unauthorized");
+  };
+  // AFTER authRoutes, BEFORE serveStatic (spec §A2): a returned `true` means the
+  // pairing handler consumed the request. Mounted even when `opts.auth` is
+  // undefined — it then answers its own 404 rather than falling through to the
+  // SPA (the same "off is distinguishable from broken" reasoning authRoutes
+  // lives by). `db` is the DeviceStore; null → pairing 503s (Task 7).
+  const handlePairing = pairingRoutes({ auth: opts.auth, devices: db, onRevoked });
 
   const send = (socket: WebSocket, msg: unknown) => {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
@@ -449,6 +481,9 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     // authRoutes consumed the request. Any /auth/* path is answered here — with
     // auth on or off — so none reaches the SPA fallback below.
     if (handleAuth(req, res)) return;
+    // AFTER authRoutes, BEFORE serveStatic (spec §A2): every /pair/* path is
+    // answered here — auth on or off — so none reaches the SPA fallback below.
+    if (handlePairing(req, res)) return;
     if (serveStatic) {
       serveStatic(req, res);
       return;
@@ -466,14 +501,31 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     // Without a listener an "error" is an unhandled EventEmitter error and
     // crashes the process; "close" always follows and does the cleanup.
     socket.on("error", () => {});
-    if ((req.url ?? "/").startsWith("/uplink")) handleUplink(socket);
+    if ((req.url ?? "/").startsWith("/uplink")) handleUplink(socket, req);
     // The cookie is read ONCE, here at the upgrade, and held on the channel
     // for the life of the connection: WS messages carry no cookies, so a
     // per-message re-read would have nothing to read (spec §3.5 rule 1).
     else handleBrowser(socket, req.headers.cookie);
   });
 
-  function handleUplink(socket: WebSocket): void {
+  function handleUplink(socket: WebSocket, req: IncomingMessage): void {
+    // The bearer gate, at the upgrade and BEFORE any frame (spec A2, A3). Auth
+    // off (`opts.auth` undefined) → `authedMachineId` stays null and the socket
+    // is admitted bare, exactly as it always was. Auth on → the socket must
+    // carry a bearer whose hash matches a live device record; the machineId that
+    // record names is latched here and the `hello` below must match it. Fail
+    // closed: no device store (`db` null) refuses every uplink, because there is
+    // nothing to authenticate against.
+    let authedMachineId: string | null = null;
+    if (opts.auth) {
+      const token = bearerToken(req.headers.authorization);
+      const device = token && db ? db.deviceByTokenHash(hashToken(token)) : null;
+      if (!device) {
+        socket.close(UPLINK_UNAUTHORIZED, "unauthorized");
+        return;
+      }
+      authedMachineId = device.machineId;
+    }
     let uplinkId: string | null = null;
     let projectId: string | null = null;
     /** Session ids this socket has already been told it does not own. One
@@ -501,6 +553,17 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         return;
       }
       if (frame.t === "hello") {
+        // Identity binding (spec A3): a bearer authenticates EXACTLY the
+        // machineId it was approved for, so a hello for any other id is a
+        // hijack attempt and is refused before it can register or evict.
+        // Auth off → `authedMachineId` is null and any uplinkId stands, exactly
+        // as today. This also gates eviction: superseding an incumbent now
+        // requires a valid bearer for THAT machine, so it is reconnect-recovery,
+        // never a takeover.
+        if (authedMachineId !== null && frame.uplinkId !== authedMachineId) {
+          socket.close(UPLINK_UNAUTHORIZED, "unauthorized");
+          return;
+        }
         // One identity per socket, the mirror of "hello first" below. A second
         // hello would register a second id in `uplinks` that the close handler
         // (which only knows the last one) can never reclaim — leaving a dead

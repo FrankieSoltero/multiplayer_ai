@@ -6,7 +6,10 @@ import {
   type SessionFacts,
 } from "multiplayer-ai-server/relayProtocol";
 import { Session } from "multiplayer-ai-server/session";
+import { SESSION_COOKIE, signSession, type AuthConfig } from "multiplayer-ai-server/auth";
 import { startHub } from "../src/hub.js";
+import { HubDb } from "../src/hubDb.js";
+import { hashToken } from "../src/pairing.js";
 import { decl, wait, connect, collect, relayConnector, laptop, laptopThatAnswers, browserReplay, replayOnceAtLeast, snapshotVia } from "./helpers/uplinkHarness.js";
 
 /** The real laptop against the real hub.
@@ -886,5 +889,292 @@ describe("machines and repos, across the wire", () => {
     expect(otherSeen.filter((f) => f.t === "tunnel")).toEqual([]);
     browser.close();
     other.close();
+  }, TIMEOUT);
+});
+
+/** Uplink bearer enforcement (spec A2, A3), Task 8.
+ *
+ *  The relay harness (`laptop`, `laptopThatAnswers`) constructs its `ws`
+ *  sockets with no `headers` option and so cannot carry an `Authorization`
+ *  header — the very gap `relay.ts:426-433` closes on the client side (spec
+ *  §1). These scenarios therefore build raw uplink sockets directly, exactly as
+ *  the "refuses a v1 hello" scenario above does, so the bearer travels in the
+ *  header. Tokens are minted here (`hashToken(plaintext)`) and installed
+ *  straight into a `HubDb` device record via `deviceApproved`, then that same db
+ *  is handed to `startHub` through the `db` seam — the plaintext bearer only
+ *  ever lives in the test, never in the store (spec §10.5). */
+const UPLINK_AUTH: AuthConfig = {
+  clientId: "cid",
+  clientSecret: "csecret",
+  sessionSecret: "test-secret",
+  allowlist: "ana",
+};
+
+/** A `:memory:` record seeded with device rows, one live token per machine. */
+function seededDevices(devices: { machineId: string; token: string }[]): HubDb {
+  const db = new HubDb(":memory:");
+  for (const d of devices) {
+    db.deviceApproved({
+      machineId: d.machineId,
+      name: d.machineId,
+      tokenHash: hashToken(d.token),
+      approvedBy: "ana",
+      approvedAt: new Date().toISOString(),
+    });
+  }
+  return db;
+}
+
+/** A raw uplink socket, optionally carrying a bearer. `on("error")` is bound
+ *  immediately because a refused upgrade/close surfaces as an EventEmitter
+ *  error that would otherwise crash the runner. */
+function rawUplink(port: number, token?: string): WebSocket {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/uplink`, {
+    maxPayload: MAX_FRAME_BYTES,
+    ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+  });
+  ws.on("error", () => {});
+  return ws;
+}
+
+/** Resolve on close with the code+reason, or a sentinel if the hub never
+ *  closes within `ms` — so a green run that SHOULD close reports a real value
+ *  and a bug that leaves the socket open reports "never closed" rather than
+ *  hanging the suite. */
+function closedWithin(ws: WebSocket, ms = 5000): Promise<{ code: number; reason: string }> {
+  return Promise.race([
+    new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.on("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+    }),
+    wait(ms).then(() => ({ code: -1, reason: "the hub never closed the socket" })),
+  ]);
+}
+
+/** A members-only `peek`, driven from a cookie-authenticated browser — the
+ *  harness's `snapshotVia` sends no cookie and so cannot identify once auth is
+ *  on. Polls to a deadline for a snapshot satisfying `predicate`, then hands
+ *  back whatever it last held (or undefined) so the caller's assertion names the
+ *  gap rather than a timeout naming nothing. */
+async function peekAuthed(
+  port: number,
+  cookie: string,
+  predicate: (snap: any) => boolean,
+): Promise<any | undefined> {
+  const deadline = Date.now() + 8000;
+  let snap: any | undefined;
+  while (Date.now() < deadline) {
+    snap = await new Promise<any | undefined>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/`, { headers: { cookie } });
+      const seen: any[] = [];
+      ws.on("error", () => resolve(undefined));
+      ws.on("message", (raw) => seen.push(JSON.parse(raw.toString())));
+      ws.on("open", () => {
+        ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+        ws.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+        ws.send(JSON.stringify({ type: "peek", projectId: "default" }));
+      });
+      const stop = Date.now() + 2000;
+      const iv = setInterval(() => {
+        const project = seen.find((m) => m.type === "project");
+        if (project || Date.now() > stop) {
+          clearInterval(iv);
+          ws.close();
+          resolve(project);
+        }
+      }, 20);
+    });
+    if (snap && predicate(snap)) return snap;
+    await wait(50);
+  }
+  return snap;
+}
+
+const helloFrame = (uplinkId: string) => ({
+  t: "hello",
+  v: RELAY_PROTOCOL_VERSION,
+  uplinkId,
+  name: uplinkId,
+  projectId: "default",
+  repos: [decl("github.com/acme/api")],
+});
+
+describe("uplink bearer enforcement, across the wire", () => {
+  it("auth OFF: a bare uplink with no Authorization is welcomed exactly as today", async () => {
+    // The unchanged path (spec A2's "auth off" row). No auth configured, no
+    // header, no bearer — the hub must behave precisely as every other scenario
+    // in this file (which all run auth-off) already assumes.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+
+    const ws = rawUplink(hub.port);
+    const frames: any[] = [];
+    collect(ws, frames);
+    let closeCode: number | null = null;
+    ws.on("close", (code) => (closeCode = code));
+    await new Promise<void>((resolve) => ws.on("open", () => resolve()));
+    ws.send(JSON.stringify(helloFrame("lap-1")));
+    await until(frames, (f) => f.t === "welcome");
+    expect(frames.find((f) => f.t === "welcome")?.v).toBe(RELAY_PROTOCOL_VERSION);
+    expect(closeCode).toBeNull();
+    ws.close();
+  }, TIMEOUT);
+
+  it("auth ON, no header: closes 4401 unauthorized before any frame is processed", async () => {
+    const db = seededDevices([{ machineId: "m1", token: "tok-m1" }]);
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: UPLINK_AUTH, db });
+    close = hub.close;
+
+    // No bearer at all. Nothing is even sent — the refusal is at the upgrade,
+    // ahead of the first frame.
+    const ws = rawUplink(hub.port);
+    expect(await closedWithin(ws)).toEqual({ code: 4401, reason: "unauthorized" });
+  }, TIMEOUT);
+
+  it("auth ON, unknown token: closes 4401 unauthorized", async () => {
+    const db = seededDevices([{ machineId: "m1", token: "tok-m1" }]);
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: UPLINK_AUTH, db });
+    close = hub.close;
+
+    const ws = rawUplink(hub.port, "not-a-real-token");
+    expect(await closedWithin(ws)).toEqual({ code: 4401, reason: "unauthorized" });
+  }, TIMEOUT);
+
+  it("auth ON, revoked token: closes 4401 unauthorized", async () => {
+    // A revoked device is a lookup miss (`deviceByTokenHash` filters on
+    // `revoked = 0`), indistinguishable from an unknown token — both 4401.
+    const db = seededDevices([{ machineId: "m1", token: "tok-m1" }]);
+    expect(db.deviceRevoked("m1")).toBe(true);
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: UPLINK_AUTH, db });
+    close = hub.close;
+
+    const ws = rawUplink(hub.port, "tok-m1");
+    expect(await closedWithin(ws)).toEqual({ code: 4401, reason: "unauthorized" });
+  }, TIMEOUT);
+
+  it("auth ON, valid token + hello for its own machineId: welcomed exactly as today", async () => {
+    const db = seededDevices([{ machineId: "m1", token: "tok-m1" }]);
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: UPLINK_AUTH, db });
+    close = hub.close;
+
+    const ws = rawUplink(hub.port, "tok-m1");
+    const frames: any[] = [];
+    collect(ws, frames);
+    let closeCode: number | null = null;
+    ws.on("close", (code) => (closeCode = code));
+    await new Promise<void>((resolve) => ws.on("open", () => resolve()));
+    ws.send(JSON.stringify(helloFrame("m1")));
+    await until(frames, (f) => f.t === "welcome");
+    expect(frames.find((f) => f.t === "welcome")?.v).toBe(RELAY_PROTOCOL_VERSION);
+    expect(closeCode).toBeNull();
+    ws.close();
+  }, TIMEOUT);
+
+  it("auth ON, valid token for m1 but hello for m2: closes 4401 (A3 identity binding)", async () => {
+    // A bearer authenticates EXACTLY the machineId it was approved for. m1's
+    // token helloing as m2 is a hijack attempt, refused before any welcome.
+    const db = seededDevices([
+      { machineId: "m1", token: "tok-m1" },
+      { machineId: "m2", token: "tok-m2" },
+    ]);
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: UPLINK_AUTH, db });
+    close = hub.close;
+
+    const ws = rawUplink(hub.port, "tok-m1");
+    const frames: any[] = [];
+    collect(ws, frames);
+    await new Promise<void>((resolve) => ws.on("open", () => resolve()));
+    ws.send(JSON.stringify(helloFrame("m2")));
+    expect(await closedWithin(ws)).toEqual({ code: 4401, reason: "unauthorized" });
+    expect(frames.some((f) => f.t === "welcome")).toBe(false);
+  }, TIMEOUT);
+
+  it("auth ON, eviction gated: m1's own valid bearer reconnecting as m1 supersedes the incumbent", async () => {
+    // Reconnect-recovery preserved (spec A2): a second connection presenting
+    // m1's valid bearer and helloing as m1 runs the supersede path as today —
+    // the new socket is welcomed. The hijack half (a different device's bearer
+    // helloing as m1) is refused by the A3 test above.
+    const db = seededDevices([{ machineId: "m1", token: "tok-m1" }]);
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: UPLINK_AUTH, db });
+    close = hub.close;
+
+    const first = rawUplink(hub.port, "tok-m1");
+    const firstFrames: any[] = [];
+    collect(first, firstFrames);
+    await new Promise<void>((resolve) => first.on("open", () => resolve()));
+    first.send(JSON.stringify(helloFrame("m1")));
+    await until(firstFrames, (f) => f.t === "welcome");
+
+    const second = rawUplink(hub.port, "tok-m1");
+    const secondFrames: any[] = [];
+    collect(second, secondFrames);
+    let secondClose: number | null = null;
+    second.on("close", (code) => (secondClose = code));
+    await new Promise<void>((resolve) => second.on("open", () => resolve()));
+    second.send(JSON.stringify(helloFrame("m1")));
+    await until(secondFrames, (f) => f.t === "welcome");
+    expect(secondFrames.find((f) => f.t === "welcome")?.v).toBe(RELAY_PROTOCOL_VERSION);
+    expect(secondClose).toBeNull();
+    first.close();
+    second.close();
+  }, TIMEOUT);
+
+  it("auth ON, live revocation: onRevoked drops the connected uplink 4401 and detach runs", async () => {
+    // /pair/revoke revokes the device AND notifies `onRevoked`, which closes the
+    // live uplink 4401. The existing close handler then runs `store.detach`, so
+    // the machine's session flips to offline — observable in a peek.
+    const db = seededDevices([{ machineId: "m1", token: "tok-m1" }]);
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: UPLINK_AUTH, db });
+    close = hub.close;
+
+    const cookie = `${SESSION_COOKIE}=${signSession("ana", UPLINK_AUTH.sessionSecret)}`;
+    const ws = rawUplink(hub.port, "tok-m1");
+    const frames: any[] = [];
+    collect(ws, frames);
+    await new Promise<void>((resolve) => ws.on("open", () => resolve()));
+    ws.send(JSON.stringify(helloFrame("m1")));
+    await until(frames, (f) => f.t === "welcome");
+    // A session so detach has something to flip offline.
+    ws.send(
+      JSON.stringify({
+        t: "facts",
+        sessionId: "auth",
+        runId: "run-1",
+        facts: {
+          id: "auth", participants: ["ana"], driverName: "ana", intent: null,
+          lastActivityTs: null, ended: false, pendingGate: null, skills: [],
+          repoKey: "github.com/acme/api", touched: ["src/auth.ts"], lifecycle: "open",
+        },
+      }),
+    );
+    const online = await peekAuthed(hub.port, cookie, (s) =>
+      s.sessions.some((x: any) => x.id === "auth" && x.presence === "online"),
+    );
+    expect(online.sessions.find((x: any) => x.id === "auth")?.presence).toBe("online");
+
+    // Revoke via the mounted pairing route, with the allowlisted approver cookie.
+    const revoked = await fetch(`http://127.0.0.1:${hub.port}/pair/revoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ machineId: "m1" }),
+    });
+    expect(revoked.status).toBe(200);
+    expect(await revoked.json()).toEqual({ revoked: true });
+
+    expect(await closedWithin(ws)).toEqual({ code: 4401, reason: "unauthorized" });
+    // detach ran via the close handler: the session is now offline.
+    const gone = await peekAuthed(hub.port, cookie, (s) =>
+      s.sessions.every((x: any) => x.presence === "offline"),
+    );
+    expect(gone.sessions.map((x: any) => x.presence)).toEqual(["offline"]);
+  }, TIMEOUT);
+
+  it("auth ON but no device store: every uplink is refused 4401 (fail-closed)", async () => {
+    // auth set, `db` null — there is no record to authenticate against, so the
+    // only safe answer is to refuse everything (pairing already 503s per Task 7).
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: UPLINK_AUTH });
+    close = hub.close;
+
+    const ws = rawUplink(hub.port, "any-token");
+    expect(await closedWithin(ws)).toEqual({ code: 4401, reason: "unauthorized" });
   }, TIMEOUT);
 });
