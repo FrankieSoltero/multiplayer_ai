@@ -1310,3 +1310,274 @@ describe("workspace guard", () => {
     expect((errors[0] as { message: string }).message).toContain(missing);
   });
 });
+
+// §8.4 Task 1: gate attribution + task join field. A sub-agent's tool call is
+// streamed tagged with parent_tool_use_id; the driver maps that inner
+// toolUseId → parent so the permission gate it later raises (identified by the
+// SDK's canUseTool `toolUseID`, delivered via `meta.toolUseId`) can be
+// attributed to the sub-session. Attribution is DISPLAY metadata: absent, every
+// event is byte-identical to today.
+describe("sub-session gate attribution (T1)", () => {
+  // Streams one sub-agent Write tool_use (inner id "sub-1", parent "task-P1"),
+  // then raises that call's gate through onPermissionRequest carrying the SDK's
+  // toolUseID for it. The yield is consumed (map populated) before the hook runs.
+  const attributedRun = (signal?: AbortSignal): RunQuery =>
+    async function* (prompts, hooks) {
+      for await (const _p of prompts) {
+        yield {
+          type: "assistant",
+          parent_tool_use_id: "task-P1",
+          content: [{ type: "tool_use", id: "sub-1", name: "Write", input: { file_path: "x.ts" } }],
+        } as SdkMessage;
+        const d = await hooks.onPermissionRequest(
+          "Write",
+          { file_path: "x.ts" },
+          signal,
+          { toolUseId: "sub-1" },
+        );
+        yield { type: "assistant", content: [{ type: "text", text: `d:${d}` }] } as SdkMessage;
+        return;
+      }
+    };
+
+  it("T1-attributed-request: permission_request carries the mapped parent id", async () => {
+    const session = new Session("s-t1-attr");
+    const driver = new AgentDriver(session, attributedRun());
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "permission_request");
+    expect(request.parentToolUseId).toBe("task-P1");
+    driver.resolvePermission(request.requestId, "allow", "u1");
+  });
+
+  it("T1-decision-inherits-driver: the driver decision inherits the same parent", async () => {
+    const session = new Session("s-t1-drv");
+    const driver = new AgentDriver(session, attributedRun());
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "permission_request");
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(true);
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({
+      requestId: request.requestId,
+      decision: "allow",
+      userId: "u1",
+      parentToolUseId: "task-P1",
+    });
+  });
+
+  it("T1-decision-inherits-auto: both the request and the auto decision carry the parent", async () => {
+    const session = new Session("s-t1-auto");
+    session.join("u1", "Ana");
+    const driver = new AgentDriver(session, attributedRun());
+    expect(driver.setPermissionMode("auto", "u1")).toEqual({ ok: true });
+    driver.sendPrompt("u1", "go");
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({
+      decision: "allow",
+      userId: "u1",
+      auto: true,
+      parentToolUseId: "task-P1",
+    });
+    const request = await waitForEvent(session, "permission_request");
+    expect(request.parentToolUseId).toBe("task-P1");
+  });
+
+  it("T1-decision-inherits-abort: the system-attributed abort deny carries the parent", async () => {
+    const controller = new AbortController();
+    const session = new Session("s-t1-abort");
+    const driver = new AgentDriver(session, attributedRun(controller.signal));
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "permission_request");
+    controller.abort();
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({
+      requestId: request.requestId,
+      decision: "deny",
+      userId: "system",
+      parentToolUseId: "task-P1",
+    });
+  });
+
+  it("T1-main-agent-call: an unmapped toolUseId leaves request/decision byte-identical to today", async () => {
+    const mainRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _p of prompts) {
+        const d = await hooks.onPermissionRequest(
+          "Bash",
+          { command: "rm -rf build" },
+          undefined,
+          { toolUseId: "main-1" }, // never mapped to a parent
+        );
+        yield { type: "assistant", content: [{ type: "text", text: `d:${d}` }] } as SdkMessage;
+        return;
+      }
+    };
+    const session = new Session("s-t1-main");
+    const driver = new AgentDriver(session, mainRun);
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "permission_request");
+    expect("parentToolUseId" in request).toBe(false);
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(true);
+    const decision = await waitForEvent(session, "permission_decision");
+    expect("parentToolUseId" in decision).toBe(false);
+  });
+
+  it("T1-interleaved-concurrency: two live sub-agents never cross-attribute, even with out-of-order deletes", async () => {
+    let d1!: Promise<"allow" | "deny">;
+    let d2!: Promise<"allow" | "deny">;
+    const interleavedRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _p of prompts) {
+        // Two sub-agents' inner calls stream in, interleaved.
+        yield {
+          type: "assistant",
+          parent_tool_use_id: "P1",
+          content: [{ type: "tool_use", id: "X1", name: "Write", input: { file_path: "a.ts" } }],
+        } as SdkMessage;
+        yield {
+          type: "assistant",
+          parent_tool_use_id: "P2",
+          content: [{ type: "tool_use", id: "X2", name: "Write", input: { file_path: "b.ts" } }],
+        } as SdkMessage;
+        d1 = hooks.onPermissionRequest("Write", { file_path: "a.ts" }, undefined, { toolUseId: "X1" });
+        d2 = hooks.onPermissionRequest("Write", { file_path: "b.ts" }, undefined, { toolUseId: "X2" });
+        await Promise.all([d1, d2]);
+        // Results come back out of order (X2 before X1) — must not retro-taint.
+        yield {
+          type: "user",
+          parent_tool_use_id: "P2",
+          content: [{ type: "tool_result", tool_use_id: "X2", content: "b done" }],
+        } as SdkMessage;
+        yield {
+          type: "user",
+          parent_tool_use_id: "P1",
+          content: [{ type: "tool_result", tool_use_id: "X1", content: "a done" }],
+        } as SdkMessage;
+        return;
+      }
+    };
+    const session = new Session("s-t1-inter");
+    const driver = new AgentDriver(session, interleavedRun);
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => {
+      expect(session.eventsFrom(0).filter((e) => e.type === "permission_request").length).toBe(2);
+    });
+    const requests = session.eventsFrom(0).filter((e) => e.type === "permission_request") as any[];
+    const reqA = requests.find((r) => r.input.file_path === "a.ts");
+    const reqB = requests.find((r) => r.input.file_path === "b.ts");
+    expect(reqA.parentToolUseId).toBe("P1");
+    expect(reqB.parentToolUseId).toBe("P2");
+    driver.resolvePermission(reqA.requestId, "allow", "u1");
+    driver.resolvePermission(reqB.requestId, "allow", "u1");
+    await vi.waitFor(() => {
+      expect(session.eventsFrom(0).filter((e) => e.type === "permission_decision").length).toBe(2);
+    });
+    const decisions = session.eventsFrom(0).filter((e) => e.type === "permission_decision") as any[];
+    expect(decisions.find((d) => d.requestId === reqA.requestId).parentToolUseId).toBe("P1");
+    expect(decisions.find((d) => d.requestId === reqB.requestId).parentToolUseId).toBe("P2");
+  });
+
+  it("T1-index-lifecycle: a forwarded tool_result removes the entry, so a later gate on that id is unattributed", async () => {
+    const lifecycleRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _p of prompts) {
+        yield {
+          type: "assistant",
+          parent_tool_use_id: "P1",
+          content: [{ type: "tool_use", id: "X", name: "Write", input: { file_path: "x.ts" } }],
+        } as SdkMessage;
+        yield {
+          type: "user",
+          parent_tool_use_id: "P1",
+          content: [{ type: "tool_result", tool_use_id: "X", content: "done" }],
+        } as SdkMessage;
+        const d = await hooks.onPermissionRequest("Write", { file_path: "x.ts" }, undefined, { toolUseId: "X" });
+        yield { type: "assistant", content: [{ type: "text", text: `d:${d}` }] } as SdkMessage;
+        return;
+      }
+    };
+    const session = new Session("s-t1-life");
+    const driver = new AgentDriver(session, lifecycleRun);
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "permission_request");
+    expect("parentToolUseId" in request).toBe(false);
+    driver.resolvePermission(request.requestId, "allow", "u1");
+  });
+
+  it("T1-plan-gate-untouched: plan_request/plan_decision never carry attribution", async () => {
+    const planRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _p of prompts) {
+        const d = await hooks.onPlanRequest("my plan");
+        yield { type: "assistant", content: [{ type: "text", text: `plan:${d}` }] } as SdkMessage;
+        return;
+      }
+    };
+    const session = new Session("s-t1-plan");
+    const driver = new AgentDriver(session, planRun);
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "plan_request");
+    expect("parentToolUseId" in request).toBe(false);
+    expect(driver.resolvePlan(request.requestId, "approve", "u1")).toBe(true);
+    const decision = await waitForEvent(session, "plan_decision");
+    expect("parentToolUseId" in decision).toBe(false);
+  });
+});
+
+describe("task join field (T1)", () => {
+  it("T1-task-join-field: a task_started message pins its tool_use_id onto the started task_event; absent leaves no key", async () => {
+    const run: RunQuery = async function* (prompts) {
+      for await (const _p of prompts) {
+        yield {
+          type: "system", subtype: "task_started", task_id: "T1",
+          tool_use_id: "toolu_X", description: "audit",
+        } as SdkMessage;
+        yield {
+          type: "system", subtype: "task_started", task_id: "T2",
+          description: "no join id here",
+        } as SdkMessage;
+        return;
+      }
+    };
+    const s = new Session("t1-join");
+    const driver = new AgentDriver(s, run);
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => {
+      expect(s.eventsFrom(0).filter((e) => e.type === "task_event").length).toBe(2);
+    });
+    const [first, second] = s.eventsFrom(0).filter((e) => e.type === "task_event") as any[];
+    expect(first).toMatchObject({ taskId: "T1", subtype: "started", toolUseId: "toolu_X" });
+    expect("toolUseId" in second).toBe(false);
+  });
+
+  it("T1-task-join-scope: progress/updated/done never carry toolUseId even when the SDK message has one", async () => {
+    const run: RunQuery = async function* (prompts) {
+      for await (const _p of prompts) {
+        yield {
+          type: "system", subtype: "task_started", task_id: "T1",
+          tool_use_id: "toolu_X",
+        } as SdkMessage;
+        yield {
+          type: "system", subtype: "task_progress", task_id: "T1",
+          tool_use_id: "toolu_X", usage: { total_tokens: 10 },
+        } as SdkMessage;
+        yield {
+          type: "system", subtype: "task_updated", task_id: "T1",
+          tool_use_id: "toolu_X", patch: { status: "running" },
+        } as SdkMessage;
+        yield {
+          type: "system", subtype: "task_notification", task_id: "T1",
+          tool_use_id: "toolu_X", status: "completed",
+        } as SdkMessage;
+        return;
+      }
+    };
+    const s = new Session("t1-scope");
+    const driver = new AgentDriver(s, run, undefined, [], undefined, 5000);
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => {
+      const subs = (s.eventsFrom(0).filter((e) => e.type === "task_event") as any[]).map((e) => e.subtype);
+      expect(subs).toEqual(["started", "progress", "updated", "done"]);
+    });
+    const evs = s.eventsFrom(0).filter((e) => e.type === "task_event") as any[];
+    for (const ev of evs) {
+      if (ev.subtype === "started") continue;
+      expect("toolUseId" in ev).toBe(false);
+    }
+  });
+});

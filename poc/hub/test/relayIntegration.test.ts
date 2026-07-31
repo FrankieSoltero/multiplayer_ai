@@ -265,6 +265,65 @@ describe("laptop ↔ hub, real Relay against a real hub", () => {
     expect(snap.sessions[0].repoKey).toBe("github.com/acme/api");
     expect(snap.sessions[0].presence).toBe("online");
   }, TIMEOUT);
+
+  // §8.4 Task 1: the hub relays the new optional attribution fields opaquely.
+  // The laptop stamps them; the hub must round-trip them to a joining browser
+  // character-identically, having no knowledge of what they mean.
+  it("T1-hub-round-trip-gate: a permission_request's parentToolUseId survives the relay to a browser", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+
+    const session = new Session("auth");
+    const { relay } = laptop(hub.port);
+    relay.trackSession("auth", session);
+    relay.start();
+    await wait(60);
+
+    relay.publishEvent(
+      "auth",
+      session.append({
+        type: "permission_request",
+        requestId: "req-1",
+        toolName: "Write",
+        input: { file_path: "x.ts" },
+        parentToolUseId: "task-P1",
+      }),
+    );
+
+    const stored = await replayOnceAtLeast(hub.port, 1);
+    relay.stop();
+    const gate = stored.find((e) => e.type === "permission_request");
+    expect(gate).toBeDefined();
+    expect(gate.parentToolUseId).toBe("task-P1");
+  }, TIMEOUT);
+
+  it("T1-hub-round-trip-task: a started task_event's toolUseId survives the relay to a browser", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+
+    const session = new Session("auth");
+    const { relay } = laptop(hub.port);
+    relay.trackSession("auth", session);
+    relay.start();
+    await wait(60);
+
+    relay.publishEvent(
+      "auth",
+      session.append({
+        type: "task_event",
+        taskId: "T1",
+        subtype: "started",
+        description: "audit",
+        toolUseId: "toolu_X",
+      }),
+    );
+
+    const stored = await replayOnceAtLeast(hub.port, 1);
+    relay.stop();
+    const task = stored.find((e) => e.type === "task_event");
+    expect(task).toBeDefined();
+    expect(task.toolUseId).toBe("toolu_X");
+  }, TIMEOUT);
 });
 
 describe("creating a session through the hub", () => {
