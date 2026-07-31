@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./terminal.css";
-import { deriveState, deriveTranscriptGroups } from "./derive";
+import { deriveState, deriveSubSessions, deriveTranscriptGroups } from "./derive";
 import { nextMode } from "./modes";
 import { hashIdentity, loadOrCreateUserId, loadProfile, saveProfile } from "./identity";
 import type { Profile } from "./identity";
@@ -8,6 +8,7 @@ import { useSessionSocket } from "./useSessionSocket";
 import { Header, MODEL_LABELS } from "./components/Header";
 import { PromptBar } from "./components/PromptBar";
 import { Transcript } from "./components/Transcript";
+import { SubSessionRail } from "./components/SubSessionRail";
 import { PartyPane } from "./components/PartyPane";
 import { TodoPanel } from "./components/TodoPanel";
 import { ThinkingStrip } from "./components/ThinkingStrip";
@@ -174,7 +175,7 @@ export default function App() {
   );
 }
 
-function SessionView(props: {
+export function SessionView(props: {
   userId: string;
   sessionId: string;
   projectId: string;
@@ -198,6 +199,14 @@ function SessionView(props: {
   });
 
   const derived = useMemo(() => deriveState(events), [events]);
+
+  // The sub-sessions present in this log, and which one is projected. View state
+  // is client-local component state (constraint 5): not synced, not persisted,
+  // not in the URL — a refresh remounts and lands on MAIN. null = MAIN. Both the
+  // rail and the MAIN compact rows drive the SAME setter, so a compact-row click
+  // and a chip click open the same view (spec §2.3).
+  const subSessions = useMemo(() => deriveSubSessions(events), [events]);
+  const [subSessionView, setSubSessionView] = useState<string | null>(null);
 
   const [pullThresholdMs, setPullThresholdMs] = useState<number | null>(() =>
     thresholdFromStorage(localStorage.getItem(PULL_STORAGE_KEY)),
@@ -558,6 +567,41 @@ function SessionView(props: {
       />
 
       <div className="row">
+        <SubSessionRail
+          subSessions={subSessions}
+          view={subSessionView}
+          onSelect={setSubSessionView}
+        />
+
+        {(() => {
+          // The view header lives only while a sub-session is projected. It
+          // names the sub-session and, when the log carries a joined task, folds
+          // in that task's status/summary/tokens (spec §2.1 enrichment). The
+          // enrichment is display metadata: an absent task join degrades to the
+          // sub-session's own status, never to an error (constraint 2). The
+          // driver's ■ STOP reuses the existing `stop_task` path (constraint 4)
+          // — shown only when there is a running joined task to stop.
+          if (subSessionView === null) return null;
+          const info = subSessions.find((s) => s.key === subSessionView);
+          const task = info?.taskId ? derived.tasks.get(info.taskId) : undefined;
+          const label = info?.label ?? subSessionView;
+          const status = task?.status ?? info?.status ?? "running";
+          let line = `⚒ ${label} · ${status}`;
+          if (task?.summary) line += ` · ${task.summary}`;
+          if (task?.tokens !== undefined) line += ` · ${task.tokens} tok`;
+          const canStop = isDriver && !!info?.taskId && task?.status === "running";
+          return (
+            <div className="subsession-header">
+              <span>{line}</span>
+              {canStop && (
+                <button className="btn" onClick={() => send({ type: "stop_task", taskId: info!.taskId! })}>
+                  ■ STOP
+                </button>
+              )}
+            </div>
+          );
+        })()}
+
         <Transcript
           events={events}
           derived={derived}
@@ -567,6 +611,8 @@ function SessionView(props: {
           onDecideSkill={onDecideSkill}
           onDecidePlan={onDecidePlan}
           hotkeysMuted={arcadeCapturing}
+          view={subSessionView}
+          onOpenSubSession={setSubSessionView}
         />
 
         <PartyPane
