@@ -3,9 +3,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import {
+  clearHubToken,
+  httpBaseOf,
+  loadHubToken,
+  pairWithHub,
+  saveHubToken,
+} from "./hubPairing.js";
 import { loadMachineIdentity, mpaiHome, type MachineIdentity } from "./machineIdentity.js";
 import { MAX_REPO_CANDIDATES, scanRepoRoots, type RepoCandidate } from "./machineRepos.js";
 import { SLUG } from "./project.js";
+import type { ConnectFn, RelaySocket } from "./relay.js";
+import { MAX_FRAME_BYTES } from "./relayProtocol.js";
 import { startServer } from "./server.js";
 import { ensureExcluded, WorkspaceManager } from "./workspace.js";
 
@@ -169,6 +178,92 @@ export function finalizeCandidates(
   return { candidates };
 }
 
+export interface HubAuthDeps {
+  /** Injected so tests never touch the network (same seam as `hubPairing`'s
+   *  `pairWithHub`). Falls back to the global `fetch`. */
+  fetchImpl?: typeof fetch;
+  /** Where the pairing instruction is shown. Defaults to `console.log`. */
+  print?: (line: string) => void;
+  pollIntervalMs?: number;
+}
+
+/** Resolve the uplink bearer for a `--hub` launch (spec A2/A3).
+ *
+ *  A token already on file for this hub skips the round trip entirely. With no
+ *  token, `pairWithHub` prints the code and polls; a returned token is persisted
+ *  so the next launch skips pairing, and an auth-off hub (404 on `/pair/request`)
+ *  yields no header at all so the dev flow stays zero-config (Task 8 accepts a
+ *  bare uplink). The returned `onUplinkClose` drops the stored token on a 4401
+ *  close — the hub refusing this bearer — so the next launch re-pairs cleanly
+ *  rather than re-presenting a credential the hub rejects. */
+export async function prepareHubAuth(
+  hubUrl: string,
+  home: string,
+  identity: { machineId: string; name: string },
+  deps: HubAuthDeps = {},
+): Promise<
+  | { ok: true; headers?: Record<string, string>; onUplinkClose: (code: number) => void }
+  | { ok: false; error: string }
+> {
+  const onUplinkClose = (code: number): void => {
+    // 4401 is the hub refusing THIS machine's credentials (spec A2 / relay.ts's
+    // close handler). Drop the token so the next launch re-pairs instead of
+    // re-presenting a bearer that is refused on every reconnect.
+    if (code === 4401) clearHubToken(home, hubUrl);
+  };
+  const stored = loadHubToken(home, hubUrl);
+  if (stored) {
+    return { ok: true, headers: { authorization: `Bearer ${stored}` }, onUplinkClose };
+  }
+  const result = await pairWithHub({
+    httpBase: httpBaseOf(hubUrl),
+    machineId: identity.machineId,
+    name: identity.name,
+    fetchImpl: deps.fetchImpl,
+    print: deps.print ?? ((line) => console.log(line)),
+    pollIntervalMs: deps.pollIntervalMs,
+  });
+  if (!result.ok) return { ok: false, error: result.error };
+  if (result.token) {
+    saveHubToken(home, hubUrl, result.token);
+    return { ok: true, headers: { authorization: `Bearer ${result.token}` }, onUplinkClose };
+  }
+  // Auth-off hub: a bare uplink, no Authorization header.
+  return { ok: true, headers: undefined, onUplinkClose };
+}
+
+/** A production `ConnectFn` for the uplink. Mirrors `relay.ts`'s `defaultConnect`
+ *  — same `maxPayload` bound on inbound frames — and adds the two things the
+ *  paired uplink needs that the relay's own default cannot supply: the bearer on
+ *  the `Authorization` header (spec §10.1 — a header, never a query string), and
+ *  a token-drop on a 4401 close. It is the CLI's conduit into the relay: the
+ *  hub option's `connect` seam is threaded straight to `Relay.connect` and is
+ *  re-invoked on every reconnect, so the bearer rides every attempt. */
+export function hubConnect(
+  headers: Record<string, string> | undefined,
+  onUplinkClose: (code: number) => void,
+): ConnectFn {
+  return (url): RelaySocket => {
+    const socket = new WebSocket(url, { maxPayload: MAX_FRAME_BYTES, headers });
+    return {
+      send: (data) => socket.send(data),
+      close: () => socket.close(),
+      on: (event, fn) => {
+        if (event === "close") {
+          // Inspect the close code for the credential refusal, then hand the
+          // frame on unchanged so the relay's own 4401/1008 handling is intact.
+          socket.on("close", (code: number) => {
+            onUplinkClose(code);
+            fn(code);
+          });
+          return;
+        }
+        socket.on(event, fn as (...fnArgs: unknown[]) => void);
+      },
+    };
+  };
+}
+
 async function launch(args: CliArgs): Promise<number | null> {
   const repoRoot = findRepoRoot(process.cwd());
   if (!repoRoot) {
@@ -185,9 +280,10 @@ async function launch(args: CliArgs): Promise<number | null> {
     console.error(`client build missing at ${distDir} — run: cd poc/client && npm run build`);
     return 1;
   }
+  const home = mpaiHome();
   let identity: MachineIdentity;
   try {
-    identity = loadMachineIdentity(mpaiHome());
+    identity = loadMachineIdentity(home);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     return 1;
@@ -212,6 +308,22 @@ async function launch(args: CliArgs): Promise<number | null> {
     return 1;
   }
   const candidates = resolved.candidates;
+  // Pair (or load the stored bearer) BEFORE binding the port, so a hub that
+  // refuses or cannot be reached exits non-zero without ever standing up a
+  // half-attached server. `connect` carries the bearer into the relay and drops
+  // the token on a 4401 refusal; it stays undefined for a solo launch.
+  let hubConnectFn: ConnectFn | undefined;
+  if (args.hub) {
+    const auth = await prepareHubAuth(args.hub, home, {
+      machineId: identity.machineId,
+      name: machineName,
+    });
+    if (!auth.ok) {
+      console.error(auth.error);
+      return 1;
+    }
+    hubConnectFn = hubConnect(auth.headers, auth.onUplinkClose);
+  }
   try {
     const { port } = await startServer({
       port: args.port,
@@ -223,7 +335,14 @@ async function launch(args: CliArgs): Promise<number | null> {
       machine: { machineId: identity.machineId, name: machineName },
       repoCandidates: candidates,
       ...(args.hub
-        ? { hub: { url: args.hub, projectId: args.project, uplinkId: identity.machineId } }
+        ? {
+            hub: {
+              url: args.hub,
+              projectId: args.project,
+              uplinkId: identity.machineId,
+              connect: hubConnectFn,
+            },
+          }
         : {}),
     });
     const url = localUrlFor(port, args);
