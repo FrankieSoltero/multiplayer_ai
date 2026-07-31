@@ -1,10 +1,56 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-31 (session #24, Branch A lean-sdd execution mid-flight — 8/13 tasks complete, 2 implementers in flight at handoff).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-31 (session #28 — plan **PASSED council 85.3** after 4 rounds/2 cycles; branch `feature/presentation` cut, first docs commit made, lean-sdd execution starting).*
 
 ---
 
-## 🚀 START HERE (session #26 wrap) — §8.4 SUB-SESSIONS: SPEC APPROVED, PLAN **PASSED COUNCIL (85.7, round 3)**. NEXT: post-PASS mechanical fixes → lean-sdd execution on a fresh branch off main.
+## 🚀 START HERE (session #28) — PRESENTATION CYCLE (§8.5+§8.9): PLAN **PASSED (85.3, cycle 2)**. ON `feature/presentation`. EXECUTING via lean-sdd (15 tasks). THE SDD LEDGER IS THE AUTHORITY once it exists: `.soltero/lean-sdd/2026-07-31-presentation/progress.md`.
+
+**Council history (full record in `docs/plan-reviews/2026-07-31-presentation-review.md`):**
+round 1 BLOCKED 84.2 (D2 floor) → fixes → round 2 BLOCKED 82.2 (D2/D4 floors, 3 blockings:
+live-run check, drag mapping, unguarded storage reads) → fixes, plan grew 8→11→15 tasks →
+round 3 BLOCKED 85.2 (1 blocking: `sessionUrlFrom` needs a REQUIRED third `projectId` arg the
+plan hadn't pinned — resolved: pulls are project-scoped by construction, third arg = App's
+`projectId` prop, App.tsx:191) → cycle-1 max rounds hit, plan re-authored per skill rules →
+**cycle 2 round 1 (workflow round 4) PASS 85.3**, post-PASS mechanical fixes applied (incl.
+the D6 catch: /400 divisor means 200px — not 400px — spans the full drag range).
+
+**Execution facts:** 15 tasks; serial 1→2→3, then 4/5/7 concurrent, 6 after 4, 8 after 6+7,
+9→10→11 serial, 12 anytime, 13 after 8+12 (‖ 9–11), 14‖15 trailing. terminal.css chokepoint
+chain: 3→4→6→8→13. Model policy unchanged: `.claude/settings.json` pins opus→claude-opus-4-8;
+tiering mechanical→sonnet/haiku, standard→opus/sonnet, judgment→opus/opus; fix rounds to the
+ORIGINAL implementer. Done gate: three suites at baseline (server 762 · hub 352 · client
+≥430) + the OBJECTIVE live-walk (both themes screenshotted per state) BEFORE the PR. Then
+lean-finishing → push → **open PR, user merges**.
+
+## 🟡 (superseded) session #27 wrap block below
+
+## (was) START HERE (session #27 wrap) — PRESENTATION CYCLE (§8.5+§8.9): SPEC APPROVED, PLAN COUNCIL ROUND 1 **BLOCKED (84.2, D2 floor 79)**. NEXT: apply the round-1 fix list to the PLAN → re-convene council (round 2) → on PASS branch `feature/presentation` + lean-sdd.
+
+**Where it stopped, exactly:** the ~40% context hook fired right after council round 1 returned. All three artifacts exist, UNTRACKED on purpose (no branch yet — first docs commit of `feature/presentation` per standing convention): `docs/specs/2026-07-31-presentation-design.md` (**user-APPROVED**, rulings R1 §8.5+§8.9 pair / R2 Clean same-density quieter-skin / R3 agent-proposed surfacing approved / R4 smaller games + user-adjustable arcade split), `docs/plans/2026-07-31-presentation.md` (8 tasks, serial 1→6 through the terminal.css chokepoint, 7‖8 trailing), `docs/plan-reviews/2026-07-31-presentation-review.md` (round 1 BLOCKED; **complete fix list + 2 controller rulings recorded there — apply them to the plan, they are NOT yet applied**).
+
+**➡️ ORDERED NEXT STEPS (fresh session):**
+1. **Apply the round-1 fix list** in `docs/plan-reviews/2026-07-31-presentation-review.md` §"Findings → fix list" to the PLAN (all mechanical; the 2 owner-decision items are already RESOLVED by controller rulings logged there — trailing parity test justified+kept, lane base pinned to `--fs` 13px). Includes splitting Task 5 → three tasks and Task 3 → two (renumber dependency table accordingly).
+2. **Re-convene the council (round 2)** via soltero-skills:plan-review workflow (`round: 2`; round 1 runId `wf_739a7244-4e8` had one dead agent — councilComplete false, disclosed in the review file; round 2 runs fresh). Append round 2 to the review file.
+3. On PASS: branch `feature/presentation` off main (`20c40fd`), first docs commit = spec + plan + review + this HANDOFF edit, execute via **soltero-skills:lean-sdd** (model policy unchanged: opus→claude-opus-4-8 via `.claude/settings.json`; fix rounds to ORIGINAL implementer), then lean-finishing → push → **open PR, user merges**.
+
+**Key facts for the plan fixes (verified this session, save re-deriving):** client presentation inventory is embedded in the spec §1 (terminal.css 810 lines, tokens :18-65, NO theme mechanism exists, full-bleed HALF-DONE — no 1296px pin anymore, Cabinet marquee/legend still outside glass at Crt.tsx:39-66/App.tsx:172-174); `.lane` (css:446-450) sets NO font-size — that's why the lane base needed pinning; hooks-shim test pattern lives in `poc/client/src/components/Transcript.test.tsx` (renderTree helper) — cite it by path in Tasks 6/7; pulls navigation helper is `sessionUrlFrom` in `poc/client/src/pickerUrl.ts`; Header.test.tsx EXISTS, ThinkingStrip.test.tsx does NOT (Task 6 creates it).
+
+**Also this session (all done, no action):** §8.4 sub-sessions shipped end-to-end — **PR #32 MERGED by user's direction** (main `20c40fd`); suites on main server 762 · hub 352 · client 430, tsc ×3 clean; SDD workspace + local feature branch deleted; PR #32's named follow-ups (CSS for subsession classes, compact-row a11y) are Tasks 3-ish of the NEW plan (deliberately). Demo stack from the aborted demo run torn down (hub :4000, laptop :3005 stopped; scratch `$CLAUDE_JOB_DIR/tmp/subdemo/` left, disposable). User WIP untouched: `poc/client/src/game/tetris.test.ts` + usual untracked files — never stage them. This HANDOFF edit is uncommitted — fold into `feature/presentation`'s first docs commit.
+
+## 🟡 (superseded) session #27 mid-session block below
+
+## (was) START HERE (session #27) — §8.4 SUB-SESSIONS **EXECUTED AND PR'D**: https://github.com/FrankieSoltero/multiplayer_ai/pull/32 — **MERGED this session (user-directed).**
+
+**Where it stopped, exactly:** the full lean-sdd cycle completed this session on branch `feature/sub-sessions` (8 commits `ebe1b11..d9c7abf` off main `0a5ae4a`, pushed; PR #32 open with full disclosures). All 5 plan tasks complete, every review clean; one task fix round (Task 4 rail no-wrap, `af22cc0`) and one final-review fix wave (`d9c7abf` — attributed gates were being swept out of MAIN by `deriveTranscriptGroups`; ruled by spec §2.3, gate events now excluded from the sweep, pinned by tests) — both re-reviews clean. Fresh suites at head: **server 762 · hub 352 · client 430**, tsc ×3 clean. Ledger: `.soltero/lean-sdd/2026-07-31-sub-sessions/progress.md` — **workspace KEPT until PR merge (house precedent), then delete.** This HANDOFF edit is uncommitted — fold into the next branch's first docs commit as usual.
+
+**➡️ ON MERGE OF #32:** delete `.soltero/lean-sdd/2026-07-31-sub-sessions/`; then the user picks the next PRD §8 section (remaining: §8.5 remainder + §8.9 themes pair naturally as one presentation cycle — natural home for PR #32's named CSS follow-up (unstyled `subsession-*`/`subagent-row`/`badge` classes) + compact-row a11y; §8.6 needs a Claude-Code gap inventory as its first task; §8.8 hub-side oversight second half).
+
+**Carry-forward facts:** model policy unchanged (`.claude/settings.json` pins opus→claude-opus-4-8; lean-sdd tiering held; fix rounds to the ORIGINAL implementer — worked again this session). Session #26's demo background processes (dev hub :4000, dev-demo :3005, demo-buddy :3006) were STOPPED during session #27 — no demo state of ours is running. The user's own daemon (:3001) was never ours to touch and may still be up. User's checkout still has legacy `mpai/test` branch + `.mpai/worktrees/test` blocking project `test` (their call: `git worktree remove .mpai/worktrees/test && git branch -D mpai/test`). User WIP untouched: `poc/client/src/game/tetris.test.ts` modified + the usual untracked files. L7 no-LICENSE still deferred — ask first.
+
+## 🟡 (superseded this session) previous session-#26 wrap block below
+
+## (was) START HERE (session #26 wrap) — §8.4 SUB-SESSIONS: SPEC APPROVED, PLAN **PASSED COUNCIL (85.7, round 3)**. NEXT: post-PASS mechanical fixes → lean-sdd execution on a fresh branch off main.
 
 **Where it stopped, exactly:** the ~40% context hook fired right after the round-3 PASS landed. Nothing §8.4 is committed yet — all three artifacts are UNTRACKED on purpose (they'd have no branch): `docs/specs/2026-07-31-sub-sessions-design.md` (user-approved: R1 shared worktree / R2 agent-initiated spawn only / R3 transcript+gates only), `docs/plans/2026-07-31-sub-sessions.md` (5 tasks: T1 server gate-attribution+task-join, T2 client derive, T3 Transcript, T4 rail+App+STOP, T5 PRD; T1‖T2 parallel, deps in the table), `docs/plan-reviews/2026-07-31-sub-sessions-review.md` (3 rounds: 78-floor block → 1 blocking D6 → PASS 85.7).
 
