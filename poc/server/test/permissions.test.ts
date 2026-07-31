@@ -110,6 +110,43 @@ describe("buildCanUseTool", () => {
   });
 });
 
+describe("buildCanUseTool sub-session attribution meta (T1)", () => {
+  it("T1-attributed-request: passes the SDK toolUseID/agentID to the driver-ask hook as meta", async () => {
+    let seenMeta: unknown;
+    const hooks: DriverHooks = {
+      onIntent: () => {},
+      onPermissionRequest: (_toolName, _input, _signal, meta) => {
+        seenMeta = meta;
+        return Promise.resolve("allow" as const);
+      },
+      onPlanRequest: async () => "approve" as const,
+    };
+    const options = {
+      signal: new AbortController().signal,
+      toolUseID: "toolu_9",
+      agentID: "agent_9",
+      requestId: "cr1",
+    } as Parameters<CanUseTool>[2];
+    // A tool that reaches the final driver-ask path (not bash/write/bookkeeping).
+    const result = await buildCanUseTool(hooks)("WebSearch", { query: "x" }, options);
+    expect(result).toEqual({ behavior: "allow" });
+    expect(seenMeta).toEqual({ toolUseId: "toolu_9", agentId: "agent_9" });
+  });
+
+  it("T1-bookkeeping-unaffected: a subagent bookkeeping tool stays auto-allowed with no driver ask, attribution or not", async () => {
+    const { hooks, calls } = fakeHooks("deny");
+    const options = {
+      signal: new AbortController().signal,
+      toolUseID: "toolu_sub",
+      agentID: "agent_sub",
+      requestId: "cr1",
+    } as Parameters<CanUseTool>[2];
+    const result = await buildCanUseTool(hooks)("TodoWrite", { todos: [] }, options);
+    expect(result).toEqual({ behavior: "allow" });
+    expect(calls.length).toBe(0);
+  });
+});
+
 describe("buildCanUseTool worktree containment (file-writing tools)", () => {
   it("auto-approves Write with a relative file_path inside the worktree, without asking the driver", async () => {
     const { hooks, calls } = fakeHooks("deny");

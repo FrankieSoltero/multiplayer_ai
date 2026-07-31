@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { deriveTranscriptGroups, type DerivedState } from "../derive";
+import {
+  deriveSubSessions,
+  deriveTranscriptGroups,
+  subSessionEvents,
+  type DerivedState,
+} from "../derive";
 import type { LoggedEvent } from "../types";
 import { pluginLine } from "../pluginLine";
 
@@ -15,6 +20,16 @@ export function Transcript(props: {
    *  (game letters overlap a/d) — mutes the a/d permission hotkeys so
    *  steering never silently allows/denies a tool call. */
   hotkeysMuted?: boolean;
+  /** Which sub-session is projected. null/undefined = the MAIN view, where a
+   *  sub-session collapses to one compact row (spec §2.3). Otherwise a
+   *  sub-session key: the body is the projection `subSessionEvents(events,key)`.
+   *  Client-local component state (constraint 5) — App owns it (Task 4). */
+  view?: string | null;
+  /** Open a sub-session's projected view from its MAIN compact row. Optional so
+   *  App compiles unchanged before Task 4 wires it — an undefined handler makes
+   *  the row a harmless no-op, never an error (attribution is display metadata,
+   *  never load-bearing — constraint 2). */
+  onOpenSubSession?: (key: string) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -33,6 +48,12 @@ export function Transcript(props: {
     return () => clearTimeout(t);
   }, [props.events]);
   const { participants, permissionDecisions, lastIntentSeq, suggestDecisions, planDecisions } = props.derived;
+  // Sub-session label index (spec §2.3): the SAME derivation the compact rows
+  // and the view projection read, so the gate prefix `⚒ <label>` names the
+  // sub-session identically end to end. A gate whose parentToolUseId is absent
+  // here degrades to today's unprefixed card — attribution is display metadata,
+  // never load-bearing (constraint 2).
+  const subLabel = new Map(deriveSubSessions(props.events).map((s) => [s.key, s.label]));
   const nameOf = (id?: string) => (id && participants.get(id)?.name) ?? id ?? "?";
   const colorOf = (id?: string) => (id && participants.get(id)?.color) ?? "var(--fg)";
   const watchers = [...participants.entries()].filter(([id]) => id !== props.selfId);
@@ -126,8 +147,14 @@ export function Transcript(props: {
         const decided = ev.requestId ? permissionDecisions.get(ev.requestId) : undefined;
         const cmd = (ev.input as { command?: unknown } | undefined)?.command;
         const preview = typeof cmd === "string" ? cmd : JSON.stringify(ev.input);
+        // Attribution prefix (spec §2.3): when this gate belongs to a
+        // sub-session, name it `⚒ <label>` before the existing gate text.
+        // Rendered ONLY when attributed, so an unattributed gate stays
+        // byte-identical to today (constraint 1) — same posture as `reason`.
+        const subOf = ev.parentToolUseId ? subLabel.get(ev.parentToolUseId) : undefined;
         return (
           <div key={ev.seq} className="perm">
+            {subOf ? <div className="perm-sub">⚒ {subOf}</div> : null}
             <div className="perm-head">
               <span className="perm-title">🔐 PERMISSION CHECK</span>
               <span className="rule" />
@@ -291,25 +318,37 @@ export function Transcript(props: {
     }
   };
 
+  const view = props.view ?? null;
   return (
     <main className="transcript panel">
       <div className="transcript-body">
-        {deriveTranscriptGroups(props.events).map((group, gi) =>
-          group.kind === "main" ? (
-            group.events.map(renderEvent)
-          ) : (
-            <details key={`sub-${gi}-${group.parentId}`} className="subagent">
-              <summary>
-                <span className={group.status === "done" ? "lamp done" : "lamp"} />
-                <span className="pix sm">⚒ SUB-QUEST</span>
-                <span>
-                  {group.label} · {group.status === "done" ? "done" : "running…"} · {group.events.length} rows
-                </span>
-              </summary>
-              <div className="subagent-body">{group.events.map(renderEvent)}</div>
-            </details>
-          ),
-        )}
+        {view === null
+          ? // MAIN view: main events flat, each sub-session as ONE compact row
+            // (spec §2.3) — the collapsed form of what its view would show. The
+            // `⚒ SUB-QUEST` marker and the `lamp`/`lamp done` class carry over
+            // from today's collapsible rendering unchanged.
+            deriveTranscriptGroups(props.events).map((group, gi) =>
+              group.kind === "main" ? (
+                group.events.map(renderEvent)
+              ) : (
+                <div
+                  key={`sub-${gi}-${group.parentId}`}
+                  className="subagent-row"
+                  onClick={() => props.onOpenSubSession?.(group.parentId)}
+                >
+                  <span className={group.status === "done" ? "lamp done" : "lamp"} />
+                  <span className="pix sm">⚒ SUB-QUEST</span>
+                  <span>
+                    {group.label} · {group.status === "done" ? "done" : "running…"} ·{" "}
+                    {group.events.length} rows · open ▸
+                  </span>
+                </div>
+              ),
+            )
+          : // Sub-session view: the projection `subSessionEvents(events, view)`,
+            // rendered flat through the SAME `renderEvent` (no nesting). An
+            // unknown key projects to `[]` — an empty body, never a crash.
+            subSessionEvents(props.events, view).map(renderEvent)}
         <div ref={bottomRef} />
       </div>
     </main>

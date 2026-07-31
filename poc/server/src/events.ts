@@ -28,8 +28,8 @@ export type SessionEvent =
    *  replays and renders (`Transcript.tsx`'s `case "permission_request"`);
    *  `pendingGateOf` derives `PendingGate.reason` from this same field, so there
    *  is one source behind both surfaces. */
-  | { type: "permission_request"; requestId: string; toolName: string; input: unknown; reason?: string }
-  | { type: "permission_decision"; requestId: string; decision: "allow" | "deny"; userId: string; auto?: true }
+  | { type: "permission_request"; requestId: string; toolName: string; input: unknown; reason?: string; parentToolUseId?: string }
+  | { type: "permission_decision"; requestId: string; decision: "allow" | "deny"; userId: string; auto?: true; parentToolUseId?: string }
   | { type: "model_change"; model: string; userId: string }
   | { type: "turn_end" }
   | { type: "skill_roster"; skills: SkillInfo[] }
@@ -43,6 +43,10 @@ export type SessionEvent =
   | { type: "plugin_change"; action: "add" | "remove"; name: string; skillCount: number; userId: string }
   | { type: "task_event"; taskId: string;
       subtype: "started" | "progress" | "updated" | "done";
+      /** The `tool_use_id` of the Task tool call that spawned this sub-session,
+       *  populated ONLY on `subtype: "started"` (§2.1 task join). Display
+       *  metadata: absent leaves the started event byte-identical to today. */
+      toolUseId?: string;
       description?: string; subagentType?: string; workflowName?: string;
       status?: string; summary?: string; error?: string;
       tokens?: number; toolUses?: number; durationMs?: number; lastTool?: string }

@@ -36,6 +36,9 @@ export interface SdkMessage {
   parent_tool_use_id?: string | null;
   // system task messages (task_started/task_progress/task_updated/task_notification)
   task_id?: string;
+  // The Task tool call that spawned this sub-session (task_started only,
+  // sdk.d.ts:4466-4468). Pinned onto the started task_event as the join field.
+  tool_use_id?: string;
   description?: string;
   subagent_type?: string;
   workflow_name?: string;
@@ -59,6 +62,7 @@ export interface DriverHooks {
     toolName: string,
     input: unknown,
     signal?: AbortSignal,
+    meta?: { toolUseId?: string; agentId?: string },
   ) => Promise<"allow" | "deny">;
   /** Surface a permission-flow failure into the session log (agent_error). */
   onPermissionError?: (message: string) => void;
@@ -258,6 +262,15 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
 export class AgentDriver {
   private prompts = new AsyncQueue<SdkUserMessage>();
   private toolNamesById = new Map<string, string>();
+  // Sub-session gate attribution (§2.2): inner toolUseId → its parentToolUseId.
+  // Populated when a streamed tool_call carries BOTH its own id and a parentId
+  // (a sub-agent's call), read when that call's permission gate arrives (keyed
+  // by the SDK's canUseTool toolUseID via `meta.toolUseId`), and deleted when the
+  // matching tool_result forwards. DISPLAY metadata only: SDK tool_use ids are
+  // unique, so a stale key (tool_result never forwarded on abort/crash) is never
+  // looked up again and cannot misattribute (constraint 2). Bounded by tool-call
+  // volume for the driver instance's lifetime.
+  private subCallParents = new Map<string, string>();
   // The tool name rides alongside the resolver because entering auto mode has
   // to know whether ANY pending request is a file write before it decides to
   // recompute the touched set (decision site 2, Task 4). Kept in the same map
@@ -272,12 +285,17 @@ export class AgentDriver {
   // an ordinary gate. It exists so `resolvePermission` can record the human's
   // answer against the right file without re-deriving it from a contested set
   // that may have moved since the question was asked.
+  // `parentToolUseId` is the sub-session this gate belongs to, or absent for a
+  // main-agent gate. Resolved once at request time and stored so every decision
+  // path (driver resolve, auto sweep, stream-death/abort deny) inherits the same
+  // attribution the request event carried.
   private pendingPermissions = new Map<
     string,
     {
       toolName: string;
       input: unknown;
       contestedPath: string | null;
+      parentToolUseId?: string;
       resolve: (d: "allow" | "deny") => void;
     }
   >();
@@ -331,7 +349,7 @@ export class AgentDriver {
     this.stream = run(this.prompts, {
       onIntent: (text) =>
         this.session.append({ type: "intent_update", text: text.slice(0, 200) }),
-      onPermissionRequest: (toolName, input, signal) => {
+      onPermissionRequest: (toolName, input, signal, meta) => {
         // Decision site 1 (spec §3.2, Task 4). FIRST statement, so the touched
         // set is fresh before the auto branch below resolves the gate — a
         // recompute hung off the appended `permission_request` event would run
@@ -339,6 +357,15 @@ export class AgentDriver {
         // shell out to git.
         if (FILE_WRITE_TOOLS.has(toolName)) this.recomputeTouched?.();
         const requestId = randomUUID();
+        // Sub-session attribution (§2.2). The SDK's own toolUseID for THIS gate
+        // (via `meta.toolUseId`) is the key the streaming handler mapped to its
+        // parent when the sub-agent's tool_call was appended. Resolved once here
+        // so the request event and every decision path share one attribution.
+        // Never load-bearing: a miss (main-agent call, meta absent, or entry
+        // already deleted) yields `undefined` → no key, byte-identical to today.
+        const parentToolUseId = meta?.toolUseId
+          ? this.subCallParents.get(meta.toolUseId)
+          : undefined;
         // Decision site 1 (spec §6b, Task 8b). Evaluated for EVERY gate, not
         // just the auto branch: a request that reached here from site 3's
         // withdrawal is in `default` mode, and it is this line that puts the
@@ -350,6 +377,7 @@ export class AgentDriver {
             requestId,
             toolName,
             input,
+            ...(parentToolUseId ? { parentToolUseId } : {}),
           });
           this.session.append({
             type: "permission_decision",
@@ -357,6 +385,7 @@ export class AgentDriver {
             decision: "allow",
             userId: this.session.driverId ?? "system",
             auto: true,
+            ...(parentToolUseId ? { parentToolUseId } : {}),
           });
           return Promise.resolve("allow" as const);
         }
@@ -370,6 +399,7 @@ export class AgentDriver {
           toolName,
           input,
           contestedPath: contested?.path ?? null,
+          ...(parentToolUseId ? { parentToolUseId } : {}),
           resolve,
         });
         this.session.append({
@@ -381,6 +411,8 @@ export class AgentDriver {
           // byte-identical to the one today's code appends — no `reason` KEY at
           // all, which is what `pendingGateOf` reads as "ordinary".
           ...(contested === null ? {} : { reason: contested.reason }),
+          // Same conditional-spread discipline for attribution: absent → no key.
+          ...(parentToolUseId ? { parentToolUseId } : {}),
         });
         // The SDK aborts canUseTool calls (e.g. the underlying tool_use
         // was interrupted/superseded) independently of any driver
@@ -399,6 +431,7 @@ export class AgentDriver {
               requestId,
               decision: "deny",
               userId: "system",
+              ...(parentToolUseId ? { parentToolUseId } : {}),
             });
             resolve("deny");
           };
@@ -560,7 +593,14 @@ export class AgentDriver {
     const pending = this.pendingPermissions.get(requestId);
     if (!pending) return false;
     this.pendingPermissions.delete(requestId);
-    this.session.append({ type: "permission_decision", requestId, decision, userId });
+    this.session.append({
+      type: "permission_decision",
+      requestId,
+      decision,
+      userId,
+      // Inherit the request's sub-session attribution (§2.2); absent → no key.
+      ...(pending.parentToolUseId ? { parentToolUseId: pending.parentToolUseId } : {}),
+    });
     // A HUMAN answered this contested gate — allow and deny are both answers
     // (spec §6b), so the file is not asked about again for the rest of this
     // session. Deliberately NOT done in `denyAllPending` or the abort path:
@@ -738,6 +778,7 @@ export class AgentDriver {
         requestId,
         decision: "deny",
         userId: "system",
+        ...(pending.parentToolUseId ? { parentToolUseId: pending.parentToolUseId } : {}),
       });
       pending.resolve("deny");
     }
@@ -785,6 +826,7 @@ export class AgentDriver {
         decision: "allow",
         userId,
         auto: true,
+        ...(pending.parentToolUseId ? { parentToolUseId: pending.parentToolUseId } : {}),
       });
       pending.resolve("allow");
     }
@@ -816,6 +858,12 @@ export class AgentDriver {
           });
         } else if (block.type === "tool_use" && block.name) {
           if (block.id) this.toolNamesById.set(block.id, block.name);
+          // Sub-session attribution (§2.2): a call carrying BOTH its own id and a
+          // parentId is a sub-agent's tool call — map its id to its parent so the
+          // permission gate it later raises can be attributed. Same guard as the
+          // conditional spreads on this event, so the index only ever holds real
+          // (id, parent) pairs.
+          if (block.id && parentId) this.subCallParents.set(block.id, parentId);
           this.session.append({
             type: "tool_call",
             toolName: block.name,
@@ -887,6 +935,10 @@ export class AgentDriver {
           const toolName =
             (block.tool_use_id && this.toolNamesById.get(block.tool_use_id)) ??
             "tool";
+          // Sub-session attribution (§2.2): the call is done, so drop its parent
+          // mapping. A later gate that reuses this id (SDK ids are unique, so it
+          // won't) would be unattributed — the correct default.
+          if (block.tool_use_id) this.subCallParents.delete(block.tool_use_id);
           this.session.append({
             type: "tool_result",
             toolName,
@@ -948,6 +1000,10 @@ export class AgentDriver {
     if (message.subtype === "task_started") {
       this.session.append({
         type: "task_event", taskId, subtype: "started",
+        // Task join (§2.1): pin the spawning Task tool call so the client can
+        // join this sub-session's transcript to its parent gate. started only;
+        // absent leaves the event byte-identical to today.
+        ...(message.tool_use_id ? { toolUseId: message.tool_use_id } : {}),
         ...(message.description ? { description: message.description } : {}),
         ...(message.subagent_type ? { subagentType: message.subagent_type } : {}),
         ...(message.workflow_name ? { workflowName: message.workflow_name } : {}),

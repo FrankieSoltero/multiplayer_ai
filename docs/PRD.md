@@ -441,13 +441,32 @@ break that sent people back to a `localhost` tab. Machines & repos (§8.3, merge
 extended the routing rather than replacing it: `create_session` now
 carries an optional `machineId`, so a repo offered by several online machines is routed to the
 one named instead of a coin-toss first-match, with three distinct refusals (machine unknown,
-offline, or not offering that repo) (`hub.ts:549-613`). Sub-sessions do not exist as a product
-concept.
+offline, or not offering that repo) (`hub.ts:549-613`). Sub-sessions now exist as **swappable
+views, not a peer object** — spawning stays agent-initiated (the driver's Task/Agent tool call
+opens one; there is no UI spawn control) and every sub-session is a filtered projection over the
+parent's single append-only event log, never a log of its own. The server attributes each
+`permission_request`/`permission_decision` and task start with an optional `parentToolUseId`
+naming the spawning sub-session (`agentDriver.ts:265-434`, `events.ts:16-32`); a gate the driver
+can't attribute still renders exactly as before, since attribution is display metadata, never
+load-bearing for the decision. The client derives sub-session summaries from that same flat log
+(`deriveSubSessions`, `derive.ts:152-218`) and swaps the transcript area between `MAIN` and a
+per-sub-session projection (`Transcript.tsx`). A compact rail under the stats bar
+(`SubSessionRail.tsx`, wired in `App.tsx:570`) lists one chip per sub-session — glyph `⚒`, label,
+running/done state, and a pending-gate badge — and carries the existing driver-only STOP control
+for a sub-session mapped to a stoppable task. Gates stay parent-scoped regardless of active view:
+they render in the gate surface prefixed `⚒ <label>` when attributed, and are decided on the
+parent session's driver exactly like a main-agent gate — there is no separate approval path per
+sub-session. View state is client-local (not synced, not persisted); refresh lands on `MAIN`.
 
-*Final state:* spawn sub-sessions and swap between them (D8).
+*Final state:* shipped at the code level — spawn sub-sessions and swap between them (D8), per
+the design of record `docs/specs/2026-07-31-sub-sessions-design.md`.
 
-*Open:* does a sub-session get its own worktree (isolated and mergeable) or share its parent's
-(fast, but two agents writing one tree)?
+*Ruling (spec R1, 2026-07-31):* the former "Open" question here — does a sub-session get its own
+worktree, or share its parent's — is CLOSED: **shared parent worktree.** A sub-session runs in its
+parent session's worktree, on the parent's branch; no per-sub-session worktrees, no merge-back
+machinery, no branch naming. This matches Claude Code's model and the SDK default. Accepted bound:
+parallel sub-agents can write the same tree — work is typically partitioned by prompt, and
+everything lands on the session's one branch.
 
 ### 8.5 Control transfer & approvals
 

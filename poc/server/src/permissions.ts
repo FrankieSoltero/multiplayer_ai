@@ -334,7 +334,14 @@ export function buildCanUseTool(hooks: DriverHooks): CanUseTool {
     }
     try {
       const decision = await Promise.race([
-        hooks.onPermissionRequest(toolName, input, options.signal),
+        // Sub-session attribution (§2.2): hand the driver the SDK's own ids for
+        // this call as display metadata. The driver maps `toolUseId` back to the
+        // sub-agent's parent; both are passed verbatim under the SDK's names
+        // (`toolUseID`, `agentID`). Never load-bearing — no gate policy reads it.
+        hooks.onPermissionRequest(toolName, input, options.signal, {
+          toolUseId: options.toolUseID,
+          agentId: options.agentID,
+        }),
         abortsToDeny(options.signal),
       ]);
       if (decision === "allow") return { behavior: "allow" };
