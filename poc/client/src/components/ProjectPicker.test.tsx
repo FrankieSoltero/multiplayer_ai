@@ -190,6 +190,18 @@ describe("approvePairing — normalize, POST, result (spec A2)", () => {
     const result = await approvePairing(fn, "abcd1234");
     expect(result.ok).toBe(false);
   });
+
+  it("returns an inline error result when the fetch rejects (offline), never throwing", async () => {
+    // An offline browser rejects the fetch. Without a try/catch that rejection
+    // propagates out of the component's approve handler as an unhandled
+    // rejection and the pairing panel silently sticks with no feedback. The
+    // core must instead resolve to a rendered inline error.
+    const rejecting = (async () => {
+      throw new Error("Failed to fetch");
+    }) as unknown as Parameters<typeof approvePairing>[0];
+    const result = await approvePairing(rejecting, "abcd1234");
+    expect(result).toEqual({ ok: false, error: "could not reach the hub" });
+  });
 });
 
 describe("pairMessage — what the entrance shows for a result (spec A2)", () => {

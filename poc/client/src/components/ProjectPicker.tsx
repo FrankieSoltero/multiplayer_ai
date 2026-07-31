@@ -187,12 +187,22 @@ export async function approvePairing(
   rawCode: string,
 ): Promise<PairResult> {
   const code = normalizePairCode(rawCode);
-  const res = await fetchImpl("/pair/approve", {
-    method: "POST",
-    credentials: "include",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code }),
-  });
+  // A rejected fetch (the browser is offline, the hub is unreachable) must not
+  // escape as an unhandled rejection that leaves the approve handler's panel
+  // silently stuck — mirror signOut.ts and turn it into an inline result the
+  // component renders. Only the transport is wrapped; a non-200 the hub DID
+  // answer still flows through the verbatim-error path below.
+  let res: { status: number; json: () => Promise<unknown> };
+  try {
+    res = await fetchImpl("/pair/approve", {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+  } catch {
+    return { ok: false, error: "could not reach the hub" };
+  }
   const body = (await res.json().catch(() => null)) as
     | { machineId?: unknown; name?: unknown; error?: unknown }
     | null;
