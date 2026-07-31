@@ -235,6 +235,14 @@ first and only refuse the *drive/approve* paths, which `tunnel()` already does o
 
 ### 2.5 The invite flow is dead through the hub — needs design, not a patch
 
+**Status, 2026-07-31 (PRD §8.1, identity-and-access branch): partially unblocked, still open.**
+This entry's blocker was "it has no identity plane of its own until v7b2" — that plane now exists
+(the hub verifies GitHub identity itself and machines authenticate with hash-stored, revocable
+bearers, §8.1). What remains is exactly option (c) below, narrowed to a design/implementation
+task rather than a prerequisite: scoping the invite flow to a project so a hub-side invite store
+can select the right project and broadcast (or answer) within it. Still §8.2's item (the invite
+flow scoped to projects), not this branch's — carried forward, not fixed here.
+
 `peek_invite` is sent by `poc/client/src/components/InviteLanding.tsx:24` and
 `InviteSignIn.tsx:17`. The hub's `HUB_HANDLED` set (`poc/hub/src/hub.ts:18`) covers only
 `watch_project` and `peek`, so `peek_invite` falls through to `tunnel()` and — on a socket that

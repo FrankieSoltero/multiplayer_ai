@@ -50,8 +50,10 @@ export interface SessionFacts {
    *  ALL members of that project on every laptop, and is journaled hub-side under
    *  the journal's existing retention policy. Deliberately broader than the
    *  `contested` down-frame, which minimizes to intersecting paths only. Same
-   *  exposure class as the record's `filesChanged`, to be swept together with
-   *  v7b2 auth. The bound that holds today is project membership. */
+   *  exposure class as the record's `filesChanged`, swept together with v7b2
+   *  auth (PRD §8.1): the bound is project membership, and it is now ENFORCED —
+   *  `hub.ts`'s `isMember` gates `join`/`watch_project`/`peek`/`get_record` and
+   *  the project-push fan-out this field rides on, not merely assumed. */
   touched: string[] | null;
   lifecycle: Lifecycle;
 }
