@@ -55,6 +55,10 @@ const facts = (over: Partial<SessionFacts> = {}): SessionFacts => ({
   pendingGate: null,
   skills: [],
   repoKey: "github.com/acme/api",
+  // NON-NULL on purpose: this builder's facts are serialized into `facts_json`
+  // and hydrated back through an unchecked cast, so a real list is what proves
+  // `touched` survives the SQLite round trip rather than being dropped.
+  touched: ["src/auth.ts"],
   lifecycle: "open",
   ...over,
 });

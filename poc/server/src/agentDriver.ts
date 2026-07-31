@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AsyncQueue } from "./asyncQueue.js";
 import { MODELS, DEFAULT_MODEL, type ModelKey } from "./models.js";
-import { buildCanUseTool } from "./permissions.js";
+import { buildCanUseTool, contestedWriteReason, FILE_WRITE_TOOLS } from "./permissions.js";
 import type { Session } from "./session.js";
 import type { SessionEvent, SkillInfo, TodoItem } from "./events.js";
 
@@ -78,6 +78,21 @@ export interface DriverHooks {
   /** Latest team oversight summary text, or the spec §6 fallback strings.
    *  Absent on drivers constructed without oversight wiring. */
   getOversight?: () => string;
+  /** Recompute this session's touched set NOW, synchronously, before a write-tool
+   *  permission decision is made (spec §3.2 pre-gate freshness, Task 4).
+   *  Absent on drivers constructed without collision wiring — then no recompute
+   *  runs and the decision sites judge the last turn-boundary set. */
+  recomputeTouched?: () => void;
+  /** The reading session's currently-contested repo-relative paths (Task 7a).
+   *  Absent on drivers constructed without collision wiring — treat as empty. */
+  getContested?: () => ReadonlySet<string>;
+  /** Paths this session has already asked a human about (Task 8b bookkeeping).
+   *  Absent = empty; membership means "do not withdraw again". */
+  contestedAsked?: () => ReadonlySet<string>;
+  /** Peer session ids colliding on a path, for the reason line (Task 7a). */
+  contestedSessions?: (path: string) => string[];
+  /** Record that a human answered a contested gate for this path. */
+  onContestedAnswered?: (path: string) => void;
 }
 
 export type RunQueryResult = AsyncIterable<SdkMessage> & {
@@ -243,7 +258,29 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
 export class AgentDriver {
   private prompts = new AsyncQueue<SdkUserMessage>();
   private toolNamesById = new Map<string, string>();
-  private pendingPermissions = new Map<string, (d: "allow" | "deny") => void>();
+  // The tool name rides alongside the resolver because entering auto mode has
+  // to know whether ANY pending request is a file write before it decides to
+  // recompute the touched set (decision site 2, Task 4). Kept in the same map
+  // rather than a parallel one so a request can never be deleted from one and
+  // leak in the other.
+  // `input` rides alongside for the same reason `toolName` does: decision site
+  // 2 re-judges every pending request against the set that is fresh AT SWEEP
+  // TIME (Task 4's single pre-sweep recompute), not against the one that was
+  // current when each was queued — so it needs the tool call itself, not a
+  // decision cached at queue time.
+  // `contestedPath` is the path this request's gate is asking about, or null for
+  // an ordinary gate. It exists so `resolvePermission` can record the human's
+  // answer against the right file without re-deriving it from a contested set
+  // that may have moved since the question was asked.
+  private pendingPermissions = new Map<
+    string,
+    {
+      toolName: string;
+      input: unknown;
+      contestedPath: string | null;
+      resolve: (d: "allow" | "deny") => void;
+    }
+  >();
   private pendingPlans = new Map<string, (d: "approve" | "reject") => void>();
   private dead = false;
   // Relay-level permission mode. "auto" is enforced HERE, not in the SDK:
@@ -280,18 +317,34 @@ export class AgentDriver {
   constructor(
     private session: Session,
     run: RunQuery = runAgentQuery,
-    workdir?: string,
+    private workdir?: string,
     pluginPaths: string[] = [],
     private onRoster?: (skills: SkillInfo[]) => void,
     private progressThrottleMs = 2000,
     private getOversight?: () => string,
+    private recomputeTouched?: () => void,
+    private getContested?: () => ReadonlySet<string>,
+    private contestedAsked?: () => ReadonlySet<string>,
+    private contestedSessions?: (path: string) => string[],
+    private onContestedAnswered?: (path: string) => void,
   ) {
     this.stream = run(this.prompts, {
       onIntent: (text) =>
         this.session.append({ type: "intent_update", text: text.slice(0, 200) }),
       onPermissionRequest: (toolName, input, signal) => {
+        // Decision site 1 (spec §3.2, Task 4). FIRST statement, so the touched
+        // set is fresh before the auto branch below resolves the gate — a
+        // recompute hung off the appended `permission_request` event would run
+        // strictly too late. Write tools only: a Read/Grep/Bash gate must not
+        // shell out to git.
+        if (FILE_WRITE_TOOLS.has(toolName)) this.recomputeTouched?.();
         const requestId = randomUUID();
-        if (this.permissionMode === "auto") {
+        // Decision site 1 (spec §6b, Task 8b). Evaluated for EVERY gate, not
+        // just the auto branch: a request that reached here from site 3's
+        // withdrawal is in `default` mode, and it is this line that puts the
+        // reason on its `permission_request` event. `null` = nothing changes.
+        const contested = contestedWriteReason(toolName, input, this.contestedHooks());
+        if (this.permissionMode === "auto" && contested === null) {
           this.session.append({
             type: "permission_request",
             requestId,
@@ -313,12 +366,21 @@ export class AgentDriver {
         });
         // Register the resolver BEFORE appending, so a subscriber that
         // decides synchronously on seeing the event still finds it.
-        this.pendingPermissions.set(requestId, resolve);
+        this.pendingPermissions.set(requestId, {
+          toolName,
+          input,
+          contestedPath: contested?.path ?? null,
+          resolve,
+        });
         this.session.append({
           type: "permission_request",
           requestId,
           toolName,
           input,
+          // Spread, not `reason: undefined`: an ordinary gate's event must be
+          // byte-identical to the one today's code appends — no `reason` KEY at
+          // all, which is what `pendingGateOf` reads as "ordinary".
+          ...(contested === null ? {} : { reason: contested.reason }),
         });
         // The SDK aborts canUseTool calls (e.g. the underlying tool_use
         // was interrupted/superseded) independently of any driver
@@ -378,6 +440,16 @@ export class AgentDriver {
       workdir,
       pluginPaths,
       getOversight: this.getOversight,
+      // Site 3 (`buildCanUseTool`) reads it off THIS object; sites 1 and 2 call
+      // `this.recomputeTouched` — the same closure either way.
+      recomputeTouched: this.recomputeTouched,
+      // Same arrangement for the contested wiring (Task 8b): site 3 reads these
+      // four off THIS object, sites 1 and 2 read the identical closures off
+      // `this`. One source of truth, three readers.
+      getContested: this.getContested,
+      contestedAsked: this.contestedAsked,
+      contestedSessions: this.contestedSessions,
+      onContestedAnswered: this.onContestedAnswered,
     });
     void this.consume(this.stream);
     void this.refreshRoster();
@@ -385,6 +457,23 @@ export class AgentDriver {
 
   get isDead(): boolean {
     return this.dead;
+  }
+
+  /** The four contested closures in the shape `contestedWriteReason` takes —
+   *  the SAME functions that ride on the hooks object site 3 reads, so all
+   *  three decision sites are looking at one source of truth. Built per
+   *  decision rather than stored, because the driver's own fields are the
+   *  authority and a cached object is one refactor away from going stale. */
+  private contestedHooks(): Pick<
+    DriverHooks,
+    "workdir" | "getContested" | "contestedAsked" | "contestedSessions"
+  > {
+    return {
+      workdir: this.workdir,
+      getContested: this.getContested,
+      contestedAsked: this.contestedAsked,
+      contestedSessions: this.contestedSessions,
+    };
   }
 
   /**
@@ -468,11 +557,19 @@ export class AgentDriver {
     decision: "allow" | "deny",
     userId: string,
   ): boolean {
-    const resolve = this.pendingPermissions.get(requestId);
-    if (!resolve) return false;
+    const pending = this.pendingPermissions.get(requestId);
+    if (!pending) return false;
     this.pendingPermissions.delete(requestId);
     this.session.append({ type: "permission_decision", requestId, decision, userId });
-    resolve(decision);
+    // A HUMAN answered this contested gate — allow and deny are both answers
+    // (spec §6b), so the file is not asked about again for the rest of this
+    // session. Deliberately NOT done in `denyAllPending` or the abort path:
+    // those are system-attributed, nobody saw the question, and treating them
+    // as answers would spend the one interruption this file gets on nothing.
+    // Recorded BEFORE resolving, so the agent's very next write to the same
+    // file already sees the path in `contestedAsked`.
+    if (pending.contestedPath !== null) this.onContestedAnswered?.(pending.contestedPath);
+    pending.resolve(decision);
     return true;
   }
 
@@ -528,7 +625,19 @@ export class AgentDriver {
     );
     this.permissionMode = mode;
     this.session.append({ type: "permission_mode_change", mode, userId });
-    if (mode === "auto") this.allowAllPending(userId);
+    if (mode === "auto") {
+      // Decision site 2 (spec §3.2, Task 4). ONE recompute for the whole batch,
+      // immediately before `allowAllPending` decides them — never one per
+      // pending request, and never at all unless a file write is among them.
+      if (
+        [...this.pendingPermissions.values()].some((p) =>
+          FILE_WRITE_TOOLS.has(p.toolName),
+        )
+      ) {
+        this.recomputeTouched?.();
+      }
+      this.allowAllPending(userId);
+    }
     return { ok: true };
   }
 
@@ -622,7 +731,7 @@ export class AgentDriver {
    * decision.
    */
   private denyAllPending(_reason: string): void {
-    for (const [requestId, resolve] of this.pendingPermissions) {
+    for (const [requestId, pending] of this.pendingPermissions) {
       this.pendingPermissions.delete(requestId);
       this.session.append({
         type: "permission_decision",
@@ -630,7 +739,7 @@ export class AgentDriver {
         decision: "deny",
         userId: "system",
       });
-      resolve("deny");
+      pending.resolve("deny");
     }
     for (const [requestId, resolve] of this.pendingPlans) {
       this.pendingPlans.delete(requestId);
@@ -653,7 +762,22 @@ export class AgentDriver {
    * checkpoint, not a tool gate.
    */
   private allowAllPending(userId: string): void {
-    for (const [requestId, resolve] of this.pendingPermissions) {
+    for (const [requestId, pending] of this.pendingPermissions) {
+      // Decision site 2 (spec §6b, Task 8b). Re-judged HERE, against the set
+      // Task 4's single pre-sweep recompute just wrote — not against whatever
+      // was contested when this request was queued. A contested write is
+      // LEFT PENDING: not resolved, not denied, still answerable by a human,
+      // and its path is stamped on the entry so that answer records against the
+      // right file.
+      const contested = contestedWriteReason(
+        pending.toolName,
+        pending.input,
+        this.contestedHooks(),
+      );
+      if (contested !== null) {
+        pending.contestedPath = contested.path;
+        continue;
+      }
       this.pendingPermissions.delete(requestId);
       this.session.append({
         type: "permission_decision",
@@ -662,7 +786,7 @@ export class AgentDriver {
         userId,
         auto: true,
       });
-      resolve("allow");
+      pending.resolve("allow");
     }
   }
 

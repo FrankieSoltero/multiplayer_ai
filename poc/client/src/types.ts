@@ -26,6 +26,9 @@ export type LoggedEvent = {
   plan?: string;
   mode?: string;
   auto?: boolean;
+  /** Why this permission gate was opened, e.g. `contested with session alpha`
+   *  (spec §6b). Optional so an event from an older server still parses. */
+  reason?: string | null;
   game?: string;
   score?: number;
   action?: string;
@@ -68,7 +71,7 @@ export type ProjectSessionInfo = {
   /** The oldest permission request nobody has answered, or null. Mirrors the
    *  server's ProjectMessage. Optional so a snapshot from an older server does
    *  not break the client. */
-  pendingGate?: { toolName: string; sinceTs: string } | null;
+  pendingGate?: { toolName: string; sinceTs: string; reason?: string | null } | null;
   skills?: { name: string; description: string }[];
   /** Stable cross-machine repo identity. Optional so a snapshot from an older
    *  server does not break the client — same posture as pendingGate. */
@@ -80,6 +83,9 @@ export type ProjectSessionInfo = {
   /** Spec §3.4. Optional so an older server's snapshot still renders. */
   presence?: "online" | "offline";
   lifecycle?: "open" | "closed";
+  /** Repo-relative paths this session has changed (spec §3.3). Optional so a
+   *  snapshot from an older server still parses — same posture as `repoKey`. */
+  touched?: string[] | null;
 };
 
 export type ProjectLifecycle = "active" | "closed" | "archived";

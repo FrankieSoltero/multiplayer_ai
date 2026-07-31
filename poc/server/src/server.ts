@@ -4,9 +4,16 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { AgentDriver, runAgentQuery, type RunQuery } from "./agentDriver.js";
-import { buildTeammateDigest, oversightSessionDigest, summarizeSession } from "./digest.js";
+import { contestedFor, contestedSessionsFor } from "./contested.js";
+import {
+  buildTeammateDigest,
+  oversightSessionDigest,
+  remoteTeammateSummary,
+  summarizeSession,
+} from "./digest.js";
 import { isModelKey } from "./models.js";
 import {
+  driverNameOf,
   Project,
   projectSnapshot,
   projectSummaryOf,
@@ -16,15 +23,16 @@ import {
   type ProjectWatcher,
 } from "./project.js";
 import { projectRecordFrom, type RecordSessionInput } from "./record.js";
-import { Relay, type ConnectFn } from "./relay.js";
+import { Relay, type ConnectFn, type ContestedFrame } from "./relay.js";
 import { defaultBaseRefFor, type RepoCandidate } from "./machineRepos.js";
-import { clampRepoDecl, MAX_REPOS, type RepoDecl } from "./relayProtocol.js";
+import { clampRepoDecl, MAX_FRAME_BYTES, MAX_REPOS, type RepoDecl } from "./relayProtocol.js";
 import { Session } from "./session.js";
 import { PluginStore } from "./pluginStore.js";
 import { ARCADE_GAMES } from "./events.js";
 import { lifecycleOf } from "./lifecycle.js";
 import { ensureExcluded, slugify, WorkspaceManager, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
+import { touchedFiles } from "./touched.js";
 import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
 import { InviteStore } from "./invites.js";
 import { authRoutes, requireAuth, type AuthConfig } from "./auth.js";
@@ -107,6 +115,15 @@ const INTERESTING = new Set([
   "permission_mode_change",
   "game_score",
   "plugin_change",
+  // A turn boundary CHANGES what a push carries: the subscriber recomputes
+  // `entry.touched` on it (spec §3.2), so the facts snapshot built afterwards
+  // is materially different from the one before. Without this entry the
+  // recompute landed in memory and nothing shipped it — the hub kept the
+  // previous turn's touched set until some unrelated later event happened to
+  // trigger a push, which is a one-event-stale collision signal (walk-proven
+  // in hub mode). This is the SAME push every other interesting event uses,
+  // built after the recompute; it is not a second push and not an extra frame.
+  "turn_end",
 ]);
 
 const OVERSEER_EVENTS = new Set([
@@ -326,7 +343,7 @@ export async function startServer(opts: {
           id,
           entry.session.eventsFrom(0),
           entry.driver.isDead,
-          participants.find((p) => p.userId === driverId)?.name ?? null,
+          driverNameOf(participants, driverId),
           participants.map((p) => p.name),
         );
       });
@@ -384,6 +401,91 @@ export async function startServer(opts: {
     pushTimers.set(project, timer);
   }
 
+  /** Session ids whose recompute has already failed once. A git failure is a
+   *  standing condition (a deleted worktree, a broken repo), so logging it per
+   *  event would fill the operator's terminal with the same line every turn and
+   *  every gate. */
+  const touchedFailureLogged = new Set<string>();
+
+  /** The SINGLE recompute entry point (spec §3.2) — nothing else in the server
+   *  calls `touchedFiles` directly. Reads the session's OWN persisted workdir
+   *  and baseRef (never `defaultBranch()`, never a literal "main"), and never
+   *  throws: git failing — including the 5000 ms timeout — KEEPS the previous
+   *  `entry.touched` (stale beats absent, spec §3.1) and logs once per session.
+   *  A session with no workdir or no baseRef is not a failure and shells out to
+   *  nothing: `touched` stays null, which is the honest "never measured". */
+  function recomputeTouched(project: Project, sessionId: string): void {
+    const entry = project.sessions.get(sessionId);
+    if (!entry) return;
+    const { workdir, baseRef } = entry;
+    if (workdir === undefined || baseRef === null) return;
+    // Nothing has been appended since the last successful measurement, so git
+    // would be asked the question it was just asked and would answer the same
+    // thing (`ProjectSessionEntry.touchedDirty`). Every decision site still
+    // calls this function; this is the one place that decides whether the call
+    // costs a process. The flag is NOT cleared on the paths above: a session
+    // with no worktree has nothing to measure, and one that is gone cannot be
+    // asked again.
+    if (!entry.touchedDirty) return;
+    try {
+      entry.touched = touchedFiles(workdir, baseRef);
+      // AFTER the assignment, and only on success: a throw below keeps the flag
+      // set so the next site retries rather than inheriting a skip on top of a
+      // kept-previous value.
+      entry.touchedDirty = false;
+    } catch (err) {
+      if (touchedFailureLogged.has(sessionId)) return;
+      touchedFailureLogged.add(sessionId);
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[touched] session=${sessionId} recompute failed: ${message}\n`);
+    }
+  }
+
+  /** Unknown session ids a `contested` frame has already been dropped for. A
+   *  hub that keeps naming a session this laptop does not hold is a STANDING
+   *  condition — it pushes on every collision change — so logging per frame
+   *  would bury the one line that diagnoses it. Same log-once shape, and the
+   *  same reason, as `touchedFailureLogged` above. */
+  const contestedUnknownLogged = new Set<string>();
+
+  /** The inbound `contested` frame (spec §6a): the hub's view of which files
+   *  this session shares with sessions on OTHER machines. Stored verbatim on
+   *  the entry, where `contested.ts`'s accessors union it with local derivation
+   *  on read.
+   *
+   *  Scoped to the uplink's OWN project. The relay is opened for exactly one
+   *  project (`opts.hub.projectId`), so that is the map this frame's session id
+   *  is resolved in — searching every project would let a frame land on a
+   *  same-named session in a project this uplink does not speak for.
+   *
+   *  A frame for a session this laptop does not hold is DROPPED, never created:
+   *  a `ProjectSessionEntry` minted here would be a session with no driver, no
+   *  worktree and no participants, sitting in the project map — visible on the
+   *  project screen — because a peer said its name. It races real removals and
+   *  it names sessions owned by other uplinks, so it is an expected event, not
+   *  an error: no throw, no disconnect, one log line per id. */
+  function applyContested(frame: ContestedFrame): void {
+    const projectId = opts.hub?.projectId;
+    const project = projectId === undefined ? undefined : projects.get(projectId);
+    const entry = project?.sessions.get(frame.sessionId);
+    if (!entry) {
+      if (contestedUnknownLogged.has(frame.sessionId)) return;
+      contestedUnknownLogged.add(frame.sessionId);
+      process.stderr.write(
+        `[contested] session=${frame.sessionId} unknown session, frame dropped\n`,
+      );
+      return;
+    }
+    // Copied field by field, never aliased: the parsed frame is the relay's
+    // object, and a consumer that sorted or truncated the array it was handed
+    // would rewrite this session's stored state (`sessionFactsOf` copies
+    // `touched` for the same reason).
+    entry.contestedFrame = {
+      paths: [...frame.paths],
+      collisions: frame.collisions.map((c) => ({ path: c.path, sessionIds: [...c.sessionIds] })),
+    };
+  }
+
   function getOrCreateProject(projectId: string): Project {
     let project = projects.get(projectId);
     if (!project) {
@@ -404,22 +506,30 @@ export async function startServer(opts: {
   function getOrCreateSession(
     project: Project,
     sessionId: string,
-    init?: { workdir?: string; repoKey?: string | null },
+    init?: { workdir?: string; repoKey?: string | null; baseRef?: string | null },
   ): ProjectSessionEntry | { error: string } {
     let entry = project.sessions.get(sessionId);
     if (!entry) {
       let workdir: string | undefined = init?.workdir;
       let repoKey: string | null = init?.repoKey ?? null;
+      // Whatever the caller branched from, verbatim (spec §3.1). This function
+      // never picks a base of its own for the entry: the value below is only
+      // ever the argument that reached `provision` on the path taken.
+      let baseRef: string | null = init?.baseRef ?? null;
       if (workdir === undefined) {
         const attached = attachedRepos();
         if (attached.length === 1) {
           // Deep-link join to a not-yet-provisioned session: same core as
           // create_session, branched off the default branch (spec §3).
           const only = attached[0];
-          const result = only.workspace.provision(sessionId, only.defaultBranch ?? "main");
+          const base = only.defaultBranch ?? "main";
+          const result = only.workspace.provision(project.id, sessionId, base);
           if (!result.ok) return { error: result.error };
           workdir = result.workdir;
           repoKey = only.key;
+          // The same `base` that git just branched the worktree from — not a
+          // second read of `only.defaultBranch`, which could answer differently.
+          baseRef = base;
         } else if (attached.length === 0) {
           const root = process.env.AGENT_WORKDIR_ROOT;
           workdir = root ? path.join(root, sessionId) : undefined;
@@ -453,15 +563,53 @@ export async function startServer(opts: {
           },
           undefined,
           () => oversightToolText(overseer.isEnabled(project.id), overseer.latest(project.id)),
+          () => recomputeTouched(project, sessionId),
+          // The contested wiring (spec §6b, Task 8b). All four close over data
+          // this call site already holds; `server.ts` is the only module with a
+          // `Project` handle, which is why the three decision sites reach it
+          // through callbacks rather than importing `contested.ts` themselves.
+          // Read on every gate decision, never cached: `contestedFor` derives
+          // the local half from live session state, so a cached set would go
+          // stale the moment any teammate's touched set moved.
+          () => contestedFor(project, sessionId),
+          () => newEntry.contestedAsked,
+          (contestedPath) => contestedSessionsFor(project, sessionId, contestedPath),
+          (contestedPath) => void newEntry.contestedAsked.add(contestedPath),
         ),
         skills,
         pendingSuggests: new Map(),
         pendingOversight: false,
         repoKey,
+        workdir,
+        baseRef,
+        // Never measured yet (spec §3.3) — null, not [], which would claim this
+        // worktree has been inspected and found clean.
+        touched: null,
+        // TRUE at creation, for exactly that reason: nothing has been measured,
+        // so the first decision site to ask must actually shell out.
+        touchedDirty: true,
+        // No hub frame has arrived for this session (spec §6a) — null, not an
+        // empty frame, which would claim the hub has spoken and found nothing.
+        contestedFrame: null,
+        // Nobody has been asked about anything yet (spec §6b). Lives for the
+        // session's lifetime and is never cleared — see the field's note.
+        contestedAsked: new Set<string>(),
       };
       entry = newEntry;
       project.sessions.set(sessionId, entry);
       session.subscribe((event) => {
+        // FIRST, before the turn-boundary recompute below can read it: any
+        // appended event may accompany a change on disk (a tool call and its
+        // result both land here), so this is the invalidation signal for the
+        // measured touched set. `turn_end` is itself an append, which is why
+        // the recompute one line down always finds a dirty entry.
+        newEntry.touchedDirty = true;
+        // Turn boundary (spec §3.2). ORDER IS LOAD-BEARING: the recompute
+        // completes BEFORE the push for this same event is scheduled below —
+        // `turn_end` is in INTERESTING precisely so that push exists — so the
+        // facts frame this turn_end sends to watchers and to the hub is built
+        // from the set that just changed, not the previous turn's.
+        if (event.type === "turn_end") recomputeTouched(project, sessionId);
         if (INTERESTING.has(event.type)) schedulePush(project);
         if (OVERSEER_EVENTS.has(event.type)) overseer.notify(project.id);
         relay?.publishEvent(sessionId, event);
@@ -507,13 +655,88 @@ export async function startServer(opts: {
     return attached[0];
   }
 
+  /** Which of THIS session's contested paths each peer shares with it, ready
+   *  for `summarizeSession`'s `contested` argument.
+   *
+   *  WHAT THIS MAP COSTS, EXACTLY. Both Task 7a accessors recompute local
+   *  collisions over every session on this laptop on EVERY call (see
+   *  `contested.ts` — nothing derived there is stored, which is what stops it
+   *  going stale). This map collapses the (peer × path) blow-up: without it,
+   *  `digestFor` would ask about every path once per PEER, so the lookup below
+   *  runs once per contested path instead of once per (peer, path).
+   *
+   *  It does NOT make the digest one pass. The true cost is `1 + P`
+   *  `localCollisions` passes for P contested paths — one inside `contestedFor`
+   *  and one more inside EACH `contestedSessionsFor` — each pass being O(sessions
+   *  on this laptop × their touched sets). That per-path recompute is the N+1
+   *  this map does not collapse, and it is accepted, not overlooked: it is the
+   *  deferred minor logged against Task 7a in the execution ledger
+   *  (`.soltero/lean-sdd/2026-07-30-awareness-collisions/progress.md`, "Task 7a:
+   *  minor (deferred): localCollisions recomputes per accessor call"), alongside
+   *  the sibling pass `agentDriver`'s pre-sweep recompute pays. Collapsing it
+   *  means hoisting one `localCollisions` result across both accessors, which
+   *  means giving `contested.ts` a cache and an invalidation rule — the very
+   *  thing "nothing derived here is stored" buys the freedom from. */
+  function contestedByPeer(project: Project, sessionId: string): Map<string, string[]> {
+    const byPeer = new Map<string, string[]>();
+    // Ascending, code-unit order — the order `TeammateSummary.contested`
+    // promises and `collisions.ts` already sorts by. `Array.sort`'s default
+    // comparator is exactly that for strings.
+    const paths = [...contestedFor(project, sessionId)].sort();
+    for (const path of paths) {
+      for (const peerId of contestedSessionsFor(project, sessionId, path)) {
+        const seen = byPeer.get(peerId);
+        if (seen === undefined) byPeer.set(peerId, [path]);
+        else seen.push(path);
+      }
+    }
+    return byPeer;
+  }
+
   function digestFor(project: Project, sessionId: string): string {
+    const byPeer = contestedByPeer(project, sessionId);
     const others = [...project.sessions.entries()]
       .filter(([id]) => id !== sessionId)
-      .map(([id, entry]) =>
-        summarizeSession(id, entry.session.eventsFrom(0), entry.driver.isDead),
-      );
-    return buildTeammateDigest(others);
+      .map(([id, entry]) => {
+        // Resolved from participants (spec §6a) through the SAME helper
+        // `sessionFactsOf` uses — null when the peer has no driver or the
+        // driver has left, which degrades the line to its bare `session X`
+        // form.
+        return summarizeSession(
+          id,
+          entry.session.eventsFrom(0),
+          entry.driver.isDead,
+          byPeer.get(id) ?? [],
+          driverNameOf(entry.session.participantList, entry.session.driverId),
+        );
+      });
+    // Peers named ONLY by the hub's frame — sessions on ANOTHER machine, which
+    // this laptop's map cannot hold. Spec §6a makes the digest read the UNION
+    // of local derivation and the frame, and the frame exists precisely so a
+    // cross-machine collision reaches the agent; building `others` from the
+    // local map alone would drop exactly that case on the floor.
+    //
+    // Skipped when the peer DOES have a local session: it is already in
+    // `others` above with its driver resolved, and naming it twice would read
+    // as two teammates. Sorted by id so the block is deterministic regardless
+    // of the order paths happened to be walked in.
+    const remoteIds = [...byPeer.keys()]
+      .filter((peerId) => !project.sessions.has(peerId))
+      .sort();
+    for (const peerId of remoteIds) {
+      // The remote-peer shape, built by `digest.ts` beside `summarizeSession`:
+      // id and paths only, everything else unknown by construction.
+      others.push(remoteTeammateSummary(peerId, byPeer.get(peerId)!));
+    }
+    const digest = buildTeammateDigest(others);
+    // Debug facility, not a product surface (Task 11a step 5 / 11b step 8e
+    // read it back): the laptop's OWN stderr, one JSON-escaped line, crossing
+    // no session boundary. Read per call and never cached, so a run that never
+    // sets it pays one comparison and emits nothing.
+    if (process.env.MPAI_DIGEST_DUMP === "1") {
+      process.stderr.write(`[digest-dump] session=${sessionId} ${JSON.stringify(digest)}\n`);
+    }
+    return digest;
   }
 
   // Single seam for the closed-session guard shared by prompt / suggest_skill
@@ -573,7 +796,13 @@ export async function startServer(opts: {
     res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     res.end("not found");
   });
-  const wss = new WebSocketServer({ server: httpServer });
+  // maxPayload is applied here, before any gate, because the upgrade completes
+  // before authentication — a limit that only protects authenticated peers
+  // protects nothing (spec §10.2). `ws` otherwise defaults to 100MB. Same
+  // option, same constant and same reasoning as the hub's listener
+  // (`poc/hub/src/hub.ts`); this server was the one place missing it (audit M5),
+  // and `denyUnauthed` runs INSIDE `handleMessage`, i.e. after `JSON.parse`.
+  const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_FRAME_BYTES });
 
   /** The whole per-connection protocol, independent of what is carrying it.
    *  Closes over everything `startServer` already has in scope, so both the
@@ -1038,11 +1267,14 @@ export async function startServer(opts: {
           typeof msg.baseRef === "string" && msg.baseRef.length > 0
             ? msg.baseRef.slice(0, 100)
             : resolved.defaultBranch ?? "main";
-        const result = resolved.workspace.provision(slug, baseRef);
+        const result = resolved.workspace.provision(projectId, slug, baseRef);
         if (!result.ok) return sendError(result.error);
         const entry = getOrCreateSession(project, slug, {
           workdir: result.workdir,
           repoKey: resolved.key,
+          // The very string handed to `provision` one line above, whether it
+          // came from the create form or from this call site's own fallback.
+          baseRef,
         });
         if ("error" in entry) return sendError(entry.error);
         io.send({ type: "session_created", sessionId: slug });
@@ -1443,7 +1675,7 @@ export async function startServer(opts: {
           uplinkId: opts.hub.uplinkId ?? opts.machine?.machineId ?? randomUUID(),
           connect: opts.hub.connect,
         },
-        { createConnection },
+        { createConnection, onContested: applyContested },
       )
     : null;
 

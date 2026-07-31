@@ -32,6 +32,41 @@ export type AddResult =
 const OFF_ERROR = "plugin import is off — set AGENT_PLUGINS_ROOT on the server";
 
 /**
+ * The hosts `add` may clone from (audit findings M1/M6).
+ *
+ * `add_plugin` has no driver gate by design — anyone in the project may
+ * register a plugin (spec §1) — so "any https url" made it a primitive for
+ * pointing the server process at any host it can reach: internal services,
+ * other laptops' hubs, link-local metadata endpoints. `execFile` with an argv
+ * array already rules out shell injection, so the exposure was request forgery
+ * and the recon oracle in git's differentiated error text, not RCE.
+ *
+ * FAIL CLOSED, and deliberately a hard-coded set rather than an env knob: an
+ * operator-configurable allowlist is a bigger change than this audit item, and
+ * a knob that defaults to open is the bug again. Every URL in the repo's tests,
+ * docs and demo bundles is a `github.com` one; a second host is a one-line
+ * addition here when something actually needs it.
+ */
+const ALLOWED_PLUGIN_HOSTS = ["github.com"];
+const HOST_ERROR = `plugin url host must be one of: ${ALLOWED_PLUGIN_HOSTS.join(", ")}`;
+
+/** Host-allowlist check on a URL already known to start with `https://`.
+ *  Parsed, never string-matched: `https://github.com@evil.example/x` and
+ *  `https://github.com.evil.example/x` both start with the right prefix and
+ *  neither is github.com. An unparseable URL answers `false` — this is the
+ *  last check before `git` sees the string, so ambiguity is a refusal. */
+function isAllowedPluginHost(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  return ALLOWED_PLUGIN_HOSTS.includes(parsed.hostname.toLowerCase());
+}
+
+/**
  * Project-scoped plugin registry backed by disk: clones live at
  * `<root>/<projectId>/<name>/` with a sibling `<name>.meta.json` carrying
  * `{url, addedBy}` so a boot rescan loses nothing. No database — the
@@ -73,6 +108,9 @@ export class PluginStore {
     if (!this.root) return { ok: false, error: OFF_ERROR };
     if (!url.startsWith("https://"))
       return { ok: false, error: "plugin url must be https://" };
+    // Before the first mkdir, and long before `git` runs: a refused url must
+    // leave no directory behind and open no socket (audit M1/M6).
+    if (!isAllowedPluginHost(url)) return { ok: false, error: HOST_ERROR };
     const projectDir = path.join(this.root, projectId);
     fs.mkdirSync(projectDir, { recursive: true });
     const tmp = path.join(projectDir, `.clone-${randomUUID()}`);

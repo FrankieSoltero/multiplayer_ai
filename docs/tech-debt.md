@@ -128,18 +128,27 @@ Bash-allowlist two-hop risk that plugin hooks widen (v6c spec §8).
 
 ## 2. Correctness
 
-### 2.1 Worktrees are not project-scoped — two projects can silently share one working copy
+### 2.1 Worktrees are not project-scoped — two projects can silently share one working copy — RESOLVED (PRD §8.8, 2026-07-30)
 
-`poc/server/src/server.ts:511` — `provision(slug, baseRef)` keys on the session slug alone:
-directory `worktreesRoot/<slug>`, branch `mpai/<slug>`, no `projectId` anywhere.
-`project.sessions.has(slug)` guards *within* a project but nothing guards across them, and
-`provision`'s idempotent-reuse check (`poc/server/src/workspace.ts:35`) runs **before** the
-branch-taken check. So a session named `auth` in project B silently adopts project A's existing
+**Was:** `poc/server/src/server.ts:511` — `provision(slug, baseRef)` keyed on the session slug
+alone: directory `worktreesRoot/<slug>`, branch `mpai/<slug>`, no `projectId` anywhere.
+`project.sessions.has(slug)` guarded *within* a project but nothing guarded across them, and
+`provision`'s idempotent-reuse check (`poc/server/src/workspace.ts:35`) ran **before** the
+branch-taken check. So a session named `auth` in project B silently adopted project A's existing
 worktree and branch: two agents, two sessions, one working copy, no warning.
 
-Found 2026-07-27 while designing v7. **Blocks v7e** (collision detection), which must dedupe by
-resolved workdir and treat a shared working copy as "same copy" rather than collision —
-otherwise every file either session touches reads as contested.
+Found 2026-07-27 while designing v7. Blocked v7e (collision detection), which needed to dedupe by
+resolved workdir and treat a shared working copy as "same copy" rather than collision — otherwise
+every file either session touched would read as contested.
+
+**What closed it.** Fixed at the root rather than worked around: provisioning is now
+project-scoped, keyed `(projectId, slug)` — path `<repoRoot>/.mpai/worktrees/<projectId>/<slug>`,
+branch `mpai/<projectId>/<slug>` — and the idempotent-reuse check runs against that scoped key, so
+two projects can no longer collide on one working copy and `collisionsFrom` never needs
+same-working-copy dedup (spec §7, owner ruling 2026-07-30). **Disclosed, not migrated:** worktrees
+provisioned under the old flat `worktreesRoot/<slug>` scheme are left as-is — pre-branch sessions
+keep working until closed, but their worktrees/branches are orphaned across a daemon restart under
+the new scheme, with no legacy-key compat path (spec §8a ruling 7).
 
 ### 2.2 Production sessions have no workspace provisioning
 

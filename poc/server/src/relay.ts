@@ -5,6 +5,7 @@ import {
   MAX_FRAME_BYTES,
   RELAY_PROTOCOL_VERSION,
   parseDownFrame,
+  type DownFrame,
   type RepoDecl,
   type SessionFacts,
   type UpFrame,
@@ -41,14 +42,29 @@ export interface RelayOptions {
   newRunId?: () => string;
 }
 
-/** The one thing the relay needs from `server.ts`: the per-connection handler
- *  factory. Injected rather than imported so this module never depends on a
- *  running server, and so tests drive the command plane with a stub. */
+/** One validated `contested` down-frame, exactly as `parseDownFrame` rebuilt
+ *  it. Named here so `RelayDeps` can state what the handler receives without
+ *  the union being re-spelled at every call site. */
+export type ContestedFrame = Extract<DownFrame, { t: "contested" }>;
+
+/** What the relay needs from `server.ts`. Injected rather than imported so this
+ *  module never depends on a running server, and so tests drive both planes
+ *  with stubs.
+ *
+ *  Both members are REQUIRED. An optional `onContested` would let a caller wire
+ *  the uplink and silently drop every collision frame the hub sends — the
+ *  laptop would look attached and simply never know a file was contested, with
+ *  nothing failing anywhere to say so. */
 export interface RelayDeps {
   createConnection: (io: ConnectionIO) => {
     handleMessage: (msg: any) => void;
     close: () => void;
   };
+  /** The hub's per-session collision set (spec §6a). Delivered on the same
+   *  seam `createConnection` uses, for the same reason: the frame's consumer
+   *  is laptop state that lives in `server.ts`, which this module must not
+   *  import. */
+  onContested: (frame: ContestedFrame) => void;
 }
 
 interface Tracked {
@@ -257,7 +273,6 @@ export class Relay {
     }
     const frame = parseDownFrame(raw);
     if (!frame) return;
-
     if (frame.t === "welcome") {
       // A successful handshake ends the episode the latch above was guarding:
       // a LATER 1008 (e.g. a hub upgrade after this laptop reconnected fine)
@@ -294,6 +309,17 @@ export class Relay {
       const conn = this.channels.get(frame.channelId);
       conn?.close();
       this.channels.delete(frame.channelId);
+      return;
+    }
+
+    if (frame.t === "contested") {
+      // Into the laptop's own state (`server.ts`), never onto a channel. The
+      // explicit branch is load-bearing twice over: the fallthrough below is
+      // the tunnel handler, and letting a `contested` frame reach it would mint
+      // a channel keyed on a `channelId` this frame does not carry; and the
+      // handler is reached through `deps`, so the frame lands in the laptop's
+      // session map without this module knowing anything about one.
+      this.deps.onContested(frame);
       return;
     }
 

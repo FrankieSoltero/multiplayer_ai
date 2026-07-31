@@ -21,7 +21,14 @@ export type SessionEvent =
   | { type: "presence_leave"; userId: string }
   | { type: "agent_error"; message: string }
   | { type: "intent_update"; text: string }
-  | { type: "permission_request"; requestId: string; toolName: string; input: unknown }
+  /** `reason` names WHY this gate is worth someone's attention (spec §6b) — e.g.
+   *  `contested with session alpha`. OPTIONAL and additive: absent is an
+   *  ordinary gate, which is every gate today. It rides on the event rather than
+   *  on `SessionFacts.pendingGate` alone because the event is what the client
+   *  replays and renders (`Transcript.tsx`'s `case "permission_request"`);
+   *  `pendingGateOf` derives `PendingGate.reason` from this same field, so there
+   *  is one source behind both surfaces. */
+  | { type: "permission_request"; requestId: string; toolName: string; input: unknown; reason?: string }
   | { type: "permission_decision"; requestId: string; decision: "allow" | "deny"; userId: string; auto?: true }
   | { type: "model_change"; model: string; userId: string }
   | { type: "turn_end" }

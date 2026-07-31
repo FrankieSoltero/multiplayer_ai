@@ -1,4 +1,5 @@
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import fs from "node:fs";
 import path from "node:path";
 import type { DriverHooks } from "./agentDriver.js";
 
@@ -52,7 +53,7 @@ export function isAutoApprovedBash(command: string): boolean {
  * would touch the operator's filesystem outside the worktree still requires
  * explicit driver approval.
  */
-const FILE_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
+export const FILE_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
 
 /**
  * The agent's own task-tracking bookkeeping — TodoWrite in the documented SDK
@@ -71,27 +72,199 @@ const AGENT_BOOKKEEPING_TOOLS = new Set([
 ]);
 
 /**
- * True if the write target — `input.file_path` for Write/Edit, or
- * `input.notebook_path` for NotebookEdit (the SDK's NotebookEdit input uses
- * a different field name) — is a string that resolves (relative to
- * `workdir`, or as-is if already absolute) to a path inside `workdir`.
- * Fails toward `false` (→ ask the driver) for any ambiguous case: no
- * workdir, missing/non-string path, or a resolved path outside the worktree
- * (including `../` traversal).
+ * The REAL path of `p` — symlinks resolved — for a path that may not exist yet.
+ *
+ * `fs.realpathSync` needs the whole path to exist, and the common case for a
+ * `Write` is a file that does not (which is why containment was lexical to
+ * begin with). So: realpath the deepest ancestor that DOES exist and re-join
+ * the segments below it. Every symlink on the existing part is resolved, and
+ * the part that does not exist cannot be a symlink — nothing is there.
+ *
+ * `null` means "could not resolve" (ELOOP, EACCES, a vanished parent), and
+ * every caller reads that as NOT contained: a path this function cannot
+ * describe is a path no auto-approval should be granted on. Never throws.
  */
-function isContainedWrite(workdir: string | undefined, input: unknown): boolean {
-  if (!workdir) return false;
+function realPathOf(p: string): string | null {
+  let current = path.resolve(p);
+  const below: string[] = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(current), ...below);
+    } catch (err) {
+      // ENOENT is the ordinary "not created yet" case — keep walking up. Any
+      // other errno is a resolution failure and must not be walked past.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return null;
+      const parent = path.dirname(current);
+      if (parent === current) return null; // reached the root, nothing resolved
+      below.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * The write target's real path and the worktree's real root, or `null` when
+ * the target is not a contained write.
+ *
+ * The target is `input.file_path` for Write/Edit, or `input.notebook_path` for
+ * NotebookEdit (the SDK's NotebookEdit input uses a different field name),
+ * resolved relative to `workdir` or taken as-is when already absolute.
+ *
+ * SYMLINKS ARE RESOLVED ON BOTH SIDES (audit finding M3). The lexical check
+ * this replaced compared `path.resolve` output, which is pure string algebra:
+ * a symlink inside the worktree pointing outside it — one `git checkout` away,
+ * since git materializes committed symlinks — made every write beneath it
+ * "contained" and therefore silently auto-approved, landing on the operator's
+ * filesystem. Both sides go through `realPathOf` so a worktree that itself
+ * lives under a symlinked ancestor (`/tmp` → `/private/tmp` on macOS) still
+ * compares like with like.
+ *
+ * Fails toward `null` (→ ask the driver) for every ambiguous case: no workdir,
+ * missing/non-string path, unresolvable path, or a real path outside the
+ * worktree (including `../` traversal). ADVISORY, never a block: the caller's
+ * answer to `null` is a human approval round-trip, not a denial.
+ */
+function containedWriteTarget(
+  workdir: string | undefined,
+  input: unknown,
+): { base: string; target: string } | null {
+  if (!workdir) return null;
   const { file_path, notebook_path } = input as {
     file_path?: unknown;
     notebook_path?: unknown;
   };
   const filePath = file_path ?? notebook_path;
-  if (typeof filePath !== "string") return false;
-  const workdirResolved = path.resolve(workdir);
-  const resolved = path.resolve(workdir, filePath);
-  return (
-    resolved === workdirResolved || resolved.startsWith(workdirResolved + path.sep)
+  if (typeof filePath !== "string") return null;
+  const base = realPathOf(workdir);
+  if (base === null) return null;
+  const target = realPathOf(path.resolve(workdir, filePath));
+  if (target === null) return null;
+  if (target !== base && !target.startsWith(base + path.sep)) return null;
+  return { base, target };
+}
+
+function isContainedWrite(workdir: string | undefined, input: unknown): boolean {
+  return containedWriteTarget(workdir, input) !== null;
+}
+
+/**
+ * The repo-relative path this tool call would write, IF that path is one the
+ * session is contesting — otherwise `null` (spec §6b).
+ *
+ * No env, no gate state, and neither argument is mutated. Path resolution
+ * READS the filesystem (`realPathOf`, audit M3) but writes nothing and throws
+ * nothing: a target that does not exist on disk yet — the common case for
+ * Write — still answers exactly like one that does, because resolution stops
+ * at the deepest existing ancestor.
+ *
+ * `contested` is the caller's set of repo-relative POSIX paths (Task 7a's
+ * `contestedFor` output); the tool input is a path relative to `workdir` or an
+ * absolute one, so the target is resolved and then relativized back before the
+ * membership test. Containment is the EXISTING `isContainedWrite` rule, reused
+ * unchanged: a target outside the worktree is never a match, so this predicate
+ * cannot widen what may be written — it only reports on writes that were
+ * already headed inside.
+ *
+ * `workdir` is `string | undefined` deliberately: every caller's workdir comes
+ * from a session (`undefined` when the session has no repo) or from
+ * `DriverHooks.workdir?`. Without a worktree root there is nothing to
+ * relativize against, so the predicate simply never fires — the guard lives
+ * here, once, rather than at each call site.
+ */
+export function contestedWrite(
+  toolName: string,
+  input: unknown,
+  workdir: string | undefined,
+  contested: ReadonlySet<string>,
+): string | null {
+  if (!FILE_WRITE_TOOLS.has(toolName)) return null;
+  if (contested.size === 0) return null;
+  if (!workdir) return null;
+  // `containedWriteTarget` destructures `input`, which throws on null/undefined
+  // — this predicate's contract is "never throws", so non-objects stop here.
+  if (typeof input !== "object" || input === null) return null;
+  // The SAME resolved pair the containment check used, not a second lexical
+  // derivation of it: the repo-relative path must be measured against the same
+  // real root, or an alias inside the worktree would map to a path git has
+  // never heard of and the contested test would silently miss it.
+  const resolved = containedWriteTarget(workdir, input);
+  if (resolved === null) return null;
+  const relative = path.relative(resolved.base, resolved.target);
+  // The worktree root itself relativizes to "" — not a file, and never a
+  // contested path, even if an upstream list somehow carried an empty string.
+  if (relative === "") return null;
+  const repoRelative = relative.split(path.sep).join("/");
+  return contested.has(repoRelative) ? repoRelative : null;
+}
+
+/** Allocated once: every gate that is not a contested write reads an empty set,
+ *  and a fresh `new Set()` per decision would be pure garbage. Never handed out
+ *  — `contestedWrite` only reads it. */
+const NO_CONTESTED: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Why this write must stop being auto-approved, or `null` to leave every
+ * existing auto-approval exactly as it was (spec §6b, §8a ruling 4).
+ *
+ * The ONE policy behind all three decision sites — `agentDriver.ts`'s auto
+ * branch and `allowAllPending`, and `buildCanUseTool` below. Each site calls
+ * this; none reimplements the membership test, so "the three sites consult the
+ * same set" is true by construction rather than by three matching edits.
+ *
+ * Four gates, in order, each of which returns `null` (= behave exactly as
+ * today):
+ *
+ *  1. `MPAI_CONTESTED_GATE === "0"` — the kill switch (spec §8a ruling 4).
+ *     Read HERE, per decision, never cached at module load: that is what makes
+ *     it honoured per-gate in tests and effective on the first gate after a
+ *     relaunch. It does NOT make it flippable on a live process — `process.env`
+ *     cannot be changed from outside a running node process, so a live laptop
+ *     still needs a restart (and that restart costs every in-flight turn, every
+ *     unanswered gate, and all three per-session in-memory sets, `contestedAsked`
+ *     included). Tier (a) surfaces are deliberately NOT behind this switch.
+ *  2. the write is not to a contested path — `contestedWrite`, which also
+ *     absorbs the no-workdir, non-write-tool, non-object-input and
+ *     outside-the-worktree cases and never throws.
+ *  3. the human has already answered for this file in this session
+ *     (`contestedAsked`) — the once-per-(file, session) promise.
+ *  4. nothing is wired (`getContested` absent on older call sites and test
+ *     fakes) — the optional chains below make that the empty set.
+ *
+ * ADVISORY, never blocking: the strongest thing a non-null answer causes is
+ * auto-approve → ask a human, once. No caller may turn it into a deny.
+ *
+ * The peer id is interpolated VERBATIM — never re-parsed, escaped or truncated
+ * here. Safe because Task 6a validates every peer id with `SLUG`
+ * (`/^[a-z0-9-]{1,40}$/`) before it can reach a frame this laptop stores, which
+ * also puts the 512-char gate-reason cap out of reach by construction:
+ * `"contested with session "` (23) + ≤ 40.
+ *
+ * `contestedSessionsFor` answers `[]` for a path the hub listed in `paths` with
+ * no matching `collisions` entry (the two lists are bounded independently, see
+ * `contested.ts`). Withdrawal still applies — the path IS contested — but there
+ * is no peer to name, so the reason degrades to the bare `"contested"` rather
+ * than naming a session nobody reported.
+ */
+export function contestedWriteReason(
+  toolName: string,
+  input: unknown,
+  hooks: Pick<DriverHooks, "workdir" | "getContested" | "contestedAsked" | "contestedSessions">,
+): { path: string; reason: string } | null {
+  if (process.env.MPAI_CONTESTED_GATE === "0") return null;
+  const contestedPath = contestedWrite(
+    toolName,
+    input,
+    hooks.workdir,
+    hooks.getContested?.() ?? NO_CONTESTED,
   );
+  if (contestedPath === null) return null;
+  if (hooks.contestedAsked?.().has(contestedPath)) return null;
+  const peers = hooks.contestedSessions?.(contestedPath) ?? [];
+  const peer = peers[0];
+  return {
+    path: contestedPath,
+    reason: peer === undefined ? "contested" : `contested with session ${peer}`,
+  };
 }
 
 /**
@@ -138,8 +311,26 @@ export function buildCanUseTool(hooks: DriverHooks): CanUseTool {
     if (toolName === "Bash" && typeof command === "string" && isAutoApprovedBash(command)) {
       return { behavior: "allow" };
     }
-    if (FILE_WRITE_TOOLS.has(toolName) && isContainedWrite(hooks.workdir, input)) {
-      return { behavior: "allow" };
+    if (FILE_WRITE_TOOLS.has(toolName)) {
+      // Decision site 3 (spec §3.2, Task 4). The recompute is deliberately
+      // INSIDE the write-tool test and BEFORE the containment test: whatever
+      // judges this write next reads a touched set measured one statement ago,
+      // and a Read/Grep/Bash decision never shells out to git. Synchronous —
+      // it cannot race the early-allow below.
+      hooks.recomputeTouched?.();
+      // Decision site 3 (spec §6b, Task 8b). The contained-write early allow
+      // fires regardless of permission mode, so it is the ONLY site that can
+      // let a contested write through in `default` mode — and it runs BEFORE
+      // any `permission_request` event exists, which is why the freshness
+      // recompute above had to move here. A withdrawal falls straight through
+      // to the driver ask below; that ask is site 1's hook, which re-derives
+      // the same answer and puts the reason on the event.
+      if (
+        isContainedWrite(hooks.workdir, input) &&
+        contestedWriteReason(toolName, input, hooks) === null
+      ) {
+        return { behavior: "allow" };
+      }
     }
     try {
       const decision = await Promise.race([

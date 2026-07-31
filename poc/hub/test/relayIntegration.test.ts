@@ -223,7 +223,11 @@ describe("laptop ↔ hub, real Relay against a real hub", () => {
     relay.publishFacts("auth", {
       id: "auth", participants: ["ana"], driverName: "ana", intent: "ship the uplink",
       lastActivityTs: null, ended: false, pendingGate: null, skills: [],
-      repoKey: "github.com/acme/api", lifecycle: "open",
+      // Non-null so the frame carries realistic input through the real uplink
+      // and `parseUpFrame`'s validator. This test asserts on stored EVENTS, not
+      // on facts, so it does not itself pin `touched` — hubDb.test.ts pins the
+      // journal round trip and hubRestart.test.ts pins the end-to-end value.
+      repoKey: "github.com/acme/api", touched: ["src/auth.ts"], lifecycle: "open",
     });
     for (const text of ["first", "second", "third"]) {
       relay.publishEvent("auth", session.append({ type: "intent_update", text }));
@@ -690,6 +694,9 @@ describe("machines and repos, across the wire", () => {
       pendingGate: null,
       skills: [],
       repoKey: "github.com/acme/api",
+      // Non-null so the frame is realistic input across the real uplink; this
+      // test pins uplinkId stability, not facts contents.
+      touched: ["src/auth.ts"],
       lifecycle: "open",
     });
 

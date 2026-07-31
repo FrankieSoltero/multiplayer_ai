@@ -26,6 +26,86 @@ export interface ProjectSessionEntry {
    *  answer (no repo was attached when it was created) and has to be written
    *  down deliberately. */
   repoKey: string | null;
+  /** This session's worktree on disk (spec §3.1) — the directory
+   *  `touchedFiles(workdir, baseRef)` runs git in. `undefined` when no repo was
+   *  attached and nothing was provisioned; bound at creation on EVERY path,
+   *  beside `repoKey`, because a session's worktree cannot move either. */
+  workdir: string | undefined;
+  /** What this session's worktree was branched FROM (spec §3.1/§3.2) —
+   *  EXACTLY the string this session's creation path handed
+   *  `workspace.provision(...)`, so the divergence recompute measures against
+   *  the ref git actually used. Never re-derived here: a base re-read from the
+   *  repo later (default branch, a `"main"` fallback) would silently measure a
+   *  session against a branch it was never cut from. `null` when nothing was
+   *  provisioned (no repo). */
+  baseRef: string | null;
+  /** Repo-relative paths this session's worktree has changed (spec §3.3) — the
+   *  last value `touchedFiles(workdir, baseRef)` returned. `null` means NEVER
+   *  MEASURED, which is not the same claim as `[]` ("measured, changed
+   *  nothing"): the project screen distinguishes the two, so a fresh entry
+   *  starts null rather than empty. Kept rather than recomputed on read because
+   *  the producer shells out to git synchronously; a failed recompute keeps the
+   *  previous value (stale beats absent, spec §3.1), which only a stored field
+   *  can express. */
+  touched: string[] | null;
+  /** Has anything been APPENDED to this session since `touched` was last
+   *  measured successfully?
+   *
+   *  The recompute is a synchronous `git` spawn on the permission-gate path, and
+   *  the production chain runs it twice for one write: `buildCanUseTool`'s
+   *  decision site 3 measures, fails the containment test, and falls through to
+   *  `onPermissionRequest`'s site 1, which measures again. That chain is
+   *  synchronous end to end — nothing can append between the two calls — so the
+   *  second spawn can only re-measure what the first just measured. Every site
+   *  still CALLS the recompute; this flag is what lets the recompute decline.
+   *
+   *  Set on session creation (never measured, so the first call must run) and on
+   *  EVERY appended event, which is the same signal `schedulePush` and the
+   *  turn-boundary recompute already ride: an agent that changed a file did so
+   *  through a tool call, and both the call and its result are appended. Cleared
+   *  only by a SUCCESSFUL recompute — a git failure leaves it set, so the next
+   *  call retries rather than inheriting a skip. */
+  touchedDirty: boolean;
+  /** The last hub `contested` frame for this session, stored VERBATIM (spec
+   *  §6a) — `null` until one arrives, which is not the same claim as an empty
+   *  frame ("the hub says nothing is contested any more"); `contested.ts` reads
+   *  the two states identically today, and the distinction is kept because only
+   *  the entry can express it.
+   *
+   *  Stored rather than derived because a laptop cannot see another machine's
+   *  sessions: this frame is the only place a peer on another laptop is named.
+   *  Its counterpart — collisions between sessions on THIS machine — is
+   *  derived on read instead (`contested.ts`), so it cannot go stale.
+   *
+   *  Structural, not an imported frame type: this is laptop state that happens
+   *  to arrive on the wire, and `relayProtocol.ts` owns the wire shape. It is
+   *  deliberately NOT copied into `sessionFactsOf` — nothing here goes back out
+   *  to the browsers watching this project. */
+  contestedFrame: {
+    paths: string[];
+    collisions: { path: string; sessionIds: string[] }[];
+  } | null;
+  /** Repo-relative paths this session has ALREADY asked a human about, because
+   *  a write to them was contested (spec §6b, Task 8b). Membership means "do
+   *  not withdraw auto-approve for this file again" — the promise is once per
+   *  (file, session), so a teammate is interrupted the first time the agent
+   *  touches a shared file and never again for that file.
+   *
+   *  A path is added when a human ANSWERS the gate — allow or deny, both are
+   *  answers. System-attributed decisions (abort, stream death) are not: nobody
+   *  saw those, so nothing was learned.
+   *
+   *  NEVER cleared while the session lives, deliberately. Clearing it when the
+   *  path drops out of the contested set would re-ask the moment the peer's
+   *  next commit lands, which is exactly the pattern that trains people to
+   *  click through gates. The only reset is the session ending — or the process
+   *  restarting, which is what the `MPAI_CONTESTED_GATE` rollback note costs.
+   *
+   *  Mutable and owned by the entry: `server.ts` hands the driver a closure over
+   *  THIS set, so the gate reads and writes one object rather than a copy. Not
+   *  in `sessionFactsOf` — it is local bookkeeping, not a fact about the
+   *  session, and nothing on the wire needs it. */
+  contestedAsked: Set<string>;
 }
 
 /** Minimal structural type so tests don't need real sockets. */
@@ -103,6 +183,21 @@ function arcadeRecords(project: Project): ArcadeRecord[] {
   );
 }
 
+/** The display name of the participant currently driving, or `null`.
+ *
+ *  ONE resolution, shared by all three readers (this module's snapshot row,
+ *  `server.ts`'s oversight digest and its `digestFor`): live driver state lives
+ *  on `Session`, so every surface that renders "driven by Y" resolves it from a
+ *  participant list plus a driver id, and three copies of the same lookup is
+ *  three places for the null-handling to drift. `null` covers all of it — no
+ *  driver, a driver who has left, and a participant carrying no name. */
+export function driverNameOf(
+  participants: { userId: string; name: string }[],
+  driverId: string | null,
+): string | null {
+  return participants.find((p) => p.userId === driverId)?.name ?? null;
+}
+
 /** The single producer of a session's snapshot row (spec §3.2). `presence` is
  *  deliberately NOT here: it is the one fact only the hub can know, so the
  *  standalone path adds a constant "online" and the hub adds the real value.
@@ -120,13 +215,17 @@ export function sessionFactsOf(
   return {
     id,
     participants: participants.map((p) => p.name),
-    driverName: participants.find((p) => p.userId === driverId)?.name ?? null,
+    driverName: driverNameOf(participants, driverId),
     intent: summary.intent,
     lastActivityTs: events.at(-1)?.ts ?? null,
     ended: summary.ended,
     pendingGate: pendingGateOf(events),
     skills: entry.skills,
     repoKey,
+    // Copied, never aliased: these facts cross the wire, the project snapshot
+    // and the collision engine, and a consumer that sorted or truncated the
+    // array it was handed would otherwise rewrite the session's stored state.
+    touched: entry.touched === null ? null : [...entry.touched],
     lifecycle: lifecycleOf(events),
   };
 }
@@ -150,6 +249,14 @@ export interface ProjectMessage {
      *  carries the SAME key — it is per-session because v7b's hub holds
      *  sessions from many repos at once. */
     repoKey: string | null;
+    /** Repo-relative paths this session has changed (spec §3.3), or null when it
+     *  has never been measured. Enumerated here rather than inherited: this row
+     *  type does not extend `SessionFacts`, so a field added only there would
+     *  never reach the snapshot the browser reads.
+     *
+     *  EXPOSURE (spec §8a ruling 5 — accepted): the FULL list, to every member
+     *  of this project. See the note on `SessionFacts.touched`. */
+    touched: string[] | null;
     /** Has someone deliberately ended this session (spec §3.4)? Orthogonal to
      *  `ended`, which is about the agent process. */
     lifecycle: Lifecycle;

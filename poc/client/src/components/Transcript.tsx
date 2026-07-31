@@ -136,6 +136,12 @@ export function Transcript(props: {
             <div className="perm-what">
               the agent wants to use <b>{ev.toolName}</b> — not on the auto-approve list
             </div>
+            {/* Why the gate opened, when the server named a reason (spec §6b).
+                Composed server-side and rendered VERBATIM — the client neither
+                composes nor reformats it, so the string is the same end to end.
+                Absent on every gate an older server (or a non-contested path)
+                opens, and then nothing extra renders at all. */}
+            {ev.reason ? <div className="perm-why">{ev.reason}</div> : null}
             <code className="perm-input">{preview?.slice(0, 300)}</code>
             {decided ? (
               <div className="perm-outcome">

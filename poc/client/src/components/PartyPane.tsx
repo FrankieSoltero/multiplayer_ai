@@ -1,5 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { hashIdentity } from "../identity";
+import { cmp } from "multiplayer-ai-server/collisions";
+import type { Collision } from "multiplayer-ai-server/collisions";
+import { projectCollisions } from "../collisionView";
 import type { ProjectSessionInfo } from "../types";
 import type { Participant } from "../derive";
 import { THRESHOLD_OPTIONS, waitedLabel, type Pull } from "../pulls";
@@ -21,11 +24,45 @@ export function PartyPane(props: {
   pulls?: Pull[];
   pullThresholdMs?: number | null;
   onPullThresholdChange?: (ms: number | null) => void;
+  /** The project's contested set, already derived. OPTIONAL, and passed by
+   *  `App.tsx` off the same memo the header badge reads, so the two surfaces
+   *  share one intersection per snapshot instead of computing it twice. Absent
+   *  (standalone render, unit tests), the pane falls back to deriving it from
+   *  the snapshot it already holds — the fallback is what keeps this component
+   *  renderable with `sessions` alone. */
+  collisions?: Collision[];
 }) {
   const [open, setOpen] = useState(false);
   const here = [...props.participants.entries()];
   const others = props.sessions.filter((s) => s.id !== props.sessionId);
   const pullBySession = new Map((props.pulls ?? []).map((p) => [p.sessionId, p]));
+  // Memoised on `props.sessions` so the fallback derivation stays off every
+  // unrelated re-render. The hook runs unconditionally (rules of hooks); the
+  // prop simply wins below when it is supplied.
+  const derivedCollisions = useMemo(() => projectCollisions(props.sessions), [props.sessions]);
+  const collisions = props.collisions ?? derivedCollisions;
+  // One pass for every row's `⚠ shares:` line, instead of one `sharedWith`
+  // rescan per OTHER PARTIES row. `sharedWith` itself is untouched — it is the
+  // shared, tested derivation, and this is the same intersection computed once
+  // per snapshot rather than once per peer.
+  const sharedBySession = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const collision of collisions) {
+      if (!collision.sessionIds.includes(props.sessionId)) continue;
+      for (const id of collision.sessionIds) {
+        if (id === props.sessionId) continue;
+        const paths = map.get(id);
+        if (paths === undefined) map.set(id, [collision.path]);
+        else if (!paths.includes(collision.path)) paths.push(collision.path);
+      }
+    }
+    // `sharedWith` answers ascending; `collisionsFrom` already emits its
+    // entries in (repoKey, path) order, so this sorts for the one case that
+    // order does not cover — a session in two repos at once cannot happen
+    // today, and this list must not depend on that staying true.
+    for (const paths of map.values()) paths.sort(cmp);
+    return map;
+  }, [collisions, props.sessionId]);
 
   return (
     <aside className={"party panel" + (open ? " open" : "")}>
@@ -91,6 +128,7 @@ export function PartyPane(props: {
         const facts = { ...s, participantCount: s.participants.length };
         const stateClass = sessionStateClass(facts);
         const stateLabel = sessionStateLabel(facts);
+        const shared = sharedBySession.get(s.id) ?? [];
         return (
           <a
             key={s.id}
@@ -115,6 +153,17 @@ export function PartyPane(props: {
               {s.driverName ? ` · 🛞 ${s.driverName}` : ""}
               {s.lastActivityTs ? ` · ${ago(s.lastActivityTs)}` : ""}
             </div>
+            {/* The peer-overlap line, last in the row: reuses `member-meta` for
+                layout and adds `contested-calm` for the tone — awareness, not
+                an alarm. Rendered only when the intersection is non-empty, so a
+                peer you share nothing with is byte-identical to before. */}
+            {shared.length > 0 && (
+              <div className="member-meta contested-calm">
+                {`⚠ shares: ${shared.slice(0, 3).join(", ")}${
+                  shared.length > 3 ? ` +${shared.length - 3} more` : ""
+                }`}
+              </div>
+            )}
           </a>
         );
       })}

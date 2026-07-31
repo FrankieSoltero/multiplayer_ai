@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import WebSocket from "ws";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -8,7 +8,7 @@ import { startServer } from "../src/server.js";
 import type { RunQuery, SdkMessage } from "../src/agentDriver.js";
 import { PluginStore, type CloneFn } from "../src/pluginStore.js";
 import { signSession, SESSION_COOKIE } from "../src/auth.js";
-import { RELAY_PROTOCOL_VERSION, parseUpFrame } from "../src/relayProtocol.js";
+import { MAX_FRAME_BYTES, RELAY_PROTOCOL_VERSION, parseUpFrame } from "../src/relayProtocol.js";
 
 const echoRun: RunQuery = async function* (prompts) {
   for await (const prompt of prompts) {
@@ -42,12 +42,12 @@ function collect(ws: WebSocket, sink: unknown[]): void {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function fakeWorkspace() {
-  const calls: { slug: string; baseRef: string }[] = [];
+  const calls: { projectId: string; slug: string; baseRef: string }[] = [];
   return {
     calls,
-    provision(slug: string, baseRef: string) {
-      calls.push({ slug, baseRef });
-      return { ok: true as const, workdir: `/tmp/wt/${slug}` };
+    provision(projectId: string, slug: string, baseRef: string) {
+      calls.push({ projectId, slug, baseRef });
+      return { ok: true as const, workdir: `/tmp/wt/${projectId}/${slug}` };
     },
     defaultBranch: () => "main",
     repoKey: () => "local:test:000000000000",
@@ -55,17 +55,38 @@ function fakeWorkspace() {
 }
 
 function keyedWorkspace(key: string) {
-  const calls: { slug: string; baseRef: string }[] = [];
+  const calls: { projectId: string; slug: string; baseRef: string }[] = [];
   return {
     calls,
-    provision(slug: string, baseRef: string) {
-      calls.push({ slug, baseRef });
-      return { ok: true as const, workdir: `/tmp/wt/${key}/${slug}` };
+    provision(projectId: string, slug: string, baseRef: string) {
+      calls.push({ projectId, slug, baseRef });
+      return { ok: true as const, workdir: `/tmp/wt/${key}/${projectId}/${slug}` };
     },
     defaultBranch: () => "main",
     repoKey: () => key,
   };
 }
+
+/** Suite-output hygiene. The turn-boundary recompute (spec §3.2) runs on every
+ *  `turn_end`, and the fake workspaces in this file hand out worktree paths
+ *  that never exist on disk — so git fails and the server writes its
+ *  once-per-session `[touched] session=… recompute failed: …` line. That log is
+ *  specified behavior and stays asserted verbatim in `serverTouched.test.ts`;
+ *  here it is pure noise, so this PASSTHROUGH spy drops only those chunks and
+ *  forwards every other stderr write untouched. Registered before the teardown
+ *  hooks below so it is restored last. */
+let stderrFilter: ReturnType<typeof vi.spyOn> | undefined;
+beforeEach(() => {
+  const realWrite = process.stderr.write.bind(process.stderr) as (...a: any[]) => boolean;
+  stderrFilter = vi
+    .spyOn(process.stderr, "write")
+    .mockImplementation(((chunk: any, ...rest: any[]) =>
+      String(chunk).startsWith("[touched] session=") ? true : realWrite(chunk, ...rest)) as never);
+});
+afterEach(() => {
+  stderrFilter?.mockRestore();
+  stderrFilter = undefined;
+});
 
 let close: (() => Promise<void>) | undefined;
 afterEach(async () => {
@@ -398,7 +419,13 @@ describe("pending gate on the project snapshot", () => {
     await wait(200);
 
     const entry = lastProject(seenBen)?.sessions.find((s: any) => s.id === "ana");
-    expect(entry.pendingGate).toEqual({ toolName: "Bash", sinceTs: expect.any(String) });
+    // `reason: null` is pinned end-to-end, not just at the unit: this task ships
+    // the gate-reason CARRIER only, so a gate opened by the real server through
+    // the real snapshot path must still name no reason. Task 8b is where a
+    // non-null one first appears here.
+    expect(entry.pendingGate).toEqual({
+      toolName: "Bash", sinceTs: expect.any(String), reason: null,
+    });
 
     wsAna.close();
     wsBen.close();
@@ -877,16 +904,20 @@ describe("plugin registry", () => {
     "skills/agent-handoff/SKILL.md":
       "---\nname: agent-handoff\ndescription: resume packets\n---\n",
   };
-  function storeWithFakeClone(): { store: PluginStore; root: string } {
+  function storeWithFakeClone(): { store: PluginStore; root: string; clones: string[] } {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "plugins-e2e-"));
-    const clone: CloneFn = async (_url, dest) => {
+    // Every url the store actually tried to fetch — a refused url must never
+    // appear here (audit M1/M6).
+    const clones: string[] = [];
+    const clone: CloneFn = async (url, dest) => {
+      clones.push(url);
       for (const [rel, content] of Object.entries(skeleton)) {
         const p = path.join(dest, rel);
         fs.mkdirSync(path.dirname(p), { recursive: true });
         fs.writeFileSync(p, content);
       }
     };
-    return { store: new PluginStore(root, clone), root };
+    return { store: new PluginStore(root, clone), root, clones };
   }
 
   it("add_plugin appends plugin_change and pushes the registry; later sessions get the paths", async () => {
@@ -985,6 +1016,30 @@ describe("plugin registry", () => {
     expect(errs).toContain("add_plugin requires url");
     expect(errs).toContain("plugin url must be https://");
     expect(errs).toContain('unknown plugin "ghost"');
+    expect(seen.some((m) => m.event?.type === "plugin_change")).toBe(false);
+    ws.close();
+  });
+
+  /** Audit M1/M6: an off-allowlist host is refused through the SAME error
+   *  reply as every other bad `add_plugin`, and appends no plugin_change. */
+  it("refuses an off-allowlist plugin host over the wire", async () => {
+    const { store, clones } = storeWithFakeClone();
+    const server = await startServer({ port: 0, runQuery: echoRun, plugins: store });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "ph", projectId: "prj9", userId: "u1", name: "Ana" }));
+    await wait(50);
+    ws.send(JSON.stringify({ type: "add_plugin", url: "https://169.254.169.254/latest/meta-data" }));
+    ws.send(JSON.stringify({ type: "add_plugin", url: "https://internal.corp.example/x.git" }));
+    await wait(200);
+    const errs = seen.filter((m) => m.type === "error").map((m) => m.message);
+    expect(errs).toEqual([
+      "plugin url host must be one of: github.com",
+      "plugin url host must be one of: github.com",
+    ]);
+    expect(clones).toEqual([]);
     expect(seen.some((m) => m.event?.type === "plugin_change")).toBe(false);
     ws.close();
   });
@@ -1116,7 +1171,7 @@ describe("session initiation", () => {
     await vi.waitFor(() => {
       expect(seen.some((m) => m.type === "session_created" && m.sessionId === "fix-auth")).toBe(true);
     });
-    expect(workspace.calls).toEqual([{ slug: "fix-auth", baseRef: "dev" }]);
+    expect(workspace.calls).toEqual([{ projectId: "default", slug: "fix-auth", baseRef: "dev" }]);
     await vi.waitFor(() => {
       expect(
         seen.some((m) => m.type === "project" && m.sessions.some((s: any) => s.id === "fix-auth")),
@@ -1202,7 +1257,7 @@ describe("session initiation", () => {
     await vi.waitFor(() => {
       expect(seen.some((m) => m.event?.type === "presence_join")).toBe(true);
     });
-    expect(workspace.calls).toEqual([{ slug: "adhoc", baseRef: "main" }]);
+    expect(workspace.calls).toEqual([{ projectId: "default", slug: "adhoc", baseRef: "main" }]);
     ws.close();
   });
 
@@ -1332,7 +1387,7 @@ describe("solo-mode entrance protocol", () => {
       await vi.waitFor(() => {
         expect(seen.some((m) => m.type === "session_created")).toBe(true);
       });
-      expect(workspace.calls).toEqual([{ slug: "s1", baseRef: "main" }]);
+      expect(workspace.calls).toEqual([{ projectId: "ghost", slug: "s1", baseRef: "main" }]);
       ws.close();
     });
 
@@ -3039,7 +3094,7 @@ describe("repo set", () => {
     ws.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1" }));
     await wait(200);
     expect(seen.some((m) => m.type === "session_created")).toBe(true);
-    expect(cwd.calls).toEqual([{ slug: "s1", baseRef: "main" }]);
+    expect(cwd.calls).toEqual([{ projectId: "default", slug: "s1", baseRef: "main" }]);
     ws.close();
   });
 
@@ -3073,7 +3128,7 @@ describe("repo set", () => {
     collect(ws, []);
     ws.send(JSON.stringify({ type: "join", sessionId: "fresh", userId: "u1", name: "Ana" }));
     await wait(200);
-    expect(cwd.calls).toEqual([{ slug: "fresh", baseRef: "main" }]);
+    expect(cwd.calls).toEqual([{ projectId: "default", slug: "fresh", baseRef: "main" }]);
     ws.close();
   });
 
@@ -3186,7 +3241,7 @@ describe("attach and detach repos", () => {
     expect(seen.some((m) => m.type === "session_created" && m.sessionId === "s1")).toBe(true);
     // The proof the attach really built a usable workspace: the session was
     // provisioned in it, at the default branch the attach path computed.
-    expect(f.web.calls).toEqual([{ slug: "s1", baseRef: "origin/main" }]);
+    expect(f.web.calls).toEqual([{ projectId: "default", slug: "s1", baseRef: "origin/main" }]);
     expect(f.api.calls).toEqual([]);
     ws.close();
   });
@@ -3707,6 +3762,55 @@ describe("attach excludes .mpai/ from git (Finding 2)", () => {
     const excludeFile = path.join(candidateRoot, ".git", "info", "exclude");
     const lines = fs.readFileSync(excludeFile, "utf8").split("\n").filter((l) => l === ".mpai/");
     expect(lines).toHaveLength(1);
+    ws.close();
+  });
+});
+
+/** Audit finding M5 (`docs/audit-2026-07-30.md`): the hub applies
+ *  `MAX_FRAME_BYTES` as `maxPayload`, the standalone server did not, and
+ *  inherited `ws`'s 100MB default — 100MB reaching `JSON.parse` on a socket
+ *  that has passed no gate, since `denyUnauthed` runs INSIDE `handleMessage`. */
+describe("WebSocket frame cap", () => {
+  it("closes a connection that sends a frame over the cap instead of parsing it", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    const closed = new Promise<number>((resolve) => ws.on("close", (code) => resolve(code)));
+
+    // Unauthenticated, and `identify` is one of the two messages deliberately
+    // never gated — so nothing but `maxPayload` stands between this frame and
+    // the parser.
+    const oversized = JSON.stringify({
+      type: "identify",
+      userId: "u1",
+      name: "a".repeat(MAX_FRAME_BYTES),
+    });
+    expect(Buffer.byteLength(oversized)).toBeGreaterThan(MAX_FRAME_BYTES);
+    ws.send(oversized);
+
+    // 1009 = "message too big" — `ws`'s own answer, raised before the frame is
+    // handed to the message handler. Raced so a server without the cap fails
+    // the assertion rather than hanging out the suite timeout.
+    const code = await Promise.race([closed, wait(1000).then(() => -1)]);
+    expect(code).toBe(1009);
+    expect(seen).toEqual([]);
+  });
+
+  it("still accepts an ordinary frame under the cap", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "cap1", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "prompt", text: "hello" }));
+    await wait(200);
+
+    expect(seen.map((m) => m.event?.type)).toContain("user_message");
     ws.close();
   });
 });

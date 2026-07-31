@@ -366,12 +366,16 @@ something better than "knows the URL."
 
 *What:* the container — create, name, invite, join, leave, close, archive.
 
-*Today:* `projectId` exists as the hub's top-level key with **no name, no members, no lifecycle**,
-and reaches the client as a hidden URL parameter defaulting to `default`
-(`SessionPicker.tsx:11,140`).
+*Today:* **shipped (PR #22).** Projects are first-class on the hub: display name, member list,
+lifecycle (open/closed/archived at the store level), `create_project`/`list_projects`/
+`join_project`/`leave_project` over the browser protocol, and the entrance screen listing
+projects with member counts. The standalone server answers the same entrance messages so solo
+mode lands on a one-item entrance. Known plan gap, disclosed in PR #22: `close_project`/
+`archive_project` exist and are tested hub-side but have **no client surface** yet, so archived
+state is unreachable from the UI.
 
-*Final state:* a first-class object with a display name, a member list, an invite flow, and a
-lifecycle. The entrance screen lists yours.
+*Final state:* the invite flow scoped to projects (invites today predate projects), and the
+close/archive client controls. Everything else here is done.
 
 ### 8.3 Machines & repos
 
@@ -484,7 +488,17 @@ product requirements of the record, not infrastructure to be deferred indefinite
 
 *What:* the shared signal that keeps people and agents from colliding — the thesis in §1.1.
 
-*Today:* presence, the roster, pull notifications, and an oversight summarizer.
+*Today:* presence, the roster, pull notifications, an oversight summarizer, and cross-session
+collision awareness: git-derived `touched` facts recomputed at turn boundaries (`turn_end`, now in
+`INTERESTING`) and at all three auto-approve decision sites, grouped by project `repoKey` through
+the pure `collisionsFrom` (shared server/client) into a hub-computed `contested` down-frame naming
+the colliding peers. Surfaces as a `⚠ CONTESTED ▸ N` header badge, per-session contested markers,
+and `⚠ shares:` party rows (calm gold, never amber); agents get a tier (a) digest line plus a tier
+(b) auto-approve withdrawal with gate reason `contested with session X`, asked once per (file,
+session). On by default, advisory only — never blocks a write — and disabled wholesale with
+`MPAI_CONTESTED_GATE=0`, which restores today's auto-approve path unchanged. Fork grouping remains
+out of scope (known bound below); oversight configured hub-side is still open — split ruling, spec
+§8a.1, tracked on its own branch.
 
 *Final state:* file-collision detection across sessions grouped by repo — meaningful only once a
 project holds more than one repo, which is why it waited. Oversight configured hub-side.

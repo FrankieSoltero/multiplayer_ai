@@ -54,6 +54,18 @@ const GAP = ["four", "five"];
 const ALL = [...EVENTS, ...GAP];
 
 const INTENT = "ship the record";
+/** The one path the two sessions in the contested row below share. */
+const SHARED = "src/shared.ts";
+
+/** What the hub owes each of those two sessions once it has recomputed from
+ *  hydrated `touched` — the peer named, and only the shared path. */
+const contested = (sessionId: string) => ({
+  t: "contested",
+  sessionId,
+  paths: [SHARED],
+  collisions: [{ path: SHARED, sessionIds: ["auth", "billing"] }],
+});
+
 const REFUSAL = {
   type: "error",
   message: 'no machine is running session "auth" right now',
@@ -69,6 +81,9 @@ const factsFor = (intent: string): SessionFacts => ({
   pendingGate: null,
   skills: [],
   repoKey: "github.com/acme/api",
+  // NON-NULL on purpose: asserted in `expectOfflineContinuity` below, so this
+  // list is what proves `touched` survives persistence and rehydration.
+  touched: ["src/auth.ts"],
   lifecycle: "open",
 });
 
@@ -132,6 +147,18 @@ function openDb(dbPath: string, opts?: { skipLock?: boolean }): HubDb {
 function own<T extends { relay: { stop(): void } }>(lap: T): T {
   relays.push(lap.relay);
   return lap;
+}
+
+/** Poll a live value until it satisfies `ok`, then hand back whatever it
+ *  ACTUALLY held, so the caller's assertion names the difference. */
+async function until<T>(read: () => T, ok: (value: T) => boolean): Promise<T> {
+  const deadline = Date.now() + 8000;
+  let value = read();
+  while (Date.now() < deadline && !ok(value)) {
+    await wait(20);
+    value = read();
+  }
+  return value;
 }
 
 /** Poll the project view until it satisfies `predicate`, then hand it back —
@@ -275,6 +302,10 @@ async function expectOfflineContinuity(port: number): Promise<void> {
     presence: "offline",
     machineId: "lap-1",
     repoKey: "github.com/acme/api",
+    // Survives the whole path the restart exercises — real uplink, the hub's
+    // validator, `facts_json`, hub death, and rehydration through an unchecked
+    // cast — and comes back out the watch snapshot as the laptop sent it.
+    touched: ["src/auth.ts"],
     lifecycle: "open",
     participants: ["ana"],
     driverName: "ana",
@@ -400,6 +431,68 @@ describe("the record across a hub restart", () => {
     const stored = await settledReplay(revived.port, EVENTS.length);
     expect(stored.map((e: any) => e.seq)).toEqual([0, 1, 2]);
     expect(stored.map((e: any) => e.text)).toEqual(EVENTS);
+  }, TIMEOUT);
+
+  it("recomputes contested state from the touched sets it hydrated, re-sending each laptop the frame it held before the restart", async () => {
+    // `touched` is the one session fact the hub COMPUTES with rather than just
+    // relays, so its survival is not the same claim as the intent's above: a
+    // restart that hydrated it as `null` would still render a perfectly normal
+    // project view, and every laptop would simply stop being told which files
+    // its teammates are in — silently, for as long as the collision set held
+    // steady. The frames below are the only thing that can say otherwise.
+    const dbPath = tmpDbPath();
+    const first = await hubOn({ port: 0, host: "127.0.0.1", dbPath });
+
+    const lapA = own(laptop(first.port, { uplinkId: "lap-1", newRunId: () => "run-a" }));
+    lapA.relay.trackSession("auth", new Session("auth"));
+    lapA.relay.start();
+    lapA.relay.publishFacts("auth", { ...factsFor(INTENT), touched: ["src/auth.ts", SHARED] });
+    const lapB = own(laptop(first.port, { uplinkId: "lap-2", newRunId: () => "run-b" }));
+    lapB.relay.trackSession("billing", new Session("billing"));
+    lapB.relay.start();
+    lapB.relay.publishFacts("billing", {
+      ...factsFor(INTENT),
+      id: "billing",
+      touched: [SHARED, "src/billing.ts"],
+    });
+
+    const before = await until(
+      () => [...lapA.contested, ...lapB.contested],
+      (frames) => frames.length > 1,
+    );
+    expect(before).toEqual([contested("auth"), contested("billing")]);
+
+    // Both laptops go first, so nothing can re-declare its facts to the second
+    // hub: everything asserted below came out of the record.
+    lapA.relay.stop();
+    lapB.relay.stop();
+    await closeNow(first);
+    const second = await hubOn({ port: 0, host: "127.0.0.1", dbPath });
+
+    // Hydrated verbatim, per session — the input the recomputation below runs on.
+    const hydrated = await snapshotVia(second.port, "watch_project");
+    expect(hydrated.sessions.map((s: any) => [s.id, s.touched])).toEqual([
+      ["auth", ["src/auth.ts", SHARED]],
+      ["billing", [SHARED, "src/billing.ts"]],
+    ]);
+
+    // Fresh relays, same uplink ids, and NO `publishFacts` anywhere: the only
+    // `touched` in the new hub's memory is the one it read back off disk.
+    const backA = own(laptop(second.port, { uplinkId: "lap-1", newRunId: () => "run-a" }));
+    backA.relay.trackSession("auth", new Session("auth"));
+    backA.relay.start();
+    const backB = own(laptop(second.port, { uplinkId: "lap-2", newRunId: () => "run-b" }));
+    backB.relay.trackSession("billing", new Session("billing"));
+    backB.relay.start();
+
+    // The same frames, to the same laptops. Change detection is in-memory only,
+    // so this IS the documented duplicate a restart is allowed — and it is the
+    // right trade: a laptop that also just restarted holds nothing.
+    const after = await until(
+      () => [...backA.contested, ...backB.contested],
+      (frames) => frames.length > 1,
+    );
+    expect(after).toEqual([contested("auth"), contested("billing")]);
   }, TIMEOUT);
 
   it("refuses a second hub on a record a live hub already holds, naming the pid that holds it", async () => {

@@ -1,3 +1,4 @@
+import { CONTROL_CHARS_SOURCE } from "./relayProtocol.js";
 import type { LoggedEvent } from "./events.js";
 
 export interface TeammateSummary {
@@ -5,12 +6,95 @@ export interface TeammateSummary {
   intent: string | null;
   recentToolCalls: { toolName: string; target: string }[];
   ended: boolean;
+  /** Repo-relative paths this peer has also changed that the READING session
+   *  has changed too (spec §6a), ascending; `[]` when none. Supplied by the
+   *  caller — `server.ts`'s `digestFor`, from the Task 7a accessors — because
+   *  the event slice below is one session's log and collision is a fact about
+   *  two. Order is the caller's contract: this module renders, never sorts. */
+  contested: string[];
+  /** Display name of this peer's current driver, or `null` when none resolves.
+   *  Passed in for the same reason `oversightSessionDigest` takes it: live
+   *  participant/driver state lives on `Session`, not in an event slice, and
+   *  spec §6a resolves the digest line's `driven by Y` from participants. */
+  driverName: string | null;
+}
+
+/** Paths named on one peer's contested line before ` +N more` takes over.
+ *
+ *  Plan-authored, not spec text — spec §6a gives the line form and sets no
+ *  digest cap. It bounds prompt growth when a peer's touched set approaches
+ *  `TOUCH_CAP` (500). Deliberately larger than the party row's cap of 3: a
+ *  prompt line carries more without costing a human anything to read, while
+ *  that row sits in a narrow fixed-width rail. */
+const CONTESTED_PATH_CAP = 5;
+
+/** C0 controls plus DEL — the SAME class `relayProtocol.ts`'s `CONTROL_CHARS`
+ *  rejects paths and gate reasons on, built here from that module's exported
+ *  source so the two can never name different characters. The `/g` variant is
+ *  built rather than shared because a global RegExp carries `lastIndex` between
+ *  calls and the validator's `.test` calls must not see it. Importing
+ *  `relayProtocol.ts` costs this module nothing it was protecting: that module
+ *  is node-only, and so is every consumer of this one.
+ *
+ *  Applied as a STRIP rather than a rejection: this is a render boundary, and a
+ *  digest that threw or vanished because a teammate typed a tab into their name
+ *  would be worse than one that shows the name without it. */
+const CONTROL_CHARS = new RegExp(CONTROL_CHARS_SOURCE, "g");
+
+/** The one strip every free-text value crosses on its way into a prompt.
+ *
+ *  Audit finding M2 (`docs/audit-2026-07-30.md`) found the `driverName`
+ *  treatment below applied to that field ALONE, while `intent` and tool-call
+ *  `target` — both agent-authored, both steerable by whatever untrusted content
+ *  the agent happened to read — reached a PEER session's prompt with their
+ *  newlines intact. The reasoning in `contestedLineFor` was never specific to
+ *  names: it applies verbatim to any value whose producers bound LENGTH and
+ *  nothing else, which is all of them. So the filter moved here and every such
+ *  value now crosses it.
+ *
+ *  At the INTERPOLATION boundary, never on the way into storage: the event log
+ *  is the record of what actually happened and stays byte-exact, and a value
+ *  that never reaches a prompt is never altered. */
+function stripControls(value: string): string {
+  return value.replace(CONTROL_CHARS, "");
+}
+
+/** The spec §6a line: `session X (driven by Y) has also changed: a, b`.
+ *
+ *  WHAT IS BOUNDED, AND WHERE. Peer ids and paths are interpolated VERBATIM and
+ *  never re-parsed, re-split or escaped, because the validators already bound
+ *  their characters upstream: `relayProtocol`'s frame check rejects any path
+ *  carrying a control character or newline, and every peer id is `SLUG`-bounded
+ *  (`str(f.sessionId, SLUG)`). Escaping either here would corrupt a real path
+ *  without buying anything those validators do not already guarantee.
+ *
+ *  The driver NAME is the exception, which is why it alone is filtered on the
+ *  way in. Every producer of it truncates LENGTH and nothing else —
+ *  `server.ts`'s `join` (`msg.name.slice(0, 40)`), `relayProtocol`'s `hello`
+ *  name and its facts `driverName` (`typeof === "string"`, no character class).
+ *  A newline therefore reaches this line intact, and one is all it takes to
+ *  forge a second `<teammates>` entry in the agent's prompt. */
+function contestedLineFor(o: TeammateSummary): string {
+  const driverName = o.driverName?.replace(CONTROL_CHARS, "");
+  // Falsy, not `=== null`: an empty participant name must degrade to the bare
+  // form too, a name left as nothing but control characters degrades with it,
+  // and a caller reaching this from untyped JS must never render the word
+  // `undefined` at a teammate's name.
+  const who = driverName
+    ? `session ${o.id} (driven by ${driverName})`
+    : `session ${o.id}`;
+  const first = o.contested.slice(0, CONTESTED_PATH_CAP);
+  const rest = o.contested.length - first.length;
+  const overflow = rest > 0 ? ` +${rest} more` : "";
+  return `${who} has also changed: ${first.join(", ")}${overflow}`;
 }
 
 export function summarizeSession(
   id: string,
   events: LoggedEvent[],
   ended: boolean,
+  contested: string[] = [],
+  driverName: string | null = null,
 ): TeammateSummary {
   let intent: string | null = null;
   const toolCalls: { toolName: string; target: string }[] = [];
@@ -24,7 +108,41 @@ export function summarizeSession(
       toolCalls.push({ toolName: ev.toolName, target });
     }
   }
-  return { id, intent, recentToolCalls: toolCalls.slice(-5), ended };
+  return {
+    id,
+    intent,
+    recentToolCalls: toolCalls.slice(-5),
+    ended,
+    // Copied, never aliased: the caller's array is live state assembled per
+    // digest build, and the cap/overflow below is one refactor away from being
+    // an in-place truncation of it.
+    contested: [...contested],
+    driverName,
+  };
+}
+
+/** The summary for a peer named ONLY by the hub's `contested` frame — a session
+ *  on ANOTHER machine, which this laptop holds no event log for.
+ *
+ *  Everything but the id and the paths is unknown BY CONSTRUCTION: the frame
+ *  carries session ids and paths only (thesis §1.1), so no name is invented —
+ *  the line degrades to its bare `session X has also changed:` form — and the
+ *  summary states what this laptop knows, which is nothing beyond the id. Homed
+ *  beside `summarizeSession` because it is the other producer of this exact
+ *  shape, and a literal spelled at the call site is one field-addition away from
+ *  the two disagreeing.
+ *
+ *  `contested` is COPIED for the same reason `summarizeSession` copies it: the
+ *  caller's array is live state assembled per digest build. */
+export function remoteTeammateSummary(id: string, contested: string[]): TeammateSummary {
+  return {
+    id,
+    intent: null,
+    recentToolCalls: [],
+    ended: false,
+    contested: [...contested],
+    driverName: null,
+  };
 }
 
 export function buildTeammateDigest(others: TeammateSummary[]): string {
@@ -32,14 +150,29 @@ export function buildTeammateDigest(others: TeammateSummary[]): string {
   const lines: string[] = ["<teammates>"];
   for (const o of others) {
     const status = o.ended ? " (ended)" : "";
+    // `intent` and `target` are stripped HERE, on the way into the prompt
+    // (audit M2). Both are agent-authored — `set_intent`'s schema is a bare
+    // `z.string()` and the tool target is the SDK's raw `file_path`, appended
+    // before any permission gate resolves — so both can carry a newline, and
+    // one newline forges a whole peer entry in the block below. `o.id` stays
+    // verbatim for the reason the header comment gives: `SLUG` already bounds
+    // its characters upstream.
     lines.push(
-      `- session "${o.id}"${status}: ${o.intent ?? "no declared intent yet"}`,
+      `- session "${o.id}"${status}: ${stripControls(o.intent ?? "no declared intent yet")}`,
     );
     if (o.recentToolCalls.length > 0) {
       const activity = o.recentToolCalls
-        .map((c) => `${c.toolName}(${c.target})`)
+        .map((c) => `${stripControls(c.toolName)}(${stripControls(c.target)})`)
         .join(", ");
       lines.push(`  recent activity: ${activity}`);
+    }
+    // LAST line of this peer's block, indented like `recent activity:` — the
+    // digest reads peer-by-peer and the contested fact belongs to the peer
+    // whose block it sits in, not to a trailing group of its own. A peer with
+    // nothing contested pushes nothing, so an uncontested project's block is
+    // byte-identical to the pre-§6a one.
+    if (o.contested.length > 0) {
+      lines.push(`  ${contestedLineFor(o)}`);
     }
   }
   lines.push("</teammates>");
@@ -60,7 +193,14 @@ export interface OversightSessionDigest {
 
 /** Structured per-session digest for the oversight summarizer (spec §3).
  *  Reads event metadata only — never agent_text_delta/tool_result content:
- *  the overseer must not see transcript prose. */
+ *  the overseer must not see transcript prose.
+ *
+ *  Every free-text field is control-stripped as it is assembled (audit M2).
+ *  This struct exists for exactly one consumer — `runOversightSummarize`, which
+ *  interpolates each field into a line of an LLM prompt whose output is then
+ *  spliced into other sessions' prompts — so assembly IS the interpolation
+ *  boundary here, and stripping once at the producer is what keeps a second
+ *  consumer from having to remember. The source events are untouched. */
 export function oversightSessionDigest(
   id: string,
   events: LoggedEvent[],
@@ -74,12 +214,14 @@ export function oversightSessionDigest(
   let errorCount = 0;
   const openGates = new Set<string>();
   for (const ev of events) {
-    if (ev.type === "intent_update") intent = ev.text;
+    if (ev.type === "intent_update") intent = stripControls(ev.text);
     if (ev.type === "tool_call") {
       const input = (ev.input ?? {}) as Record<string, unknown>;
       toolCalls.push({
-        toolName: ev.toolName,
-        target: String(input.file_path ?? input.pattern ?? input.path ?? ""),
+        toolName: stripControls(ev.toolName),
+        target: stripControls(
+          String(input.file_path ?? input.pattern ?? input.path ?? ""),
+        ),
       });
     }
     if (ev.type === "user_message") promptCount++;
@@ -90,8 +232,8 @@ export function oversightSessionDigest(
   return {
     id,
     intent,
-    driverName,
-    participants,
+    driverName: driverName === null ? null : stripControls(driverName),
+    participants: participants.map(stripControls),
     recentToolCalls: toolCalls.slice(-5),
     promptCount,
     pendingGates: openGates.size,

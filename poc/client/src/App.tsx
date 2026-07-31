@@ -23,6 +23,7 @@ import { OversightPanel } from "./components/OversightPanel";
 import { InvitePanel } from "./components/InvitePanel";
 import { AgentStatus } from "./components/AgentStatus";
 import { oversightFresh } from "./oversightView";
+import { projectCollisions } from "./collisionView";
 import { InviteLanding } from "./components/InviteLanding";
 import { inviteTokenFrom } from "./inviteLink";
 import { Landing } from "./components/Landing";
@@ -225,6 +226,12 @@ function SessionView(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [projectSessions, pullThresholdMs, sessionId, pullTick],
   );
+
+  // Contested paths for the whole project, intersected ONCE per snapshot
+  // (spec §5). The touched sets are git-scale, so this must not re-run on every
+  // unrelated render — `projectSessions` is a new array only when a fresh
+  // snapshot lands, which is exactly when the answer can change.
+  const collisions = useMemo(() => projectCollisions(projectSessions), [projectSessions]);
 
   const setPullThreshold = (ms: number | null) => {
     setPullThresholdMs(ms);
@@ -526,6 +533,7 @@ function SessionView(props: {
       <Header
         signedInAs={props.signedInAs}
         pulls={pulls.length}
+        contested={collisions}
         projectId={projectId}
         sessionId={sessionId}
         model={derived.model}
@@ -571,6 +579,10 @@ function SessionView(props: {
           pulls={pulls}
           pullThresholdMs={pullThresholdMs}
           onPullThresholdChange={setPullThreshold}
+          // The SAME memo the header badge reads (`contested` above): one
+          // intersection per snapshot, and the two surfaces cannot disagree
+          // about which files are contested.
+          collisions={collisions}
         />
         <TodoPanel todos={derived.todos} />
       </div>

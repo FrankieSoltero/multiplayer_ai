@@ -33,6 +33,9 @@ const facts = (over: Partial<SessionFacts> = {}): SessionFacts => ({
   pendingGate: null,
   skills: [],
   repoKey: "github.com/acme/api",
+  // NON-NULL on purpose: these facts flow through snapshot assembly and the
+  // persister seam, so a real list discriminates pass-through from a drop.
+  touched: ["src/auth.ts"],
   lifecycle: "open",
   ...over,
 });
@@ -328,7 +331,14 @@ describe("HubStore snapshot assembly", () => {
       facts({
         participants: ["ana"],
         skills: [{ name: "deploy", description: "ship it" }],
-        pendingGate: { toolName: "bash", sinceTs: "2026-07-27T00:00:00.000Z" },
+        // A NON-NULL reason (spec §6b) on purpose: the deep copy has to carry
+        // the gate's reason line through too, and a null here would let a copy
+        // that drops the field pass unnoticed.
+        pendingGate: {
+          toolName: "bash",
+          sinceTs: "2026-07-27T00:00:00.000Z",
+          reason: "contested with session alpha",
+        },
       }),
     );
 
@@ -343,6 +353,7 @@ describe("HubStore snapshot assembly", () => {
     expect(again.sessions[0].pendingGate).toEqual({
       toolName: "bash",
       sinceTs: "2026-07-27T00:00:00.000Z",
+      reason: "contested with session alpha",
     });
   });
 });
@@ -391,7 +402,14 @@ describe("HubStore recordInputs", () => {
       facts({
         participants: ["ana"],
         skills: [{ name: "deploy", description: "ship it" }],
-        pendingGate: { toolName: "bash", sinceTs: "2026-07-27T00:00:00.000Z" },
+        // Non-null for the same reason as the snapshot copy above: this is a
+        // SECOND copy path (`recordInputs`), and a null reason here could not
+        // tell a copy that carries the field from one that drops it.
+        pendingGate: {
+          toolName: "bash",
+          sinceTs: "2026-07-27T00:00:00.000Z",
+          reason: "contested with session alpha",
+        },
       }),
     );
 
@@ -408,6 +426,7 @@ describe("HubStore recordInputs", () => {
     expect(again[0].facts.pendingGate).toEqual({
       toolName: "bash",
       sinceTs: "2026-07-27T00:00:00.000Z",
+      reason: "contested with session alpha",
     });
     expect(again[0].facts.intent).toBeNull();
     expect(again[0].facts.repoKey).toBe("github.com/acme/api");
@@ -631,6 +650,9 @@ describe("HubStore persister seam", () => {
     pendingGate: null,
     skills: [],
     repoKey: null,
+    // Null, not []: this fixture stands for a session the hub has no facts for
+    // yet, matching `emptyFacts` in hubStore.ts.
+    touched: null,
     lifecycle: "open",
   };
 
@@ -1267,7 +1289,15 @@ function applySequence(store: HubStore, rand: () => number, len: number, cover: 
       driverName: pick(USER_IDS),
       intent: rand() < 0.5 ? null : `work on ${sessionId}`,
       lastActivityTs: pick(STAMPS),
-      pendingGate: rand() < 0.3 ? { toolName: "Bash", sinceTs: pick(STAMPS) } : null,
+      // The reason is interpolated from `sessionId` rather than drawn from
+      // `rand()` on purpose: an extra draw would shift the whole seeded stream
+      // and silently re-roll every later op in the sequence. Every generated
+      // gate therefore carries a NON-NULL reason, so the hydration-equivalence
+      // deep-equal below discriminates a record/hydrate path that drops it.
+      pendingGate:
+        rand() < 0.3
+          ? { toolName: "Bash", sinceTs: pick(STAMPS), reason: `contested with session ${sessionId}` }
+          : null,
       skills: rand() < 0.3 ? [{ name: "brainstorm", description: "d" }] : [],
       repoKey: pick(REPO_KEYS),
       lifecycle: rand() < 0.2 ? "closed" : "open",
