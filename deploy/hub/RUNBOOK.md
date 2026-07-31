@@ -75,8 +75,9 @@ Confirm the boot journal names the store you expect (`hub store: sqlite
 A teammate's laptop gets a revocable device credential — no password is ever
 typed into the CLI:
 
-1. On the laptop: `mpai --hub https://YOUR.HUB.HOSTNAME`. It prints a **short
-   pairing code** and waits.
+1. On the laptop: `mpai --hub wss://YOUR.HUB.HOSTNAME/uplink`. (The CLI accepts
+   only `ws://`/`wss://` URLs, and the `/uplink` path is required — the hub
+   routes uplinks by it.) It prints a **short pairing code** and waits.
 2. In a browser already **signed in** to the hub (allowlisted GitHub account),
    open the hub and **approve** that code.
 3. The hub issues an **opaque bearer token**, stored only as a hash against a
