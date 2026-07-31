@@ -1,0 +1,38 @@
+# NOT YET VERIFIED against a real box — written for §8.10 (B4); verify before first use.
+# Install to /etc/systemd/system/multiplayer-ai-hub.service
+
+[Unit]
+Description=multiplayer-ai hub (the record)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mpai
+Group=mpai
+WorkingDirectory=/opt/multiplayer-ai/poc/hub
+# Secrets live here, never inline in this unit: unit files in
+# /etc/systemd/system are world-readable.
+EnvironmentFile=/etc/multiplayer-ai/hub.env
+# The hub builds with `npm run build` (tsc -p tsconfig.build.json) → dist/main.js.
+ExecStart=/usr/bin/node dist/main.js
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+# Unlike the relay unit, the hub runs no unconstrained agent subprocess — it
+# only holds the record — so real filesystem confinement costs nothing and is
+# taken. ProtectSystem=strict makes the whole tree read-only except the paths
+# named in ReadWritePaths below; ProtectHome hides /home entirely, which is why
+# MPAI_HOME and the backup dir are placed under /var, not the mpai home dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# The record (MPAI_HOME → hub.db + machine.json) and the backups the hub writes
+# before pruning. Keep these in sync with MPAI_HOME / HUB_BACKUP_DIR in hub.env.
+ReadWritePaths=/var/lib/multiplayer-ai /var/backups/multiplayer-ai
+
+[Install]
+WantedBy=multi-user.target

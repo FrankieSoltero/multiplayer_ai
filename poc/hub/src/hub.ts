@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { createServer, type IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
@@ -17,9 +19,24 @@ import {
 import { HubStore, type MachineInfo } from "./hubStore.js";
 import { HubDb } from "./hubDb.js";
 import { pairingRoutes, hashToken } from "./pairing.js";
+import {
+  TokenBucket,
+  clientIp,
+  MAX_SOCKETS,
+  UPGRADES_PER_MIN_PER_IP,
+  HTTP_AUTH_PER_MIN_PER_IP,
+  MSGS_PER_WINDOW,
+  MSG_WINDOW_MS,
+  BUFFERED_MAX_BYTES,
+} from "./limits.js";
 
 const SLUG = /^[a-z0-9-]{1,40}$/;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
+
+/** How often the disk-headroom gate is allowed to consult the filesystem
+ *  (spec B1). The verdict is cached between checks, so a hot publish stream
+ *  costs at most one `statfs` per this window rather than one per frame. */
+const HEADROOM_CHECK_INTERVAL_MS = 10_000;
 
 /** The WebSocket close code an uplink is refused with when its bearer is
  *  missing, unknown, revoked, or bound to a different machineId (spec A2, A3).
@@ -95,6 +112,67 @@ export interface HubOptions {
    *  so /auth/me answers `{enabled:false}` instead of the SPA fallback. The
    *  hub reuses the server package's auth module unchanged. */
   auth?: AuthConfig;
+  /** Retention window in days (spec B1, OPT-IN). Undefined → keep forever, the
+   *  default: the record is the product (§8.7), so nothing prunes unless this is
+   *  set. When set, the hub deletes event rows older than the cutoff ONCE at
+   *  boot, after open/migration and BEFORE hydration. */
+  retentionDays?: number;
+  /** Injectable clock for the retention cutoff AND the backup filename (test
+   *  seam). Defaults to `Date.now`; a test pins it so both are deterministic. */
+  now?: () => number;
+  /** Backups (spec B1, OPT-IN). Undefined → no backup, no timer, no directory:
+   *  the record is still the live product, backups are the operator's belt.
+   *  When set on a FILE-backed record, one backup is taken at boot BEFORE the
+   *  retention prune (so a prune's deletions stay recoverable, §8.7) and then
+   *  every `intervalMs` on the live handle; only the `keep` newest are retained.
+   *  A `:memory:` record (or none) has nothing durable to copy, so a configured
+   *  backup is silently disabled with one boot line. Backup failure is NEVER
+   *  fatal — logged once per attempt, the hub keeps serving. */
+  backup?: { dir: string; intervalMs: number; keep: number };
+  /** Disk-headroom floor in bytes (spec B1). When set on a FILE-backed record,
+   *  the hub refuses to boot if free space is already below it, and refuses
+   *  `publish` frames at runtime whenever it drops below it — the loud refusal
+   *  that replaces the disk-full crash-loop. Undefined → no headroom gate at
+   *  all (the default for a hub that opted out); `:memory:`/no record never
+   *  checks regardless, having no unbounded journal to defend. */
+  minFreeBytes?: number;
+  /** Test seam for free-space measurement. Given the record's directory, returns
+   *  the bytes free on its filesystem. Defaults to `fs.statfsSync(dir)` →
+   *  `bsize * bavail`; a test injects a deterministic value so the boot refusal,
+   *  runtime drop, recovery and cadence are all exercised without a real disk. */
+  freeBytes?: (dir: string) => number;
+  /** Trust `X-Forwarded-For` for the client IP the rate limiters key on (spec
+   *  B2). Off by default: an untrusted client could otherwise forge XFF to pick
+   *  its own (empty) bucket and slip every per-IP limit. Only set when the hub
+   *  sits behind a proxy that overwrites this header. Consumes
+   *  `HubOpsConfig.trustProxy`. */
+  trustProxy?: boolean;
+  /** Allowed browser Origin (spec B3). When set, a WS upgrade that carries an
+   *  `Origin` header not exactly equal to this is refused — the cross-site
+   *  browser-hijack defense. Unset → no check (today's behavior). Consumes
+   *  `HubOpsConfig.origin`. */
+  origin?: string;
+}
+
+/** Only `hub-YYYYMMDD-HHmmssZ.db` files — the exact names `backupFileName`
+ *  emits — are ever eligible for keep-N deletion. A hand-dropped note or a
+ *  manually-named copy in the same directory is left strictly alone. */
+const BACKUP_NAME = /^hub-\d{8}-\d{6}Z\.db$/;
+
+/** The one boot line printed when a backup is configured but the record is not
+ *  durable (`:memory:`, or no record at all): there is nothing to copy, so the
+ *  operator is told the setting had no effect rather than left guessing. */
+const BACKUPS_DISABLED = "backups: disabled — no durable record to back up";
+
+/** The backup filename for a UTC instant: `hub-${YYYYMMDD}-${HHmmss}Z.db`
+ *  (spec B1). UTC and zero-padded so the lexicographic filename sort is exactly
+ *  chronological — which is what keep-N relies on to delete the oldest. */
+function backupFileName(ms: number): string {
+  const d = new Date(ms);
+  const p2 = (n: number): string => String(n).padStart(2, "0");
+  const date = `${d.getUTCFullYear()}${p2(d.getUTCMonth() + 1)}${p2(d.getUTCDate())}`;
+  const time = `${p2(d.getUTCHours())}${p2(d.getUTCMinutes())}${p2(d.getUTCSeconds())}`;
+  return `hub-${date}-${time}Z.db`;
 }
 
 /** Fail-stop (spec §3.6): log the error and stop the process. No catch-and-
@@ -121,8 +199,18 @@ export interface HubOptions {
  *  refusal (a hub version rollback) recovers by running the newer hub again or
  *  restoring the pre-upgrade backup — the back-up-before-upgrade convention,
  *  ruling 7 again. */
+/** The exact bytes `defaultFatal` writes to stderr: the stack when the error
+ *  has one, else the message — always newline-terminated so it reads cleanly
+ *  in a log tail. */
+export function fatalMessage(err: Error): string {
+  return `hub fatal: ${err.stack ?? err.message}\n`;
+}
+
 export function defaultFatal(err: Error): void {
-  console.error(err);
+  // Synchronous write (not console.error, which buffers): the process exits
+  // on the next line, and a buffered write can lose the crash's own
+  // diagnostic on the way out (spec B5, tech-debt §2.8's diagnostic half).
+  fs.writeSync(2, fatalMessage(err));
   process.exit(1);
 }
 
@@ -142,9 +230,163 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
   // held by a live hub — rejects this promise before a socket is created, so a
   // hub that cannot honor the record it was pointed at never serves (spec §3.6).
   const db = opts.db ?? (opts.dbPath === undefined ? null : new HubDb(opts.dbPath));
+  let backupTimer: NodeJS.Timeout | undefined;
+
+  // --- Rate limits, caps, backpressure (spec §8.10 B2) ---
+  // One injected clock drives every limiter (and the disk-headroom cadence), so
+  // a test pins all of them at once. Two per-IP token buckets — one for WS
+  // upgrades, one for `/auth/*` + `/pair/*` HTTP — each refilling its cap over a
+  // rolling minute. `socketCount` is the hard connection ceiling, incremented on
+  // admit and decremented on every close.
+  const clock = opts.now ?? Date.now;
+  const trustProxy = opts.trustProxy ?? false;
+  const upgradeBucket = new TokenBucket(UPGRADES_PER_MIN_PER_IP, UPGRADES_PER_MIN_PER_IP / 60_000, clock);
+  const httpBucket = new TokenBucket(HTTP_AUTH_PER_MIN_PER_IP, HTTP_AUTH_PER_MIN_PER_IP / 60_000, clock);
+  let socketCount = 0;
+  /** The IP a rate-limit bucket keys on for this request. XFF is honored only
+   *  when `trustProxy` is set (`clientIp` ignores it otherwise). */
+  const clientIpOf = (req: IncomingMessage): string => {
+    const xff = req.headers["x-forwarded-for"];
+    return clientIp(req.socket.remoteAddress, Array.isArray(xff) ? xff[0] : xff, trustProxy);
+  };
+
+  // --- Disk-headroom gate (spec B1) ---
+  // Default seam: bytes free on the record's filesystem. A test injects a
+  // deterministic value so the boot refusal, runtime drop, recovery and cadence
+  // are exercised without touching a real disk.
+  const freeBytes =
+    opts.freeBytes ??
+    ((dir: string): number => {
+      const stat = fs.statfsSync(dir);
+      return stat.bsize * stat.bavail;
+    });
+  // The directory whose free space the gate watches: the record's own parent.
+  // Non-null ONLY for a file-backed record with a known path AND a configured
+  // floor. An in-memory/no-record hub has no unbounded journal to defend, so it
+  // is never checked (spec B1); a floor must be set to have something to compare
+  // against; and a file-backed `db` seam given no `dbPath` has no directory to
+  // stat, so it too is left unchecked rather than guessed at.
+  const headroomDir =
+    db !== null && !db.inMemory && opts.dbPath !== undefined && opts.minFreeBytes !== undefined
+      ? path.dirname(opts.dbPath)
+      : null;
+  // Cached verdict: `freeBytes` is consulted at most once per
+  // HEADROOM_CHECK_INTERVAL_MS and the answer reused between, so a hot publish
+  // stream never becomes a `statfs` storm. `lowHeadroom` is the current state;
+  // the console line fires once on the transition INTO it and once on the way
+  // OUT, never per frame.
+  let lowHeadroom = false;
+  let lastHeadroomCheck = Number.NEGATIVE_INFINITY;
+
+  /** Whether a `publish` may proceed. Re-consults `freeBytes` at most once per
+   *  interval (caching the verdict between) and logs exactly once on entering
+   *  the low state and once on recovery. A hub with nothing to defend
+   *  (`headroomDir` null) always passes. */
+  function headroomOk(): boolean {
+    if (headroomDir === null) return true;
+    const t = (opts.now ?? Date.now)();
+    if (t - lastHeadroomCheck >= HEADROOM_CHECK_INTERVAL_MS) {
+      lastHeadroomCheck = t;
+      const free = freeBytes(headroomDir);
+      const nowLow = free < opts.minFreeBytes!;
+      if (nowLow && !lowHeadroom) {
+        console.error(
+          `hub: disk headroom low — ${free} bytes free at ${headroomDir}, floor is ${opts.minFreeBytes} — refusing publishes until space is freed`,
+        );
+      } else if (!nowLow && lowHeadroom) {
+        console.error(
+          `hub: disk headroom recovered — ${free} bytes free at ${headroomDir}, publishes resume`,
+        );
+      }
+      lowHeadroom = nowLow;
+    }
+    return !lowHeadroom;
+  }
+
+  // Boot preflight (spec B1): the loud refusal that REPLACES the disk-full
+  // crash-loop documented on `defaultFatal` below. A file-backed hub that boots
+  // already below the floor must not start serving only to fatal on its first
+  // publish — it refuses HERE, before any socket, naming the shortfall and how
+  // to clear it. Runs before the backup/prune/load block and seeds the runtime
+  // cache so the first publishes reuse this verdict. Closes only a handle THIS
+  // call opened (never a caller's `db` seam), exactly like the hydration catch.
+  if (headroomDir !== null) {
+    const free = freeBytes(headroomDir);
+    lastHeadroomCheck = (opts.now ?? Date.now)();
+    lowHeadroom = free < opts.minFreeBytes!;
+    if (lowHeadroom) {
+      if (!opts.db) db!.close();
+      throw new Error(
+        `insufficient disk headroom: ${free} bytes free at ${headroomDir}, floor is ${opts.minFreeBytes} — free space or lower HUB_MIN_FREE_BYTES`,
+      );
+    }
+  }
+
+  /** One backup of the live record: ensure the dir (0700 when first created),
+   *  VACUUM INTO a timestamped file, then keep only the `keep` newest matching
+   *  files. Wrapped so NOTHING here is fatal — a same-name collision, an
+   *  unwritable dir, a full disk: each is logged once (naming the path) and the
+   *  hub keeps serving, because the record is still live (spec B1, §8.7). */
+  function takeBackup(backup: { dir: string; keep: number }): void {
+    const nowFn = opts.now ?? Date.now;
+    const dest = path.join(backup.dir, backupFileName(nowFn()));
+    try {
+      if (!fs.existsSync(backup.dir)) {
+        fs.mkdirSync(backup.dir, { recursive: true, mode: 0o700 });
+        fs.chmodSync(backup.dir, 0o700);
+      }
+      // db is non-null and file-backed on every path that reaches here.
+      db!.backupTo(dest);
+      // keep-N: filename sort is chronological (UTC, zero-padded), so the
+      // oldest are the first, and ONLY pattern-matching files are candidates —
+      // a hand-dropped note in the same dir is never deleted.
+      const matches = fs.readdirSync(backup.dir).filter((f) => BACKUP_NAME.test(f)).sort();
+      for (const stale of matches.slice(0, Math.max(0, matches.length - backup.keep))) {
+        fs.rmSync(path.join(backup.dir, stale), { force: true });
+      }
+    } catch (err) {
+      console.error(
+        `hub backup to ${dest} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   let store: HubStore;
   if (db) {
+    // Backup (spec B1) — BEFORE the prune, per the canonical boot order
+    // (open/migrate → BACKUP → prune → load), so every deletion the prune makes
+    // is already captured in this boot's backup and stays recoverable (§8.7).
+    // Outside the hydration try below: a backup failure is never fatal, so it
+    // must not join the block that refuses the boot.
+    if (opts.backup) {
+      if (db.inMemory) {
+        // Nothing durable to copy — the setting had no effect, and silence would
+        // read as "it worked". No dir is created and no timer is armed.
+        console.log(BACKUPS_DISABLED);
+      } else {
+        takeBackup(opts.backup);
+        // Subsequent hot backups on the live handle. `unref()` so a hub with
+        // nothing else to do can still exit and a test never hangs on it;
+        // cleared in close().
+        const { intervalMs } = opts.backup;
+        backupTimer = setInterval(() => takeBackup(opts.backup!), intervalMs);
+        backupTimer.unref();
+      }
+    }
     try {
+      // Canonical boot order (spec B1): open/migrate (done in the constructor)
+      // → BACKUP (above) → PRUNE → load(). The prune runs BEFORE hydration so
+      // memory boots from the already-pruned record and the two never diverge;
+      // opt-in, so nothing deletes unless `retentionDays` is set. One-shot — a
+      // long-running hub prunes only at its next restart.
+      if (opts.retentionDays !== undefined) {
+        const now = opts.now ?? Date.now;
+        const cutoff = new Date(now() - opts.retentionDays * 86_400_000).toISOString();
+        const pruned = db.pruneEventsBefore(cutoff);
+        // Prints even for 0 rows, so an operator can see the prune ran and its
+        // window took effect (in addition to main.ts's config-announce line).
+        console.log(`retention: pruned ${pruned} event row(s) older than ${opts.retentionDays}d`);
+      }
       store = new HubStore(db, db.load());
     } catch (err) {
       // A read that fails AFTER the handle opened still refuses the boot — and
@@ -156,6 +398,9 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     }
   } else {
     store = new HubStore();
+    // No record at all: a configured backup has nothing durable to copy, said
+    // once so the operator knows the setting had no effect.
+    if (opts.backup) console.log(BACKUPS_DISABLED);
   }
   const uplinks = new Map<string, WebSocket>();
   /** The last `contested` frame sent for each session, so a push only writes
@@ -215,7 +460,17 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
   const handlePairing = pairingRoutes({ auth: opts.auth, devices: db, onRevoked });
 
   const send = (socket: WebSocket, msg: unknown) => {
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
+    if (socket.readyState !== WebSocket.OPEN) return;
+    // Backpressure (spec B2): a socket whose kernel/user send buffer has already
+    // outrun BUFFERED_MAX_BYTES is a reader that cannot keep up. Buffering more
+    // only grows unbounded memory behind a dead pipe, so close it with 1013 and
+    // let a reconnect replay from the record instead. The one choke point every
+    // outbound frame passes through, so it covers browsers AND uplinks alike.
+    if (socket.bufferedAmount > BUFFERED_MAX_BYTES) {
+      socket.close(1013, "backpressure");
+      return;
+    }
+    socket.send(JSON.stringify(msg));
   };
   const down = (socket: WebSocket, frame: DownFrame) => send(socket, frame);
 
@@ -480,6 +735,19 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       res.end(req.method === "HEAD" ? undefined : JSON.stringify({ status: "ok" }));
       return;
     }
+    // Per-IP HTTP rate limit (spec B2), BEFORE handleAuth/handlePairing consume
+    // the request: `/auth/*` and `/pair/*` are the credential and pairing-code
+    // surfaces, so a per-IP flood there is refused with 429 before it can touch
+    // OAuth or the device store. Scoped to exactly those two prefixes —
+    // `/healthz` already returned above and static assets fall through
+    // unlimited, so neither is ever counted against the bucket.
+    if (pathname.startsWith("/auth/") || pathname.startsWith("/pair/")) {
+      if (!httpBucket.take(clientIpOf(req))) {
+        res.writeHead(429, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "rate limited" }));
+        return;
+      }
+    }
     // AFTER /healthz, BEFORE serveStatic (spec §4.2): a returned `true` means
     // authRoutes consumed the request. Any /auth/* path is answered here — with
     // auth on or off — so none reaches the SPA fallback below.
@@ -504,6 +772,47 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     // Without a listener an "error" is an unhandled EventEmitter error and
     // crashes the process; "close" always follows and does the cleanup.
     socket.on("error", () => {});
+    // Hard connection cap (spec B2): the global ceiling, checked FIRST — before
+    // the per-IP rate and before any dispatch — because an accepted-then-refused
+    // socket still costs a file descriptor. The 513th (MAX_SOCKETS = 512) is
+    // closed immediately with 1013; refused sockets are never counted.
+    if (socketCount >= MAX_SOCKETS) {
+      socket.close(1013, "rate limited");
+      return;
+    }
+    // Per-IP upgrade rate (spec B2): the 31st upgrade from one IP inside a
+    // minute is refused with 1013, uplinks and browsers alike (the socket cap's
+    // "browser or uplink" reach). Keyed by the proxy-aware client IP so one IP
+    // cannot exhaust the hub's connection budget.
+    if (!upgradeBucket.take(clientIpOf(req))) {
+      socket.close(1013, "rate limited");
+      return;
+    }
+    // Origin check (spec B3): AFTER the Task 6 caps (cheapest checks first) and
+    // BEFORE uplink/browser dispatch. When an allowed origin is configured and a
+    // browser presents an `Origin` header that is not it (exact string compare),
+    // the cross-site upgrade is refused with 1008 — a protocol/policy violation,
+    // the same family as the frame-shape faults, distinct from the 1013 overload
+    // refusals above. A connection carrying NO Origin header — every uplink, the
+    // CLI, and non-browser tools — is ADMITTED: this check defends against a
+    // browser on another site being driven to open this socket, and a non-browser
+    // can forge any Origin it likes, so refusing the header-less case buys no
+    // security and would break every uplink. `origin` unset → no check at all.
+    if (
+      opts.origin !== undefined &&
+      req.headers.origin !== undefined &&
+      req.headers.origin !== opts.origin
+    ) {
+      socket.close(1008, "origin not allowed");
+      return;
+    }
+    // Admitted: count the slot and reclaim it on close. Registered here (not in
+    // the per-role handlers) so the decrement fires for every admitted socket
+    // exactly once, whatever path it took.
+    socketCount += 1;
+    socket.on("close", () => {
+      socketCount -= 1;
+    });
     if ((req.url ?? "/").startsWith("/uplink")) handleUplink(socket, req);
     // The cookie is read ONCE, here at the upgrade, and held on the channel
     // for the life of the connection: WS messages carry no cookies, so a
@@ -540,6 +849,16 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
      *  with the connection and leaks nothing. */
     const reportedCollisions = new Set<string>();
 
+    // UPLINK MESSAGE-RATE EXEMPTION (spec B2): unlike a browser, an uplink is NOT
+    // subject to the per-connection message-rate close. Two reasons it would be
+    // wrong to apply here. First, an uplink is AUTHENTICATED (Branch A: a bearer
+    // matched a device record at the upgrade above), so it is not an anonymous
+    // flood source the cap exists to stop. Second, a reconnecting laptop
+    // legitimately replays a large backlog as fast as the socket allows, and each
+    // frame is already bounded by `maxPayload = MAX_FRAME_BYTES` — so the honest
+    // resume path would trip a 200-msg/10s cap and be closed mid-replay, turning
+    // recovery into a flap. Backpressure (the shared `send`) still protects the
+    // hub's own memory; frame-shape faults still close with 1008 below.
     socket.on("message", (raw) => {
       let parsed: unknown;
       try {
@@ -628,6 +947,22 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         return;
       }
       if (frame.t === "publish") {
+        // Disk-headroom gate (spec B1). Once free space has fallen below the
+        // floor, the publish is refused BEFORE `store.publish`: nothing is
+        // written, nothing is fanned out, and NO `{type:"error"}` frame is sent
+        // to the browser — a retry would only re-hit the full disk. Because the
+        // frame is dropped before the store, the session's high-water mark never
+        // advances past it, so `resumeOffsets` keeps asking the owning laptop to
+        // re-send it and the resume protocol back-fills the moment space
+        // recovers. `headroomOk` consults the disk at most once per
+        // HEADROOM_CHECK_INTERVAL_MS and logs once per transition, so a hot
+        // publish stream costs no per-frame syscall and no per-frame log.
+        //
+        // ONLY publish is gated. facts/attach/membership writes still apply
+        // while low: they are small and bounded, the floor exists to defend the
+        // UNBOUNDED event journal, and refusing identity/membership writes would
+        // break the UI for no headroom gain.
+        if (!headroomOk()) return;
         // A laptop may publish only for sessions it owns; the store checks
         // ownership and returns nothing for a session it does not own
         // (spec §3.5 rule 2).
@@ -771,7 +1106,24 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       down(uplink, { t: "tunnel", channelId, identity: channel.identity, payload });
     };
 
+    // Per-connection message-rate cap for a BROWSER (spec B2): a fixed window off
+    // the injected clock. The 201st message (MSGS_PER_WINDOW = 200) inside
+    // MSG_WINDOW_MS is a client-side message flood — a protocol misuse — so it is
+    // closed with 1008, distinct from the 1013 backpressure/overload refusals.
+    // Uplinks are deliberately NOT subject to this (see handleUplink).
+    let msgWindowStart = clock();
+    let msgCount = 0;
     socket.on("message", (raw) => {
+      const t = clock();
+      if (t - msgWindowStart >= MSG_WINDOW_MS) {
+        msgWindowStart = t;
+        msgCount = 0;
+      }
+      msgCount += 1;
+      if (msgCount > MSGS_PER_WINDOW) {
+        socket.close(1008, "message rate exceeded");
+        return;
+      }
       let msg: any;
       try {
         msg = JSON.parse(raw.toString());
@@ -1182,6 +1534,7 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     port,
     close: () =>
       new Promise<void>((resolve, reject) => {
+        if (backupTimer) clearInterval(backupTimer);
         for (const timer of pushTimers.values()) clearTimeout(timer);
         pushTimers.clear();
         for (const client of wss.clients) client.terminate();

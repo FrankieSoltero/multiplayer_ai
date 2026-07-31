@@ -66,6 +66,15 @@ describe("refusalText", () => {
     expect(text).toMatch(/run: mpai\b/);
   });
 
+  it("fills the real hub url and project id into the command when known", () => {
+    // With context the command is copy-pasteable as-is — no placeholder left
+    // for the user to decode. Partial context falls back per placeholder.
+    expect(refusalText("no-machine", { hubUrl: "ws://hub.local:4000", projectId: "acme" }))
+      .toBe("no machine is online — run: mpai --hub ws://hub.local:4000 --project acme");
+    expect(refusalText("no-machine", { projectId: "acme" }))
+      .toBe("no machine is online — run: mpai --hub <url> --project acme");
+  });
+
   it("covers every refusal canAct can produce, with no two alike", () => {
     // Guards the failure mode a table test cannot see: a new ActRefusal added
     // to canAct but not to this table, or two arms accidentally sharing copy.

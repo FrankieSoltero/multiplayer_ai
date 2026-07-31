@@ -16,11 +16,15 @@ export function canAct(project: ProjectSummary | null, userId: string): ActRefus
   return null;
 }
 
-export function refusalText(refusal: ActRefusal): string {
+export function refusalText(
+  refusal: ActRefusal,
+  ctx?: { hubUrl?: string; projectId?: string },
+): string {
   switch (refusal) {
     case "unknown-project": return "this project no longer exists";
     case "not-a-member": return "you are spectating — join this project to work in it";
     case "not-active": return "this project is closed";
-    case "no-machine": return "no machine is online — run: mpai --hub <url> --project <id>";
+    case "no-machine":
+      return `no machine is online — run: mpai --hub ${ctx?.hubUrl ?? "<url>"} --project ${ctx?.projectId ?? "<id>"}`;
   }
 }

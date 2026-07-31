@@ -1,6 +1,6 @@
 import { startHub } from "./hub.js";
 import { hubDbPath, storeLogLine } from "./bootConfig.js";
-import { hubAuthFrom } from "./hubEnv.js";
+import { hubAuthFrom, hubConfigFrom, opsBootLines } from "./hubEnv.js";
 
 // Auth is all-or-nothing (spec §4.5): a partial config would silently run
 // anonymous and look like a bug, so a half-set environment takes the process
@@ -12,10 +12,16 @@ if (!authResult.ok) {
 }
 const auth = authResult.auth;
 
-const port = Number(process.env.PORT ?? 4000);
-// Loopback by default, like the server (A1a): the deployed port is reachable
-// only through the reverse proxy. Set HOST=0.0.0.0 for LAN access.
-const host = process.env.HOST ?? "127.0.0.1";
+// Operating knobs, all validated together (spec §3, B6): a typo REFUSES BOOT
+// with a named error rather than silently defaulting. HOST fail-closed lives
+// here because it depends on whether auth was configured above.
+const configResult = hubConfigFrom(process.env, auth);
+if (!configResult.ok) {
+  console.error(`config error: ${configResult.error}`);
+  process.exit(1);
+}
+const config = configResult.config;
+const { port, host } = config;
 // Home-anchored, `HUB_DB` overriding (spec §8a.2): the launch directory never
 // decides where the record lives. Resolved BEFORE the hub starts so the boot
 // line below names the same path the hub opened, not a second guess at it.
@@ -31,6 +37,25 @@ const { port: actual } = await startHub({
   staticDir: process.env.CLIENT_DIST,
   dbPath,
   auth,
+  // OPT-IN retention (spec B1): null (keep forever) becomes undefined, which
+  // startHub reads as "never prune". A set value prunes once at boot.
+  retentionDays: config.retentionDays ?? undefined,
+  // OPT-IN backups (spec B1): null (no backups) becomes undefined. A set value
+  // takes one backup at boot (before the prune) and one every intervalMs.
+  backup: config.backup ?? undefined,
+  // Disk-headroom floor (spec B1): always a number here (defaults to 100 MiB in
+  // hubConfigFrom), so a file-backed hub refuses to boot below it and refuses
+  // publishes that would drive the record onto a full disk. A :memory: hub
+  // never checks. The default seam (fs.statfsSync) is used; only tests inject one.
+  minFreeBytes: config.minFreeBytes,
+  // Trust X-Forwarded-For for the rate limiters' client IP only when explicitly
+  // opted in (HUB_TRUST_PROXY=1). Off, an untrusted client cannot forge XFF to
+  // choose its own per-IP bucket (spec B2).
+  trustProxy: config.trustProxy,
+  // Allowed browser Origin (spec B3): null (unset) becomes undefined, which
+  // startHub reads as "no origin check". A set value refuses cross-site WS
+  // upgrades whose Origin header does not match exactly.
+  origin: config.origin ?? undefined,
 });
 
 console.log(`multiplayer-ai hub listening on http://${host}:${actual}`);
@@ -44,3 +69,5 @@ if (auth) {
 } else {
   console.log("auth OFF — development hub, do NOT expose this to the internet");
 }
+// One line per enabled/non-default operating control; nothing for the defaults.
+for (const line of opsBootLines(config)) console.log(line);

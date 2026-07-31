@@ -545,9 +545,26 @@ by accident.
 *What:* running a hub for real — deployment, TLS, payload limits, rate limiting, retention,
 audit, host settings.
 
-*Today:* deployment wiring exists in-repo; nothing is deployed. The hub already enforces a
-pre-authentication payload limit, and the standalone server now matches it (`docs/tech-debt.md`
-§1.1, resolved) — TLS, rate limiting, retention/backup and host settings are what remain open.
+*Today:* shipped at the code level; nothing has run on a real box yet. `hubConfigFrom`
+(`hubEnv.ts`) validates every operating var at boot — `HUB_ORIGIN`, `HUB_RETENTION_DAYS`,
+`HUB_BACKUP_DIR`/`_INTERVAL_MS`/`_KEEP`, `HUB_MIN_FREE_BYTES`, `HUB_TRUST_PROXY` — and refuses to
+boot on a malformed value with a named error; `HOST` is fail-closed, refusing to boot a
+non-loopback bind that has no auth configured rather than exposing an anonymous hub. Retention is
+opt-in: unset keeps every event forever (a deliberate stance, not a gap), and when set, boot-time
+pruning runs open/migrate → backup → prune → load, with `nextEventId` seeded from the max *stored*
+id so a prune never disturbs sequence continuity and `sessions` rows are never pruned. Hot backups
+(`VACUUM INTO`) run at boot before any prune and on an interval thereafter, keep the newest N, are
+never fatal, and write 0700 dirs / 0600 files. A disk-headroom preflight refuses to boot below
+`HUB_MIN_FREE_BYTES`, and a runtime gate refuses publishes while headroom is low (logged once,
+recovering via reconnect) — replacing the old disk-full crash-loop with a loud refusal. Connections
+are capped at 512 sockets, upgrades and `/auth`/`/pair` are rate-limited per IP (30/min, 429 on the
+HTTP paths), a 200-msg/10s flood closes browser sockets (uplinks exempt), and a 4 MB
+`bufferedAmount` triggers a backpressure close. The WebSocket upgrade checks `Origin` against
+`HUB_ORIGIN` and closes 1008 on a mismatch, admitting header-less clients unchanged. `deploy/hub/`
+carries a Caddyfile, systemd unit, `env.example`, and a RUNBOOK — present but explicitly
+**UNVERIFIED**: written for this section, never exercised against a real box because none exists
+to test on. D12's exposure gate is satisfied at the code level; real-box verification is the one
+item this section leaves open.
 
 *Final state:* a hub that can be exposed to a network beyond a trusted one. **This section is the
 gate on that exposure** (D12) and on nothing else.

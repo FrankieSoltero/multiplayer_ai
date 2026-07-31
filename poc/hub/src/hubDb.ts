@@ -140,6 +140,11 @@ interface DeviceRowOut {
  *  two event streams into one journal (spec §3.1, §8a.3). */
 export class HubDb implements HubPersister, DeviceStore {
   private readonly db: Database.Database;
+  /** `true` for a `:memory:` record — nothing durable, so there is nothing to
+   *  back up (spec B1). Read by the hub to decide whether a configured backup
+   *  runs at all; `lockPath` can't answer this, since `{ skipLock: true }` is
+   *  also lock-less yet very much file-backed. */
+  readonly inMemory: boolean;
   /** null for `:memory:` and for `{ skipLock: true }` — the only two ways to
    *  run without one. */
   private readonly lockPath: string | null;
@@ -166,6 +171,7 @@ export class HubDb implements HubPersister, DeviceStore {
    *  live writers on one record is the failure the lock exists to prevent. */
   constructor(dbPath: string, opts?: { skipLock?: boolean }) {
     const inMemory = dbPath === MEMORY_PATH;
+    this.inMemory = inMemory;
     if (!inMemory) {
       const dir = path.dirname(dbPath);
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -201,6 +207,11 @@ export class HubDb implements HubPersister, DeviceStore {
         // WAL is what makes "committed" mean "survives process death" for a
         // reader that opens the file afterwards. Meaningless for `:memory:`.
         this.db.pragma("journal_mode = WAL");
+        // The other half of B1's unbounded-journal blast radius (the prune is
+        // the first): cap the WAL at 64 MiB so a burst between checkpoints
+        // cannot grow the journal without bound. Only meaningful in WAL, so it
+        // rides alongside the pragma above and skips `:memory:`.
+        this.db.pragma("journal_size_limit = 67108864");
       }
       this.db.exec(SCHEMA_DDL);
       this.db
@@ -361,6 +372,21 @@ export class HubDb implements HubPersister, DeviceStore {
     return { projects, machines, sessions };
   }
 
+  /** A hot, atomic backup of the live record to `destPath` (spec B1, §8a
+   *  ruling 7). `VACUUM INTO` runs against the open handle — no lock conflict
+   *  with a concurrent publish — and writes ONE self-contained database file,
+   *  sidestepping the `.db`/`-wal`/`-shm` trio-copy hazard a plain file copy
+   *  would have. The copy is tightened to `0600`: it holds the same prompts,
+   *  userIds and file paths the live record does (spec §8a.7).
+   *
+   *  THROWS if `destPath` already exists — that is SQLite's own refusal to
+   *  overwrite, surfaced here rather than swallowed; the caller (the hub) treats
+   *  a failed backup as non-fatal and logs it. */
+  backupTo(destPath: string): void {
+    this.db.prepare("VACUUM INTO ?").run(destPath);
+    fs.chmodSync(destPath, 0o600);
+  }
+
   /** Closes the handle and releases the lock, in that order, so the file is
    *  never advertised as free while this process still holds it open.
    *  Idempotent: shutdown paths may reach it twice. */
@@ -502,6 +528,33 @@ export class HubDb implements HubPersister, DeviceStore {
         `eventsAppended for unknown session "${sessionId}" in "${projectId}" with no newSession`,
       );
     }
+  }
+
+  /** Retention prune (spec B1, OPT-IN): delete every event row whose payload
+   *  timestamp is strictly older than `cutoffIso`, returning how many rows went.
+   *  Called ONCE at boot, after open/migration and BEFORE `load()`, so memory
+   *  hydrates from the already-pruned record and never diverges from it.
+   *
+   *  `events` ONLY — `sessions` rows (facts, last_run_id, last_seq) are left
+   *  exactly as they were, so a pruned session still reports its offsets and
+   *  `resumeOffsets` does not ask its laptop to re-send a run it already has.
+   *
+   *  Two guards make the comparison fail-safe TOWARD retention (a doubtful row
+   *  is kept, never dropped): `json_type(...) = 'text'` is required, so a row
+   *  with NO `ts` (`json_type` → NULL) and a row with a NON-STRING `ts` (a
+   *  number sorts BELOW any string in SQLite and would otherwise delete) are
+   *  both kept; only a real ISO string is ever compared. Comparisons are
+   *  lexicographic, which is exactly chronological for the zero-padded ISO-8601
+   *  the log writes. */
+  pruneEventsBefore(cutoffIso: string): number {
+    const result = this.db
+      .prepare(
+        `DELETE FROM events
+           WHERE json_type(event_json, '$.ts') = 'text'
+             AND json_extract(event_json, '$.ts') < ?`,
+      )
+      .run(cutoffIso);
+    return result.changes;
   }
 
   /** Approve or re-pair a device (spec §A2). `ON CONFLICT DO UPDATE`, never

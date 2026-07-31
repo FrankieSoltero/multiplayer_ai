@@ -1,0 +1,26 @@
+# NOT YET VERIFIED against a real box — written for §8.10 (B4); verify before first use.
+#
+# Caddy terminates TLS and reverse-proxies everything to the hub's Node process,
+# which serves the WebSocket, the /auth/* and /pair/* routes, /healthz, and
+# (when CLIENT_DIST is set) the built client — all from one origin.
+# reverse_proxy passes WebSocket upgrades through natively — no extra config.
+
+hub.example.com {  # ← replace with your hub's hostname
+    encode gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options nosniff
+        # Not boilerplate: this product's core interaction is a human clicking
+        # "approve" on a privileged action (including pairing a laptop). Without
+        # frame denial that UI can be clickjacked via an invisible overlaid
+        # iframe to harvest a real approval.
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+    }
+
+    # The hub binds loopback on 4000 (hubEnv.ts DEFAULT_PORT); Caddy is the only
+    # thing that should reach it. Set HUB_TRUST_PROXY=1 in the env so the hub
+    # reads the real client IP from Caddy's X-Forwarded-For for per-IP limits.
+    reverse_proxy 127.0.0.1:4000
+}

@@ -322,32 +322,43 @@ starts attached instead of starting as a candidate the operator has to re-attach
 design call on ordering (persisted state vs. a candidate the scan no longer finds, or a candidate
 whose root moved) before it is a patch rather than a decision.
 
-### 2.8 No retention/compaction/backup — the events table grows without bound
+### 2.8 No retention/compaction/backup — the events table grows without bound — RESOLVED (PRD §8.10, 2026-07-31)
 
-The-record branch (PRD §8.7, spec `docs/specs/2026-07-29-the-record-design.md` §6 non-goal 2)
-made the hub's SQLite store (`HUB_DB`, default `~/.mpai/hub.db`) durable, and durability means the
-`events` table now accumulates every event of every session forever — nothing prunes, compacts, or
-backs it up. Deliberately deferred: retention/compaction/size caps and a backup mechanism are
-explicitly named as §8.10's job (operating a hub), not this branch's.
+**Was:** the-record branch (PRD §8.7, spec `docs/specs/2026-07-29-the-record-design.md` §6
+non-goal 2) made the hub's SQLite store (`HUB_DB`, default `~/.mpai/hub.db`) durable, and
+durability meant the `events` table accumulated every event of every session forever — nothing
+pruned, compacted, or backed it up. The documented failure mode was disk-full: the hub's write
+path is fail-stop by design (spec §3.6), so a full disk meant the hub died on its next write and
+crash-looped on every restart until space was freed — and the one diagnostic line an operator
+needed was itself at risk, since `defaultFatal` logged via a bare `console.error(err)` immediately
+before `process.exit(1)`, a write not guaranteed to flush under a supervisor's piped stderr before
+the process died.
 
-**Failure mode:** unbounded growth trends toward disk-full, whose documented consequence is a
-crash-loop — the hub's write path is fail-stop by design (spec §3.6): any runtime write failure
-propagates and the process exits rather than run with memory ahead of disk, so a full disk means
-the hub dies on the next write and crash-loops on every restart until space is freed. Recovery is
-spec §8a ruling 7 — **back up the `hub.db`/`hub.db-wal`/`hub.db-shm` trio first** (it is the
-product's sole record; move the trio together or strand committed WAL data), then free disk space
-/ move the trio / run degraded with `HUB_DB=:memory:`. A corrupt DB has no recovery before §8.10
-ships backups — the record to that point is lost absent copies the operator kept. The same
-backup-before-upgrade convention applies to schema bumps.
+**What closed it.** Branch B (§8.10) shipped both halves. The diagnostic half is closed first:
+`defaultFatal` (`poc/hub/src/hub.ts:209-213`, Task B5) now writes the fatal message synchronously
+via `fs.writeSync(2, …)` before `process.exit(1)`, so the crash's one diagnostic line survives a
+piped-stderr supervisor. The crash-loop itself is replaced, not just diagnosed (Task B1c): a
+disk-headroom preflight refuses to *boot* at all when free space is already below
+`HUB_MIN_FREE_BYTES`, and a runtime gate refuses publishes while headroom is low rather than
+writing into a disk that is about to fill — so disk-full is now a loud, logged refusal instead of
+an undiagnosable crash-loop. Retention is opt-in (`HUB_RETENTION_DAYS`, Task B1): unset keeps
+every event forever — a deliberate product stance recorded as the user's decision, not debt — and
+when set, boot-time pruning (`hubDb.ts:549` `pruneEventsBefore`) runs after a mandatory
+pre-prune backup, with `nextEventId` seeded from the max *stored* id (`hubStore.ts:196-212`) so a
+prune never disturbs sequence continuity and `sessions` rows are never pruned. Hot backups
+(`hubDb.ts:386`, `VACUUM INTO`) run at boot before any prune and on an interval thereafter, keep
+the newest N, are never fatal on failure, and write 0700 dirs / 0600 files (`hubDb.ts:166-167`).
+**The events table — the actual unbounded journal this entry was written about — is bounded only
+when retention is opted in**, exactly as the keep-forever default intends; the separate WAL
+`journal_size_limit` pragma (64 MiB, `hubDb.ts:214`) is unconditional and was never gated on
+retention, so committed-but-uncheckpointed growth was already capped independent of this fix.
 
-**Related, smaller:** `defaultFatal` (`poc/hub/src/hub.ts`, Task 7) logs via a bare
-`console.error(err)` immediately before `process.exit(1)`; under a supervisor with piped stderr,
-that write is not guaranteed to flush before the process dies, so the crash-loop's one diagnostic
-line can be lost exactly when an operator most needs it.
-
-**Fixed looks like:** §8.10 — a retention/compaction policy (age- or size-bounded), an operator
-backup mechanism (scheduled or triggered trio copy), and hardening `defaultFatal`'s log write (or
-draining stderr) before exit so the crash-loop is diagnosable from the first restart.
+**What remains, honestly.** A hub that never sets `HUB_RETENTION_DAYS` still grows `events`
+without bound — unchanged from the original description, but now a chosen default one env var
+away from bounding, not a gap. None of this has been exercised against a real disk filling up on
+a real box: §8.10's deploy artifacts (Caddyfile, systemd unit, RUNBOOK) are themselves
+**UNVERIFIED** (PRD §8.10), so the crash-loop-to-refusal claim rests on unit/integration coverage,
+not a live low-disk walk.
 
 ---
 
