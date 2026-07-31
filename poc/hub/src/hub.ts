@@ -19,6 +19,16 @@ import {
 import { HubStore, type MachineInfo } from "./hubStore.js";
 import { HubDb } from "./hubDb.js";
 import { pairingRoutes, hashToken } from "./pairing.js";
+import {
+  TokenBucket,
+  clientIp,
+  MAX_SOCKETS,
+  UPGRADES_PER_MIN_PER_IP,
+  HTTP_AUTH_PER_MIN_PER_IP,
+  MSGS_PER_WINDOW,
+  MSG_WINDOW_MS,
+  BUFFERED_MAX_BYTES,
+} from "./limits.js";
 
 const SLUG = /^[a-z0-9-]{1,40}$/;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
@@ -131,6 +141,12 @@ export interface HubOptions {
    *  `bsize * bavail`; a test injects a deterministic value so the boot refusal,
    *  runtime drop, recovery and cadence are all exercised without a real disk. */
   freeBytes?: (dir: string) => number;
+  /** Trust `X-Forwarded-For` for the client IP the rate limiters key on (spec
+   *  B2). Off by default: an untrusted client could otherwise forge XFF to pick
+   *  its own (empty) bucket and slip every per-IP limit. Only set when the hub
+   *  sits behind a proxy that overwrites this header. Consumes
+   *  `HubOpsConfig.trustProxy`. */
+  trustProxy?: boolean;
 }
 
 /** Only `hub-YYYYMMDD-HHmmssZ.db` files — the exact names `backupFileName`
@@ -210,6 +226,24 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
   // hub that cannot honor the record it was pointed at never serves (spec §3.6).
   const db = opts.db ?? (opts.dbPath === undefined ? null : new HubDb(opts.dbPath));
   let backupTimer: NodeJS.Timeout | undefined;
+
+  // --- Rate limits, caps, backpressure (spec §8.10 B2) ---
+  // One injected clock drives every limiter (and the disk-headroom cadence), so
+  // a test pins all of them at once. Two per-IP token buckets — one for WS
+  // upgrades, one for `/auth/*` + `/pair/*` HTTP — each refilling its cap over a
+  // rolling minute. `socketCount` is the hard connection ceiling, incremented on
+  // admit and decremented on every close.
+  const clock = opts.now ?? Date.now;
+  const trustProxy = opts.trustProxy ?? false;
+  const upgradeBucket = new TokenBucket(UPGRADES_PER_MIN_PER_IP, UPGRADES_PER_MIN_PER_IP / 60_000, clock);
+  const httpBucket = new TokenBucket(HTTP_AUTH_PER_MIN_PER_IP, HTTP_AUTH_PER_MIN_PER_IP / 60_000, clock);
+  let socketCount = 0;
+  /** The IP a rate-limit bucket keys on for this request. XFF is honored only
+   *  when `trustProxy` is set (`clientIp` ignores it otherwise). */
+  const clientIpOf = (req: IncomingMessage): string => {
+    const xff = req.headers["x-forwarded-for"];
+    return clientIp(req.socket.remoteAddress, Array.isArray(xff) ? xff[0] : xff, trustProxy);
+  };
 
   // --- Disk-headroom gate (spec B1) ---
   // Default seam: bytes free on the record's filesystem. A test injects a
@@ -421,7 +455,17 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
   const handlePairing = pairingRoutes({ auth: opts.auth, devices: db, onRevoked });
 
   const send = (socket: WebSocket, msg: unknown) => {
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
+    if (socket.readyState !== WebSocket.OPEN) return;
+    // Backpressure (spec B2): a socket whose kernel/user send buffer has already
+    // outrun BUFFERED_MAX_BYTES is a reader that cannot keep up. Buffering more
+    // only grows unbounded memory behind a dead pipe, so close it with 1013 and
+    // let a reconnect replay from the record instead. The one choke point every
+    // outbound frame passes through, so it covers browsers AND uplinks alike.
+    if (socket.bufferedAmount > BUFFERED_MAX_BYTES) {
+      socket.close(1013, "backpressure");
+      return;
+    }
+    socket.send(JSON.stringify(msg));
   };
   const down = (socket: WebSocket, frame: DownFrame) => send(socket, frame);
 
@@ -686,6 +730,19 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       res.end(req.method === "HEAD" ? undefined : JSON.stringify({ status: "ok" }));
       return;
     }
+    // Per-IP HTTP rate limit (spec B2), BEFORE handleAuth/handlePairing consume
+    // the request: `/auth/*` and `/pair/*` are the credential and pairing-code
+    // surfaces, so a per-IP flood there is refused with 429 before it can touch
+    // OAuth or the device store. Scoped to exactly those two prefixes —
+    // `/healthz` already returned above and static assets fall through
+    // unlimited, so neither is ever counted against the bucket.
+    if (pathname.startsWith("/auth/") || pathname.startsWith("/pair/")) {
+      if (!httpBucket.take(clientIpOf(req))) {
+        res.writeHead(429, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "rate limited" }));
+        return;
+      }
+    }
     // AFTER /healthz, BEFORE serveStatic (spec §4.2): a returned `true` means
     // authRoutes consumed the request. Any /auth/* path is answered here — with
     // auth on or off — so none reaches the SPA fallback below.
@@ -710,6 +767,29 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     // Without a listener an "error" is an unhandled EventEmitter error and
     // crashes the process; "close" always follows and does the cleanup.
     socket.on("error", () => {});
+    // Hard connection cap (spec B2): the global ceiling, checked FIRST — before
+    // the per-IP rate and before any dispatch — because an accepted-then-refused
+    // socket still costs a file descriptor. The 513th (MAX_SOCKETS = 512) is
+    // closed immediately with 1013; refused sockets are never counted.
+    if (socketCount >= MAX_SOCKETS) {
+      socket.close(1013, "rate limited");
+      return;
+    }
+    // Per-IP upgrade rate (spec B2): the 31st upgrade from one IP inside a
+    // minute is refused with 1013, uplinks and browsers alike (the socket cap's
+    // "browser or uplink" reach). Keyed by the proxy-aware client IP so one IP
+    // cannot exhaust the hub's connection budget.
+    if (!upgradeBucket.take(clientIpOf(req))) {
+      socket.close(1013, "rate limited");
+      return;
+    }
+    // Admitted: count the slot and reclaim it on close. Registered here (not in
+    // the per-role handlers) so the decrement fires for every admitted socket
+    // exactly once, whatever path it took.
+    socketCount += 1;
+    socket.on("close", () => {
+      socketCount -= 1;
+    });
     if ((req.url ?? "/").startsWith("/uplink")) handleUplink(socket, req);
     // The cookie is read ONCE, here at the upgrade, and held on the channel
     // for the life of the connection: WS messages carry no cookies, so a
@@ -746,6 +826,16 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
      *  with the connection and leaks nothing. */
     const reportedCollisions = new Set<string>();
 
+    // UPLINK MESSAGE-RATE EXEMPTION (spec B2): unlike a browser, an uplink is NOT
+    // subject to the per-connection message-rate close. Two reasons it would be
+    // wrong to apply here. First, an uplink is AUTHENTICATED (Branch A: a bearer
+    // matched a device record at the upgrade above), so it is not an anonymous
+    // flood source the cap exists to stop. Second, a reconnecting laptop
+    // legitimately replays a large backlog as fast as the socket allows, and each
+    // frame is already bounded by `maxPayload = MAX_FRAME_BYTES` — so the honest
+    // resume path would trip a 200-msg/10s cap and be closed mid-replay, turning
+    // recovery into a flap. Backpressure (the shared `send`) still protects the
+    // hub's own memory; frame-shape faults still close with 1008 below.
     socket.on("message", (raw) => {
       let parsed: unknown;
       try {
@@ -993,7 +1083,24 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       down(uplink, { t: "tunnel", channelId, identity: channel.identity, payload });
     };
 
+    // Per-connection message-rate cap for a BROWSER (spec B2): a fixed window off
+    // the injected clock. The 201st message (MSGS_PER_WINDOW = 200) inside
+    // MSG_WINDOW_MS is a client-side message flood — a protocol misuse — so it is
+    // closed with 1008, distinct from the 1013 backpressure/overload refusals.
+    // Uplinks are deliberately NOT subject to this (see handleUplink).
+    let msgWindowStart = clock();
+    let msgCount = 0;
     socket.on("message", (raw) => {
+      const t = clock();
+      if (t - msgWindowStart >= MSG_WINDOW_MS) {
+        msgWindowStart = t;
+        msgCount = 0;
+      }
+      msgCount += 1;
+      if (msgCount > MSGS_PER_WINDOW) {
+        socket.close(1008, "message rate exceeded");
+        return;
+      }
       let msg: any;
       try {
         msg = JSON.parse(raw.toString());

@@ -48,6 +48,10 @@ const { port: actual } = await startHub({
   // publishes that would drive the record onto a full disk. A :memory: hub
   // never checks. The default seam (fs.statfsSync) is used; only tests inject one.
   minFreeBytes: config.minFreeBytes,
+  // Trust X-Forwarded-For for the rate limiters' client IP only when explicitly
+  // opted in (HUB_TRUST_PROXY=1). Off, an untrusted client cannot forge XFF to
+  // choose its own per-IP bucket (spec B2).
+  trustProxy: config.trustProxy,
 });
 
 console.log(`multiplayer-ai hub listening on http://${host}:${actual}`);

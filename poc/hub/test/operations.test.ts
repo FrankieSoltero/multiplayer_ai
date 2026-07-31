@@ -2,12 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
+import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startHub, type RunningHub } from "../src/hub.js";
 import { HubDb } from "../src/hubDb.js";
 import { HubStore } from "../src/hubStore.js";
+import { MAX_SOCKETS } from "../src/limits.js";
 import { connect, collect, wait, decl } from "./helpers/uplinkHarness.js";
 import { RELAY_PROTOCOL_VERSION } from "multiplayer-ai-server/relayProtocol";
+import type { AuthConfig } from "multiplayer-ai-server/auth";
 import type { LoggedEvent } from "multiplayer-ai-server/events";
 
 /** Every DB and hub this file opens, torn down after each test so a failing
@@ -722,4 +725,342 @@ describe("disk-headroom preflight and runtime gate (spec B1)", () => {
     expect(session?.facts.intent).toBe("low-disk"); // identity/facts write applied
     up.close();
   });
+});
+
+// --- Rate limits, connection caps, backpressure (spec §8.10 B2) ---
+
+const AUTH: AuthConfig = {
+  clientId: "cid",
+  clientSecret: "csecret",
+  sessionSecret: "test-secret",
+  allowlist: "alice",
+};
+
+/** A dist dir with an index.html so the static handler (and its SPA fallback)
+ *  is active — used to prove static assets are never rate-limited. */
+function limitsStaticDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hublimits-"));
+  tmpDirs.push(dir);
+  fs.writeFileSync(path.join(dir, "index.html"), "<!doctype html><title>spa</title>");
+  return dir;
+}
+
+/** Open a raw WS with optional headers; resolve `{ code }` if the hub closes it
+ *  (a refusal fires open→close), or `{ code: null }` if it is still open after a
+ *  short grace window. Kept sockets are pushed into `kept` for teardown. */
+function probeWs(
+  url: string,
+  kept: WebSocket[],
+  headers?: Record<string, string>,
+  graceMs = 60,
+): Promise<{ code: number | null; reason: string }> {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(url, headers ? { headers } : undefined);
+    kept.push(ws);
+    let settled = false;
+    ws.on("error", () => {});
+    ws.on("close", (code, reason) => {
+      if (!settled) {
+        settled = true;
+        resolve({ code, reason: reason.toString() });
+      }
+    });
+    ws.on("open", () => {
+      setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          resolve({ code: null, reason: "" });
+        }
+      }, graceMs);
+    });
+  });
+}
+
+/** The `_socket` a `ws` client exposes after upgrade — pausing its reader is how
+ *  a test builds server-side backpressure without a real slow consumer. */
+const rawSocket = (ws: WebSocket): { pause(): void; resume(): void } =>
+  (ws as unknown as { _socket: { pause(): void; resume(): void } })._socket;
+
+const helloFrame = (): string =>
+  JSON.stringify({
+    t: "hello",
+    v: RELAY_PROTOCOL_VERSION,
+    uplinkId: "lap-1",
+    name: "lap-1",
+    projectId: "default",
+    repos: [decl("github.com/acme/api")],
+  });
+
+describe("rate limits — connection cap (spec B2)", () => {
+  it("refuses the 513th socket with 1013 'rate limited' before dispatch, and reclaims a slot on close", async () => {
+    let nowMs = 1_000_000;
+    const hub = await hubOn({ port: 0, host: "127.0.0.1", now: () => nowMs });
+    const kept: WebSocket[] = [];
+
+    // Fill to MAX_SOCKETS. Advance the injected clock generously between each so
+    // the per-IP UPGRADE bucket (30/min) never runs dry — this row is about the
+    // hard socket CAP, which is checked first and is clock-independent.
+    for (let i = 0; i < MAX_SOCKETS; i += 1) {
+      nowMs += 5_000;
+      const ws = new WebSocket(`ws://127.0.0.1:${hub.port}/`);
+      kept.push(ws);
+      ws.on("error", () => {});
+      await new Promise<void>((res, rej) => {
+        ws.on("open", () => res());
+        ws.on("close", (code) => rej(new Error(`socket ${i} unexpectedly refused (${code})`)));
+      });
+    }
+
+    // The 513th is refused immediately with 1013 'rate limited'.
+    nowMs += 5_000;
+    const refused = await probeWs(`ws://127.0.0.1:${hub.port}/`, kept);
+    expect(refused.code).toBe(1013);
+    expect(refused.reason).toBe("rate limited");
+
+    // Closing one admitted socket decrements the count; a fresh connection fits.
+    kept[0]!.close();
+    await wait(200);
+    nowMs += 5_000;
+    const readmitted = await probeWs(`ws://127.0.0.1:${hub.port}/`, kept, undefined, 120);
+    expect(readmitted.code).toBeNull(); // stayed open — the slot was reclaimed
+
+    for (const ws of kept) ws.close();
+  }, 30_000);
+});
+
+describe("rate limits — per-IP upgrade rate (spec B2)", () => {
+  it("refuses the 31st upgrade from one IP within a minute (1013); other IPs unaffected", async () => {
+    const hub = await hubOn({ port: 0, host: "127.0.0.1", trustProxy: true });
+    const kept: WebSocket[] = [];
+    const url = `ws://127.0.0.1:${hub.port}/`;
+
+    // 30 upgrades from one proxied IP all pass.
+    for (let i = 0; i < 30; i += 1) {
+      const r = await probeWs(url, kept, { "x-forwarded-for": "1.1.1.1" }, 25);
+      expect(r.code).toBeNull();
+    }
+    // The 31st from that same IP is refused with 1013 'rate limited'.
+    const refused = await probeWs(url, kept, { "x-forwarded-for": "1.1.1.1" }, 25);
+    expect(refused.code).toBe(1013);
+    expect(refused.reason).toBe("rate limited");
+    // A different IP has its own untouched bucket.
+    const other = await probeWs(url, kept, { "x-forwarded-for": "2.2.2.2" }, 60);
+    expect(other.code).toBeNull();
+
+    for (const ws of kept) ws.close();
+  }, 20_000);
+
+  it("ignores X-Forwarded-For when trustProxy is false — every forged IP shares one bucket", async () => {
+    // trustProxy defaults off: an untrusted client cannot pick its own bucket, so
+    // 30 upgrades under DIFFERENT forged XFF values still drain the single
+    // loopback bucket, and the 31st is refused regardless of the header it sends.
+    const hub = await hubOn({ port: 0, host: "127.0.0.1" });
+    const kept: WebSocket[] = [];
+    const url = `ws://127.0.0.1:${hub.port}/`;
+
+    for (let i = 0; i < 30; i += 1) {
+      const r = await probeWs(url, kept, { "x-forwarded-for": `10.0.0.${i}` }, 25);
+      expect(r.code).toBeNull();
+    }
+    const refused = await probeWs(url, kept, { "x-forwarded-for": "203.0.113.9" }, 25);
+    expect(refused.code).toBe(1013);
+
+    for (const ws of kept) ws.close();
+  }, 20_000);
+});
+
+describe("rate limits — per-IP /auth and /pair HTTP rate (spec B2)", () => {
+  it("returns 429 {error:'rate limited'} on the 31st /auth or /pair request from one IP", async () => {
+    const hub = await hubOn({
+      port: 0,
+      host: "127.0.0.1",
+      trustProxy: true,
+      auth: AUTH,
+      dbPath: ":memory:",
+      staticDir: limitsStaticDir(),
+    });
+    const base = `http://127.0.0.1:${hub.port}`;
+    const H = { "x-forwarded-for": "1.1.1.1" };
+
+    // 30 /auth/me requests from one IP all pass (200/401 — never rate-limited).
+    for (let i = 0; i < 30; i += 1) {
+      const r = await fetch(`${base}/auth/me`, { headers: H });
+      expect(r.status).not.toBe(429);
+    }
+    // The 31st — a /pair request — proves /auth and /pair share ONE per-IP bucket.
+    const refused = await fetch(`${base}/pair/request`, {
+      method: "POST",
+      headers: { ...H, "content-type": "application/json" },
+      body: JSON.stringify({ machineId: "lap-1", name: "x" }),
+    });
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("content-type")).toBe("application/json");
+    expect(await refused.json()).toEqual({ error: "rate limited" });
+  }, 20_000);
+
+  it("never rate-limits /healthz or static assets, even from a drained IP", async () => {
+    const hub = await hubOn({
+      port: 0,
+      host: "127.0.0.1",
+      trustProxy: true,
+      auth: AUTH,
+      dbPath: ":memory:",
+      staticDir: limitsStaticDir(),
+    });
+    const base = `http://127.0.0.1:${hub.port}`;
+    const H = { "x-forwarded-for": "1.1.1.1" };
+
+    // Drain the /auth bucket for this IP.
+    for (let i = 0; i < 31; i += 1) await fetch(`${base}/auth/me`, { headers: H });
+    expect((await fetch(`${base}/auth/me`, { headers: H })).status).toBe(429);
+
+    // /healthz is checked before the limiter and is never counted.
+    for (let i = 0; i < 40; i += 1) {
+      expect((await fetch(`${base}/healthz`, { headers: H })).status).toBe(200);
+    }
+    // A static asset falls through unlimited too.
+    expect((await fetch(`${base}/index.html`, { headers: H })).status).toBe(200);
+  }, 20_000);
+});
+
+describe("rate limits — browser message flood, uplink exemption (spec B2)", () => {
+  it("closes a browser on its 201st message inside the window with 1008 'message rate exceeded'", async () => {
+    const hub = await hubOn({ port: 0, host: "127.0.0.1" });
+    const ws = await connect(`ws://127.0.0.1:${hub.port}/`);
+    ws.on("error", () => {});
+    const closed = new Promise<{ code: number; reason: string }>((res) =>
+      ws.on("close", (code, reason) => res({ code, reason: reason.toString() })),
+    );
+    for (let i = 0; i < 201; i += 1) ws.send(JSON.stringify({ type: "noop", i }));
+    const c = await closed;
+    expect(c.code).toBe(1008);
+    expect(c.reason).toBe("message rate exceeded");
+  }, 15_000);
+
+  it("leaves a browser sending exactly 200 messages open (pass-through)", async () => {
+    const hub = await hubOn({ port: 0, host: "127.0.0.1" });
+    const ws = await connect(`ws://127.0.0.1:${hub.port}/`);
+    ws.on("error", () => {});
+    let closedCode: number | null = null;
+    ws.on("close", (code) => {
+      closedCode = code;
+    });
+    for (let i = 0; i < 200; i += 1) ws.send(JSON.stringify({ type: "noop", i }));
+    await wait(200);
+    expect(closedCode).toBeNull();
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  }, 15_000);
+
+  it("does NOT message-rate an uplink replaying a large backlog fast (exempt — authenticated)", async () => {
+    const hub = await hubOn({ port: 0, host: "127.0.0.1" });
+    const up = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    up.on("error", () => {});
+    let closedCode: number | null = null;
+    up.on("close", (code) => {
+      closedCode = code;
+    });
+    up.send(helloFrame());
+    await wait(40);
+    // 250 publish frames back to back — well past MSGS_PER_WINDOW — must not close.
+    for (let i = 0; i < 250; i += 1) {
+      up.send(JSON.stringify({ t: "publish", sessionId: "auth", runId: "run-a", events: [eventAt(i)] }));
+    }
+    await wait(250);
+    expect(closedCode).toBeNull();
+    expect(up.readyState).toBe(WebSocket.OPEN);
+    up.close();
+  }, 15_000);
+});
+
+describe("backpressure — bufferedAmount ceiling (spec B2)", () => {
+  const bigEvent = (seq: number): LoggedEvent =>
+    ({
+      type: "user_message",
+      seq,
+      ts: isoAt(seq),
+      userId: "ana",
+      text: "x".repeat(90_000),
+    }) as unknown as LoggedEvent;
+
+  const joinFrames = (ws: WebSocket): void => {
+    ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    ws.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    ws.send(
+      JSON.stringify({ type: "join", sessionId: "auth", projectId: "default", userId: "ana", name: "ana" }),
+    );
+  };
+
+  it("closes a BROWSER whose bufferedAmount exceeds BUFFERED_MAX_BYTES with 1013 'backpressure'", async () => {
+    const hub = await hubOn({ port: 0, host: "127.0.0.1" });
+    const up = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    up.on("error", () => {});
+    up.send(helloFrame());
+    await wait(40);
+    up.send(JSON.stringify({ t: "publish", sessionId: "auth", runId: "run-a", events: [eventAt(0)] }));
+    await wait(40);
+    const ws = await connect(`ws://127.0.0.1:${hub.port}/`);
+    ws.on("error", () => {});
+    let closed: { code: number; reason: string } | null = null;
+    ws.on("close", (code, reason) => {
+      closed = { code, reason: reason.toString() };
+    });
+    joinFrames(ws);
+    await wait(150);
+
+    // Stop the browser from draining, then flood large events down to it. With
+    // the reader paused, the hub's send buffer to it climbs past 4 MB.
+    rawSocket(ws).pause();
+    for (let f = 0; f < 30; f += 1) {
+      const events = Array.from({ length: 10 }, (_, k) => bigEvent(f * 10 + k + 1));
+      up.send(JSON.stringify({ t: "publish", sessionId: "auth", runId: "run-a", events }));
+      await wait(5);
+    }
+    await wait(100);
+    rawSocket(ws).resume();
+
+    const deadline = Date.now() + 4000;
+    while (!closed && Date.now() < deadline) await wait(20);
+    expect(closed).not.toBeNull();
+    expect(closed!.code).toBe(1013);
+    expect(closed!.reason).toBe("backpressure");
+    up.close();
+  }, 20_000);
+
+  it("closes an UPLINK whose bufferedAmount exceeds BUFFERED_MAX_BYTES with 1013 'backpressure'", async () => {
+    const hub = await hubOn({ port: 0, host: "127.0.0.1" });
+    const up = await connect(`ws://127.0.0.1:${hub.port}/uplink`);
+    up.on("error", () => {});
+    let closed: { code: number; reason: string } | null = null;
+    up.on("close", (code, reason) => {
+      closed = { code, reason: reason.toString() };
+    });
+    up.send(helloFrame());
+    await wait(40);
+    up.send(JSON.stringify({ t: "publish", sessionId: "auth", runId: "run-a", events: [eventAt(0)] }));
+    await wait(40);
+    const ws = await connect(`ws://127.0.0.1:${hub.port}/`);
+    ws.on("error", () => {});
+    joinFrames(ws);
+    await wait(150);
+
+    // Pause the uplink's reader, then drive large tunnel payloads at it via the
+    // browser: each browser message becomes one hub->uplink `tunnel` frame. The
+    // browser stays well under its own 200-message cap.
+    rawSocket(up).pause();
+    const blob = "z".repeat(700_000);
+    for (let i = 0; i < 30; i += 1) {
+      ws.send(JSON.stringify({ type: "cmd", blob }));
+      await wait(5);
+    }
+    await wait(100);
+    rawSocket(up).resume();
+
+    const deadline = Date.now() + 4000;
+    while (!closed && Date.now() < deadline) await wait(20);
+    expect(closed).not.toBeNull();
+    expect(closed!.code).toBe(1013);
+    expect(closed!.reason).toBe("backpressure");
+    ws.close();
+  }, 20_000);
 });
