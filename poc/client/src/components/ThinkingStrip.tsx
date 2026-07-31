@@ -6,6 +6,34 @@ import { tetrisEngine } from "../game/tetris";
 import { doodleEngine } from "../game/doodle";
 
 const LEAVE_MS = 600;
+
+/** Client-local arcade footprint preference (constraint 6). The stored value is
+ *  a lane font-size multiplier of the mono base token `--fs` (13px); Task 13
+ *  owns the resize control that WRITES it. */
+export const ARCADE_SIZE_KEY = "mpai-arcade-size";
+export const ARCADE_SCALE = { min: 0.5, max: 1.0, default: 0.65, step: 0.05 } as const;
+
+/** Pure: parse a stored scale, clamp to [min,max]; NaN/absent → default. */
+export function readStoredScale(raw: string | null): number {
+  if (raw == null) return ARCADE_SCALE.default;
+  const n = Number.parseFloat(raw);
+  if (Number.isNaN(n)) return ARCADE_SCALE.default;
+  return Math.min(ARCADE_SCALE.max, Math.max(ARCADE_SCALE.min, n));
+}
+
+/** The initial lane scale. The READ is try/catch-wrapped so a blocked-storage
+ *  sandbox (getItem throws) falls back silently to the default, never a crash
+ *  (constraint 6). This task adds the READ path only. */
+function readInitialScale(): number {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(ARCADE_SIZE_KEY);
+  } catch {
+    raw = null;
+  }
+  return readStoredScale(raw);
+}
+
 const bestKey = (game: string) => `mpai-${game}-high`;
 const readBest = (game: string) => {
   const n = Number(localStorage.getItem(bestKey(game)) ?? 0);
@@ -82,6 +110,10 @@ export function ThinkingStrip(props: {
       setState(runState);
     }
   }
+  // arcade footprint scale — read once on mount (constraint 6); Task 13 adds
+  // the resize control that writes it.
+  const [scale] = useState(readInitialScale);
+  const laneStyle = { fontSize: `calc(var(--fs) * ${scale})` };
   const [high, setHigh] = useState(() => readBest("dino"));
   const ledgerRef = useRef<RunLedger>({ submitted: false, localBest: readBest("dino") });
   const [elapsed, setElapsed] = useState(0);
@@ -237,6 +269,7 @@ export function ThinkingStrip(props: {
       {engine ? (
         <pre
           className="lane"
+          style={laneStyle}
           onClick={() => {
             if (!playing) start();
             else setState((s: any) => engine.input(s, "click"));
@@ -245,7 +278,7 @@ export function ThinkingStrip(props: {
           {engine.render(runState).join("\n")}
         </pre>
       ) : (
-        <pre className="lane" style={{ color: "var(--dim)" }}>
+        <pre className="lane" style={{ ...laneStyle, color: "var(--dim)" }}>
           {"  cartridge not inserted — " + game + " has no engine yet\n" + "▁".repeat(40)}
         </pre>
       )}
