@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { startHub, type RunningHub } from "../src/hub.js";
 import { HubDb } from "../src/hubDb.js";
 import { HubStore } from "../src/hubStore.js";
+import { connect, collect, wait, decl } from "./helpers/uplinkHarness.js";
+import { RELAY_PROTOCOL_VERSION } from "multiplayer-ai-server/relayProtocol";
 import type { LoggedEvent } from "multiplayer-ai-server/events";
 
 /** Every DB and hub this file opens, torn down after each test so a failing
@@ -460,5 +462,264 @@ describe("backups — hot VACUUM INTO, keep-N, never fatal (spec B1)", () => {
 
     expect(logSpy).toHaveBeenCalledWith(DISABLED_LINE);
     expect(fs.existsSync(backupDir)).toBe(false);
+  });
+});
+
+describe("disk-headroom preflight and runtime gate (spec B1)", () => {
+  // The cadence const the hub caches its verdict for — kept in step with
+  // hub.ts's `HEADROOM_CHECK_INTERVAL_MS` (a module const, not exported).
+  const INTERVAL = 10_000;
+  const FLOOR = 100_000_000;
+  const HIGH = 500_000_000;
+  const LOW = 10;
+
+  /** A `publish` up-frame (the one write path the headroom gate refuses). */
+  const publish = (sessionId: string, runId: string, events: LoggedEvent[]): string =>
+    JSON.stringify({ t: "publish", sessionId, runId, events });
+
+  /** A `facts` up-frame — small and bounded, so it is NEVER gated by headroom. */
+  const factsFor = (id: string, over: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      t: "facts",
+      sessionId: id,
+      runId: "run-a",
+      facts: {
+        id,
+        participants: ["ana"],
+        driverName: "ana",
+        intent: null,
+        lastActivityTs: null,
+        ended: false,
+        pendingGate: null,
+        skills: [],
+        repoKey: "github.com/acme/api",
+        touched: null,
+        lifecycle: "open",
+        ...over,
+      },
+    });
+
+  /** An attached uplink that has said hello for the default project. */
+  async function uplink(port: number) {
+    const up = await connect(`ws://127.0.0.1:${port}/uplink`);
+    const seen: any[] = [];
+    collect(up, seen);
+    up.send(
+      JSON.stringify({
+        t: "hello",
+        v: RELAY_PROTOCOL_VERSION,
+        uplinkId: "lap-1",
+        name: "lap-1",
+        projectId: "default",
+        repos: [decl("github.com/acme/api")],
+      }),
+    );
+    await wait(40);
+    return { up, seen };
+  }
+
+  /** A browser that has identified, joined the default project and joined the
+   *  named session — so anything the hub fans out for that session reaches it. */
+  async function browserJoined(port: number, sessionId = "auth") {
+    const ws = await connect(`ws://127.0.0.1:${port}/`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    ws.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    ws.send(JSON.stringify({ type: "join", sessionId, projectId: "default", userId: "ana", name: "ana" }));
+    await wait(60);
+    return { ws, seen };
+  }
+
+  const eventIds = (db: HubDb): number[] | undefined =>
+    db.load().sessions.find((s) => s.sessionId === "auth")?.events.map((e) => e.id);
+
+  it("boot refusal: a file-backed hub below the floor rejects with the exact message", async () => {
+    const { db, dbPath } = fileDb();
+    const dir = path.dirname(dbPath);
+
+    await expect(
+      startHub({
+        port: 0,
+        host: "127.0.0.1",
+        db,
+        dbPath,
+        minFreeBytes: 1000,
+        freeBytes: () => 500,
+      }),
+    ).rejects.toThrow(
+      `insufficient disk headroom: 500 bytes free at ${dir}, floor is 1000 — free space or lower HUB_MIN_FREE_BYTES`,
+    );
+  });
+
+  it("default off-path: an in-memory record never checks headroom and never refuses boot", async () => {
+    const db = memDb();
+    const freeSpy = vi.fn(() => 0); // would refuse at boot if it were ever consulted
+
+    const hub = await hubOn({
+      port: 0,
+      host: "127.0.0.1",
+      db,
+      minFreeBytes: 1_000_000,
+      freeBytes: freeSpy,
+    });
+
+    expect(hub.port).toBeGreaterThan(0);
+    expect(freeSpy).not.toHaveBeenCalled();
+  });
+
+  it("runtime gate: a publish while low is refused before store.publish — nothing written, no fan-out, no error frame, one log", async () => {
+    const { db, dbPath } = fileDb();
+    let free = HIGH;
+    let nowMs = 1_000_000;
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const hub = await hubOn({
+      port: 0,
+      host: "127.0.0.1",
+      db,
+      dbPath,
+      minFreeBytes: FLOOR,
+      freeBytes: () => free,
+      now: () => nowMs,
+    });
+    const { up, seen: upSeen } = await uplink(hub.port);
+
+    // Healthy: this publish creates the session and lands (id 1).
+    up.send(publish("auth", "run-a", [eventAt(0)]));
+    await wait(40);
+    expect(eventIds(db)).toEqual([1]);
+
+    // A browser joins and watches; clear its replay so only NEW frames count.
+    const { ws, seen: browserSeen } = await browserJoined(hub.port);
+    browserSeen.length = 0;
+
+    // Disk drops below the floor; the cached healthy verdict is re-consulted
+    // only after the interval elapses.
+    free = LOW;
+    nowMs += INTERVAL;
+    up.send(publish("auth", "run-a", [eventAt(1)]));
+    await wait(40);
+
+    // The dropped frame never reached the record...
+    expect(eventIds(db)).toEqual([1]);
+    // ...nothing was fanned out to the joined browser...
+    expect(browserSeen.filter((m) => m.type === "event")).toEqual([]);
+    // ...no error frame invited a retry (browser or uplink)...
+    expect(browserSeen.filter((m) => m.type === "error")).toEqual([]);
+    expect(upSeen.filter((m) => m.t === "error" || m.type === "error")).toEqual([]);
+    // ...and exactly one console.error announced entering the low state.
+    expect(errSpy).toHaveBeenCalledTimes(1);
+
+    up.close();
+    ws.close();
+  });
+
+  it("recovery: publishes resume once free rises, back-filling from the unmoved high-water mark, with one log each way", async () => {
+    const { db, dbPath } = fileDb();
+    let free = HIGH;
+    let nowMs = 1_000_000;
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const hub = await hubOn({
+      port: 0,
+      host: "127.0.0.1",
+      db,
+      dbPath,
+      minFreeBytes: FLOOR,
+      freeBytes: () => free,
+      now: () => nowMs,
+    });
+    const { up } = await uplink(hub.port);
+
+    up.send(publish("auth", "run-a", [eventAt(0)]));
+    await wait(40);
+    expect(eventIds(db)).toEqual([1]);
+
+    // Low: seq 1 is dropped, so the high-water mark stays at seq 0.
+    free = LOW;
+    nowMs += INTERVAL;
+    up.send(publish("auth", "run-a", [eventAt(1)]));
+    await wait(40);
+    expect(eventIds(db)).toEqual([1]);
+
+    // Recovered: the resume protocol replays from lastSeq (0) — seq 1 was never
+    // accepted, so re-sending it now lands exactly once, id 2, no gap.
+    free = HIGH;
+    nowMs += INTERVAL;
+    up.send(publish("auth", "run-a", [eventAt(1)]));
+    await wait(40);
+    expect(eventIds(db)).toEqual([1, 2]);
+
+    // One log entering low, one on recovery — two total, never per frame.
+    expect(errSpy).toHaveBeenCalledTimes(2);
+    up.close();
+  });
+
+  it("cadence: freeBytes is consulted at most once per interval no matter how many publishes", async () => {
+    const { db, dbPath } = fileDb();
+    let nowMs = 1_000_000;
+    const freeSpy = vi.fn(() => HIGH);
+    const hub = await hubOn({
+      port: 0,
+      host: "127.0.0.1",
+      db,
+      dbPath,
+      minFreeBytes: FLOOR,
+      freeBytes: freeSpy,
+      now: () => nowMs,
+    });
+    const { up } = await uplink(hub.port);
+
+    // The boot preflight is the one and only consult so far.
+    expect(freeSpy).toHaveBeenCalledTimes(1);
+
+    // Ten publishes inside one interval consult freeBytes zero further times.
+    for (let i = 0; i < 10; i += 1) {
+      up.send(publish("auth", "run-a", [eventAt(i)]));
+      await wait(15);
+    }
+    expect(freeSpy).toHaveBeenCalledTimes(1);
+    // The whole burst still landed (the cached verdict was healthy).
+    expect(eventIds(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+
+    // Crossing the interval, the next publish consults exactly once more.
+    nowMs += INTERVAL;
+    up.send(publish("auth", "run-a", [eventAt(10)]));
+    await wait(30);
+    expect(freeSpy).toHaveBeenCalledTimes(2);
+    up.close();
+  });
+
+  it("scope bound: a facts frame is still applied while headroom is low — the floor guards only the journal", async () => {
+    const { db, dbPath } = fileDb();
+    let free = HIGH;
+    let nowMs = 1_000_000;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const hub = await hubOn({
+      port: 0,
+      host: "127.0.0.1",
+      db,
+      dbPath,
+      minFreeBytes: FLOOR,
+      freeBytes: () => free,
+      now: () => nowMs,
+    });
+    const { up } = await uplink(hub.port);
+
+    up.send(publish("auth", "run-a", [eventAt(0)]));
+    await wait(40);
+    expect(eventIds(db)).toEqual([1]);
+
+    // Go low: a publish is refused, but a facts write still lands.
+    free = LOW;
+    nowMs += INTERVAL;
+    up.send(publish("auth", "run-a", [eventAt(1)]));
+    await wait(40);
+    expect(eventIds(db)).toEqual([1]); // journal held at the floor
+
+    up.send(factsFor("auth", { intent: "low-disk" }));
+    await wait(40);
+    const session = db.load().sessions.find((s) => s.sessionId === "auth");
+    expect(session?.facts.intent).toBe("low-disk"); // identity/facts write applied
+    up.close();
   });
 });

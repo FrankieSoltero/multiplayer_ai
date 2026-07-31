@@ -23,6 +23,11 @@ import { pairingRoutes, hashToken } from "./pairing.js";
 const SLUG = /^[a-z0-9-]{1,40}$/;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
 
+/** How often the disk-headroom gate is allowed to consult the filesystem
+ *  (spec B1). The verdict is cached between checks, so a hot publish stream
+ *  costs at most one `statfs` per this window rather than one per frame. */
+const HEADROOM_CHECK_INTERVAL_MS = 10_000;
+
 /** The WebSocket close code an uplink is refused with when its bearer is
  *  missing, unknown, revoked, or bound to a different machineId (spec A2, A3).
  *  Deliberately NOT 1008: the relay reads 1008 as a protocol/version mismatch
@@ -114,6 +119,18 @@ export interface HubOptions {
    *  backup is silently disabled with one boot line. Backup failure is NEVER
    *  fatal — logged once per attempt, the hub keeps serving. */
   backup?: { dir: string; intervalMs: number; keep: number };
+  /** Disk-headroom floor in bytes (spec B1). When set on a FILE-backed record,
+   *  the hub refuses to boot if free space is already below it, and refuses
+   *  `publish` frames at runtime whenever it drops below it — the loud refusal
+   *  that replaces the disk-full crash-loop. Undefined → no headroom gate at
+   *  all (the default for a hub that opted out); `:memory:`/no record never
+   *  checks regardless, having no unbounded journal to defend. */
+  minFreeBytes?: number;
+  /** Test seam for free-space measurement. Given the record's directory, returns
+   *  the bytes free on its filesystem. Defaults to `fs.statfsSync(dir)` →
+   *  `bsize * bavail`; a test injects a deterministic value so the boot refusal,
+   *  runtime drop, recovery and cadence are all exercised without a real disk. */
+  freeBytes?: (dir: string) => number;
 }
 
 /** Only `hub-YYYYMMDD-HHmmssZ.db` files — the exact names `backupFileName`
@@ -193,6 +210,78 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
   // hub that cannot honor the record it was pointed at never serves (spec §3.6).
   const db = opts.db ?? (opts.dbPath === undefined ? null : new HubDb(opts.dbPath));
   let backupTimer: NodeJS.Timeout | undefined;
+
+  // --- Disk-headroom gate (spec B1) ---
+  // Default seam: bytes free on the record's filesystem. A test injects a
+  // deterministic value so the boot refusal, runtime drop, recovery and cadence
+  // are exercised without touching a real disk.
+  const freeBytes =
+    opts.freeBytes ??
+    ((dir: string): number => {
+      const stat = fs.statfsSync(dir);
+      return stat.bsize * stat.bavail;
+    });
+  // The directory whose free space the gate watches: the record's own parent.
+  // Non-null ONLY for a file-backed record with a known path AND a configured
+  // floor. An in-memory/no-record hub has no unbounded journal to defend, so it
+  // is never checked (spec B1); a floor must be set to have something to compare
+  // against; and a file-backed `db` seam given no `dbPath` has no directory to
+  // stat, so it too is left unchecked rather than guessed at.
+  const headroomDir =
+    db !== null && !db.inMemory && opts.dbPath !== undefined && opts.minFreeBytes !== undefined
+      ? path.dirname(opts.dbPath)
+      : null;
+  // Cached verdict: `freeBytes` is consulted at most once per
+  // HEADROOM_CHECK_INTERVAL_MS and the answer reused between, so a hot publish
+  // stream never becomes a `statfs` storm. `lowHeadroom` is the current state;
+  // the console line fires once on the transition INTO it and once on the way
+  // OUT, never per frame.
+  let lowHeadroom = false;
+  let lastHeadroomCheck = Number.NEGATIVE_INFINITY;
+
+  /** Whether a `publish` may proceed. Re-consults `freeBytes` at most once per
+   *  interval (caching the verdict between) and logs exactly once on entering
+   *  the low state and once on recovery. A hub with nothing to defend
+   *  (`headroomDir` null) always passes. */
+  function headroomOk(): boolean {
+    if (headroomDir === null) return true;
+    const t = (opts.now ?? Date.now)();
+    if (t - lastHeadroomCheck >= HEADROOM_CHECK_INTERVAL_MS) {
+      lastHeadroomCheck = t;
+      const free = freeBytes(headroomDir);
+      const nowLow = free < opts.minFreeBytes!;
+      if (nowLow && !lowHeadroom) {
+        console.error(
+          `hub: disk headroom low — ${free} bytes free at ${headroomDir}, floor is ${opts.minFreeBytes} — refusing publishes until space is freed`,
+        );
+      } else if (!nowLow && lowHeadroom) {
+        console.error(
+          `hub: disk headroom recovered — ${free} bytes free at ${headroomDir}, publishes resume`,
+        );
+      }
+      lowHeadroom = nowLow;
+    }
+    return !lowHeadroom;
+  }
+
+  // Boot preflight (spec B1): the loud refusal that REPLACES the disk-full
+  // crash-loop documented on `defaultFatal` below. A file-backed hub that boots
+  // already below the floor must not start serving only to fatal on its first
+  // publish — it refuses HERE, before any socket, naming the shortfall and how
+  // to clear it. Runs before the backup/prune/load block and seeds the runtime
+  // cache so the first publishes reuse this verdict. Closes only a handle THIS
+  // call opened (never a caller's `db` seam), exactly like the hydration catch.
+  if (headroomDir !== null) {
+    const free = freeBytes(headroomDir);
+    lastHeadroomCheck = (opts.now ?? Date.now)();
+    lowHeadroom = free < opts.minFreeBytes!;
+    if (lowHeadroom) {
+      if (!opts.db) db!.close();
+      throw new Error(
+        `insufficient disk headroom: ${free} bytes free at ${headroomDir}, floor is ${opts.minFreeBytes} — free space or lower HUB_MIN_FREE_BYTES`,
+      );
+    }
+  }
 
   /** One backup of the live record: ensure the dir (0700 when first created),
    *  VACUUM INTO a timestamped file, then keep only the `keep` newest matching
@@ -745,6 +834,22 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         return;
       }
       if (frame.t === "publish") {
+        // Disk-headroom gate (spec B1). Once free space has fallen below the
+        // floor, the publish is refused BEFORE `store.publish`: nothing is
+        // written, nothing is fanned out, and NO `{type:"error"}` frame is sent
+        // to the browser — a retry would only re-hit the full disk. Because the
+        // frame is dropped before the store, the session's high-water mark never
+        // advances past it, so `resumeOffsets` keeps asking the owning laptop to
+        // re-send it and the resume protocol back-fills the moment space
+        // recovers. `headroomOk` consults the disk at most once per
+        // HEADROOM_CHECK_INTERVAL_MS and logs once per transition, so a hot
+        // publish stream costs no per-frame syscall and no per-frame log.
+        //
+        // ONLY publish is gated. facts/attach/membership writes still apply
+        // while low: they are small and bounded, the floor exists to defend the
+        // UNBOUNDED event journal, and refusing identity/membership writes would
+        // break the UI for no headroom gain.
+        if (!headroomOk()) return;
         // A laptop may publish only for sessions it owns; the store checks
         // ownership and returns nothing for a session it does not own
         // (spec §3.5 rule 2).

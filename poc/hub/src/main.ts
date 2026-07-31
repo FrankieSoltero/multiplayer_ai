@@ -43,6 +43,11 @@ const { port: actual } = await startHub({
   // OPT-IN backups (spec B1): null (no backups) becomes undefined. A set value
   // takes one backup at boot (before the prune) and one every intervalMs.
   backup: config.backup ?? undefined,
+  // Disk-headroom floor (spec B1): always a number here (defaults to 100 MiB in
+  // hubConfigFrom), so a file-backed hub refuses to boot below it and refuses
+  // publishes that would drive the record onto a full disk. A :memory: hub
+  // never checks. The default seam (fs.statfsSync) is used; only tests inject one.
+  minFreeBytes: config.minFreeBytes,
 });
 
 console.log(`multiplayer-ai hub listening on http://${host}:${actual}`);
