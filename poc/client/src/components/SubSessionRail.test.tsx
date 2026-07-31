@@ -170,10 +170,16 @@ describe("SubSessionRail", () => {
       expect(nodes.some((n) => textOf(n).includes(`sub ${i}`))).toBe(true);
     }
     // The rail container scrolls horizontally rather than wrapping (spec §2.5).
+    // `overflow-x: auto` alone cannot achieve this — inline-block chips would
+    // wrap and grow the container's height instead of overflowing. `white-space:
+    // nowrap` keeps them on one line so horizontal overflow (and the scrollbar)
+    // actually happens. Best proxy available with no layout env: assert BOTH
+    // style props are present on the same container.
     const container = nodes.find((n) => {
-      const s = n.props.style as { overflowX?: string } | undefined;
+      const s = n.props.style as { overflowX?: string; whiteSpace?: string } | undefined;
       return s?.overflowX === "auto";
     });
     expect(container).toBeDefined();
+    expect((container!.props.style as { whiteSpace?: string }).whiteSpace).toBe("nowrap");
   });
 });

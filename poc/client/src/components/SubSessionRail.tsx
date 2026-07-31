@@ -22,7 +22,7 @@ interface SubSessionRailProps {
 export function SubSessionRail(props: SubSessionRailProps): JSX.Element | null {
   if (props.subSessions.length === 0) return null;
   return (
-    <div className="subsession-rail" style={{ overflowX: "auto" }}>
+    <div className="subsession-rail" style={{ overflowX: "auto", whiteSpace: "nowrap" }}>
       <button
         className={props.view === null ? "subsession-chip active" : "subsession-chip"}
         onClick={() => props.onSelect(null)}
