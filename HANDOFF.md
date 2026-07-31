@@ -1,10 +1,164 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-30 (session #22, §8.7 SHIPPED — PR #26 open).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-07-31 (session #24, Branch A lean-sdd execution mid-flight — 8/13 tasks complete, 2 implementers in flight at handoff).*
 
 ---
 
-## 🚀 START HERE (post session #22) — ALL MERGED, TREE CLEAN, NOTHING IN FLIGHT.
+## 🚀 START HERE (session #25) — **PR #29 MERGED** (`ddc8432`, user-directed, 2026-07-31). Branch A is done. We are ON `feature/operating-a-hub` (cut from that merge), old SDD workspace deleted, plan+review committed as the first docs commit, **Branch B (§8.10) execution in flight via lean-sdd.** Tree state below is historical.
+
+**Final state:** all 13 tasks + one fix wave executed and reviewed; final whole-branch review "Ready to merge", 0 Critical; scoped re-review clean. Fresh suites at `268ab23`: server 748 · hub 266 · client 390, tsc ×3 clean. Branch pushed; **PR #29** (https://github.com/FrankieSoltero/multiplayer_ai/pull/29) carries the full disclosure list. SDD workspace (`.soltero/lean-sdd/2026-07-31-identity-and-access/`) kept until merge, then delete (session-#22 precedent). Follow-ups parked in the PR body + ledger (WAL-v1 backup test, projectAccess/RecordPanel comment sweeps). This HANDOFF edit is uncommitted on the branch — fold into the next branch's first docs commit as usual.
+
+**BRANCH B (§8.10) IS PLANNED AND GATED — execution waits ONLY on the PR #29 merge.** Plan: `docs/plans/2026-07-31-operating-a-hub.md` (9 tasks; hub.ts serial chain 2→3→4→5→6→7; canonical boot order open/migrate → backup → prune → load; the id-continuity trap — publish-after-prune PK collision, fix = `nextEventId` seeded from MAX(id)+1 — is pinned in Task 3). Council verdict: **PASS 85.9** round 1, `docs/plan-reviews/2026-07-31-operating-a-hub-review.md`; all mechanical fixes applied post-PASS. **Both files are UNTRACKED on purpose** (they'd pollute PR #29) — they become the first docs commit of the Branch B branch. ONE open owner question, non-blocking, user not yet asked directly: pull `staticFiles.ts` security headers into Branch B as a ride-along, or keep headers Caddyfile-only (plan currently keeps them out, flagged in its Global Constraints). **On merge of #29:** delete the old SDD workspace, branch `feature/operating-a-hub` off fresh `main`, commit plan+review, execute with lean-sdd (model policy unchanged: opus alias → claude-opus-4-8).
+
+## (was mid-flight) session #24 — ON `feature/identity-and-access`, EXECUTION MID-FLIGHT. THE SDD LEDGER IS THE AUTHORITY.
+
+**Goal:** ship PRD §8.1 (Branch A of the approved §8.1+§8.10 spec) via soltero-skills:lean-sdd. Branch B (§8.10) is a later cycle.
+
+**The three artifacts of record (all committed, `9b2bac3`):**
+- Spec (APPROVED, incl. A5 = list hub-wide/depth membership-gated, B1 = retention opt-in): `docs/specs/2026-07-31-identity-and-operating-design.md`
+- Plan (13 tasks, dependency table at `docs/plans/2026-07-31-identity-and-access.md:63-79`): `docs/plans/2026-07-31-identity-and-access.md`
+- Plan-review: **PASS 86.1**, council round 1, post-PASS mechanical fixes applied: `docs/plan-reviews/2026-07-31-identity-and-access-review.md`
+
+**Execution ledger (AUTHORITATIVE — trust it + `git log` over this summary):**
+`.soltero/lean-sdd/2026-07-31-identity-and-access/progress.md` — per-task briefs `task-N-brief.md`, reports `task-N-report.md`, review diffs `review-*.diff`, all in the same dir (git-ignored).
+
+**Where it stopped, exactly (2nd refresh, hook at ~50%):**
+- **COMPLETE (committed + reviewed clean):** 1 (`a214092`), 2 (`2e6c46d`), 3 (`a477a7a`), 4 (`ee3a585` + fix-round test `7909a6e`, re-review clean), 5 (`1bbd4a3`), 6 (`a303b69`), 7 (`0d28d76`), 9 (`391a955`), 10 (`3945a17`), 11 (`68cb2cd`), 12 (`11aaa28`). Suites at 7909a6e: server 748 · hub 253 · client 389.
+- **IN FLIGHT:** **Task 8** — code committed (`124500b`, hub.ts + relayIntegration.test.ts + httpSurface.test.ts, spec-correct per its own 31/31) but **the tree is RED at that commit**: 3 `routing.test.ts` auth-on tests use a bare-uplink fixture (`routing.test.ts:44` `attachedUplink`) that the new 4401 enforcement correctly refuses. Its implementer was resumed with routing.test.ts scope (fixture carries a bearer under auth; expected commit `test(hub): auth-on uplink fixtures carry a bearer`; expect hub ~264). **Task 8's FULL review (opus, judgment tier) has NOT run yet** — dispatch it over BOTH commits once the fixture lands (`scripts/review-package PLAN 124500b~1 <fixture-sha>`).
+- **NOT STARTED:** 13 (docs sweep — mechanical/sonnet, haiku review; fold in Task 1's deferred PRD D12 ~`docs/PRD.md:311`/`:531` stale payload-limit cites), then the final whole-branch review.
+
+**Decisions locked (why):**
+1. **Model policy:** `.claude/settings.json` sets `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-8` (user directive; in effect since session #24's start). lean-sdd tiering: mechanical→sonnet impl/haiku SPEC_ONLY review; standard→opus impl/sonnet FULL review; judgment→opus/opus. Controller (fable) never dispatched. Task tiers are in the plan's dependency table.
+2. **Task 6 deviation KEPT:** explicit `wal_checkpoint(TRUNCATE)` before the `.v1.bak` copy — reviewer CONFIRMED the plan's "WAL is checkpointed by the open" premise is false in SQLite; do not revert toward plan text.
+3. **Task 10 parked (ledger has the ruling):** cli.ts uses a custom `hubConnect` ConnectFn for bearer/4401 because `startServer`'s `hub` option forwards neither `headers` nor `onUnauthorized` (plan gap; server.ts was out of scope and concurrently owned). Reviewer-approved for the task; **final fix wave must add the 2-field forward through server.ts (`server.ts:208-213` type, `:1663-1680` Relay construction), switch cli.ts to `RelayOptions.headers`/`onUnauthorized`, delete `hubConnect` — strictly AFTER Task 5 lands (server.ts writer conflict).**
+4. Fix rounds go to the ORIGINAL implementer (resume it with findings; it appends to its report file) — never a reviewer, never the controller (twice-made historical error).
+
+### ➡️ ORDERED NEXT STEPS
+
+1. **Reconcile Task 8's fixture fix** (check `git log 124500b..HEAD` for `test(hub): auth-on uplink fixtures carry a bearer` + the appended fix report in `task-8-report.md`; if absent and no agent alive, re-do it: make `routing.test.ts:44`'s `attachedUplink` fixture present a valid bearer when auth is on — seed a device via DeviceStore + hashToken, mirror relayIntegration.test.ts's pattern). Hub suite must be GREEN (~264) before anything else.
+2. **Task 8 FULL review** (opus, judgment): `scripts/review-package PLAN 124500b~1 <fixture-sha>` covering both commits; brief + report + amendment (routing.test.ts fixture scope) as inputs.
+3. **Task 13 docs sweep** (mechanical/sonnet impl, haiku SPEC_ONLY review) — fold in Task 1's deferred items (PRD D12 ~`docs/PRD.md:311` and ~`:531` stale payload-limit cites).
+4. **Final whole-branch review** (opus, lean-sdd final-review-prompt): `scripts/review-package PLAN $(git merge-base main HEAD) HEAD`; point it at the ledger's deferred/parked lines — the Task 10 parked item (2-field forward through server.ts `:208-213`/`:1663-1680`, cli→RelayOptions, delete hubConnect) is the one known Important, now unblocked (Task 5 landed). ONE fix dispatch, one scoped re-review, adjudicate residuals.
+5. **Wrap:** delete the SDD workspace, then soltero-skills:lean-finishing → fresh full-suite run → push → **open PR, NEVER merge** (user merges; PR body carries disclosures incl. the ledger's deferred minors).
+
+### Resume & verify — run this first, expect exactly this (plus any in-flight commits above 68cb2cd)
+
+```bash
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
+git branch --show-current        # feature/identity-and-access
+git log --oneline -3             # 68cb2cd feat(client): membership-aware entrance … (or newer if Task 4/12 landed)
+cat .soltero/lean-sdd/2026-07-31-identity-and-access/progress.md   # the ledger — read it ALL
+ls .soltero/lean-sdd/2026-07-31-identity-and-access/task-4-report.md task-12-report.md 2>&1  # existence = that task finished
+cd poc/server && npx tsc --noEmit && npx vitest run   # 747 passed at handoff (more if 4/12 landed server-side changes — they shouldn't)
+cd ../hub && npm --prefix ../server run build >/dev/null && npx tsc --noEmit && npx vitest run   # 241+ passed
+cd ../client && npx tsc -b && npx vitest run          # 378+ passed
+```
+
+**Gotchas:** never `git add -A` (user WIP: `poc/client/src/game/tetris.test.ts` modified + untracked market-research.md, poc/demo-plugins/, screenshots, .soltero/, .claude/); implementers commit ONLY their explicit paths with the Co-Authored-By + Claude-Session trailers; concurrent committers may hit transient index.lock (wait 2s, retry); hub/client tests import poc/server from built dist — build server first (pretest doesn't fire under `npx vitest run`); client typecheck is `npx tsc -b`; grep is aliased to ugrep (`command grep`); never predict suite totals — read them from runs.
+
+**Open questions:** none blocking (A5/B1 were decided by the user this session). L7 (no LICENSE) still deferred — ask before adding one. §8.10 = Branch B is the next cycle after this PR merges.
+
+---
+
+## 🟡 HISTORICAL — session #23 state below. FULLY SUPERSEDED: the spec WAS written and approved, the plan PASSed council review, and execution is mid-flight (see START HERE above). The exploration findings below are now encoded in the spec's §1; the model-policy block was actioned and is in effect.
+
+## (was) START HERE (session #23) — ON `main`, NOTHING MERGED THIS SESSION. §8.1+§8.10 BRAINSTORM IN FLIGHT, SPEC NOT WRITTEN.
+
+**Where it stopped, exactly:** context exploration for the §8.1+§8.10 brainstorm is COMPLETE (findings below — they are the expensive part, do not re-derive). The next action was `Write docs/specs/2026-07-31-identity-and-operating-design.md`. **That file does not exist yet.** No code touched, no branch cut, no commits made this session.
+
+**User's two directives this session:**
+1. **"lets do 8.1 and 8.10"** — the paired section is APPROVED. Recommendation on record was §8.1+§8.10 as a pair; the user took it.
+2. **"lets make sure we don't use opus 5 — can we use opus 4.8 for this next cycle"** — see the model block below. **Partly actioned; needs a session restart to take effect.**
+
+### ⚠️ MODEL POLICY — actioned but NOT yet in effect
+
+- **`claude-opus-4-8` is a real, current model ID** (verified via the `claude-api` skill's model table; Opus-tier, $5/$25, 1M ctx).
+- **The Agent tool's `model` parameter is ENUM-ONLY** — `sonnet` | `opus` | `haiku` | `fable`. Passing `"claude-opus-4-8"` was probed live and **rejected**: `InputValidationError: expected one of "sonnet"|"opus"|"haiku"|"fable"`. Do not retry this; it is settled.
+- **Fix applied:** wrote `.claude/settings.json` (NEW FILE, untracked) with `{"env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-8"}}`. This repoints what the `opus` alias resolves to **while preserving the haiku/sonnet/opus tiering** the lean-sdd model policy depends on.
+- **It does NOT take effect in the session that wrote it** — `env` is read at session start. **The user must `/clear` or relaunch before any dispatch-heavy phase (plan-review, lean-sdd).** The brainstorm itself is controller-only work, so it was safe to continue.
+- **Rejected alternative, with WHY:** `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-8` has top priority in the resolution order and would override *every* per-dispatch `model:` choice — flattening mechanical/haiku and sonnet-tier work onto Opus 4.8. More expensive and contrary to the tiering. `ANTHROPIC_DEFAULT_OPUS_MODEL` is the correct knob.
+- Resolution order, for reference: `CLAUDE_CODE_SUBAGENT_MODEL` → per-invocation `model` → agent frontmatter `model:` → main-conversation model.
+
+### 🔑 EXPLORATION FINDINGS — the expensive part. Do not re-derive.
+
+**Three stale citations to correct in the spec's first docs commit:**
+1. **PRD §8.1 (`docs/PRD.md:362`) cites `hub.ts:337-338`** for "truncates whatever the browser sent" — **stale**. Actual sites: `poc/hub/src/hub.ts:670-671` (`identify`) and `hub.ts:766-767` (`join`). `hub.ts:337` is now a doc comment.
+2. **`docs/tech-debt.md` §1.1 ("no `maxPayload`") is stale in BOTH directions.** The hub **has** one (`hub.ts:411`, `MAX_FRAME_BYTES = 1_000_000` at `poc/server/src/relayProtocol.ts:23`) and always did; the server gained one at `server.ts:805` (audit M5). The two halves no longer diverge. **PRD §8.10's "Today" line inherits this error** — it says the hub has no pre-auth payload limit; it does.
+3. Audit **M4** (`Docs/audit-2026-07-30.md:139-153`) is still the live gap, but note the panel refuted the *severity framing* on the grounds that `main.ts:7` binds `127.0.0.1` by default and no deploy artifact exposes the hub.
+
+**The real holes (these are what §8.1 must close):**
+- **`join` has NO membership check.** `hub.ts:734-798` validates shape and liveness, then binds and replays — there is no `store.isMember` call anywhere in it. Any browser that can name a `projectId`+`sessionId` gets full event replay (`hub.ts:790-792`), the project snapshot (`:793`), and a live tunnel into the owning laptop (`:796`) — from which it can drive the agent and approve permission gates. Membership gates guard *provisioning* (`create_session` `hub.ts:830`, `attach_repo` `:904`, `set_project_lifecycle` `:725`); nothing guards *participation*.
+- **`watch_project`/`peek` (`hub.ts:926-936`) require neither identity nor membership**, and `pushProject` (`hub.ts:177-193`) fans out to any channel whose `channel.projectId` matches — a field the browser sets itself via `watch_project` (`:933`). That snapshot carries `SessionFacts.touched`, the full changed-path list of every session. **`poc/server/src/relayProtocol.ts:47-55` explicitly states "the bound that holds today is project membership" — it does not hold.**
+- **`pushProjects` (`hub.ts:338-341`) broadcasts every project's member roster** (`hubStore.ts:355`) to every connected channel. Under real auth that is a roster of GitHub logins.
+- **Uplink auth is a URL path prefix and nothing else.** `hub.ts:417` routes `/uplink` to `handleUplink`; the `hello` branch (`hub.ts:448-493`) checks frame shape only, then `uplinks.set(frame.uplinkId, socket)` unconditionally — and **a new `hello` with an existing `uplinkId` EVICTS the incumbent** (`hub.ts:465-470`). Any peer that can reach the port can hijack a machine's sessions, flap it offline, or publish events into its log.
+- **`relay.ts:426-433` (`defaultConnect`) passes no `headers` option**, so a bearer cannot be sent today without changing that line. Uplink token work starts there.
+- Correctly scoped already, don't "fix": `emitContested` (`hub.ts:224-300`) targets only the owning uplink; the reply narrowcast (`hub.ts:566-593`) requires session ownership or a hub-issued single-use `pendingReplyFrom` grant.
+
+**Reusable assets:**
+- **`poc/server/src/auth.ts` (387 lines) is near-drop-in for the hub.** Takes `IncomingMessage`/`ServerResponse` — exactly what `hub.ts:377`'s `createServer` handler passes; `authRoutes(cfg)` returns a did-I-consume-this boolean and slots in at `hub.ts:390` beside `/healthz`. HMAC-SHA256 session token (`auth.ts:38-41`), 7-day max age, `timingSafeEqual`, `mpai_session` cookie with `Secure` via a three-signal `isSecure()` (`auth.ts:150-154`), allowlist fail-closed on empty (`auth.ts:74-82`), `requireAuth` single policy point (`auth.ts:168-179`). The `identify` handler is the natural insertion point — `hub.ts:661-665`'s own comment already names this as the plan.
+- **`docs/superpowers/plans/2026-07-27-v7b2-trust-and-pairing.md` (116KB, 8 tasks) is a complete, task-level design for exactly §8.1.** ~70% reusable. Device pairing: `mpai --hub` prints a short code → signed-in browser approves → hub issues an opaque bearer, stores only its **hash** against a revocable per-device record; bearer in `Authorization`, never a query string. **Stale because it predates §8.2 (projects/membership), §8.3 (persisted `machineId`), §8.7 (HubDb), §8.8.** Its single biggest stated bound — "device records and pairings are in memory, a hub restart un-pairs every laptop, v7c fixes it" — **is now dissolvable: HubDb exists**, so device records belong in schema v2.
+- **`docs/superpowers/specs/2026-07-27-v7-hub-architecture-design.md` §10** is the security floor §8.10 must satisfy: 10.1 no secrets in query params, 10.2 payload limits precede auth, 10.3 every wire field bounded + charset-checked, 10.4 trust covers identity only (laptop still validates shape) + hub-assigned `channelId`, 10.5 pairing codes short-TTL/single-use/rate-limited, 10.6 Origin check + rate limiting.
+
+**Current hub facts §8.10 needs:**
+- **Config is 5 env vars, no validation:** `PORT` (`main.ts:4`, `Number()` unvalidated — a typo yields `NaN` → port 0), `HOST` (`main.ts:7`, defaults `127.0.0.1`), `CLIENT_DIST` (`main.ts:20`), `HUB_DB` + `MPAI_HOME` (`bootConfig.ts:20-24`). **There is no `config.ts` equivalent on the hub** — adding auth means adding that module. `deploy/env.example` contains **no hub variables at all**.
+- **No rate limiting anywhere**, no connection-count cap, no per-socket message cap, no `bufferedAmount` backpressure check (`hub.ts:172-174` checks only `readyState`). The only throttles are outbound fan-out dampers (`PROJECT_PUSH_INTERVAL_MS = 1000`, `hub.ts:20`).
+- **Zero retention/pruning/vacuum.** `HubDb` (`poc/hub/src/hubDb.ts`, 533 lines) has 6 tables (`:27-48`), `SCHEMA_VERSION = 1` (`:15`); `events` is **INSERT-only, one row per `LoggedEvent`** (`:403-405`) — including throttled agent progress frames. No `DELETE FROM events`, no `VACUUM`, no `journal_size_limit`, no TTL. Archiving a project (`hubStore.ts:249-258`) retains every event row. At-rest posture is good already (dir `0700` `:129-137`, files `0600` `:441-446`, WAL, PID lockfile `:456-485`).
+- **Fail-stop blast radius:** `defaultFatal` (`hub.ts:74-101`) — any failed write exits the process, killing every uplink and browser; disk-full therefore crash-loops on the first publish after each restart. `hub.ts:94-97`: "a CORRUPT `hub.db` has no recovery before §8.10's backups land." Its one diagnostic line is a bare `console.error` immediately before `process.exit(1)` — not guaranteed to flush (tech-debt §2.8).
+- **No hub deploy artifact exists.** `deploy/Caddyfile`, `deploy/multiplayer-ai.service`, `deploy/env.example`, `deploy/RUNBOOK.md` all target the **standalone server on 3001**. All four are headed "NOT YET VERIFIED against a real box." Security headers live **only** in the Caddyfile, not `staticFiles.ts` (`:65-67` sets `content-type` and nothing else).
+
+### 📐 DRAFT DESIGN — my recommendations, NOT yet user-approved, NOT yet written to a spec
+
+**Structure: ONE spec, TWO branches.** Splitting the spec would make the access-control decisions incoherent (they are one gate); splitting the branches keeps each cycle a normal size. **Branch A (§8.1) must land before Branch B (§8.10)** — B's rate limiting and audit trail need to know who a caller is.
+
+- **A1** — Move `auth.ts` to the hub; browsers sign in with GitHub at the hub; the hub stamps identity. Reuse, near-zero change.
+- **A2** — Uplink auth: v7b2's pairing-code → opaque bearer → hash-stored revocable device record, **but persisted in HubDb schema v2** rather than memory. Closes v7b2's biggest bound.
+- **A3** — Bind the device record to §8.3's persisted `machineId`, not a fresh device id — reuses durable identity that already exists.
+- **A4** — Add `isMember` to `join`. Closes the participation hole.
+- **A5** — **The genuine product fork, needs the user's call.** Today P2 says "every browser sees every project." Recommend: the project **list** stays hub-wide (it is the join affordance — you cannot join what you cannot see), but **snapshots / `touched` / the record require membership**. Rationale: this makes `relayProtocol.ts:47-55`'s already-stated bound TRUE rather than inventing new policy. Alternative: keep everything hub-wide and require only identity (D1 says one team, one hub — everyone is a colleague).
+- **A6** — Allowlist stays `GITHUB_ALLOWLIST` env. Host settings are out of scope.
+- **B1** — **Backup via SQLite `VACUUM INTO`** — atomic, hot-safe, single output file, so it sidesteps the `.db`/`-wal`/`-shm` trio-copy hazard that spec §8a ruling 7 warns about. **Retention OPT-IN** (`HUB_RETENTION_DAYS`, unset = keep forever) because the record IS the product and silently deleting turns undermines §8.7. Plus a **disk-headroom preflight** that turns the crash-loop into a loud warning and a clean refusal before the disk fills.
+- **B2** — Rate limiting: per-IP token bucket on the WS upgrade, `/auth/*`, and pairing-code submission; per-connection message rate; connection-count caps; `bufferedAmount` backpressure.
+- **B3** — Origin check on the WS upgrade (`HUB_ORIGIN`), fail-closed.
+- **B4** — Hub deploy artifacts (Caddyfile, systemd unit, env template, RUNBOOK section). **Cannot be verified against a real box — the user has none. Must be disclosed as unverified, not claimed deployable.**
+- **B5** — Harden `defaultFatal`'s stderr flush so the crash-loop is diagnosable from the first restart.
+- **B6** — **HOST fail-closed: refuse to boot if `HOST` is non-loopback and auth is unconfigured.** Cheapest, strongest single answer to audit M4.
+- **Out of scope, but note it becomes unblocked by A:** tech-debt §2.5 (the invite flow is dead through the hub — every invite link is broken against a hub; it needs a hub identity plane, which is exactly A).
+
+### ➡️ ORDERED NEXT STEPS
+
+1. **Tell the user to `/clear`** (or relaunch) so `.claude/settings.json`'s `ANTHROPIC_DEFAULT_OPUS_MODEL` takes effect before any dispatch.
+2. **Write `docs/specs/2026-07-31-identity-and-operating-design.md`** from the DRAFT DESIGN block above. It is a `lean-brainstorming` deliverable — the design message + spec file are the same approval pass.
+3. **Present the spec and STOP for approval.** Flag **A5 (the visibility fork)** and **B1 (retention opt-in vs default-prune)** as the two decisions that genuinely need the user, and **B4** as the honest can't-verify disclosure. Ask in plain prose, not `AskUserQuestion` (memory: the dialog hides the text being approved).
+4. On approval → `soltero-skills:lean-plans` for **Branch A only**, gate with `plan-review`, execute with `lean-sdd` on a fresh branch off `main`. Branch B follows after A merges.
+5. First docs commit on Branch A folds in the three stale-citation corrections listed above.
+
+### Resume & verify — run this first, expect exactly this
+
+```bash
+cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
+git branch --show-current   # main
+git log --oneline -1        # 6f31010 docs: HANDOFF — post-merge reset, next-section recommendation
+git status --short          # M poc/client/src/game/tetris.test.ts  +  ?? .claude/ .soltero/ market-research.md poc/demo-plugins/ tour-skill-suggest.png walk-step8-labels.png
+cat .claude/settings.json   # {"env":{"ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-8"}}  — written this session, untracked
+ls docs/specs/2026-07-31-*  # NO SUCH FILE — that is the next thing to write
+cd poc/server && npx tsc --noEmit && npx vitest run   # 725 passed
+cd ../hub    && npx tsc --noEmit && npx vitest run    # 195 passed
+cd ../client && npx tsc -b && npx vitest run          # 361 passed
+```
+
+### Open questions (unresolved — do NOT record these as settled)
+
+1. **A5, the visibility fork** — hub-wide reads vs membership-scoped snapshots. Genuine product decision; P2 says hub-wide today and that is a deliberate spec position, so changing it is a spec change, not a bug fix.
+2. **B1 retention default** — opt-in (my recommendation, because the record is the product) vs a default age cap (closes tech-debt §2.8 harder but can silently destroy the deliverable).
+3. **§8.10 scope** — code-level controls only, or actually-deployable artifacts? There is no box to verify against, so "deployable" cannot be proven this cycle.
+4. **Does the §8.2 invite flow (tech-debt §2.5) ride along with Branch A?** Recommended out; it is §8.2's final-state item, not §8.1's.
+5. **L7 — no LICENSE file** (audit). User deferred the license choice; ask before adding one.
+
+---
+
+## 🟡 HISTORICAL — session #22 state below (§8.7 + §8.8 shipped and merged). Superseded where it conflicts with the block above.
+
+## (was) START HERE (post session #22) — ALL MERGED, TREE CLEAN, NOTHING IN FLIGHT.
 
 **Shipped and merged this session:** §8.7 The record (PR #26 → main `6ba1ee2`) and §8.8 Awareness/collisions (PR #27 → main `259162d`), plus a security-audit remediation, a /simplify quality pass, and `npm audit fix` (PR #28 → `41d9efd`, 0 vulnerabilities). Skills repo: soltero-skills PR #11 merged (code-optimizer gained a declaration-gated string-constant category).
 
