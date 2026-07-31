@@ -394,7 +394,15 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
         )}
         {refusal !== null && refusal !== "not-a-member" && (
           <div className="panel">
-            <div className="line dim">{refusalText(refusal)}</div>
+            <div className="line dim">
+              {refusalText(refusal, {
+                // The /uplink path is load-bearing: the hub routes uplinks by
+                // URL path, and a bare origin lands on the browser arm where a
+                // hello registers nothing — silently (proved live, 2026-07-31).
+                hubUrl: `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/uplink`,
+                projectId: props.projectId,
+              })}
+            </div>
           </div>
         )}
       </div>
