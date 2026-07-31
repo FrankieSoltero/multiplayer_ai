@@ -3,6 +3,7 @@ import WebSocket from "ws";
 import { startHub } from "../src/hub.js";
 import { RELAY_PROTOCOL_VERSION, type RepoDecl } from "multiplayer-ai-server/relayProtocol";
 import { projectRecordFrom } from "multiplayer-ai-server/record";
+import { signSession } from "multiplayer-ai-server/auth";
 
 const decl = (key: string, over: Partial<RepoDecl> = {}): RepoDecl => ({
   key,
@@ -782,6 +783,164 @@ describe("hub per-connection identity", () => {
     expect(seen[0].userId).toHaveLength(64);
     expect(seen[0].name).toHaveLength(40);
     ws.close();
+  });
+});
+
+describe("hub verified identity stamping", () => {
+  // A throwaway auth config. `alice` is the sole allowlisted login; the
+  // session secret is what `signSession` below signs with, so a cookie the
+  // hub will accept is `mpai_session=<signSession(login, SECRET)>`. The
+  // OAuth fields are present only to satisfy AuthConfig's shape — no route
+  // under test ever exchanges a code.
+  const SECRET = "test-secret";
+  const AUTH = {
+    clientId: "cid",
+    clientSecret: "csecret",
+    sessionSecret: SECRET,
+    allowlist: "alice",
+  };
+  const cookieFor = (login: string) => ({ cookie: `mpai_session=${signSession(login, SECRET)}` });
+
+  // The `ws` client reads request headers ONCE at the upgrade; the hub holds
+  // that cookie for the life of the connection (WS messages carry no cookies).
+  function connectWith(url: string, headers?: Record<string, string>): Promise<WebSocket> {
+    return new Promise((resolve, reject) => {
+      const ws = headers ? new WebSocket(url, { headers }) : new WebSocket(url);
+      ws.on("open", () => resolve(ws));
+      ws.on("error", reject);
+    });
+  }
+
+  it("stamps the verified login over the browser's identify claim", async () => {
+    // The trust inversion (spec §3.5 rule 1): the browser claims `mallory`,
+    // the hub discards it and stamps the cookie-verified login as BOTH id and
+    // display name. Asserting the full reply — not just that it is not
+    // `mallory` — pins the name lock too (spec §3.4).
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    close = hub.close;
+    const ws = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("alice"));
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId: "mallory", name: "m" }));
+    await wait(40);
+    expect(seen).toEqual([{ type: "identified", userId: "alice", name: "alice" }]);
+    ws.close();
+  });
+
+  it("refuses an identify with no cookie and with a forged cookie alike", async () => {
+    // Both auth-on refusals of the missing-identity kind resolve to the same
+    // string, in the same order the standalone join gate uses (spec §4.3):
+    // no cookie and a signature the hub did not sign are both unauthenticated.
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    close = hub.close;
+    const none = await connectWith(`ws://127.0.0.1:${hub.port}`);
+    const forged = await connectWith(`ws://127.0.0.1:${hub.port}`, {
+      cookie: "mpai_session=not.a.real.token",
+    });
+    const s1: any[] = []; const s2: any[] = [];
+    collect(none, s1); collect(forged, s2);
+    none.send(JSON.stringify({ type: "identify", userId: "alice", name: "alice" }));
+    forged.send(JSON.stringify({ type: "identify", userId: "alice", name: "alice" }));
+    await wait(40);
+    expect(s1).toEqual([{ type: "error", message: "authentication required" }]);
+    expect(s2).toEqual([{ type: "error", message: "authentication required" }]);
+    none.close(); forged.close();
+  });
+
+  it("refuses an identify for a verified login off the allowlist", async () => {
+    // A validly-signed cookie whose login is not allowlisted is the SECOND
+    // refusal, distinct from "authentication required" — the cookie verifies,
+    // the person is simply not admitted (spec §4.3).
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    close = hub.close;
+    const ws = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("mallory"));
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId: "mallory", name: "mallory" }));
+    await wait(40);
+    expect(seen).toEqual([{ type: "error", message: "not on the allowlist" }]);
+    ws.close();
+  });
+
+  it("stamps the verified login on join, and tunnels it as the identity", async () => {
+    // The join path's stamp is what the laptop's relay arm trusts
+    // (server.ts's `io.mode === "relay"` branch): the tunnelled `identity`
+    // must carry the verified login, not the `mallory` the payload claims.
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const browser = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("alice"));
+    browser.send(join({ userId: "mallory", name: "m" }));
+    await wait(50);
+    const tunnels = upSeen.filter((f) => f.t === "tunnel");
+    expect(tunnels.map((f) => f.payload.type)).toEqual(["join"]);
+    expect(tunnels[0].identity).toEqual({ userId: "alice", name: "alice" });
+    browser.close(); up.close();
+  });
+
+  it("refuses a join whose cookie is missing or off the allowlist", async () => {
+    // The same two refusals as identify, on the join gate — and BEFORE the
+    // tunnel, so a rejected join never reaches the laptop.
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const noCookie = await connectWith(`ws://127.0.0.1:${hub.port}`);
+    const offList = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("mallory"));
+    const s1: any[] = []; const s2: any[] = [];
+    collect(noCookie, s1); collect(offList, s2);
+    noCookie.send(join());
+    offList.send(join());
+    await wait(50);
+    expect(s1.map((m) => m.message)).toEqual(["authentication required"]);
+    expect(s2.map((m) => m.message)).toEqual(["not on the allowlist"]);
+    expect(upSeen.filter((f) => f.t === "tunnel")).toEqual([]);
+    noCookie.close(); offList.close(); up.close();
+  });
+
+  it("keeps the client's identify/join claim verbatim when auth is off", async () => {
+    // Auth off (no `auth`): `requireAuth` admits every request with a null
+    // login, so the browser's claim stands byte-for-byte — even the truncation
+    // is unchanged — preserving today's behaviour. A stray cookie is ignored.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const browser = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("alice"));
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "identify", userId: "mallory", name: "m" }));
+    await wait(40);
+    // Identify with auth off is a no-op guard-wise but proves the claim holds.
+    // (A join re-binds identity; assert the tunnelled identity keeps the claim.)
+    browser.send(join({ userId: "mallory", name: "m" }));
+    await wait(50);
+    expect(seen[0]).toEqual({ type: "identified", userId: "mallory", name: "m" });
+    const tunnels = upSeen.filter((f) => f.t === "tunnel");
+    expect(tunnels[0].identity).toEqual({ userId: "mallory", name: "m" });
+    browser.close(); up.close();
+  });
+
+  it("refuses a second identify after join even with auth on", async () => {
+    // The already-joined guard runs BEFORE the auth gate, so the refusal is
+    // "already joined" (not re-verification), and the join-bound identity
+    // holds — the auth wiring must not disturb this existing guard.
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const browser = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("alice"));
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(join({ userId: "mallory", name: "m" }));
+    await wait(40);
+    seen.length = 0;
+    upSeen.length = 0;
+    browser.send(JSON.stringify({ type: "identify", userId: "alice", name: "alice" }));
+    await wait(50);
+    expect(seen.map((m) => m.message)).toEqual(["already joined"]);
+    expect(seen.some((m) => m.type === "identified")).toBe(false);
+    browser.send(JSON.stringify({ type: "set_intent", intent: "x" }));
+    await wait(50);
+    expect(upSeen.filter((f) => f.t === "tunnel").map((f) => f.identity.userId)).toEqual(["alice"]);
+    browser.close(); up.close();
   });
 });
 

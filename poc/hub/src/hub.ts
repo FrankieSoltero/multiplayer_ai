@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { staticHandler } from "multiplayer-ai-server/staticFiles";
-import { authRoutes, type AuthConfig } from "multiplayer-ai-server/auth";
+import { authRoutes, requireAuth, type AuthConfig } from "multiplayer-ai-server/auth";
 import { slugify } from "multiplayer-ai-server/workspace";
 import { projectRecordFrom } from "multiplayer-ai-server/record";
 import { collisionsFrom, TOUCH_CAP, TOUCH_SENTINEL } from "multiplayer-ai-server/collisions";
@@ -429,7 +429,10 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     // crashes the process; "close" always follows and does the cleanup.
     socket.on("error", () => {});
     if ((req.url ?? "/").startsWith("/uplink")) handleUplink(socket);
-    else handleBrowser(socket);
+    // The cookie is read ONCE, here at the upgrade, and held on the channel
+    // for the life of the connection: WS messages carry no cookies, so a
+    // per-message re-read would have nothing to read (spec §3.5 rule 1).
+    else handleBrowser(socket, req.headers.cookie);
   });
 
   function handleUplink(socket: WebSocket): void {
@@ -627,7 +630,7 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     });
   }
 
-  function handleBrowser(socket: WebSocket): void {
+  function handleBrowser(socket: WebSocket, cookieHeader: string | undefined): void {
     // Assigned here and never read from the client: a client-chosen channel id
     // would let one browser address another's tunnel (spec §10.4).
     const channelId = randomUUID();
@@ -681,10 +684,20 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         if (typeof msg.userId !== "string" || typeof msg.name !== "string") {
           return error("identify requires userId, name");
         }
-        const userId = msg.userId.slice(0, 64);
-        const name = msg.name.slice(0, 40);
+        // Auth gate (spec §4.3, §3.5 rule 1). The cookie was read once at the
+        // upgrade; on success the browser's claim is DISCARDED and the verified
+        // GitHub login is stamped as both id and display name (the name lock,
+        // spec §3.4). Same two rejections, in the same order, as `join` below
+        // and as the standalone server's join gate — the hub must reject
+        // exactly what a laptop with auth on would. Auth off → `login` is null
+        // and the client's claim (with its truncation) stands verbatim.
+        const auth = requireAuth(cookieHeader, opts.auth);
+        if (!auth.ok) return error(auth.error);
+        const userId = auth.login !== null ? auth.login : msg.userId.slice(0, 64);
+        const name = auth.login !== null ? auth.login : msg.name.slice(0, 40);
         // An empty userId produces a `tunnel` frame the laptop's
         // parseDownFrame drops on the floor — identity that fails in silence.
+        // A verified login is never empty, so this only guards the auth-off arm.
         if (!userId) return error("identify requires userId");
         channel.identity = { userId, name };
         send(socket, { type: "identified", userId, name });
@@ -772,15 +785,26 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
           return error("projectId and sessionId must be 1-40 chars of a-z, 0-9, -");
         }
         const sessionId: string = msg.sessionId;
-        // v7b1 runs with auth OFF and takes the browser's word, exactly as a
-        // standalone server does with auth off. v7b2 replaces these two lines
-        // with the hub's cookie-verified GitHub login, which is what makes the
-        // trust inversion (spec §3.5 rule 1) real. Until then this hub must
-        // not be exposed to the internet.
-        const userId = msg.userId.slice(0, 64);
-        const name = msg.name.slice(0, 40);
+        // The trust inversion, now real (spec §3.5 rule 1). The hub verifies
+        // the cookie it read once at the upgrade and stamps the verified
+        // GitHub login as BOTH userId and display name, DISCARDING the
+        // browser's claim above — this is the verifier the laptop's relay arm
+        // assumes has already run (`server.ts`'s `io.mode === "relay"` stamp),
+        // so the two never diverge. Run BEFORE the owner check and before
+        // `tunnel()`, so a rejected join never reaches a laptop and the
+        // identity that does is the verified one. Same two rejections, in the
+        // same order, as the standalone join gate (spec §4.3). Auth off →
+        // `login` is null and the browser's claim (with its truncation) stands
+        // verbatim, exactly as v7b1 behaved. The join PAYLOAD is still
+        // forwarded untouched (`DownFrame`'s contract); only the tunnelled
+        // `identity` carries the login.
+        const auth = requireAuth(cookieHeader, opts.auth);
+        if (!auth.ok) return error(auth.error);
+        const userId = auth.login !== null ? auth.login : msg.userId.slice(0, 64);
+        const name = auth.login !== null ? auth.login : msg.name.slice(0, 40);
         // An empty userId would produce a `tunnel` frame the laptop's
         // parseDownFrame drops on the floor — a join that fails in silence.
+        // A verified login is never empty, so this only guards the auth-off arm.
         if (!userId) return error("join requires userId");
 
         const owner = store.ownerOf(projectId, sessionId);
