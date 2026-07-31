@@ -901,11 +901,19 @@ export async function startServer(opts: {
         // input grow `projects` without bound — the hub's `readSessionsOf` vs
         // `sessionsOf` split (hubStore.ts) guards the identical failure and
         // this mirrors it.
+        // `memberCount`/`isMember` for parity with the hub's redacted list
+        // (spec A5): one browser bundle talks to both servers, so a field the
+        // hub sends and this omits would fork the client's parsing. Solo mode
+        // has no membership concept — anyone reachable may already join any
+        // session — so `memberCount` is just the roster length and the
+        // connecting user is always `isMember: true`. No roster is redacted
+        // here: `projectSummaryOf` already reports only the connecting user.
         io.send({
           type: "projects",
-          projects: [...projects.values()].map((p) =>
-            projectSummaryOf(p, identity?.userId ?? null, machineView()),
-          ),
+          projects: [...projects.values()].map((p) => {
+            const summary = projectSummaryOf(p, identity?.userId ?? null, machineView());
+            return { ...summary, memberCount: summary.members.length, isMember: true };
+          }),
         });
         return;
       }

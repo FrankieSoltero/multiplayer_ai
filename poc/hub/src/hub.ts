@@ -7,7 +7,7 @@ import { slugify } from "multiplayer-ai-server/workspace";
 import { projectRecordFrom } from "multiplayer-ai-server/record";
 import { collisionsFrom, TOUCH_CAP, TOUCH_SENTINEL } from "multiplayer-ai-server/collisions";
 import type { Collision } from "multiplayer-ai-server/collisions";
-import type { ProjectMessage } from "multiplayer-ai-server/project";
+import type { ProjectMessage, ProjectSummary } from "multiplayer-ai-server/project";
 import {
   MAX_FRAME_BYTES,
   RELAY_PROTOCOL_VERSION,
@@ -350,11 +350,42 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     }
   }
 
-  /** The project directory changed. Every browser sees every project (spec
-   *  P2), so this is a broadcast rather than a per-project narrowcast. */
+  /** The list stays hub-wide — it is the join affordance (spec A5) — but each
+   *  entry's roster is members-only, exactly like the snapshot and record. A
+   *  channel viewing a project it belongs to gets the real `members`; anyone
+   *  else (including an unidentified channel) gets `members: []`. `memberCount`
+   *  is always the REAL size — a non-member learns HOW MANY are in a project
+   *  without learning WHO — and `isMember` lets the client render the join
+   *  affordance. `store.listProjects()` is unchanged and still returns the full
+   *  roster; redaction is a view concern applied here, per requester. */
+  function redactFor(
+    summaries: ProjectSummary[],
+    userId: string | null,
+  ): (ProjectSummary & { memberCount: number; isMember: boolean })[] {
+    return summaries.map((p) => {
+      const isMember = userId !== null && p.members.includes(userId);
+      return {
+        ...p,
+        memberCount: p.members.length,
+        isMember,
+        members: isMember ? p.members : [],
+      };
+    });
+  }
+
+  /** The project directory changed. The list is hub-wide (spec A5), so this
+   *  still reaches every channel — but each channel's payload is tailored to
+   *  its own membership by `redactFor`, so one directory change produces one
+   *  per-channel narrowcast, not one shared broadcast: a non-member never sees
+   *  another project's roster ride out on a push it happened to be watching. */
   function pushProjects(): void {
-    const payload = { type: "projects", projects: store.listProjects() };
-    for (const channel of channels.values()) send(channel.socket, payload);
+    const summaries = store.listProjects();
+    for (const channel of channels.values()) {
+      send(channel.socket, {
+        type: "projects",
+        projects: redactFor(summaries, channel.identity?.userId ?? null),
+      });
+    }
   }
 
   /** The same 1s leading+trailing throttle the server uses (server.ts's
@@ -719,7 +750,14 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       }
 
       if (msg?.type === "list_projects") {
-        send(socket, { type: "projects", projects: store.listProjects() });
+        // Hub-wide, no identity gate: the list is the join affordance (spec A5).
+        // But each entry is redacted to THIS channel by `redactFor` — a
+        // non-member (or an unidentified channel) sees `members: []` with the
+        // real `memberCount`, never another project's roster.
+        send(socket, {
+          type: "projects",
+          projects: redactFor(store.listProjects(), channel.identity?.userId ?? null),
+        });
         return;
       }
 

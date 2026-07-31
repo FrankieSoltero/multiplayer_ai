@@ -1004,8 +1004,10 @@ describe("hub project registry", () => {
     ws.close();
   });
 
-  it("lets anyone list projects they are not a member of — visibility is hub-wide", async () => {
-    // Spec P2: visibility is hub-wide, participation is membership-scoped.
+  it("keeps a non-member's list entry visible but redacts its roster (spec A5)", async () => {
+    // Spec A5 (supersedes P2): the list is the join affordance so it stays
+    // hub-wide, but a non-member sees no roster — real memberCount, empty
+    // members, isMember false. No login of a member may leak in the entry.
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
     const ana = await identified(hub.port, "ana");
@@ -1014,8 +1016,82 @@ describe("hub project registry", () => {
     const bo = await identified(hub.port, "bo");
     bo.ws.send(JSON.stringify({ type: "list_projects" }));
     await wait(30);
-    expect(bo.seen[0].projects[0].id).toBe("acme");
-    expect(bo.seen[0].projects[0].members).toEqual(["ana"]);
+    const entry = bo.seen[0].projects[0];
+    expect(entry.id).toBe("acme"); // still visible
+    expect(entry.isMember).toBe(false);
+    expect(entry.memberCount).toBe(1); // REAL size, not the redacted array's length
+    expect(entry.members).toEqual([]); // no logins disclosed
+    expect(JSON.stringify(entry)).not.toContain("ana");
+    ana.ws.close();
+    bo.ws.close();
+  });
+
+  it("gives a member the full roster with memberCount and isMember true (spec A5)", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ana = await identified(hub.port, "ana");
+    ana.ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+    await wait(30);
+    const bo = await identified(hub.port, "bo");
+    bo.ws.send(JSON.stringify({ type: "join_project", projectId: "acme" }));
+    await wait(30);
+    bo.seen.length = 0;
+    bo.ws.send(JSON.stringify({ type: "list_projects" }));
+    await wait(30);
+    const entry = bo.seen[0].projects[0];
+    expect(entry.isMember).toBe(true);
+    expect(entry.memberCount).toBe(2);
+    expect(entry.members).toEqual(["ana", "bo"]); // full roster for a member
+    ana.ws.close();
+    bo.ws.close();
+  });
+
+  it("redacts every entry for an unidentified channel (spec A5)", async () => {
+    // No identity yet: the list stays the join affordance (entry visible), but
+    // every roster is redacted — real memberCount, isMember false, members [].
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ana = await identified(hub.port, "ana");
+    ana.ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+    await wait(30);
+    const ws = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "list_projects" }));
+    await wait(30);
+    const entry = seen[0].projects[0];
+    expect(entry.id).toBe("acme"); // still visible: the join affordance
+    expect(entry.isMember).toBe(false);
+    expect(entry.memberCount).toBe(1);
+    expect(entry.members).toEqual([]);
+    expect(JSON.stringify(entry)).not.toContain("ana");
+    ana.ws.close();
+    ws.close();
+  });
+
+  it("tailors each channel's pushProjects payload to its own membership (spec A5)", async () => {
+    // ONE state change fans out ONE push to every channel; each channel's copy
+    // is redacted for THAT channel. A member and a non-member watching the same
+    // push must receive DIFFERENT payloads for the same project entry.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ana = await identified(hub.port, "ana");
+    ana.ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+    await wait(30);
+    const bo = await identified(hub.port, "bo"); // never joins acme
+    await wait(30);
+    ana.seen.length = 0;
+    bo.seen.length = 0;
+    // A single directory change (ana creates a second project) → one pushProjects.
+    ana.ws.send(JSON.stringify({ type: "create_project", name: "Beta" }));
+    await wait(30);
+    const anaAcme = ana.seen.at(-1).projects.find((p: any) => p.id === "acme");
+    const boAcme = bo.seen.at(-1).projects.find((p: any) => p.id === "acme");
+    expect(anaAcme.isMember).toBe(true);
+    expect(anaAcme.members).toEqual(["ana"]); // member sees the roster
+    expect(boAcme.isMember).toBe(false);
+    expect(boAcme.members).toEqual([]); // non-member's copy of the SAME push is redacted
+    expect(boAcme.memberCount).toBe(1);
     ana.ws.close();
     bo.ws.close();
   });
