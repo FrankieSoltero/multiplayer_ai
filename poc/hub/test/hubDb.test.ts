@@ -91,7 +91,7 @@ function raw<T>(dbPath: string, fn: (db: Database.Database) => T): T {
 const isDir = (p: string) => fs.statSync(p).isDirectory();
 
 describe("HubDb — fresh file", () => {
-  it("creates the file, the v1 schema, WAL mode and a 0700 parent dir", () => {
+  it("creates the file, the v2 schema, WAL mode and a 0700 parent dir", () => {
     const dbPath = path.join(tmp(), "nested", "deep", "hub.db");
     openDb(dbPath);
 
@@ -115,6 +115,7 @@ describe("HubDb — fresh file", () => {
           .all() as { name: string }[]
       ).map((r) => r.name);
       expect(tables).toEqual([
+        "devices",
         "events",
         "machines",
         "meta",
@@ -123,6 +124,12 @@ describe("HubDb — fresh file", () => {
         "sessions",
       ]);
     });
+  });
+
+  it("takes no .v1.bak for a fresh file — nothing to lose (spec §3.2 blast radius)", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    openDb(dbPath);
+    expect(fs.existsSync(`${dbPath}.v1.bak`)).toBe(false);
   });
 
   it("tightens a parent dir and a db file that ALREADY existed (spec §8a.7)", () => {
@@ -594,15 +601,25 @@ describe("HubDb — boot refusals (spec §3.6)", () => {
   it("refuses a DB whose schema is newer than it understands", () => {
     const dbPath = path.join(tmp(), "hub.db");
     openDb(dbPath).close();
+    // A stamp ABOVE the current version: migration runs forward only, so a v3
+    // record is refused with the existing message shape rather than downgraded.
     const bump = new Database(dbPath);
-    bump.prepare("UPDATE meta SET value = '2' WHERE key = 'schema_version'").run();
+    bump.prepare("UPDATE meta SET value = '3' WHERE key = 'schema_version'").run();
     bump.close();
 
     expect(() => openDb(dbPath)).toThrow(
-      `hub.db schema is v2; this hub understands v${SCHEMA_VERSION} — refusing to start`,
+      `hub.db schema is v3; this hub understands v${SCHEMA_VERSION} — refusing to start`,
     );
     // And it did not consume its own lock on the way out.
     expect(fs.existsSync(`${dbPath}.lock`)).toBe(false);
+    // The stamp is left exactly as found — a newer record is refused, never
+    // rewritten on the way out.
+    raw(dbPath, (db) => {
+      const meta = db
+        .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+        .get() as { value: string };
+      expect(meta.value).toBe("3");
+    });
   });
 
   it("propagates the failure of a file that is not a database", () => {
@@ -617,5 +634,235 @@ describe("HubDb — boot refusals (spec §3.6)", () => {
     fs.mkdirSync(dir);
     expect(() => openDb(dir)).toThrow();
     expect(fs.existsSync(`${dir}.lock`)).toBe(false);
+  });
+});
+
+/** The v1 schema, VERBATIM as it shipped — the pre-`devices` table set — so a
+ *  test can forge a genuine v1 record with raw SQL and prove the forward
+ *  migration leaves every v1 row exactly where it found it. */
+const V1_SCHEMA_DDL = `
+CREATE TABLE IF NOT EXISTS meta
+                (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS projects
+                (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                 created_by TEXT, created_at TEXT NOT NULL, lifecycle TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS project_members
+                (project_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                 PRIMARY KEY (project_id, user_id));
+CREATE TABLE IF NOT EXISTS machines
+                (uplink_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                 name TEXT NOT NULL, repos_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions
+                (project_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                 uplink_id TEXT NOT NULL, facts_json TEXT NOT NULL,
+                 last_run_id TEXT, last_seq INTEGER NOT NULL,
+                 PRIMARY KEY (project_id, session_id));
+CREATE TABLE IF NOT EXISTS events
+                (project_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                 id INTEGER NOT NULL, run_id TEXT NOT NULL, event_json TEXT NOT NULL,
+                 PRIMARY KEY (project_id, session_id, id));
+`;
+
+/** Forges a v1 record on disk with raw SQL and a representative row in every v1
+ *  table, then closes it — exactly the file a pre-branch hub left behind. */
+function writeV1File(dbPath: string): void {
+  const db = new Database(dbPath);
+  try {
+    db.exec(V1_SCHEMA_DDL);
+    db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '1')").run();
+    db.prepare(
+      "INSERT INTO projects (id, name, created_by, created_at, lifecycle) VALUES (?, ?, ?, ?, ?)",
+    ).run("acme", "Acme", "ana", "2026-07-29T10:00:00.000Z", "active");
+    db.prepare("INSERT INTO project_members (project_id, user_id) VALUES (?, ?)").run("acme", "ana");
+    db.prepare(
+      "INSERT INTO machines (uplink_id, project_id, name, repos_json) VALUES (?, ?, ?, ?)",
+    ).run("lap-1", "acme", "ana-mbp", JSON.stringify([decl("github.com/acme/api")]));
+    db.prepare(
+      "INSERT INTO sessions (project_id, session_id, uplink_id, facts_json, last_run_id, last_seq) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("acme", "auth", "lap-1", JSON.stringify(facts()), "run-a", 1);
+    const insertEvent = db.prepare(
+      "INSERT INTO events (project_id, session_id, id, run_id, event_json) VALUES (?, ?, ?, ?, ?)",
+    );
+    insertEvent.run("acme", "auth", 1, "run-a", JSON.stringify(stored(1, 0).event));
+    insertEvent.run("acme", "auth", 2, "run-a", JSON.stringify(stored(2, 1).event));
+  } finally {
+    db.close();
+  }
+}
+
+describe("HubDb — v1→v2 forward migration", () => {
+  it("migrates a genuine v1 record: adds devices, bumps meta, leaves every v1 row untouched", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    writeV1File(dbPath);
+
+    const db = openDb(dbPath);
+
+    // The stamp is now v2 and the devices table exists — empty, because a
+    // migration is additive and invents no rows.
+    raw(dbPath, (rdb) => {
+      const meta = rdb
+        .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+        .get() as { value: string };
+      expect(meta.value).toBe(String(SCHEMA_VERSION));
+      const hasDevices = rdb
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'devices'")
+        .get();
+      expect(hasDevices).toBeDefined();
+      expect((rdb.prepare("SELECT count(*) AS n FROM devices").get() as { n: number }).n).toBe(0);
+    });
+
+    // Every v1 row survives, and load() hands back exactly what the v1 record
+    // held — the migration disturbs nothing it did not add.
+    const h = db.load();
+    expect(h.projects.map((p) => p.id)).toEqual(["acme"]);
+    expect(h.projects[0]?.members).toEqual(["ana"]);
+    expect(h.projects[0]?.lifecycle).toBe("active");
+    expect(h.machines.map((m) => m.uplinkId)).toEqual(["lap-1"]);
+    expect(h.machines[0]?.repos).toHaveLength(1);
+    expect(h.sessions.map((s) => s.sessionId)).toEqual(["auth"]);
+    expect(h.sessions[0]?.events.map((e) => e.id)).toEqual([1, 2]);
+    expect(h.sessions[0]?.lastRunId).toBe("run-a");
+    expect(h.sessions[0]?.lastSeq).toBe(1);
+  });
+
+  it("copies the pure-v1 file to <dbPath>.v1.bak BEFORE migrating (blast radius / rollback)", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    writeV1File(dbPath);
+
+    openDb(dbPath);
+
+    const bakPath = `${dbPath}.v1.bak`;
+    expect(fs.existsSync(bakPath)).toBe(true);
+    // Owner-only: the snapshot carries the same prompts, userIds and file paths
+    // the live record does (spec §8a.7).
+    expect((fs.statSync(bakPath).mode & 0o777).toString(8)).toBe("600");
+    // And it is a PRE-migration snapshot — still stamped v1, still without the
+    // devices table — so a rollback restores an intact v1 record.
+    const bak = new Database(bakPath);
+    try {
+      const meta = bak
+        .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+        .get() as { value: string };
+      expect(meta.value).toBe("1");
+      const hasDevices = bak
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'devices'")
+        .get();
+      expect(hasDevices).toBeUndefined();
+      // The v1 rows are all there — it is a full copy, not an empty shell.
+      expect((bak.prepare("SELECT count(*) AS n FROM projects").get() as { n: number }).n).toBe(1);
+      expect((bak.prepare("SELECT count(*) AS n FROM events").get() as { n: number }).n).toBe(2);
+    } finally {
+      bak.close();
+    }
+  });
+
+  it("reopening a migrated file is a plain v2 open — no second backup, no re-migration", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    writeV1File(dbPath);
+    openDb(dbPath).close();
+    // The migration already ran; delete its backup so a second one would show.
+    fs.rmSync(`${dbPath}.v1.bak`);
+
+    const reopened = openDb(dbPath);
+    expect(fs.existsSync(`${dbPath}.v1.bak`)).toBe(false);
+    expect(reopened.load().projects.map((p) => p.id)).toEqual(["acme"]);
+  });
+});
+
+describe("HubDb — DeviceStore", () => {
+  const approve = (
+    db: HubDb,
+    over: Partial<{
+      machineId: string;
+      name: string;
+      tokenHash: string;
+      approvedBy: string;
+      approvedAt: string;
+    }> = {},
+  ) =>
+    db.deviceApproved({
+      machineId: "m1",
+      name: "ana-mbp",
+      tokenHash: "hash-a",
+      approvedBy: "ana",
+      approvedAt: "2026-07-31T10:00:00.000Z",
+      ...over,
+    });
+
+  it("inserts an approved device with revoked = 0 and looks it up by token hash", () => {
+    const db = openDb(":memory:");
+    approve(db);
+    expect(db.deviceByTokenHash("hash-a")).toEqual({ machineId: "m1", name: "ana-mbp" });
+  });
+
+  it("returns null for an unknown token hash", () => {
+    const db = openDb(":memory:");
+    approve(db);
+    expect(db.deviceByTokenHash("nope")).toBeNull();
+  });
+
+  it("returns true and revokes a known device; false for an unknown machineId", () => {
+    const db = openDb(":memory:");
+    approve(db);
+    expect(db.deviceRevoked("m1")).toBe(true);
+    expect(db.deviceRevoked("ghost")).toBe(false);
+  });
+
+  it("hides a revoked device from token-hash lookup (revocation enforced in the query)", () => {
+    const db = openDb(":memory:");
+    approve(db);
+    db.deviceRevoked("m1");
+    expect(db.deviceByTokenHash("hash-a")).toBeNull();
+  });
+
+  it("re-pairs a revoked device: new token hash, revoked reset to 0, rowid preserved", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    const db = openDb(dbPath);
+    approve(db, { tokenHash: "hash-old" });
+    const rowidBefore = raw(dbPath, (rdb) =>
+      (rdb.prepare("SELECT rowid AS r FROM devices WHERE machine_id = 'm1'").get() as { r: number })
+        .r,
+    );
+    db.deviceRevoked("m1");
+
+    // Re-pair with a fresh token, approver and timestamp.
+    db.deviceApproved({
+      machineId: "m1",
+      name: "ana-mbp-2",
+      tokenHash: "hash-new",
+      approvedBy: "bo",
+      approvedAt: "2026-07-31T12:00:00.000Z",
+    });
+
+    // The old hash is gone, the new one is live again, and the fields updated.
+    expect(db.deviceByTokenHash("hash-old")).toBeNull();
+    expect(db.deviceByTokenHash("hash-new")).toEqual({ machineId: "m1", name: "ana-mbp-2" });
+    // Upsert, not replace: the rowid — the record's arrival order — is preserved.
+    const rowidAfter = raw(dbPath, (rdb) =>
+      (rdb.prepare("SELECT rowid AS r FROM devices WHERE machine_id = 'm1'").get() as { r: number })
+        .r,
+    );
+    expect(rowidAfter).toBe(rowidBefore);
+    raw(dbPath, (rdb) => {
+      const row = rdb
+        .prepare("SELECT approved_by, approved_at, revoked FROM devices WHERE machine_id = 'm1'")
+        .get() as { approved_by: string; approved_at: string; revoked: number };
+      expect(row.approved_by).toBe("bo");
+      expect(row.approved_at).toBe("2026-07-31T12:00:00.000Z");
+      expect(row.revoked).toBe(0);
+    });
+  });
+
+  it("survives a close and reopen — devices persist, and are NOT hydrated into load()", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    const db = openDb(dbPath);
+    approve(db);
+    db.close();
+
+    const reopened = openDb(dbPath);
+    expect(reopened.deviceByTokenHash("hash-a")).toEqual({ machineId: "m1", name: "ana-mbp" });
+    // load() is untouched by devices: no field of HubHydration exposes them.
+    const h = reopened.load();
+    expect(Object.keys(h).sort()).toEqual(["machines", "projects", "sessions"]);
   });
 });

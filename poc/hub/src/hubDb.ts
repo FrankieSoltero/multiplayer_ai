@@ -11,8 +11,20 @@ import type {
 } from "./hubStore.js";
 
 /** Bumped only by a migration. A DB stamped higher than this is refused at boot
- *  rather than read with the wrong assumptions (spec §3.2, §3.6). */
-export const SCHEMA_VERSION = 1;
+ *  rather than read with the wrong assumptions (spec §3.2, §3.6); a DB stamped
+ *  LOWER is migrated forward at open (v1→v2 adds `devices`). */
+export const SCHEMA_VERSION = 2;
+
+/** The v2 addition (spec §A2, §A3): revocable device records for uplink auth,
+ *  read per-lookup and never hydrated into `HubStore`. Its own constant so the
+ *  fresh-file DDL sweep and the v1→v2 migration create it from ONE source of
+ *  truth. `revoked` is an integer flag (SQLite has no boolean); a token hash is
+ *  an opaque hex string this class only stores and compares — hashing is the
+ *  caller's job (Task 7). */
+const DEVICES_DDL = `CREATE TABLE IF NOT EXISTS devices
+                (machine_id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                 token_hash TEXT NOT NULL, approved_by TEXT NOT NULL,
+                 approved_at TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);`;
 
 /** Verbatim from spec §3.2. `IF NOT EXISTS` because opening an existing record
  *  is the normal case and creating one is the exception.
@@ -45,6 +57,7 @@ CREATE TABLE IF NOT EXISTS events
                 (project_id TEXT NOT NULL, session_id TEXT NOT NULL,
                  id INTEGER NOT NULL, run_id TEXT NOT NULL, event_json TEXT NOT NULL,
                  PRIMARY KEY (project_id, session_id, id));
+${DEVICES_DDL}
 `;
 
 const MEMORY_PATH = ":memory:";
@@ -82,6 +95,35 @@ interface EventRowOut {
   event_json: string;
 }
 
+/** The revocable-device record (spec §A2, §A3), served per-lookup and never
+ *  hydrated into `HubStore` — the uplink auth path reads a device row on demand,
+ *  it does not hold the set in memory. A token hash is an opaque hex string the
+ *  caller produces (`crypto.createHash("sha256")…`, Task 7); this store only
+ *  writes and matches it. */
+export interface DeviceStore {
+  /** Approve a machine, or RE-pair an existing one: an upsert on `machineId`
+   *  that installs the new token hash, approver and timestamp and clears
+   *  `revoked`, keeping the row's rowid (its arrival order) intact. */
+  deviceApproved(d: {
+    machineId: string;
+    name: string;
+    tokenHash: string;
+    approvedBy: string;
+    approvedAt: string;
+  }): void;
+  /** The live device holding this token hash, or `null` — a revoked device is a
+   *  miss, because revocation is enforced in the query itself. */
+  deviceByTokenHash(tokenHash: string): { machineId: string; name: string } | null;
+  /** Revoke a device; `true` if one by that `machineId` existed, `false` if
+   *  none did. */
+  deviceRevoked(machineId: string): boolean;
+}
+
+interface DeviceRowOut {
+  machine_id: string;
+  name: string;
+}
+
 /** The hub's record on disk: a `HubPersister` that writes through to SQLite,
  *  plus the two lifecycle operations only the owner of the file can perform —
  *  `load()` at boot (spec §3.4) and `close()` at shutdown.
@@ -96,7 +138,7 @@ interface EventRowOut {
  *  **One writer per file.** A PID lockfile beside the DB (`<dbPath>.lock`)
  *  makes a second hub on the same record refuse to start instead of interleaving
  *  two event streams into one journal (spec §3.1, §8a.3). */
-export class HubDb implements HubPersister {
+export class HubDb implements HubPersister, DeviceStore {
   private readonly db: Database.Database;
   /** null for `:memory:` and for `{ skipLock: true }` — the only two ways to
    *  run without one. */
@@ -146,8 +188,15 @@ export class HubDb implements HubPersister {
       this.db = opened;
       // Before any DDL: a record stamped with a schema this hub does not
       // understand must be left exactly as it was found, not half-migrated by
-      // an `IF NOT EXISTS` sweep on the way to refusing it.
-      this.assertSchemaUnderstood(dbPath);
+      // an `IF NOT EXISTS` sweep on the way to refusing it. A stamp BELOW this
+      // build's is the migratable case and is returned, not refused.
+      const found = this.assertSchemaUnderstood(dbPath);
+      // Forward-only, and BEFORE the WAL pragma and the DDL sweep so the backup
+      // it takes is of a still-pure v1 file. A newer stamp already refused
+      // above; a fresh file (`found === null`) has nothing to migrate.
+      if (found !== null && found < SCHEMA_VERSION) {
+        this.migrateForward(dbPath, found, inMemory);
+      }
       if (!inMemory) {
         // WAL is what makes "committed" mean "survives process death" for a
         // reader that opens the file afterwards. Meaningless for `:memory:`.
@@ -182,24 +231,61 @@ export class HubDb implements HubPersister {
     }
   }
 
-  /** Refuses rather than guesses. A newer schema means columns this build does
-   *  not know about and rows it would half-read; the record is the product, so
+  /** Reads the stamp and decides what this build may do with the record, WITHOUT
+   *  writing a byte. Returns the stamped version — `null` for a fresh or
+   *  unstamped file — so the caller can migrate a lower one forward. A NEWER
+   *  stamp is refused rather than guessed: it means columns this build does not
+   *  know about and rows it would half-read, and the record is the product, so
    *  the honest move is to stop (spec §3.6). */
-  private assertSchemaUnderstood(dbPath: string): void {
+  private assertSchemaUnderstood(dbPath: string): number | null {
     const hasMeta = this.db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
       .get();
-    if (!hasMeta) return;
+    if (!hasMeta) return null;
     const row = this.db
       .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
       .get() as { value: string | null } | undefined;
-    if (row?.value == null) return;
+    if (row?.value == null) return null;
     const found = Number(row.value);
-    if (found === SCHEMA_VERSION) return;
+    // At or below this build's version is understood: equal is opened as-is,
+    // lower is migrated forward by the caller. Only a higher stamp refuses.
+    if (found <= SCHEMA_VERSION) return found;
     const basename = path.basename(dbPath);
     throw new Error(
       `${basename} schema is v${found}; this hub understands v${SCHEMA_VERSION} — refusing to start`,
     );
+  }
+
+  /** Migrates an older record up to `SCHEMA_VERSION`, forward only and additive:
+   *  today the single step is v1→v2, which adds the `devices` table and bumps
+   *  the stamp. Two invariants make a crash mid-migration a non-event:
+   *
+   *  1. **Backup first.** A file (never `:memory:`, which has nothing to lose)
+   *     is copied to `<dbPath>.v<found>.bak` while it is still pure v1 — BEFORE
+   *     the transaction opens — so a rollback is a file copy back. The WAL is
+   *     checkpointed into the main file first, because the backup is a main-file
+   *     copy and an un-checkpointed frame would otherwise be lost from it. The
+   *     copy is tightened to `0600`: it holds the same prompts, userIds and file
+   *     paths the live record does (spec §8a.7).
+   *  2. **One transaction.** The `devices` DDL and the meta bump commit together
+   *     or not at all, so a crash leaves the file stamped v1 and untouched — the
+   *     backup is belt to that braces. */
+  private migrateForward(dbPath: string, found: number, inMemory: boolean): void {
+    if (!inMemory) {
+      // Flush any committed-but-un-checkpointed frames into the main file so the
+      // main-file copy below is the whole record. A no-op on a non-WAL file.
+      this.db.pragma("wal_checkpoint(TRUNCATE)");
+      const backupPath = `${dbPath}.v${found}.bak`;
+      fs.copyFileSync(dbPath, backupPath);
+      fs.chmodSync(backupPath, 0o600);
+    }
+    const migrate = this.db.transaction(() => {
+      this.db.exec(DEVICES_DDL);
+      this.db
+        .prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'")
+        .run(String(SCHEMA_VERSION));
+    });
+    migrate();
   }
 
   /** Everything a restarting hub boots from (spec §3.4), in the record's own
@@ -416,6 +502,53 @@ export class HubDb implements HubPersister {
         `eventsAppended for unknown session "${sessionId}" in "${projectId}" with no newSession`,
       );
     }
+  }
+
+  /** Approve or re-pair a device (spec §A2). `ON CONFLICT DO UPDATE`, never
+   *  `INSERT OR REPLACE`: re-pairing a machine must reuse its row — replace
+   *  would delete it and re-insert with a NEW rowid, reordering the record's
+   *  arrival order (the same rule the `machines` upsert lives by,
+   *  `hubDb.ts` header). A re-pair installs the new hash, approver and
+   *  timestamp and clears `revoked`, so a previously revoked machine becomes
+   *  live again. */
+  deviceApproved(d: {
+    machineId: string;
+    name: string;
+    tokenHash: string;
+    approvedBy: string;
+    approvedAt: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO devices (machine_id, name, token_hash, approved_by, approved_at, revoked)
+           VALUES (?, ?, ?, ?, ?, 0)
+           ON CONFLICT(machine_id) DO UPDATE SET
+             name = excluded.name, token_hash = excluded.token_hash,
+             approved_by = excluded.approved_by, approved_at = excluded.approved_at,
+             revoked = 0`,
+      )
+      .run(d.machineId, d.name, d.tokenHash, d.approvedBy, d.approvedAt);
+  }
+
+  /** `revoked = 0` in the WHERE clause is the enforcement point: a revoked
+   *  device is indistinguishable from an unknown one to the auth path — both are
+   *  `null` — so revocation cannot be bypassed by a lookup that forgets to check
+   *  a flag afterwards. */
+  deviceByTokenHash(tokenHash: string): { machineId: string; name: string } | null {
+    const row = this.db
+      .prepare("SELECT machine_id, name FROM devices WHERE token_hash = ? AND revoked = 0")
+      .get(tokenHash) as DeviceRowOut | undefined;
+    return row ? { machineId: row.machine_id, name: row.name } : null;
+  }
+
+  /** `true` only when a row by that `machineId` existed to revoke — an unknown
+   *  machine changes nothing and reports `false`, so a caller can tell "revoked"
+   *  from "there was nothing to revoke". */
+  deviceRevoked(machineId: string): boolean {
+    const result = this.db
+      .prepare("UPDATE devices SET revoked = 1 WHERE machine_id = ?")
+      .run(machineId);
+    return result.changes > 0;
   }
 
   private releaseLock(): void {
