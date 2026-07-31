@@ -3,6 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import {
+  clearHubToken,
+  httpBaseOf,
+  loadHubToken,
+  pairWithHub,
+  saveHubToken,
+} from "./hubPairing.js";
 import { loadMachineIdentity, mpaiHome, type MachineIdentity } from "./machineIdentity.js";
 import { MAX_REPO_CANDIDATES, scanRepoRoots, type RepoCandidate } from "./machineRepos.js";
 import { SLUG } from "./project.js";
@@ -169,6 +176,61 @@ export function finalizeCandidates(
   return { candidates };
 }
 
+export interface HubAuthDeps {
+  /** Injected so tests never touch the network (same seam as `hubPairing`'s
+   *  `pairWithHub`). Falls back to the global `fetch`. */
+  fetchImpl?: typeof fetch;
+  /** Where the pairing instruction is shown. Defaults to `console.log`. */
+  print?: (line: string) => void;
+  pollIntervalMs?: number;
+}
+
+/** Resolve the uplink bearer for a `--hub` launch (spec A2/A3).
+ *
+ *  A token already on file for this hub skips the round trip entirely. With no
+ *  token, `pairWithHub` prints the code and polls; a returned token is persisted
+ *  so the next launch skips pairing, and an auth-off hub (404 on `/pair/request`)
+ *  yields no header at all so the dev flow stays zero-config (Task 8 accepts a
+ *  bare uplink). The returned `onUnauthorized` drops the stored token — the
+ *  relay fires it ONLY on a 4401 close (the hub refusing this bearer), so the
+ *  next launch re-pairs cleanly rather than re-presenting a rejected credential.
+ *  `headers` and `onUnauthorized` are threaded straight into `startServer`'s hub
+ *  option, which forwards them into the relay's own conduit — no bespoke socket
+ *  wrapper needed on the CLI side. */
+export async function prepareHubAuth(
+  hubUrl: string,
+  home: string,
+  identity: { machineId: string; name: string },
+  deps: HubAuthDeps = {},
+): Promise<
+  | { ok: true; headers?: Record<string, string>; onUnauthorized: () => void }
+  | { ok: false; error: string }
+> {
+  // The relay's 4401 close handler is the only caller (spec A2), so this is
+  // unconditional: drop the token so the next launch re-pairs instead of
+  // re-presenting a bearer that is refused on every reconnect.
+  const onUnauthorized = (): void => clearHubToken(home, hubUrl);
+  const stored = loadHubToken(home, hubUrl);
+  if (stored) {
+    return { ok: true, headers: { authorization: `Bearer ${stored}` }, onUnauthorized };
+  }
+  const result = await pairWithHub({
+    httpBase: httpBaseOf(hubUrl),
+    machineId: identity.machineId,
+    name: identity.name,
+    fetchImpl: deps.fetchImpl,
+    print: deps.print ?? ((line) => console.log(line)),
+    pollIntervalMs: deps.pollIntervalMs,
+  });
+  if (!result.ok) return { ok: false, error: result.error };
+  if (result.token) {
+    saveHubToken(home, hubUrl, result.token);
+    return { ok: true, headers: { authorization: `Bearer ${result.token}` }, onUnauthorized };
+  }
+  // Auth-off hub: a bare uplink, no Authorization header.
+  return { ok: true, headers: undefined, onUnauthorized };
+}
+
 async function launch(args: CliArgs): Promise<number | null> {
   const repoRoot = findRepoRoot(process.cwd());
   if (!repoRoot) {
@@ -185,9 +247,10 @@ async function launch(args: CliArgs): Promise<number | null> {
     console.error(`client build missing at ${distDir} — run: cd poc/client && npm run build`);
     return 1;
   }
+  const home = mpaiHome();
   let identity: MachineIdentity;
   try {
-    identity = loadMachineIdentity(mpaiHome());
+    identity = loadMachineIdentity(home);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     return 1;
@@ -212,6 +275,25 @@ async function launch(args: CliArgs): Promise<number | null> {
     return 1;
   }
   const candidates = resolved.candidates;
+  // Pair (or load the stored bearer) BEFORE binding the port, so a hub that
+  // refuses or cannot be reached exits non-zero without ever standing up a
+  // half-attached server. The bearer (`headers`) and the 4401 token-drop
+  // (`onUnauthorized`) ride the relay's own conduit via the hub option below;
+  // both stay undefined for a solo launch.
+  let hubHeaders: Record<string, string> | undefined;
+  let hubOnUnauthorized: (() => void) | undefined;
+  if (args.hub) {
+    const auth = await prepareHubAuth(args.hub, home, {
+      machineId: identity.machineId,
+      name: machineName,
+    });
+    if (!auth.ok) {
+      console.error(auth.error);
+      return 1;
+    }
+    hubHeaders = auth.headers;
+    hubOnUnauthorized = auth.onUnauthorized;
+  }
   try {
     const { port } = await startServer({
       port: args.port,
@@ -223,7 +305,15 @@ async function launch(args: CliArgs): Promise<number | null> {
       machine: { machineId: identity.machineId, name: machineName },
       repoCandidates: candidates,
       ...(args.hub
-        ? { hub: { url: args.hub, projectId: args.project, uplinkId: identity.machineId } }
+        ? {
+            hub: {
+              url: args.hub,
+              projectId: args.project,
+              uplinkId: identity.machineId,
+              headers: hubHeaders,
+              onUnauthorized: hubOnUnauthorized,
+            },
+          }
         : {}),
     });
     const url = localUrlFor(port, args);

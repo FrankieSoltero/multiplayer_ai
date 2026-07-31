@@ -101,11 +101,37 @@ export type ProjectSummary = {
   id: string;
   name: string;
   lifecycle: ProjectLifecycle;
+  /** The roster — REAL only when `isMember`; the hub redacts it to `[]` for a
+   *  non-member (spec A5). Read membership through `isProjectMember` and the
+   *  count through `projectMemberCount`, never off `.length` directly. */
   members: string[];
+  /** True project size, sent even when `members` is redacted. Optional so an
+   *  old server that doesn't send it still parses — `projectMemberCount` then
+   *  falls back to `members.length`. */
+  memberCount?: number;
+  /** Whether the viewer belongs to this project. Optional so an old server
+   *  that doesn't send it still parses — `isProjectMember` then falls back to
+   *  scanning `members`. */
+  isMember?: boolean;
   sessionCount: number;
   liveSessionCount: number;
   machines: MachineInfo[];
 };
+
+/** Membership of a project summary, redaction-safe (spec A5). Prefers the
+ *  server's `isMember` flag; falls back to scanning the roster for an old
+ *  server that doesn't send the flag. `??` (not `||`) so an explicit
+ *  `isMember: false` is honoured rather than treated as absent. */
+export function isProjectMember(project: ProjectSummary, userId: string): boolean {
+  return project.isMember ?? project.members.includes(userId);
+}
+
+/** True member count, redaction-safe (spec A5): `memberCount` when present, so
+ *  a redacted project still shows its real size; else the length of the
+ *  (possibly redacted) roster for an old server. `??` so a real `0` stands. */
+export function projectMemberCount(project: ProjectSummary): number {
+  return project.memberCount ?? project.members.length;
+}
 
 export type ArcadeRecord = {
   game: string;

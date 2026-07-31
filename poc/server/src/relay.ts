@@ -21,7 +21,7 @@ export interface RelaySocket {
   on(event: "open" | "message" | "close" | "error", fn: (arg?: unknown) => void): void;
 }
 
-export type ConnectFn = (url: string) => RelaySocket;
+export type ConnectFn = (url: string, headers?: Record<string, string>) => RelaySocket;
 
 export interface RelayOptions {
   hubUrl: string;
@@ -38,6 +38,16 @@ export interface RelayOptions {
   uplinkId: string;
   connect?: ConnectFn;
   reconnectDelayMs?: number;
+  /** The paired bearer, sent on the `Authorization` header (spec A2) — never a
+   *  query string (spec §10.1). Threaded to EVERY `connect()`, initial and
+   *  reconnect, so a re-opened socket presents the same credentials the hub
+   *  first accepted. Absent for the un-paired / no-auth path, which stays
+   *  `connect(url, undefined)` exactly as before. */
+  headers?: Record<string, string>;
+  /** Fired when the hub refuses this machine's credentials (a 4401 close): the
+   *  reconnect loop has already been stopped by then, and this is where
+   *  re-pairing is driven. Optional — its absence must not defeat the stop. */
+  onUnauthorized?: () => void;
   /** Injected so tests get deterministic run ids. */
   newRunId?: () => string;
 }
@@ -114,6 +124,12 @@ export class Relay {
    *  upgrade after this laptop reconnected fine, for instance — still gets
    *  reported instead of staying silenced by an episode that already ended. */
   private loggedProtocolMismatch = false;
+  /** Latches the 4401 refusal log to once, on the same log-once discipline as
+   *  the 1008 latch above. A 4401 sets `stopped` so no reconnect retries it, but
+   *  the latch still guards a redelivered close from doubling the line. Cleared
+   *  on a successful handshake and on stop(), so a fresh pairing that later
+   *  fails again is still reported rather than silenced by a stale latch. */
+  private loggedUnauthorized = false;
 
   constructor(
     private opts: RelayOptions,
@@ -151,6 +167,9 @@ export class Relay {
     // an explicit restart should still be reported, not silenced by a latch
     // left over from before the restart.
     this.loggedProtocolMismatch = false;
+    // Same reasoning for the credential refusal: a re-paired laptop that
+    // stop()s and start()s should report a renewed refusal, not stay quiet.
+    this.loggedUnauthorized = false;
   }
 
   /** Register a session so it takes part in the handshake replay. Called for
@@ -200,7 +219,10 @@ export class Relay {
     // live until its `welcome` lands.
     this.ready = false;
     const connect = this.opts.connect ?? defaultConnect;
-    const socket = connect(this.opts.hubUrl);
+    // Credentials ride on every connect, initial and reconnect (spec A2). Read
+    // from opts each time rather than snapshotted, same as `repos`, so a token
+    // refreshed while the daemon runs is presented on the next reconnect.
+    const socket = connect(this.opts.hubUrl, this.opts.headers);
     this.socket = socket;
     // Every handler below is guarded on the identity of the socket that
     // registered it. `ws` reports a socket's `close` ASYNCHRONOUSLY, so a
@@ -229,6 +251,23 @@ export class Relay {
     });
     socket.on("close", (code) => {
       if (!isCurrent()) return;
+      // 4401 is the hub refusing THIS MACHINE'S CREDENTIALS — a revoked or
+      // stale bearer (spec A2). Distinct from 1008 below (a protocol/version
+      // mismatch): retrying cannot succeed, since the same bearer is presented
+      // on every reconnect and refused every time. So unlike 1008 this STOPS
+      // the reconnect loop (`scheduleReconnect` returns early on `stopped`) and
+      // hands control to `onUnauthorized`, which is where re-pairing is driven.
+      // The log is latched to once on the same discipline as the 1008 line.
+      if (code === 4401) {
+        if (!this.loggedUnauthorized) {
+          this.loggedUnauthorized = true;
+          console.error(
+            "hub refused this machine's credentials — re-pair with the hub (run mpai --hub again)",
+          );
+        }
+        this.stopped = true;
+        this.opts.onUnauthorized?.();
+      }
       // 1008 is the hub refusing this uplink at the frame boundary — almost
       // always a version mismatch, since there is no compatibility shim (D6).
       // Without this line the symptom is a laptop that simply never appears in
@@ -279,6 +318,9 @@ export class Relay {
       // is a new problem and must be reported again, not silenced by a latch
       // left over from a mismatch that already resolved.
       this.loggedProtocolMismatch = false;
+      // Same for the credential latch: a handshake proves the bearer is good,
+      // so a later 4401 (a mid-run revocation) is a new episode worth its line.
+      this.loggedUnauthorized = false;
       // The replay below reads the live log and is therefore authoritative:
       // anything buffered while the socket was down is already contained in
       // it. Dropping buffered publishes avoids re-sending events the hub
@@ -423,8 +465,8 @@ function publishFrames(sessionId: string, runId: string, events: LoggedEvent[]):
 }
 
 /** Real socket, kept out of the class so tests never reach the network. */
-const defaultConnect: ConnectFn = (url) => {
-  const socket = new WebSocket(url, { maxPayload: MAX_FRAME_BYTES });
+const defaultConnect: ConnectFn = (url, headers) => {
+  const socket = new WebSocket(url, { maxPayload: MAX_FRAME_BYTES, headers });
   return {
     send: (data) => socket.send(data),
     close: () => socket.close(),

@@ -210,6 +210,13 @@ export async function startServer(opts: {
     projectId: string;
     uplinkId?: string;
     connect?: ConnectFn;
+    /** The paired bearer, sent on the `Authorization` header (spec §10.1),
+     *  forwarded straight into the relay's own conduit (`defaultConnect`) so the
+     *  CLI needs no bespoke socket wrapper. Absent for a solo / auth-off launch. */
+    headers?: Record<string, string>;
+    /** Fired by the relay on a 4401 credential refusal — where the CLI drops the
+     *  stored token so the next launch re-pairs. Forwarded into `new Relay`. */
+    onUnauthorized?: () => void;
   };
 }) {
   const runQuery = opts.runQuery ?? runAgentQuery;
@@ -901,11 +908,19 @@ export async function startServer(opts: {
         // input grow `projects` without bound — the hub's `readSessionsOf` vs
         // `sessionsOf` split (hubStore.ts) guards the identical failure and
         // this mirrors it.
+        // `memberCount`/`isMember` for parity with the hub's redacted list
+        // (spec A5): one browser bundle talks to both servers, so a field the
+        // hub sends and this omits would fork the client's parsing. Solo mode
+        // has no membership concept — anyone reachable may already join any
+        // session — so `memberCount` is just the roster length and the
+        // connecting user is always `isMember: true`. No roster is redacted
+        // here: `projectSummaryOf` already reports only the connecting user.
         io.send({
           type: "projects",
-          projects: [...projects.values()].map((p) =>
-            projectSummaryOf(p, identity?.userId ?? null, machineView()),
-          ),
+          projects: [...projects.values()].map((p) => {
+            const summary = projectSummaryOf(p, identity?.userId ?? null, machineView());
+            return { ...summary, memberCount: summary.members.length, isMember: true };
+          }),
         });
         return;
       }
@@ -1674,6 +1689,12 @@ export async function startServer(opts: {
           // a stable id the store's takeover rule re-owns them silently.
           uplinkId: opts.hub.uplinkId ?? opts.machine?.machineId ?? randomUUID(),
           connect: opts.hub.connect,
+          // The bearer and the token-drop ride the relay's OWN conduit
+          // (`headers` → `defaultConnect`; `onUnauthorized` → the 4401 close
+          // handler), which is what lets the CLI drop its duplicate `hubConnect`
+          // wrapper entirely.
+          headers: opts.hub.headers,
+          onUnauthorized: opts.hub.onUnauthorized,
         },
         { createConnection, onContested: applyContested },
       )

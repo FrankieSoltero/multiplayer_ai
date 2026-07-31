@@ -1412,6 +1412,8 @@ describe("solo-mode entrance protocol", () => {
           name: "default",
           lifecycle: "active",
           members: ["ana"],
+          memberCount: 1,
+          isMember: true,
           sessionCount: 0,
           liveSessionCount: 0,
           machines: [
@@ -1441,6 +1443,28 @@ describe("solo-mode entrance protocol", () => {
       await wait(50);
       const projectsMsg = seen.find((m) => m.type === "projects");
       expect(projectsMsg.projects[0].members).toEqual([]);
+      ws.close();
+    });
+
+    it("adds memberCount and isMember for standalone parity with the hub (spec A5)", async () => {
+      // One browser bundle talks to both servers, so the standalone list must
+      // carry the same three fields the hub sends. Solo has no membership
+      // concept: memberCount = members.length, and the connecting user is
+      // always a member (isMember true).
+      const workspace = fakeWorkspace();
+      const server = await startServer({ port: 0, runQuery: echoRun, workspace, projectId: "acme" });
+      close = server.close;
+      const ws = await connect(server.port);
+      const seen: any[] = [];
+      collect(ws, seen);
+      ws.send(JSON.stringify({ type: "identify", userId: "ana", name: "Ana" }));
+      ws.send(JSON.stringify({ type: "list_projects" }));
+      await wait(50);
+      const projectsMsg = seen.find((m) => m.type === "projects");
+      const entry = projectsMsg.projects[0];
+      expect(entry.members).toEqual(["ana"]);
+      expect(entry.memberCount).toBe(1); // members.length
+      expect(entry.isMember).toBe(true); // the solo user is always a member
       ws.close();
     });
 

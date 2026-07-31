@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { SERVER_URL } from "../types";
+import { SERVER_URL, isProjectMember } from "../types";
 import type { MachineInfo, ProjectSessionInfo, ProjectSummary } from "../types";
 import { slugPreview, sortSessions } from "../sessionRow";
 import { sessionBadgeLabel, sessionStateClass } from "../sessionState";
@@ -26,6 +26,57 @@ const CREATE_TIMEOUT_MS = 30_000;
 const CREATE_TIMEOUT_TEXT =
   "no reply from the machine — it may have gone offline. check it is still running and try again.";
 
+/** The redacted-entrance join flow (spec A5). A `watch_project` on a project
+ *  you don't belong to is refused with `{type:"error", code:"not_a_member"}`
+ *  rather than a `project` push — the hub never streams a non-member the
+ *  session detail. `notMember` remembers that refusal so the screen offers
+ *  JOIN instead of an error toast; `joining` remembers that JOIN was pressed so
+ *  a later `projects` push showing membership can re-`watch_project` and load
+ *  the now-unredacted project. */
+export type MembershipState = { notMember: boolean; joining: boolean };
+
+export const MEMBERSHIP_IDLE: MembershipState = { notMember: false, joining: false };
+
+export type MembershipEvent =
+  | { kind: "error"; code?: string }
+  | { kind: "join" }
+  | { kind: "projects"; projects: ProjectSummary[]; projectId: string; userId: string };
+
+/** Pure transition for the join flow, tested in `SessionPicker.test.tsx`
+ *  (effects never run under this repo's static render, so the socket handler's
+ *  decisions live here where they can be asserted). `watch` tells the caller to
+ *  re-send `watch_project`. The error toast itself stays a one-line inline
+ *  guard in the handler, so the picker keeps its single, prominent `setError`
+ *  path (asserted by `RecordPanel.test.tsx`); this reducer only records that
+ *  the refusal happened, so the JOIN affordance can render. */
+export function membershipStep(
+  state: MembershipState,
+  event: MembershipEvent,
+): { state: MembershipState; watch: boolean } {
+  switch (event.kind) {
+    case "error":
+      // The membership refusal raises the JOIN affordance; every other error
+      // (and a codeless one from an old server) leaves membership untouched and
+      // is toasted by the handler's own guard.
+      if (event.code === "not_a_member") {
+        return { state: { ...state, notMember: true }, watch: false };
+      }
+      return { state, watch: false };
+    case "join":
+      return { state: { ...state, joining: true }, watch: false };
+    case "projects": {
+      const project = event.projects.find((p) => p.id === event.projectId) ?? null;
+      const member = project !== null && isProjectMember(project, event.userId);
+      // Re-watch ONLY after a JOIN we sent: an unsolicited membership push must
+      // not trigger a watch the user never asked for.
+      if (state.joining && member) {
+        return { state: { notMember: false, joining: false }, watch: true };
+      }
+      return { state, watch: false };
+    }
+  }
+}
+
 /** The project screen (spec §4.2): every session across every repo, each
  *  labelled with its repo and machine. Spectators see everything and can act
  *  on nothing — action controls are ABSENT, not disabled, because a disabled
@@ -42,12 +93,22 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   const [picked, setPicked] = useState<{ machineId: string; repoKey: string } | null>(null);
   const [baseRef, setBaseRef] = useState<string | null>(null);
   const [recordState, setRecordState] = useState<RecordState>(RECORD_CLOSED);
+  const [membership, setMembership] = useState<MembershipState>(MEMBERSHIP_IDLE);
   const wsRef = useRef<WebSocket | null>(null);
   const createTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Mirrors `recordState` for the socket handler, which is installed once per
   // effect run and would otherwise close over the state of the render that
   // installed it. Read through the ref, never through the closure.
   const recordRef = useRef<RecordState>(RECORD_CLOSED);
+  // Same mirror discipline as `recordRef`: the socket handler is installed once
+  // per effect run and would otherwise close over stale membership state. Every
+  // transition writes the ref AND the state; the handler reads the ref.
+  const membershipRef = useRef<MembershipState>(MEMBERSHIP_IDLE);
+
+  const applyMembership = (step: { state: MembershipState }) => {
+    membershipRef.current = step.state;
+    setMembership(step.state);
+  };
 
   const clearCreateTimer = () => {
     if (createTimer.current === null) return;
@@ -100,7 +161,22 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
           setSessions(msg.sessions ?? []);
           setMachines(msg.machines ?? []);
         }
-        if (msg.type === "projects") setProjects(msg.projects ?? []);
+        if (msg.type === "projects") {
+          const list: ProjectSummary[] = msg.projects ?? [];
+          setProjects(list);
+          // A JOIN we sent lands here as membership: re-watch so the hub streams
+          // the project detail it redacted while we were a spectator (spec A5).
+          const step = membershipStep(membershipRef.current, {
+            kind: "projects",
+            projects: list,
+            projectId: props.projectId,
+            userId: props.userId,
+          });
+          applyMembership(step);
+          if (step.watch) {
+            ws.send(JSON.stringify({ type: "watch_project", projectId: props.projectId }));
+          }
+        }
         if (msg.type === "session_created") {
           clearCreateTimer();
           joinSession(msg.sessionId, props.projectId);
@@ -110,9 +186,12 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
           setPending(false);
         }
         if (msg.type === "error") {
+          if (msg.code !== "not_a_member") setError(msg.message);
+          // A membership refusal shows the JOIN affordance below, NOT a toast
+          // (spec A5); every other error surfaces on the one red line above.
           clearCreateTimer();
-          setError(msg.message);
           setPending(false);
+          applyMembership(membershipStep(membershipRef.current, { kind: "error", code: msg.code }));
         }
         // Last, and unconditionally: the RECORD panel reacts to `record` and
         // `project` and ignores everything else, so it sees every message
@@ -135,6 +214,13 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   // `projects` is empty until the reply lands; treat that as "still loading"
   // rather than as an unknown project, or the screen flashes a refusal.
   const refusal = projects.length === 0 ? null : canAct(project, props.userId);
+  // The JOIN affordance shows for BOTH paths to non-membership: the entrance
+  // list classifying us out (`refusal`), and a bare `watch_project` refusal
+  // that arrived before/without that list (`membership.notMember`, spec A5).
+  // The action panels below stay hidden in either case — a spectator acts on
+  // nothing (spec §4.4), so an in-flight refusal must not flash CREATE.
+  const spectating = refusal === "not-a-member" || membership.notMember;
+  const actable = refusal === null && !membership.notMember;
   const online = machines.filter((m) => m.online);
   // Every reachable destination, standalone included: a solo server reports
   // itself as one real machine with a real repo list, so the old `repo.key`
@@ -175,6 +261,8 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
 
   const join = () => {
     wsRef.current?.send(JSON.stringify({ type: "join_project", projectId: props.projectId }));
+    // Remember the JOIN so the projects push that follows re-watches (spec A5).
+    applyMembership(membershipStep(membershipRef.current, { kind: "join" }));
   };
 
   // ATTACH/DETACH from the MACHINES panel: routed commands on the same
@@ -211,9 +299,9 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
         <span className="pix">{online.length} MACHINES</span>
       </div>
       <div className="scroll" style={{ flex: 1, minHeight: 0 }}>
-        {refusal === "not-a-member" && (
+        {spectating && (
           <div className="panel">
-            <div className="line dim">{refusalText(refusal)}</div>
+            <div className="line dim">{refusalText("not-a-member")}</div>
             <button className="btn" onClick={join}>JOIN PROJECT ▸</button>
           </div>
         )}
@@ -224,7 +312,7 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
           <SessionGroups
             sessions={sessions}
             machines={machines}
-            canJoin={refusal === null}
+            canJoin={actable}
             projectId={props.projectId}
           />
         </div>
@@ -247,7 +335,7 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
         {recordState.open && (
           <RecordPanel record={recordState.record} machines={machines} />
         )}
-        {refusal === null && (
+        {actable && (
           <MachinesPanel
             machines={machines}
             onAttach={attach}
@@ -256,7 +344,7 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
             error={error}
           />
         )}
-        {refusal === null && (
+        {actable && (
           <>
             <div className="panel pix top">NEW SESSION</div>
             <div className="panel">

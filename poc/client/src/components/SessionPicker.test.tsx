@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SessionGroups } from "./SessionPicker";
-import type { MachineInfo, ProjectSessionInfo } from "../types";
+import { MEMBERSHIP_IDLE, SessionGroups, membershipStep } from "./SessionPicker";
+import pickerSource from "./SessionPicker.tsx?raw";
+import type { MachineInfo, ProjectSessionInfo, ProjectSummary } from "../types";
 
 /** The session list's contested surfaces (spec §5): a per-repo chip on the
  *  group head and a per-session marker beside the state badge.
@@ -162,6 +163,126 @@ describe("SessionGroups — no collisions renders zero new DOM", () => {
     ];
     const unknown = quiet.map((s) => row({ ...s, touched: null }));
     expect(render(quiet)).toBe(render(unknown));
+  });
+});
+
+/** A project summary as the entrance list delivers it. `members` is the real
+ *  roster when you are a member, redacted to `[]` otherwise (spec A5). */
+const proj = (over: Partial<ProjectSummary> & { id: string }): ProjectSummary => ({
+  name: over.id,
+  lifecycle: "active",
+  members: [],
+  sessionCount: 0,
+  liveSessionCount: 0,
+  machines: [],
+  ...over,
+});
+
+describe("membershipStep — redacted-entrance join flow (spec A5)", () => {
+  it("raises the JOIN affordance flag on a not_a_member refusal", () => {
+    const step = membershipStep(MEMBERSHIP_IDLE, { kind: "error", code: "not_a_member" });
+    expect(step.state.notMember).toBe(true);
+    expect(step.watch).toBe(false);
+  });
+
+  it("leaves membership untouched on an ordinary error", () => {
+    const other = membershipStep(MEMBERSHIP_IDLE, { kind: "error", code: "no_machine" });
+    expect(other.state).toEqual(MEMBERSHIP_IDLE);
+    expect(other.watch).toBe(false);
+    // A codeless error (old server) is not mistaken for a membership refusal.
+    const codeless = membershipStep(MEMBERSHIP_IDLE, { kind: "error" });
+    expect(codeless.state.notMember).toBe(false);
+  });
+
+  it("marks a join in flight when JOIN is pressed, sending no watch yet", () => {
+    const step = membershipStep(MEMBERSHIP_IDLE, { kind: "join" });
+    expect(step.state.joining).toBe(true);
+    expect(step.watch).toBe(false);
+  });
+
+  it("re-watches once a projects push shows membership after joining", () => {
+    const step = membershipStep(
+      { notMember: true, joining: true },
+      {
+        kind: "projects",
+        projects: [proj({ id: "p1", isMember: true, members: ["frank"] })],
+        projectId: "p1",
+        userId: "frank",
+      },
+    );
+    expect(step.watch).toBe(true);
+    expect(step.state.notMember).toBe(false);
+    expect(step.state.joining).toBe(false);
+  });
+
+  it("does not re-watch on a projects push before JOIN was pressed", () => {
+    const step = membershipStep(
+      { notMember: true, joining: false },
+      {
+        kind: "projects",
+        projects: [proj({ id: "p1", isMember: true, members: ["frank"] })],
+        projectId: "p1",
+        userId: "frank",
+      },
+    );
+    expect(step.watch).toBe(false);
+  });
+
+  it("keeps waiting while the push still shows non-membership", () => {
+    const step = membershipStep(
+      { notMember: true, joining: true },
+      {
+        kind: "projects",
+        projects: [proj({ id: "p1", isMember: false, members: [], memberCount: 3 })],
+        projectId: "p1",
+        userId: "frank",
+      },
+    );
+    expect(step.watch).toBe(false);
+    expect(step.state.joining).toBe(true);
+  });
+
+  it("detects membership via the roster when isMember is absent — old server", () => {
+    const step = membershipStep(
+      { notMember: true, joining: true },
+      {
+        kind: "projects",
+        projects: [proj({ id: "p1", members: ["frank"] })],
+        projectId: "p1",
+        userId: "frank",
+      },
+    );
+    expect(step.watch).toBe(true);
+  });
+
+  it("does not re-watch when the joined project is absent from the push", () => {
+    const step = membershipStep(
+      { notMember: true, joining: true },
+      { kind: "projects", projects: [], projectId: "p1", userId: "frank" },
+    );
+    expect(step.watch).toBe(false);
+  });
+});
+
+/** The reducer decides the flags; the handler decides the toast. Static
+ *  rendering never runs the picker's socket effect (see the SessionGroups note
+ *  above), so the one-line wiring that keeps a membership refusal OFF the red
+ *  line is pinned here from source — the house `?raw` pattern
+ *  (`RecordPanel.test.tsx:13`). */
+describe("SessionPicker — membership refusal wiring (spec A5)", () => {
+  it("suppresses the error toast for a membership refusal only", () => {
+    // `setError` runs for every error whose code is NOT the membership refusal.
+    expect(pickerSource).toMatch(/msg\.code !== "not_a_member"\)\s*setError\(msg\.message\)/);
+  });
+
+  it("re-watches on the projects push when the reducer asks for it", () => {
+    expect(pickerSource).toMatch(/step\.watch[\s\S]{0,160}"watch_project"/);
+  });
+
+  it("gates the JOIN affordance on the refusal, not on a disabled control", () => {
+    // `spectating` OR-s the entrance-list refusal with the watch-refusal flag.
+    expect(pickerSource).toMatch(/spectating\s*&&/);
+    expect(pickerSource).toMatch(/membership\.notMember/);
   });
 });
 

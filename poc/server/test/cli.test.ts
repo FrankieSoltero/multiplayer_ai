@@ -10,7 +10,9 @@ import {
   sessionUrlFor,
   resolveRoots,
   finalizeCandidates,
+  prepareHubAuth,
 } from "../src/cli.js";
+import { loadHubToken, saveHubToken } from "../src/hubPairing.js";
 import type { RepoCandidate } from "../src/machineRepos.js";
 
 describe("parseArgs", () => {
@@ -227,5 +229,111 @@ describe("--hub", () => {
   // eagerly, which is what would make that spread emit a key unconditionally.
   it("leaves hub undefined when the flag is absent", () => {
     expect(parseArgs([]).hub).toBeUndefined();
+  });
+});
+
+describe("prepareHubAuth", () => {
+  const tmpDirs: string[] = [];
+  function freshHome(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mpai-hubauth-"));
+    tmpDirs.push(dir);
+    return dir;
+  }
+  afterEach(() => {
+    while (tmpDirs.length > 0) fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
+  });
+
+  const identity = { machineId: "machine-1", name: "franks-mbp" };
+
+  /** Queue-per-route fetch stub, same shape as hubPairing's. */
+  function stubFetch(routes: Record<string, Array<{ status: number; body?: unknown } | "reject">>) {
+    const cursor: Record<string, number> = {};
+    return (async (input: unknown) => {
+      const url = String(input);
+      const key = Object.keys(routes).find((s) => url.endsWith(s));
+      if (!key) throw new Error(`unexpected fetch: ${url}`);
+      const i = cursor[key] ?? 0;
+      cursor[key] = i + 1;
+      const step = routes[key][Math.min(i, routes[key].length - 1)];
+      if (step === "reject") throw new Error("ECONNREFUSED");
+      return new Response(step.body === undefined ? "" : JSON.stringify(step.body), {
+        status: step.status,
+      });
+    }) as unknown as typeof fetch;
+  }
+
+  it("uses a stored token and never touches the network", async () => {
+    const home = freshHome();
+    saveHubToken(home, "ws://hub.test", "tok-stored");
+    const boom = (() => {
+      throw new Error("network must not be called when a token is stored");
+    }) as unknown as typeof fetch;
+    const result = await prepareHubAuth("ws://hub.test", home, identity, { fetchImpl: boom });
+    expect(result).toMatchObject({ ok: true, headers: { authorization: "Bearer tok-stored" } });
+  });
+
+  it("pairs when no token is stored, then persists the issued token as the bearer", async () => {
+    const home = freshHome();
+    const fetchImpl = stubFetch({
+      "/pair/request": [{ status: 200, body: { code: "ABCD1234" } }],
+      "/pair/poll": [
+        { status: 200, body: { status: "pending" } },
+        { status: 200, body: { token: "tok-new" } },
+      ],
+    });
+    const result = await prepareHubAuth("ws://hub.test", home, identity, {
+      fetchImpl,
+      print: () => {},
+      pollIntervalMs: 0,
+    });
+    expect(result).toMatchObject({ ok: true, headers: { authorization: "Bearer tok-new" } });
+    // Persisted, so the next launch skips pairing.
+    expect(loadHubToken(home, "ws://hub.test")).toBe("tok-new");
+  });
+
+  it("proceeds without a header and saves nothing when the hub is auth-off (404)", async () => {
+    const home = freshHome();
+    const fetchImpl = stubFetch({ "/pair/request": [{ status: 404 }] });
+    const result = await prepareHubAuth("ws://hub.test", home, identity, {
+      fetchImpl,
+      print: () => {},
+    });
+    expect(result).toEqual(expect.objectContaining({ ok: true }));
+    if (result.ok) expect(result.headers).toBeUndefined();
+    expect(loadHubToken(home, "ws://hub.test")).toBeNull();
+  });
+
+  it("fails with the pairing error when the hub is unreachable", async () => {
+    const home = freshHome();
+    const fetchImpl = stubFetch({ "/pair/request": ["reject"] });
+    const result = await prepareHubAuth("ws://hub.test", home, identity, {
+      fetchImpl,
+      print: () => {},
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("http://hub.test");
+  });
+
+  it("exposes an onUnauthorized that drops the stored token, threaded into the relay's own 4401 path", async () => {
+    // The relay fires `onUnauthorized` ONLY on a 4401 credential refusal (its
+    // close handler already discriminates the code), so this callback is
+    // unconditional: invoking it drops the token so the next launch re-pairs
+    // instead of re-presenting a bearer the hub rejects. This replaces the old
+    // `hubConnect` conduit — the bearer now rides `headers` and the token-drop
+    // rides `onUnauthorized`, both handed straight to `startServer`'s hub option.
+    const home = freshHome();
+    saveHubToken(home, "ws://hub.test", "tok-stored");
+    const boom = (() => {
+      throw new Error("no network");
+    }) as unknown as typeof fetch;
+    const result = await prepareHubAuth("ws://hub.test", home, identity, { fetchImpl: boom });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The bearer is carried as a header (spec §10.1), never a query string.
+    expect(result.headers).toEqual({ authorization: "Bearer tok-stored" });
+    // Token still on file until the refusal fires.
+    expect(loadHubToken(home, "ws://hub.test")).toBe("tok-stored");
+    result.onUnauthorized();
+    expect(loadHubToken(home, "ws://hub.test")).toBeNull();
   });
 });

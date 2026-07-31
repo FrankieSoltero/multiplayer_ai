@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { startHub } from "../src/hub.js";
+import { HubDb } from "../src/hubDb.js";
+import { hashToken } from "../src/pairing.js";
 import { RELAY_PROTOCOL_VERSION, type RepoDecl } from "multiplayer-ai-server/relayProtocol";
 import { projectRecordFrom } from "multiplayer-ai-server/record";
+import { signSession } from "multiplayer-ai-server/auth";
 
 const decl = (key: string, over: Partial<RepoDecl> = {}): RepoDecl => ({
   key,
@@ -38,15 +41,49 @@ const facts = (id: string, over: Record<string, unknown> = {}) => ({
   lifecycle: "open", ...over,
 });
 
+/** The bearer the auth-on fixtures present. Its hash is what `seededDeviceDb`
+ *  installs against the paired machineId, so a hub built with that db admits an
+ *  uplink helloing as that machineId (spec A2/A3). */
+const UPLINK_BEARER = "device-bearer-lap-1";
+
+/** A `:memory:` device record pre-paired for `attachedUplink`'s default
+ *  uplinkId, handed to `startHub` via the `db` seam so an auth-on hub has a
+ *  DeviceStore to authenticate the uplink against (without one it fails closed
+ *  and refuses every uplink). Only the token HASH is stored — the plaintext
+ *  bearer lives solely in `UPLINK_BEARER` (spec §10.5). */
+function seededDeviceDb(machineId = "lap-1"): HubDb {
+  const db = new HubDb(":memory:");
+  db.deviceApproved({
+    machineId,
+    name: machineId,
+    tokenHash: hashToken(UPLINK_BEARER),
+    approvedBy: "alice",
+    approvedAt: new Date().toISOString(),
+  });
+  return db;
+}
+
 /** An attached laptop with one declared session — the precondition of most
- *  tests below. */
+ *  tests below. `token` is passed only by the auth-on fixtures: with auth on the
+ *  hub refuses a bare uplink (spec A2), so the bearer travels in the upgrade's
+ *  `Authorization` header (which `connect` cannot set). Auth off → no token, a
+ *  bare connect, exactly as before. */
 async function attachedUplink(
   port: number,
   sessionId = "auth",
   uplinkId = "lap-1",
   repos: RepoDecl[] = [decl("k")],
+  token?: string,
 ) {
-  const up = await connect(`ws://127.0.0.1:${port}/uplink`);
+  const up = token
+    ? await new Promise<WebSocket>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/uplink`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        ws.on("open", () => resolve(ws));
+        ws.on("error", reject);
+      })
+    : await connect(`ws://127.0.0.1:${port}/uplink`);
   const seen: any[] = [];
   collect(up, seen);
   up.send(JSON.stringify({
@@ -184,10 +221,8 @@ describe("hub fan-out", () => {
     }));
     await wait(40);
 
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seen: any[] = [];
-    collect(browser, seen);
-    browser.send(JSON.stringify({ type: "join", sessionId: "auth", projectId: "default", userId: "ana", name: "ana" }));
+    const { ws: browser, seen } = await member(hub.port, "default");
+    browser.send(join());
     await wait(50);
     expect(seen.filter((m) => m.type === "event").map((m) => m.event.text)).toEqual(["already happened"]);
     expect(seen.some((m) => m.type === "project")).toBe(true);
@@ -210,12 +245,10 @@ describe("hub fan-out", () => {
     close = hub.close;
     const { up, seen: upSeen } = await attachedUplink(hub.port);
 
-    const a = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const b = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seenA: any[] = []; const seenB: any[] = [];
-    collect(a, seenA); collect(b, seenB);
-    a.send(JSON.stringify({ type: "join", sessionId: "auth", projectId: "default", userId: "ana", name: "ana" }));
-    b.send(JSON.stringify({ type: "join", sessionId: "auth", projectId: "default", userId: "ben", name: "ben" }));
+    const { ws: a, seen: seenA } = await member(hub.port, "default", "ana");
+    const { ws: b, seen: seenB } = await member(hub.port, "default", "ben");
+    a.send(join());
+    b.send(join({ userId: "ben", name: "ben" }));
     await wait(50);
     upSeen.length = 0;
 
@@ -244,8 +277,8 @@ describe("hub command routing", () => {
     close = hub.close;
     const { up, seen: upSeen } = await attachedUplink(hub.port);
 
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    browser.send(JSON.stringify({ type: "join", sessionId: "auth", projectId: "default", userId: "ana", name: "ana" }));
+    const { ws: browser } = await member(hub.port, "default");
+    browser.send(join());
     await wait(40);
     browser.send(JSON.stringify({ type: "prompt", text: "hello" }));
     await wait(50);
@@ -265,11 +298,8 @@ describe("hub command routing", () => {
     close = hub.close;
     const { up, seen: upSeen } = await attachedUplink(hub.port);
 
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    browser.send(JSON.stringify({
-      type: "join", sessionId: "auth", projectId: "default",
-      userId: "ana", name: "ana", channelId: "attacker-chosen",
-    }));
+    const { ws: browser } = await member(hub.port, "default");
+    browser.send(join({ channelId: "attacker-chosen" }));
     await wait(50);
     expect(upSeen.filter((f) => f.t === "tunnel")[0].channelId).not.toBe("attacker-chosen");
     browser.close(); up.close();
@@ -280,12 +310,10 @@ describe("hub command routing", () => {
     close = hub.close;
     const { up, seen: upSeen } = await attachedUplink(hub.port);
 
-    const a = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const b = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seenA: any[] = []; const seenB: any[] = [];
-    collect(a, seenA); collect(b, seenB);
-    a.send(JSON.stringify({ type: "join", sessionId: "auth", projectId: "default", userId: "ana", name: "ana" }));
-    b.send(JSON.stringify({ type: "join", sessionId: "auth", projectId: "default", userId: "ben", name: "ben" }));
+    const { ws: a, seen: seenA } = await member(hub.port, "default", "ana");
+    const { ws: b, seen: seenB } = await member(hub.port, "default", "ben");
+    a.send(join());
+    b.send(join({ userId: "ben", name: "ben" }));
     await wait(50);
 
     const channelA = upSeen.find((f) => f.t === "tunnel" && f.identity.userId === "ana").channelId;
@@ -301,9 +329,15 @@ describe("hub command routing", () => {
   it("tells the browser plainly when no machine is running the session", async () => {
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
+    // No machine ever attached, so the auto-created "default" does not exist —
+    // the browser creates it (and is auto-joined as its member) so the join
+    // clears the membership gate and reaches the no-machine refusal under test.
     const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
     const seen: any[] = [];
     collect(browser, seen);
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    browser.send(JSON.stringify({ type: "create_project", name: "default" }));
+    await wait(40);
     browser.send(JSON.stringify({ type: "join", sessionId: "ghost", projectId: "default", userId: "ana", name: "ana" }));
     await wait(50);
     expect(seen.some((m) => m.type === "error" && /no machine/i.test(m.message))).toBe(true);
@@ -315,8 +349,8 @@ describe("hub command routing", () => {
     close = hub.close;
     const { up, seen: upSeen } = await attachedUplink(hub.port);
 
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    browser.send(JSON.stringify({ type: "join", sessionId: "auth", projectId: "default", userId: "ana", name: "ana" }));
+    const { ws: browser } = await member(hub.port, "default");
+    browser.send(join());
     await wait(40);
     const channelId = upSeen.find((f) => f.t === "tunnel").channelId;
     browser.close();
@@ -389,6 +423,12 @@ describe("hub protocol faults", () => {
     collect(browser, seen);
     browser.send("null");
     await wait(40);
+    // Liveness probe after the null: identify and create the project (auto-join
+    // makes the caller its member) so the members-only watch_project can answer
+    // — the point is the hub survived the null, still serving this socket.
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    browser.send(JSON.stringify({ type: "create_project", name: "default" }));
+    await wait(40);
     browser.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
     await wait(40);
     expect(seen.some((m) => m.type === "project")).toBe(true);
@@ -414,9 +454,7 @@ describe("hub protocol faults", () => {
     up.send(JSON.stringify({ t: "reply", channelId: "no-such-channel", payload: { type: "error", message: "x" } }));
     await wait(40);
     // Still serving: the unknown channel was ignored, not fatal.
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seen: any[] = [];
-    collect(browser, seen);
+    const { ws: browser, seen } = await member(hub.port, "default");
     browser.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
     await wait(40);
     expect(seen.some((m) => m.type === "project")).toBe(true);
@@ -474,9 +512,7 @@ describe("hub join validation", () => {
     up.send(JSON.stringify({ t: "facts", sessionId: "billing", runId: "run-a", facts: facts("billing") }));
     await wait(40);
 
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seen: any[] = [];
-    collect(browser, seen);
+    const { ws: browser, seen } = await member(hub.port, "default");
     browser.send(join());
     await wait(40);
     browser.send(join({ sessionId: "billing" }));
@@ -496,9 +532,7 @@ describe("hub join validation", () => {
     up.close();
     await wait(60);
 
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seen: any[] = [];
-    collect(browser, seen);
+    const { ws: browser, seen } = await member(hub.port, "default");
     browser.send(join());
     await wait(50);
     expect(seen).toEqual([
@@ -517,9 +551,7 @@ describe("hub reply hardening", () => {
     const { up, seen: upSeen } = await attachedUplink(hub.port);
     const { up: other } = await attachedUplink(hub.port, "billing", "lap-2");
 
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seen: any[] = [];
-    collect(browser, seen);
+    const { ws: browser, seen } = await member(hub.port, "default");
     browser.send(join());
     await wait(50);
     const channelId = upSeen.find((f) => f.t === "tunnel").channelId;
@@ -542,7 +574,7 @@ describe("hub reply hardening", () => {
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
     const { up, seen: upSeen } = await attachedUplink(hub.port);
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const { ws: browser } = await member(hub.port, "default");
     const raw: string[] = [];
     browser.on("message", (m) => raw.push(m.toString()));
     browser.send(join());
@@ -569,9 +601,7 @@ describe("hub presence", () => {
     first.close();
     await wait(60);
 
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seen: any[] = [];
-    collect(browser, seen);
+    const { ws: browser, seen } = await member(hub.port, "default");
     browser.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
     await wait(40);
     expect(seen.at(-1).sessions[0].presence).toBe("online");
@@ -584,14 +614,56 @@ describe("hub presence", () => {
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
     const { up } = await attachedUplink(hub.port);
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seen: any[] = [];
-    collect(browser, seen);
+    const { ws: browser, seen } = await member(hub.port, "default");
     browser.send(join());
     await wait(40);
+    // Not a member of "elsewhere", so this watch is refused — but the point
+    // stands: a joined channel is never re-homed (the refusal exits before the
+    // re-home line, exactly as the joined-channel guard would), so its own
+    // session's stream is never cut.
     browser.send(JSON.stringify({ type: "watch_project", projectId: "elsewhere" }));
     await wait(40);
 
+    up.send(JSON.stringify({
+      t: "publish", sessionId: "auth", runId: "run-a",
+      events: [{ type: "intent_update", text: "still mine", seq: 0, ts: "2026-07-27T00:00:00.000Z" }],
+    }));
+    await wait(50);
+    expect(seen.filter((m) => m.type === "event").map((m) => m.event.text)).toEqual(["still mine"]);
+    browser.close(); up.close();
+  });
+
+  it("does not re-home an already-joined channel that watches a second project it belongs to", async () => {
+    // The `!channel.sessionId` re-home guard, exercised directly (the membership
+    // gate cannot pre-empt it here): a channel joined to "auth" in "default" AND
+    // a member of a second project "beta" watches "beta". The watch is answered
+    // because it is a member — but the channel must NOT be re-homed, since fanOut
+    // keys on projectId AND sessionId and re-homing would cut the joined session's
+    // stream. Proven both ways: beta's snapshot arrives, AND a later publish to
+    // "default"/"auth" still reaches this channel (a broken guard would set
+    // channel.projectId = "beta" and fanOut("auth") would then skip it).
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const { ws: browser, seen } = await member(hub.port, "default");
+    // A second project the browser belongs to (create_project auto-joins its
+    // creator) with no sessions of its own, so its snapshot is unmistakably empty.
+    browser.send(JSON.stringify({ type: "create_project", name: "beta" }));
+    await wait(40);
+    browser.send(join()); // joins session "auth" in "default"
+    await wait(40);
+    seen.length = 0;
+
+    browser.send(JSON.stringify({ type: "watch_project", projectId: "beta" }));
+    await wait(40);
+    // Answered with beta's (empty) snapshot — the member watch reached the
+    // re-home line rather than being turned away by the not_a_member gate.
+    const betaSnap = seen.find((m) => m.type === "project");
+    expect(betaSnap).toBeDefined();
+    expect(betaSnap.sessions).toEqual([]);
+
+    // But the channel was NOT re-homed: an event on its joined "default"/"auth"
+    // session still reaches it.
     up.send(JSON.stringify({
       t: "publish", sessionId: "auth", runId: "run-a",
       events: [{ type: "intent_update", text: "still mine", seq: 0, ts: "2026-07-27T00:00:00.000Z" }],
@@ -607,9 +679,7 @@ describe("hub presence", () => {
     close = hub.close;
     const { up } = await attachedUplink(hub.port);
 
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seen: any[] = [];
-    collect(browser, seen);
+    const { ws: browser, seen } = await member(hub.port, "default");
     browser.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
     await wait(40);
     expect(seen.at(-1).sessions[0].presence).toBe("online");
@@ -640,9 +710,7 @@ describe("hub session-name collisions", () => {
     close = hub.close;
     await attachedUplink(hub.port, "auth", "lap-1");
 
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seen: any[] = [];
-    collect(browser, seen);
+    const { ws: browser, seen } = await member(hub.port, "default");
     browser.send(join());
     await wait(40);
 
@@ -744,9 +812,7 @@ describe("hub per-connection identity", () => {
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
     const { up, seen: upSeen } = await attachedUplink(hub.port);
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seen: any[] = [];
-    collect(browser, seen);
+    const { ws: browser, seen } = await member(hub.port, "default");
     browser.send(join());
     await wait(40);
     seen.length = 0;
@@ -782,6 +848,177 @@ describe("hub per-connection identity", () => {
     expect(seen[0].userId).toHaveLength(64);
     expect(seen[0].name).toHaveLength(40);
     ws.close();
+  });
+});
+
+describe("hub verified identity stamping", () => {
+  // A throwaway auth config. `alice` is the sole allowlisted login; the
+  // session secret is what `signSession` below signs with, so a cookie the
+  // hub will accept is `mpai_session=<signSession(login, SECRET)>`. The
+  // OAuth fields are present only to satisfy AuthConfig's shape — no route
+  // under test ever exchanges a code.
+  const SECRET = "test-secret";
+  const AUTH = {
+    clientId: "cid",
+    clientSecret: "csecret",
+    sessionSecret: SECRET,
+    allowlist: "alice",
+  };
+  const cookieFor = (login: string) => ({ cookie: `mpai_session=${signSession(login, SECRET)}` });
+
+  // The `ws` client reads request headers ONCE at the upgrade; the hub holds
+  // that cookie for the life of the connection (WS messages carry no cookies).
+  function connectWith(url: string, headers?: Record<string, string>): Promise<WebSocket> {
+    return new Promise((resolve, reject) => {
+      const ws = headers ? new WebSocket(url, { headers }) : new WebSocket(url);
+      ws.on("open", () => resolve(ws));
+      ws.on("error", reject);
+    });
+  }
+
+  it("stamps the verified login over the browser's identify claim", async () => {
+    // The trust inversion (spec §3.5 rule 1): the browser claims `mallory`,
+    // the hub discards it and stamps the cookie-verified login as BOTH id and
+    // display name. Asserting the full reply — not just that it is not
+    // `mallory` — pins the name lock too (spec §3.4).
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    close = hub.close;
+    const ws = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("alice"));
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId: "mallory", name: "m" }));
+    await wait(40);
+    expect(seen).toEqual([{ type: "identified", userId: "alice", name: "alice" }]);
+    ws.close();
+  });
+
+  it("refuses an identify with no cookie and with a forged cookie alike", async () => {
+    // Both auth-on refusals of the missing-identity kind resolve to the same
+    // string, in the same order the standalone join gate uses (spec §4.3):
+    // no cookie and a signature the hub did not sign are both unauthenticated.
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    close = hub.close;
+    const none = await connectWith(`ws://127.0.0.1:${hub.port}`);
+    const forged = await connectWith(`ws://127.0.0.1:${hub.port}`, {
+      cookie: "mpai_session=not.a.real.token",
+    });
+    const s1: any[] = []; const s2: any[] = [];
+    collect(none, s1); collect(forged, s2);
+    none.send(JSON.stringify({ type: "identify", userId: "alice", name: "alice" }));
+    forged.send(JSON.stringify({ type: "identify", userId: "alice", name: "alice" }));
+    await wait(40);
+    expect(s1).toEqual([{ type: "error", message: "authentication required" }]);
+    expect(s2).toEqual([{ type: "error", message: "authentication required" }]);
+    none.close(); forged.close();
+  });
+
+  it("refuses an identify for a verified login off the allowlist", async () => {
+    // A validly-signed cookie whose login is not allowlisted is the SECOND
+    // refusal, distinct from "authentication required" — the cookie verifies,
+    // the person is simply not admitted (spec §4.3).
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    close = hub.close;
+    const ws = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("mallory"));
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId: "mallory", name: "mallory" }));
+    await wait(40);
+    expect(seen).toEqual([{ type: "error", message: "not on the allowlist" }]);
+    ws.close();
+  });
+
+  it("stamps the verified login on join, and tunnels it as the identity", async () => {
+    // The join path's stamp is what the laptop's relay arm trusts
+    // (server.ts's `io.mode === "relay"` branch): the tunnelled `identity`
+    // must carry the verified login, not the `mallory` the payload claims.
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH, db: seededDeviceDb() });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")], UPLINK_BEARER);
+    const browser = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("alice"));
+    // alice (the verified login) joins the project so the membership gate on
+    // `join` passes; the claim in the payload stays "mallory" to prove the
+    // stamp still wins.
+    browser.send(JSON.stringify({ type: "identify", userId: "mallory", name: "m" }));
+    browser.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    await wait(40);
+    browser.send(join({ userId: "mallory", name: "m" }));
+    await wait(50);
+    const tunnels = upSeen.filter((f) => f.t === "tunnel");
+    expect(tunnels.map((f) => f.payload.type)).toEqual(["join"]);
+    expect(tunnels[0].identity).toEqual({ userId: "alice", name: "alice" });
+    browser.close(); up.close();
+  });
+
+  it("refuses a join whose cookie is missing or off the allowlist", async () => {
+    // The same two refusals as identify, on the join gate — and BEFORE the
+    // tunnel, so a rejected join never reaches the laptop.
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const noCookie = await connectWith(`ws://127.0.0.1:${hub.port}`);
+    const offList = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("mallory"));
+    const s1: any[] = []; const s2: any[] = [];
+    collect(noCookie, s1); collect(offList, s2);
+    noCookie.send(join());
+    offList.send(join());
+    await wait(50);
+    expect(s1.map((m) => m.message)).toEqual(["authentication required"]);
+    expect(s2.map((m) => m.message)).toEqual(["not on the allowlist"]);
+    expect(upSeen.filter((f) => f.t === "tunnel")).toEqual([]);
+    noCookie.close(); offList.close(); up.close();
+  });
+
+  it("keeps the client's identify/join claim verbatim when auth is off", async () => {
+    // Auth off (no `auth`): `requireAuth` admits every request with a null
+    // login, so the browser's claim stands byte-for-byte — even the truncation
+    // is unchanged — preserving today's behaviour. A stray cookie is ignored.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    const browser = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("alice"));
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "identify", userId: "mallory", name: "m" }));
+    // Auth off: the claim (mallory) is the identity, so mallory joins the
+    // project to clear the membership gate on `join` below.
+    browser.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    await wait(40);
+    // Identify with auth off is a no-op guard-wise but proves the claim holds.
+    // (A join re-binds identity; assert the tunnelled identity keeps the claim.)
+    browser.send(join({ userId: "mallory", name: "m" }));
+    await wait(50);
+    expect(seen[0]).toEqual({ type: "identified", userId: "mallory", name: "m" });
+    const tunnels = upSeen.filter((f) => f.t === "tunnel");
+    expect(tunnels[0].identity).toEqual({ userId: "mallory", name: "m" });
+    browser.close(); up.close();
+  });
+
+  it("refuses a second identify after join even with auth on", async () => {
+    // The already-joined guard runs BEFORE the auth gate, so the refusal is
+    // "already joined" (not re-verification), and the join-bound identity
+    // holds — the auth wiring must not disturb this existing guard.
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH, db: seededDeviceDb() });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")], UPLINK_BEARER);
+    const browser = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("alice"));
+    const seen: any[] = [];
+    collect(browser, seen);
+    // alice (verified) joins the project so the first `join` clears the gate.
+    browser.send(JSON.stringify({ type: "identify", userId: "mallory", name: "m" }));
+    browser.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    await wait(40);
+    browser.send(join({ userId: "mallory", name: "m" }));
+    await wait(40);
+    seen.length = 0;
+    upSeen.length = 0;
+    browser.send(JSON.stringify({ type: "identify", userId: "alice", name: "alice" }));
+    await wait(50);
+    expect(seen.map((m) => m.message)).toEqual(["already joined"]);
+    expect(seen.some((m) => m.type === "identified")).toBe(false);
+    browser.send(JSON.stringify({ type: "set_intent", intent: "x" }));
+    await wait(50);
+    expect(upSeen.filter((f) => f.t === "tunnel").map((f) => f.identity.userId)).toEqual(["alice"]);
+    browser.close(); up.close();
   });
 });
 
@@ -843,8 +1080,10 @@ describe("hub project registry", () => {
     ws.close();
   });
 
-  it("lets anyone list projects they are not a member of — visibility is hub-wide", async () => {
-    // Spec P2: visibility is hub-wide, participation is membership-scoped.
+  it("keeps a non-member's list entry visible but redacts its roster (spec A5)", async () => {
+    // Spec A5 (supersedes P2): the list is the join affordance so it stays
+    // hub-wide, but a non-member sees no roster — real memberCount, empty
+    // members, isMember false. No login of a member may leak in the entry.
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
     const ana = await identified(hub.port, "ana");
@@ -853,8 +1092,82 @@ describe("hub project registry", () => {
     const bo = await identified(hub.port, "bo");
     bo.ws.send(JSON.stringify({ type: "list_projects" }));
     await wait(30);
-    expect(bo.seen[0].projects[0].id).toBe("acme");
-    expect(bo.seen[0].projects[0].members).toEqual(["ana"]);
+    const entry = bo.seen[0].projects[0];
+    expect(entry.id).toBe("acme"); // still visible
+    expect(entry.isMember).toBe(false);
+    expect(entry.memberCount).toBe(1); // REAL size, not the redacted array's length
+    expect(entry.members).toEqual([]); // no logins disclosed
+    expect(JSON.stringify(entry)).not.toContain("ana");
+    ana.ws.close();
+    bo.ws.close();
+  });
+
+  it("gives a member the full roster with memberCount and isMember true (spec A5)", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ana = await identified(hub.port, "ana");
+    ana.ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+    await wait(30);
+    const bo = await identified(hub.port, "bo");
+    bo.ws.send(JSON.stringify({ type: "join_project", projectId: "acme" }));
+    await wait(30);
+    bo.seen.length = 0;
+    bo.ws.send(JSON.stringify({ type: "list_projects" }));
+    await wait(30);
+    const entry = bo.seen[0].projects[0];
+    expect(entry.isMember).toBe(true);
+    expect(entry.memberCount).toBe(2);
+    expect(entry.members).toEqual(["ana", "bo"]); // full roster for a member
+    ana.ws.close();
+    bo.ws.close();
+  });
+
+  it("redacts every entry for an unidentified channel (spec A5)", async () => {
+    // No identity yet: the list stays the join affordance (entry visible), but
+    // every roster is redacted — real memberCount, isMember false, members [].
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ana = await identified(hub.port, "ana");
+    ana.ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+    await wait(30);
+    const ws = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "list_projects" }));
+    await wait(30);
+    const entry = seen[0].projects[0];
+    expect(entry.id).toBe("acme"); // still visible: the join affordance
+    expect(entry.isMember).toBe(false);
+    expect(entry.memberCount).toBe(1);
+    expect(entry.members).toEqual([]);
+    expect(JSON.stringify(entry)).not.toContain("ana");
+    ana.ws.close();
+    ws.close();
+  });
+
+  it("tailors each channel's pushProjects payload to its own membership (spec A5)", async () => {
+    // ONE state change fans out ONE push to every channel; each channel's copy
+    // is redacted for THAT channel. A member and a non-member watching the same
+    // push must receive DIFFERENT payloads for the same project entry.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const ana = await identified(hub.port, "ana");
+    ana.ws.send(JSON.stringify({ type: "create_project", name: "Acme" }));
+    await wait(30);
+    const bo = await identified(hub.port, "bo"); // never joins acme
+    await wait(30);
+    ana.seen.length = 0;
+    bo.seen.length = 0;
+    // A single directory change (ana creates a second project) → one pushProjects.
+    ana.ws.send(JSON.stringify({ type: "create_project", name: "Beta" }));
+    await wait(30);
+    const anaAcme = ana.seen.at(-1).projects.find((p: any) => p.id === "acme");
+    const boAcme = bo.seen.at(-1).projects.find((p: any) => p.id === "acme");
+    expect(anaAcme.isMember).toBe(true);
+    expect(anaAcme.members).toEqual(["ana"]); // member sees the roster
+    expect(boAcme.isMember).toBe(false);
+    expect(boAcme.members).toEqual([]); // non-member's copy of the SAME push is redacted
+    expect(boAcme.memberCount).toBe(1);
     ana.ws.close();
     bo.ws.close();
   });
@@ -1342,9 +1655,10 @@ describe("hub get_record", () => {
     ws.close(); up.close();
   });
 
-  it("answers an identified channel that has joined no project and no session", async () => {
-    // Membership is deliberately NOT required: visibility is hub-wide, exactly
-    // as it is for `watch_project` and `list_projects` (spec P2).
+  it("refuses get_record from an identified non-member (A5 supersedes P2)", async () => {
+    // The APPROVED spec A5 REVERSES P2 here: the record carries every session's
+    // `filesChanged`, the same exposure class as the snapshot's `touched`, so it
+    // is members-only now — an identified non-member is refused, not answered.
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
     const { up } = await attachedUplink(hub.port);
@@ -1359,12 +1673,12 @@ describe("hub get_record", () => {
     collect(ws, seen);
     ws.send(JSON.stringify({ type: "identify", userId: "cy", name: "Cy" }));
     ws.send(JSON.stringify({ type: "get_record", projectId: "default" }));
-    await vi.waitFor(() => expect(seen.some((m) => m.type === "record")).toBe(true));
+    await wait(60);
 
-    const reply = seen.find((m) => m.type === "record");
-    expect(reply.record.sessions.map((s: any) => s.sessionId)).toEqual(["auth"]);
-    expect(reply.record.rollup.totalTurns).toBe(1);
-    expect(seen.some((m) => m.type === "error")).toBe(false);
+    expect(seen.filter((m) => m.type === "error")).toEqual([
+      { type: "error", message: "join this project to see its record", code: "not_a_member" },
+    ]);
+    expect(seen.some((m) => m.type === "record")).toBe(false);
     ws.close(); up.close();
   });
 
@@ -1387,27 +1701,22 @@ describe("hub get_record", () => {
     ws.close();
   });
 
-  it("answers an unknown project with an empty record and creates nothing", async () => {
+  it("refuses get_record for an unknown project and creates nothing", async () => {
+    // An unknown project has no members, so the membership gate refuses it —
+    // and, exactly as before, the read never grows the registry (the old
+    // `readSessionsOf` discipline): `list_projects` still shows only "default".
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
     const { up } = await attachedUplink(hub.port);
     const { ws, seen } = await member(hub.port, "default");
 
     ws.send(JSON.stringify({ type: "get_record", projectId: "ghost" }));
-    await vi.waitFor(() => expect(seen.some((m) => m.type === "record")).toBe(true));
-    expect(seen.find((m) => m.type === "record")).toEqual({
-      type: "record",
-      projectId: "ghost",
-      record: {
-        projectId: "ghost",
-        sessions: [],
-        rollup: { perUser: [], totalTurns: 0, totalSessions: 0 },
-      },
-    });
+    await wait(60);
+    expect(seen.filter((m) => m.type === "error")).toEqual([
+      { type: "error", message: "join this project to see its record", code: "not_a_member" },
+    ]);
+    expect(seen.some((m) => m.type === "record")).toBe(false);
 
-    // The `readSessionsOf` discipline (hubStore.ts): a read never grows the
-    // registry, or an unidentified-to-identified caller could fill it by asking
-    // for records that do not exist. `list_projects` is where that shows.
     ws.send(JSON.stringify({ type: "list_projects" }));
     await vi.waitFor(() => expect(seen.some((m) => m.type === "projects")).toBe(true));
     expect(seen.at(-1).projects.map((p: any) => p.id)).toEqual(["default"]);
@@ -1417,16 +1726,19 @@ describe("hub get_record", () => {
   it("answers a joined channel without re-homing it", async () => {
     // `fanOut` keys on projectId AND sessionId, so re-homing a joined channel
     // would silently cut its event stream — the same rule `watch_project`
-    // observes (hub.ts:656).
+    // observes. The caller is a member of a SECOND project "elsewhere" and reads
+    // its record; the joined "default"/"auth" stream must survive intact.
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;
     const { up } = await attachedUplink(hub.port);
-    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
-    const seen: any[] = [];
-    collect(browser, seen);
-    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    const { ws: browser, seen } = await member(hub.port, "default");
+    // A second project the caller belongs to (create_project auto-joins it), so
+    // its get_record clears the membership gate without touching "default".
+    browser.send(JSON.stringify({ type: "create_project", name: "elsewhere" }));
+    await wait(40);
     browser.send(join());
     await wait(40);
+    seen.length = 0;
 
     browser.send(JSON.stringify({ type: "get_record", projectId: "elsewhere" }));
     await vi.waitFor(() => expect(seen.some((m) => m.type === "record")).toBe(true));
@@ -1437,6 +1749,228 @@ describe("hub get_record", () => {
     }));
     await wait(50);
     expect(seen.filter((m) => m.type === "event").map((m) => m.event.text)).toEqual(["still mine"]);
+    browser.close(); up.close();
+  });
+});
+
+describe("hub membership gates on participation", () => {
+  // Task 4 (spec A4, A5): participation gets the same membership gate
+  // provisioning already has. Every gate below carries a refusal test AND its
+  // sibling member pass-through, so the gate is shown to DISCRIMINATE rather
+  // than merely to reject. `not_a_member` is the code the browser reads to turn
+  // the refusal into a "join this project" affordance (spec §4.2 shape).
+  const SECRET = "test-secret";
+  const AUTH = { clientId: "cid", clientSecret: "csecret", sessionSecret: SECRET, allowlist: "alice" };
+  const cookieFor = (login: string) => ({ cookie: `mpai_session=${signSession(login, SECRET)}` });
+  function connectWith(url: string, headers?: Record<string, string>): Promise<WebSocket> {
+    return new Promise((resolve, reject) => {
+      const ws = headers ? new WebSocket(url, { headers }) : new WebSocket(url);
+      ws.on("open", () => resolve(ws));
+      ws.on("error", reject);
+    });
+  }
+
+  it("refuses a join from a non-member and sends no replay, snapshot or tunnel", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    up.send(JSON.stringify({
+      t: "publish", sessionId: "auth", runId: "run-a",
+      events: [{ type: "intent_update", text: "history", seq: 0, ts: "2026-07-27T00:00:00.000Z" }],
+    }));
+    await wait(40);
+    upSeen.length = 0;
+
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    // Identify (auth off, claim stands) but never join_project — the "default"
+    // project a machine attach auto-creates has no members.
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    browser.send(join());
+    await wait(50);
+
+    expect(seen.filter((m) => m.type === "error")).toEqual([
+      { type: "error", message: "join this project before joining its sessions", code: "not_a_member" },
+    ]);
+    // No replay, no snapshot: the refusal happens before any binding.
+    expect(seen.some((m) => m.type === "event")).toBe(false);
+    expect(seen.some((m) => m.type === "project")).toBe(false);
+    // And nothing reached the laptop.
+    expect(upSeen.filter((f) => f.t === "tunnel")).toEqual([]);
+    browser.close(); up.close();
+  });
+
+  it("lets a member join, replaying, snapshotting and tunnelling exactly as before", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port);
+    up.send(JSON.stringify({
+      t: "publish", sessionId: "auth", runId: "run-a",
+      events: [{ type: "intent_update", text: "history", seq: 0, ts: "2026-07-27T00:00:00.000Z" }],
+    }));
+    await wait(40);
+    upSeen.length = 0;
+
+    const { ws: browser, seen } = await member(hub.port, "default");
+    browser.send(join());
+    await wait(50);
+
+    expect(seen.filter((m) => m.type === "event").map((m) => m.event.text)).toEqual(["history"]);
+    expect(seen.some((m) => m.type === "project")).toBe(true);
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+    expect(upSeen.filter((f) => f.t === "tunnel").map((f) => f.payload.type)).toEqual(["join"]);
+    browser.close(); up.close();
+  });
+
+  it("tells an unidentified channel to identify before watch_project or peek", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    browser.send(JSON.stringify({ type: "peek", projectId: "default" }));
+    await wait(50);
+    expect(seen).toEqual([
+      { type: "error", message: "identify first" },
+      { type: "error", message: "identify first" },
+    ]);
+    expect(seen.some((m) => m.type === "project")).toBe(false);
+    browser.close(); up.close();
+  });
+
+  it("refuses watch_project and peek from a non-member, and does not re-home the channel", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    await wait(30);
+    seen.length = 0;
+    browser.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    browser.send(JSON.stringify({ type: "peek", projectId: "default" }));
+    await wait(50);
+    expect(seen.filter((m) => m.type === "error")).toEqual([
+      { type: "error", message: "join this project to see it", code: "not_a_member" },
+      { type: "error", message: "join this project to see it", code: "not_a_member" },
+    ]);
+    expect(seen.some((m) => m.type === "project")).toBe(false);
+
+    // NOT re-homed: a refused watch must not set channel.projectId, so a later
+    // project push must never reach this non-member.
+    seen.length = 0;
+    up.send(JSON.stringify({
+      t: "publish", sessionId: "auth", runId: "run-a",
+      events: [{ type: "intent_update", text: "members only", seq: 0, ts: "2026-07-27T00:00:00.000Z" }],
+    }));
+    await wait(50);
+    expect(seen.some((m) => m.type === "project")).toBe(false);
+    browser.close(); up.close();
+  });
+
+  it("answers watch_project and peek for a member", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const { ws, seen } = await member(hub.port, "default");
+    ws.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    ws.send(JSON.stringify({ type: "peek", projectId: "default" }));
+    await wait(50);
+    expect(seen.filter((m) => m.type === "project")).toHaveLength(2);
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+    ws.close(); up.close();
+  });
+
+  it("refuses get_record from an identified non-member", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    await wait(30);
+    seen.length = 0;
+    browser.send(JSON.stringify({ type: "get_record", projectId: "default" }));
+    await wait(50);
+    expect(seen).toEqual([
+      { type: "error", message: "join this project to see its record", code: "not_a_member" },
+    ]);
+    expect(seen.some((m) => m.type === "record")).toBe(false);
+    browser.close(); up.close();
+  });
+
+  it("stops fanning a project push to a member that has left, without disconnecting it", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const { ws, seen } = await member(hub.port, "default");
+    // Watch to be homed onto the project's push feed (join_project alone does
+    // not set channel.projectId).
+    ws.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
+    await wait(40);
+    seen.length = 0;
+
+    up.send(JSON.stringify({
+      t: "publish", sessionId: "auth", runId: "run-a",
+      events: [{ type: "intent_update", text: "while a member", seq: 0, ts: "2026-07-27T00:00:00.000Z" }],
+    }));
+    // Pushes are throttled to 1s (like the server's), so the first one may be
+    // deferred to the next window — wait for it rather than racing it.
+    await vi.waitFor(() => expect(seen.some((m) => m.type === "project")).toBe(true), { timeout: 2000 });
+
+    ws.send(JSON.stringify({ type: "leave_project", projectId: "default" }));
+    await wait(40);
+    seen.length = 0;
+
+    up.send(JSON.stringify({
+      t: "publish", sessionId: "auth", runId: "run-a",
+      events: [{ type: "intent_update", text: "after leaving", seq: 1, ts: "2026-07-27T00:00:01.000Z" }],
+    }));
+    // Past a full throttle window: a push would have fired by now if one were
+    // going to. Silenced by the fan-out isMember filter — but never disconnected.
+    await wait(1300);
+    expect(seen.some((m) => m.type === "project")).toBe(false);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close(); up.close();
+  });
+
+  it("gates on the VERIFIED login, not the browser's claim, when auth is on", async () => {
+    // Auth on: alice is allowlisted and verified, but not a member of "default".
+    // The gate must run on the stamped login (alice), refusing even though the
+    // payload claims a different user — the whole point of stamping first.
+    const hub = await startHub({ port: 0, host: "127.0.0.1", auth: AUTH, db: seededDeviceDb() });
+    close = hub.close;
+    const { up, seen: upSeen } = await attachedUplink(hub.port, "auth", "lap-1", [decl("k")], UPLINK_BEARER);
+    const browser = await connectWith(`ws://127.0.0.1:${hub.port}`, cookieFor("alice"));
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(join({ userId: "mallory", name: "m" }));
+    await wait(50);
+    expect(seen.filter((m) => m.type === "error")).toEqual([
+      { type: "error", message: "join this project before joining its sessions", code: "not_a_member" },
+    ]);
+    expect(upSeen.filter((f) => f.t === "tunnel")).toEqual([]);
+
+    // And once alice — the verified login — joins the project, the same join
+    // goes through, proving membership was checked against alice all along
+    // (never mallory, who is refused as a non-member above and never joins).
+    // A refused join does not stamp identity, so identify (verified as alice)
+    // must run before join_project can attribute the membership to alice.
+    browser.send(JSON.stringify({ type: "identify", userId: "mallory", name: "m" }));
+    browser.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    await wait(40);
+    seen.length = 0; upSeen.length = 0;
+    browser.send(join({ userId: "mallory", name: "m" }));
+    await wait(50);
+    expect(seen.some((m) => m.type === "error")).toBe(false);
+    const tunnels = upSeen.filter((f) => f.t === "tunnel");
+    expect(tunnels.map((f) => f.payload.type)).toEqual(["join"]);
+    expect(tunnels[0].identity).toEqual({ userId: "alice", name: "alice" });
     browser.close(); up.close();
   });
 });

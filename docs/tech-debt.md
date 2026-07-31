@@ -18,23 +18,21 @@ being written.
 
 ## 1. Security — deferred 2026-07-27, must clear before public exposure
 
-### 1.1 No `maxPayload` on the WebSocket server — pre-auth DoS
+### 1.1 No `maxPayload` on the WebSocket server — pre-auth DoS — RESOLVED (audit M5, 2026-07-30)
 
-`poc/server/src/server.ts:269` — `new WebSocketServer({ server: httpServer })` with no
-`maxPayload`, so the `ws` default of **100 MB** applies. The upgrade completes *before* any
-join or auth gate, so an unauthenticated peer that can reach the port can push a 100 MB frame
-into `JSON.parse` (`server.ts:301`), amplifying into a much larger object graph. Repeatable.
+**Was:** `poc/server/src/server.ts:269` — `new WebSocketServer({ server: httpServer })` with no
+`maxPayload`, so the `ws` default of **100 MB** applied. The upgrade completed *before* any
+join or auth gate, so an unauthenticated peer that could reach the port could push a 100 MB
+frame into `JSON.parse`, amplifying into a much larger object graph.
 
-**Fixed looks like:** an explicit `maxPayload` around 1 MB (`MAX_PROMPT_LENGTH` is 4000, so
-this is generous), applied on browser-facing *and* uplink-facing sockets, enforced before
-authentication. Test: oversized frame is rejected without allocating.
-
-**v7b1 note — the two halves now diverge.** `poc/hub/src/hub.ts:135` *does* set
-`maxPayload: MAX_FRAME_BYTES` (1 MB) on both hub planes; `server.ts` still does not. So the
-same >1 MB paste into the prompt box is accepted by a standalone laptop and answered with a
-1009 close by the hub. The hub's cap is correct and stays. What makes it user-visible is §4's
-missing client reconnect: a 1009 leaves the tab on a dead socket until a manual reload.
-Fixing `server.ts` here removes the divergence; fixing the client reconnect removes the sting.
+**What closed it.** The hub already enforced this (`poc/hub/src/hub.ts:411` —
+`new WebSocketServer({ server: httpServer, maxPayload: MAX_FRAME_BYTES })`, `MAX_FRAME_BYTES` =
+1 MB, `poc/server/src/relayProtocol.ts:23`); the standalone server gained the identical limit at
+audit M5 (`poc/server/src/server.ts:805`, same option, same constant), applied before
+`denyUnauthed`'s auth gate runs inside `handleMessage`. **The two halves no longer diverge:**
+both now cap at 1 MB and both answer an oversized frame with a 1009 close before
+authentication. What remains open, unrelated to the cap itself: §4's missing client reconnect
+still leaves a tab on a dead socket after any 1009 close until a manual reload.
 
 ### 1.2 Invite token travels in query parameters and persists in the address bar
 
@@ -236,6 +234,14 @@ picker row renders `OFFLINE`, JOIN still navigates, and the session view opens e
 first and only refuse the *drive/approve* paths, which `tunnel()` already does on its own.
 
 ### 2.5 The invite flow is dead through the hub — needs design, not a patch
+
+**Status, 2026-07-31 (PRD §8.1, identity-and-access branch): partially unblocked, still open.**
+This entry's blocker was "it has no identity plane of its own until v7b2" — that plane now exists
+(the hub verifies GitHub identity itself and machines authenticate with hash-stored, revocable
+bearers, §8.1). What remains is exactly option (c) below, narrowed to a design/implementation
+task rather than a prerequisite: scoping the invite flow to a project so a hub-side invite store
+can select the right project and broadcast (or answer) within it. Still §8.2's item (the invite
+flow scoped to projects), not this branch's — carried forward, not fixed here.
 
 `peek_invite` is sent by `poc/client/src/components/InviteLanding.tsx:24` and
 `InviteSignIn.tsx:17`. The hub's `HUB_HANDLED` set (`poc/hub/src/hub.ts:18`) covers only

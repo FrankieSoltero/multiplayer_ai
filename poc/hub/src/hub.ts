@@ -1,12 +1,13 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { staticHandler } from "multiplayer-ai-server/staticFiles";
+import { authRoutes, requireAuth, type AuthConfig } from "multiplayer-ai-server/auth";
 import { slugify } from "multiplayer-ai-server/workspace";
 import { projectRecordFrom } from "multiplayer-ai-server/record";
 import { collisionsFrom, TOUCH_CAP, TOUCH_SENTINEL } from "multiplayer-ai-server/collisions";
 import type { Collision } from "multiplayer-ai-server/collisions";
-import type { ProjectMessage } from "multiplayer-ai-server/project";
+import type { ProjectMessage, ProjectSummary } from "multiplayer-ai-server/project";
 import {
   MAX_FRAME_BYTES,
   RELAY_PROTOCOL_VERSION,
@@ -15,9 +16,30 @@ import {
 } from "multiplayer-ai-server/relayProtocol";
 import { HubStore, type MachineInfo } from "./hubStore.js";
 import { HubDb } from "./hubDb.js";
+import { pairingRoutes, hashToken } from "./pairing.js";
 
 const SLUG = /^[a-z0-9-]{1,40}$/;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
+
+/** The WebSocket close code an uplink is refused with when its bearer is
+ *  missing, unknown, revoked, or bound to a different machineId (spec A2, A3).
+ *  Deliberately NOT 1008: the relay reads 1008 as a protocol/version mismatch
+ *  (`relayIntegration.test.ts`'s v1 refusal) and this application code as
+ *  "stop and re-pair". */
+const UPLINK_UNAUTHORIZED = 4401;
+
+/** The plaintext bearer from an `Authorization: Bearer <token>` header, or null
+ *  when the header is absent or not a bearer. The token is never stored or
+ *  logged — only its `hashToken` digest is compared against the device record
+ *  (spec §10.5). */
+function bearerToken(header: string | undefined): string | null {
+  if (typeof header !== "string") return null;
+  // Case-insensitive scheme per RFC 6750 §2.1: `bearer`, `Bearer`, `BEARER`
+  // all carry the same credential, so a client whose HTTP stack lower-cases the
+  // scheme must not be silently refused.
+  const match = /^Bearer (.+)$/i.exec(header);
+  return match ? match[1] : null;
+}
 
 /** Answered from the hub's own store rather than tunnelled: only the hub sees
  *  every laptop, so only the hub can answer them (spec §3.2). */
@@ -69,6 +91,10 @@ export interface HubOptions {
    *  `defaultFatal`; a test passes a spy so the failure is observable without
    *  killing the runner. */
   fatal?: (err: Error) => void;
+  /** GitHub auth (spec §4). Undefined → auth off: `authRoutes` is still mounted
+   *  so /auth/me answers `{enabled:false}` instead of the SPA fallback. The
+   *  hub reuses the server package's auth module unchanged. */
+  auth?: AuthConfig;
 }
 
 /** Fail-stop (spec §3.6): log the error and stop the process. No catch-and-
@@ -168,6 +194,25 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
   const lastPush = new Map<string, number>();
   const pushTimers = new Map<string, NodeJS.Timeout>();
   const serveStatic = opts.staticDir ? staticHandler(opts.staticDir) : null;
+  // Mounted even when `opts.auth` is undefined: `authRoutes` then answers
+  // /auth/me with `{enabled:false}` rather than letting it fall through to the
+  // SPA fallback, which would return index.html with a 200 and leave the
+  // client unable to tell "auth is off" from "auth is broken" (spec §4.2).
+  const handleAuth = authRoutes(opts.auth);
+  /** A device was revoked (via `/pair/revoke`): if it has a live uplink, drop it
+   *  now with the same 4401 an unauthenticated connection gets. The socket's
+   *  existing close handler runs `store.detach`, so the machine flips offline —
+   *  no separate teardown path, and the guard there (`uplinks.get(id) !== socket`)
+   *  keeps a superseded socket's late close from touching a live one. */
+  const onRevoked = (machineId: string): void => {
+    uplinks.get(machineId)?.close(UPLINK_UNAUTHORIZED, "unauthorized");
+  };
+  // AFTER authRoutes, BEFORE serveStatic (spec §A2): a returned `true` means the
+  // pairing handler consumed the request. Mounted even when `opts.auth` is
+  // undefined — it then answers its own 404 rather than falling through to the
+  // SPA (the same "off is distinguishable from broken" reasoning authRoutes
+  // lives by). `db` is the DeviceStore; null → pairing 503s (Task 7).
+  const handlePairing = pairingRoutes({ auth: opts.auth, devices: db, onRevoked });
 
   const send = (socket: WebSocket, msg: unknown) => {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
@@ -182,7 +227,14 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     }
     const payload = store.snapshot(projectId);
     for (const channel of channels.values()) {
-      if (channel.projectId === projectId) send(channel.socket, payload);
+      if (channel.projectId !== projectId) continue;
+      // Membership is re-checked at fan-out, not just at watch/join time (spec
+      // A5): a `leave_project` leaves `channel.projectId` set but drops the
+      // membership, so a departed member is silenced here — pushes stop without
+      // the socket being disconnected. `channel.identity` is always set once a
+      // channel is homed onto a project (watch and join both require it).
+      if (!channel.identity || !store.isMember(projectId, channel.identity.userId)) continue;
+      send(channel.socket, payload);
     }
     lastPush.set(projectId, Date.now());
     // Last, on the same throttled beat as the browser snapshot and off the
@@ -333,11 +385,42 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     }
   }
 
-  /** The project directory changed. Every browser sees every project (spec
-   *  P2), so this is a broadcast rather than a per-project narrowcast. */
+  /** The list stays hub-wide — it is the join affordance (spec A5) — but each
+   *  entry's roster is members-only, exactly like the snapshot and record. A
+   *  channel viewing a project it belongs to gets the real `members`; anyone
+   *  else (including an unidentified channel) gets `members: []`. `memberCount`
+   *  is always the REAL size — a non-member learns HOW MANY are in a project
+   *  without learning WHO — and `isMember` lets the client render the join
+   *  affordance. `store.listProjects()` is unchanged and still returns the full
+   *  roster; redaction is a view concern applied here, per requester. */
+  function redactFor(
+    summaries: ProjectSummary[],
+    userId: string | null,
+  ): (ProjectSummary & { memberCount: number; isMember: boolean })[] {
+    return summaries.map((p) => {
+      const isMember = userId !== null && p.members.includes(userId);
+      return {
+        ...p,
+        memberCount: p.members.length,
+        isMember,
+        members: isMember ? p.members : [],
+      };
+    });
+  }
+
+  /** The project directory changed. The list is hub-wide (spec A5), so this
+   *  still reaches every channel — but each channel's payload is tailored to
+   *  its own membership by `redactFor`, so one directory change produces one
+   *  per-channel narrowcast, not one shared broadcast: a non-member never sees
+   *  another project's roster ride out on a push it happened to be watching. */
   function pushProjects(): void {
-    const payload = { type: "projects", projects: store.listProjects() };
-    for (const channel of channels.values()) send(channel.socket, payload);
+    const summaries = store.listProjects();
+    for (const channel of channels.values()) {
+      send(channel.socket, {
+        type: "projects",
+        projects: redactFor(summaries, channel.identity?.userId ?? null),
+      });
+    }
   }
 
   /** The same 1s leading+trailing throttle the server uses (server.ts's
@@ -397,6 +480,13 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       res.end(req.method === "HEAD" ? undefined : JSON.stringify({ status: "ok" }));
       return;
     }
+    // AFTER /healthz, BEFORE serveStatic (spec §4.2): a returned `true` means
+    // authRoutes consumed the request. Any /auth/* path is answered here — with
+    // auth on or off — so none reaches the SPA fallback below.
+    if (handleAuth(req, res)) return;
+    // AFTER authRoutes, BEFORE serveStatic (spec §A2): every /pair/* path is
+    // answered here — auth on or off — so none reaches the SPA fallback below.
+    if (handlePairing(req, res)) return;
     if (serveStatic) {
       serveStatic(req, res);
       return;
@@ -414,11 +504,31 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     // Without a listener an "error" is an unhandled EventEmitter error and
     // crashes the process; "close" always follows and does the cleanup.
     socket.on("error", () => {});
-    if ((req.url ?? "/").startsWith("/uplink")) handleUplink(socket);
-    else handleBrowser(socket);
+    if ((req.url ?? "/").startsWith("/uplink")) handleUplink(socket, req);
+    // The cookie is read ONCE, here at the upgrade, and held on the channel
+    // for the life of the connection: WS messages carry no cookies, so a
+    // per-message re-read would have nothing to read (spec §3.5 rule 1).
+    else handleBrowser(socket, req.headers.cookie);
   });
 
-  function handleUplink(socket: WebSocket): void {
+  function handleUplink(socket: WebSocket, req: IncomingMessage): void {
+    // The bearer gate, at the upgrade and BEFORE any frame (spec A2, A3). Auth
+    // off (`opts.auth` undefined) → `authedMachineId` stays null and the socket
+    // is admitted bare, exactly as it always was. Auth on → the socket must
+    // carry a bearer whose hash matches a live device record; the machineId that
+    // record names is latched here and the `hello` below must match it. Fail
+    // closed: no device store (`db` null) refuses every uplink, because there is
+    // nothing to authenticate against.
+    let authedMachineId: string | null = null;
+    if (opts.auth) {
+      const token = bearerToken(req.headers.authorization);
+      const device = token && db ? db.deviceByTokenHash(hashToken(token)) : null;
+      if (!device) {
+        socket.close(UPLINK_UNAUTHORIZED, "unauthorized");
+        return;
+      }
+      authedMachineId = device.machineId;
+    }
     let uplinkId: string | null = null;
     let projectId: string | null = null;
     /** Session ids this socket has already been told it does not own. One
@@ -446,6 +556,17 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         return;
       }
       if (frame.t === "hello") {
+        // Identity binding (spec A3): a bearer authenticates EXACTLY the
+        // machineId it was approved for, so a hello for any other id is a
+        // hijack attempt and is refused before it can register or evict.
+        // Auth off → `authedMachineId` is null and any uplinkId stands, exactly
+        // as today. This also gates eviction: superseding an incumbent now
+        // requires a valid bearer for THAT machine, so it is reconnect-recovery,
+        // never a takeover.
+        if (authedMachineId !== null && frame.uplinkId !== authedMachineId) {
+          socket.close(UPLINK_UNAUTHORIZED, "unauthorized");
+          return;
+        }
         // One identity per socket, the mirror of "hello first" below. A second
         // hello would register a second id in `uplinks` that the close handler
         // (which only knows the last one) can never reclaim — leaving a dead
@@ -613,7 +734,7 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     });
   }
 
-  function handleBrowser(socket: WebSocket): void {
+  function handleBrowser(socket: WebSocket, cookieHeader: string | undefined): void {
     // Assigned here and never read from the client: a client-chosen channel id
     // would let one browser address another's tunnel (spec §10.4).
     const channelId = randomUUID();
@@ -628,6 +749,13 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     channels.set(channelId, channel);
 
     const error = (message: string) => send(socket, { type: "error", message });
+    // The membership refusal (spec A4/A5). Carries `code: "not_a_member"` on top
+    // of the standard `{type:"error", message}` shape (spec §4.2) so the browser
+    // can turn "you are not in this project" into a join affordance rather than a
+    // generic failure — the ONLY refusal that adds a code, and only where a
+    // membership gate rejects.
+    const denyMember = (message: string) =>
+      send(socket, { type: "error", message, code: "not_a_member" });
 
     const tunnel = (payload: unknown): void => {
       if (!channel.projectId || !channel.sessionId || !channel.identity) {
@@ -667,10 +795,20 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         if (typeof msg.userId !== "string" || typeof msg.name !== "string") {
           return error("identify requires userId, name");
         }
-        const userId = msg.userId.slice(0, 64);
-        const name = msg.name.slice(0, 40);
+        // Auth gate (spec §4.3, §3.5 rule 1). The cookie was read once at the
+        // upgrade; on success the browser's claim is DISCARDED and the verified
+        // GitHub login is stamped as both id and display name (the name lock,
+        // spec §3.4). Same two rejections, in the same order, as `join` below
+        // and as the standalone server's join gate — the hub must reject
+        // exactly what a laptop with auth on would. Auth off → `login` is null
+        // and the client's claim (with its truncation) stands verbatim.
+        const auth = requireAuth(cookieHeader, opts.auth);
+        if (!auth.ok) return error(auth.error);
+        const userId = auth.login !== null ? auth.login : msg.userId.slice(0, 64);
+        const name = auth.login !== null ? auth.login : msg.name.slice(0, 40);
         // An empty userId produces a `tunnel` frame the laptop's
         // parseDownFrame drops on the floor — identity that fails in silence.
+        // A verified login is never empty, so this only guards the auth-off arm.
         if (!userId) return error("identify requires userId");
         channel.identity = { userId, name };
         send(socket, { type: "identified", userId, name });
@@ -678,7 +816,14 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       }
 
       if (msg?.type === "list_projects") {
-        send(socket, { type: "projects", projects: store.listProjects() });
+        // Hub-wide, no identity gate: the list is the join affordance (spec A5).
+        // But each entry is redacted to THIS channel by `redactFor` — a
+        // non-member (or an unidentified channel) sees `members: []` with the
+        // real `memberCount`, never another project's roster.
+        send(socket, {
+          type: "projects",
+          projects: redactFor(store.listProjects(), channel.identity?.userId ?? null),
+        });
         return;
       }
 
@@ -758,16 +903,39 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
           return error("projectId and sessionId must be 1-40 chars of a-z, 0-9, -");
         }
         const sessionId: string = msg.sessionId;
-        // v7b1 runs with auth OFF and takes the browser's word, exactly as a
-        // standalone server does with auth off. v7b2 replaces these two lines
-        // with the hub's cookie-verified GitHub login, which is what makes the
-        // trust inversion (spec §3.5 rule 1) real. Until then this hub must
-        // not be exposed to the internet.
-        const userId = msg.userId.slice(0, 64);
-        const name = msg.name.slice(0, 40);
+        // The trust inversion, now real (spec §3.5 rule 1). The hub verifies
+        // the cookie it read once at the upgrade and stamps the verified
+        // GitHub login as BOTH userId and display name, DISCARDING the
+        // browser's claim above — this is the verifier the laptop's relay arm
+        // assumes has already run (`server.ts`'s `io.mode === "relay"` stamp),
+        // so the two never diverge. Run BEFORE the owner check and before
+        // `tunnel()`, so a rejected join never reaches a laptop and the
+        // identity that does is the verified one. Same two rejections, in the
+        // same order, as the standalone join gate (spec §4.3). Auth off →
+        // `login` is null and the browser's claim (with its truncation) stands
+        // verbatim, exactly as v7b1 behaved. The join PAYLOAD is still
+        // forwarded untouched (`DownFrame`'s contract); only the tunnelled
+        // `identity` carries the login.
+        const auth = requireAuth(cookieHeader, opts.auth);
+        if (!auth.ok) return error(auth.error);
+        const userId = auth.login !== null ? auth.login : msg.userId.slice(0, 64);
+        const name = auth.login !== null ? auth.login : msg.name.slice(0, 40);
         // An empty userId would produce a `tunnel` frame the laptop's
         // parseDownFrame drops on the floor — a join that fails in silence.
+        // A verified login is never empty, so this only guards the auth-off arm.
         if (!userId) return error("join requires userId");
+
+        // Participation is membership-scoped (spec A4). Checked AFTER the
+        // identity stamp above and BEFORE any binding, replay, snapshot or
+        // tunnel, so a non-member's join dies here having touched nothing —
+        // and, with auth on, the check sees the VERIFIED login, never the
+        // browser's claim. This is the gate provisioning already has
+        // (`create_session` hub.ts, `attach_repo`, `set_project_lifecycle`);
+        // participation was the one hole (relayProtocol's "bound is project
+        // membership" note, now true).
+        if (!store.isMember(projectId, userId)) {
+          return denyMember("join this project before joining its sessions");
+        }
 
         const owner = store.ownerOf(projectId, sessionId);
         if (!owner || !uplinks.has(owner)) {
@@ -924,12 +1092,23 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       }
 
       if (HUB_HANDLED.has(msg?.type)) {
+        // Identity then membership (spec A5): a snapshot carries every session's
+        // full `touched` change-list, so it is members-only, exactly as
+        // participation is. The list itself stays hub-wide (`list_projects`) —
+        // it is the join affordance — but everything deeper is gated.
+        if (!channel.identity) return error("identify first");
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
         if (!SLUG.test(projectId)) return error(`${msg.type} requires a valid projectId`);
+        if (!store.isMember(projectId, channel.identity.userId)) {
+          return denyMember("join this project to see it");
+        }
         // Never re-home a channel that has joined a session: `fanOut` keys on
         // projectId AND sessionId, so re-homing would silently cut the joined
         // session's event stream. Such a socket still gets the snapshot it
         // asked for; it just keeps receiving pushes for its session's project.
+        // A refused (non-member) watch above never reaches this line, so it
+        // never re-homes — the browser cannot subscribe to a project it is not
+        // in.
         if (msg.type === "watch_project" && !channel.sessionId) channel.projectId = projectId;
         send(socket, store.snapshot(projectId));
         return;
@@ -944,16 +1123,21 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
        *  `identify` is required (owner ruling, spec §8a.1), which is where this
        *  deliberately differs from the standalone handler's `denyUnauthed()`:
        *  the hub has no auth of its own until v7b2, so this pins the line the
-       *  hub's cookie-verified login will replace. Membership is deliberately
-       *  NOT required — visibility is hub-wide, exactly as for `watch_project`
-       *  and `list_projects` (spec P2). Everything else — the validation, the
-       *  error string, the reply's shape — is the standalone handler's, byte for
-       *  byte (server.ts's `get_record`), because one browser bundle talks to
-       *  both. */
+       *  hub's cookie-verified login will replace. Membership is ALSO required
+       *  now (spec A5, APPROVED — it supersedes P2's "visibility is hub-wide"):
+       *  the record carries every session's `filesChanged`, the same exposure
+       *  class as the snapshot's `touched`, so it is members-only, exactly like
+       *  `watch_project`/`peek`. Only the project LIST stays hub-wide, as the
+       *  join affordance. Everything else — the validation, the error string,
+       *  the reply's shape — is the standalone handler's, byte for byte
+       *  (server.ts's `get_record`), because one browser bundle talks to both. */
       if (msg?.type === "get_record") {
         if (!channel.identity) return error("identify first");
         const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
         if (!SLUG.test(projectId)) return error("get_record requires a valid projectId");
+        if (!store.isMember(projectId, channel.identity.userId)) {
+          return denyMember("join this project to see its record");
+        }
         // Never re-homed, for the same reason `watch_project` above never
         // re-homes a joined channel: this is a read, and `fanOut` keys on
         // projectId AND sessionId, so touching either would cut a joined

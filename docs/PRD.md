@@ -307,9 +307,10 @@ rather than removing capability. Per-user, runtime-switchable, Arcade default. S
 both did without losing anything," and a record needs the edges a project provides.
 
 **D12 — Security hardening and deployment are the last section.** *Why:* they gate exposing a hub
-beyond a trusted network, not the product being finished. **This is a real gate:** the hub has no
-pre-authentication payload limit (`docs/tech-debt.md` §1.1), so it must not be put on the public
-internet before §8.10 is done.
+beyond a trusted network, not the product being finished. **This is a real gate:** the hub already
+enforces a pre-authentication payload limit and its identity/membership plane is now enforced
+(§8.1, `docs/tech-debt.md` §1.1, resolved), but TLS, rate limiting and retention/backup are still
+open (§8.10), so it must not be put on the public internet before §8.10 is done.
 
 ---
 
@@ -354,13 +355,30 @@ Each entry states what it is, what exists today, and what final state requires.
 
 *What:* who you are on a hub, and what you may see.
 
-*Today:* GitHub OAuth with an allowlist, server-verified `userId`, invites, a sign-out control —
-all built and merged, all against the standalone server. The hub currently takes the browser's word
-for identity, which is why it must not be exposed.
+*Today:* **shipped, on this branch.** GitHub OAuth with an allowlist, server-verified `userId`,
+invites, a sign-out control — all built and merged — and now reused at the hub, not just the
+standalone server: the hub mounts the same `auth.ts` (`multiplayer-ai-server/auth`'s `authRoutes`/
+`requireAuth`, imported at `hub.ts:5`), reads the session cookie once at the browser upgrade, and
+stamps the verified GitHub login as `userId`/`name` at both `identify` (`hub.ts:804-805`) and
+`join` (`hub.ts:918-919`) — the browser's claim is discarded outright, not merely truncated.
+Machines authenticate separately, with something better than "knows the URL": a laptop pairs via
+a short-TTL (`pairing.ts`'s `PAIRING_CODE_TTL_MS` = 10 min), unambiguous-alphabet code approved by
+an allowlisted browser, minting an opaque bearer stored only as its SHA-256 digest
+(`pairing.ts`'s `hashToken`) in HubDb's schema-v2 `devices` table (`hubDb.ts:16`, `:24-27`), bound
+to the machine's persisted `machineId` — a bearer minted for one machine cannot authenticate
+`hello` for another (`hub.ts:563-564`) — and refused or revoked with WebSocket close code 4401
+(`hub.ts:29`, `:521-525`, `:205`). Project membership is now the enforced access unit:
+`join`, `create_session`, `attach_repo`/`detach_repo`, `set_project_lifecycle`,
+`watch_project`/`peek` and `get_record` all gate on `store.isMember` (`hub.ts:933`, `:995`,
+`:1069`, `:867`, `:1099`, `:1135`), and the project-push fan-out re-checks membership at send
+time, so a departed member's pushes stop without an explicit unsubscribe (`hub.ts:233`). Only the
+project LIST stays hub-wide, as the join affordance — each entry is redacted per requester
+(`memberCount`/`isMember`, `members: []` for a non-member) rather than gated outright
+(`hub.ts:388-403`, `:822`).
 
-*Final state:* the hub verifies identity itself; a machine trusts the hub's stamp rather than the
-browser's claim (today `hub.ts:337-338` simply truncates whatever the browser sent). Project membership is the access unit. Machines authenticate to the hub with
-something better than "knows the URL."
+*Final state:* reached, except for one narrowing: invites still predate projects. The remaining
+gap is scoping the invite flow to a project (§8.2, tech-debt §2.5) — the identity and membership
+planes themselves are both enforced end to end, not merely designed.
 
 ### 8.2 Projects
 
@@ -527,8 +545,9 @@ by accident.
 *What:* running a hub for real — deployment, TLS, payload limits, rate limiting, retention,
 audit, host settings.
 
-*Today:* deployment wiring exists in-repo; nothing is deployed. **The hub has no
-pre-authentication payload limit** (`docs/tech-debt.md` §1.1).
+*Today:* deployment wiring exists in-repo; nothing is deployed. The hub already enforces a
+pre-authentication payload limit, and the standalone server now matches it (`docs/tech-debt.md`
+§1.1, resolved) — TLS, rate limiting, retention/backup and host settings are what remain open.
 
 *Final state:* a hub that can be exposed to a network beyond a trusted one. **This section is the
 gate on that exposure** (D12) and on nothing else.
@@ -566,7 +585,11 @@ correctly.** The gap is surface and workflow, not the data model.
    dissolved (§8.3).
 5. ~~An uplink is one machine bound to one repo; D4 needs it to be one machine.~~ **Resolved**
    (D4, §8.3): a machine now offers a set of repos, attached and detached from the hub UI.
-6. The hub trusts the browser's identity claim.
+6. ~~The hub trusts the browser's identity claim.~~ **Resolved** (§8.1, this branch): the hub
+   verifies GitHub identity itself (`auth.ts` reused at the hub) and stamps the verified login at
+   `identify`/`join`, discarding the browser's claim; machines authenticate with pairing-derived,
+   hash-stored, revocable bearers bound to `machineId` (`hubDb.ts`'s schema-v2 `devices` table),
+   and participation is membership-gated throughout (`hub.ts`'s `isMember` checks).
 7. The hub's log does not survive a restart.
 8. Sub-sessions do not exist as a product concept.
 9. The UI is a 1296px centred column.
