@@ -21,6 +21,11 @@ const decl = (over: Partial<RepoDecl> = {}): RepoDecl => ({
 interface FakeEnd {
   socket: RelaySocket;
   sent: any[];
+  /** The headers `connect()` was called with for THIS socket — `undefined`
+   *  when the relay was configured without any. Captured per socket so a test
+   *  can assert they ride along on the reconnect socket too, not just the
+   *  first. */
+  headers?: Record<string, string>;
   /** True once the relay asked for a close. The `close` EVENT is separate and
    *  fired by `drop()`, because `ws` reports it asynchronously — the gap
    *  between the two is where the stale-handler bug lives. */
@@ -42,7 +47,7 @@ interface FakeEnd {
  *  tests about the lifecycle across a reconnect reach into `sockets[]`. */
 function fakeSocket() {
   const sockets: FakeEnd[] = [];
-  const connect = (): RelaySocket => {
+  const connect = (_url: string, headers?: Record<string, string>): RelaySocket => {
     const sent: any[] = [];
     const handlers = new Map<string, (arg?: unknown) => void>();
     const socket: RelaySocket = {
@@ -53,6 +58,7 @@ function fakeSocket() {
     const end: FakeEnd = {
       socket,
       sent,
+      headers,
       closeRequested: false,
       open: () => handlers.get("open")?.(),
       deliver: (frame) => handlers.get("message")?.(JSON.stringify(frame)),
@@ -741,5 +747,102 @@ describe("Relay bounds", () => {
 
     relay.stop();
     expect(closed).toEqual(["ana", "ben"]);
+  });
+});
+
+describe("Relay auth", () => {
+  it("passes the configured auth headers to the initial connect (spec A2)", () => {
+    // The bearer rides in the `Authorization` header, never a query string
+    // (spec §10.1) — so it must reach the socket adapter through `connect`,
+    // which threads it into `new WebSocket(url, { headers })`.
+    const fake = fakeSocket();
+    relayWith(fake, { headers: { Authorization: "Bearer tok-123" } }).start();
+    expect(fake.sockets[0]!.headers).toEqual({ Authorization: "Bearer tok-123" });
+  });
+
+  it("passes the auth headers again on every reconnect, not just the first connect", () => {
+    // A dropped uplink reconnects on a genuinely new socket, and that socket
+    // must present the same credentials — an unauthenticated reconnect would
+    // be refused, so the whole reconnect loop would be dead against an
+    // otherwise healthy hub.
+    vi.useFakeTimers();
+    const fake = fakeSocket();
+    const relay = relayWith(fake, {
+      headers: { Authorization: "Bearer tok-123" },
+      reconnectDelayMs: 500,
+    });
+    relay.start();
+    fake.sockets[0]!.open();
+    fake.sockets[0]!.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+
+    fake.sockets[0]!.drop();
+    vi.advanceTimersByTime(500);
+    expect(fake.sockets).toHaveLength(2);
+    expect(fake.sockets[1]!.headers).toEqual({ Authorization: "Bearer tok-123" });
+
+    relay.stop();
+    vi.useRealTimers();
+  });
+
+  it("passes undefined headers when none are configured, unchanged from today", () => {
+    // The no-auth path must stay byte-for-byte what it was before this option
+    // existed: `connect(url, undefined)`, so `defaultConnect` builds the same
+    // `new WebSocket(url, { maxPayload })` with no `headers` key at all.
+    const fake = fakeSocket();
+    relayWith(fake).start();
+    expect(fake.sockets[0]!.headers).toBeUndefined();
+  });
+
+  it("on a 4401 credential refusal, logs once, fires onUnauthorized, and never reconnects", () => {
+    // 4401 is the hub refusing THIS MACHINE'S CREDENTIALS (a revoked or stale
+    // bearer), distinct from 1008's protocol/version mismatch. Retrying cannot
+    // succeed — the bearer will be refused on every attempt — so unlike 1008
+    // this STOPS the reconnect loop and hands control to `onUnauthorized`, which
+    // is where re-pairing is driven. One line names the cause; a latch keeps it
+    // to one even if the close is redelivered.
+    vi.useFakeTimers();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const unauthorized = vi.fn();
+    const fake = fakeSocket();
+    const relay = relayWith(fake, { reconnectDelayMs: 500, onUnauthorized: unauthorized });
+    relay.start();
+    fake.sockets[0]!.open();
+    fake.sockets[0]!.drop(4401);
+
+    expect(logged.mock.calls.map((c) => String(c[0]))).toEqual([
+      "hub refused this machine's credentials — re-pair with the hub (run mpai --hub again)",
+    ]);
+    expect(unauthorized).toHaveBeenCalledTimes(1);
+
+    // No reconnect is ever scheduled against a refusal that cannot succeed.
+    vi.advanceTimersByTime(5000);
+    expect(fake.sockets).toHaveLength(1);
+
+    // A redelivered close must not re-log or re-fire.
+    fake.sockets[0]!.drop(4401);
+    expect(logged.mock.calls).toHaveLength(1);
+
+    logged.mockRestore();
+    relay.stop();
+    vi.useRealTimers();
+  });
+
+  it("stops on a 4401 even when no onUnauthorized callback is wired", () => {
+    // The callback is optional; its absence must not throw and must not defeat
+    // the stop — the reconnect loop still has to die.
+    vi.useFakeTimers();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fake = fakeSocket();
+    const relay = relayWith(fake, { reconnectDelayMs: 500 });
+    relay.start();
+    fake.sockets[0]!.open();
+    expect(() => fake.sockets[0]!.drop(4401)).not.toThrow();
+
+    vi.advanceTimersByTime(5000);
+    expect(fake.sockets).toHaveLength(1);
+
+    logged.mockRestore();
+    relay.stop();
+    vi.useRealTimers();
   });
 });
