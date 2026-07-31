@@ -597,6 +597,46 @@ describe("hub presence", () => {
     browser.close(); up.close();
   });
 
+  it("does not re-home an already-joined channel that watches a second project it belongs to", async () => {
+    // The `!channel.sessionId` re-home guard, exercised directly (the membership
+    // gate cannot pre-empt it here): a channel joined to "auth" in "default" AND
+    // a member of a second project "beta" watches "beta". The watch is answered
+    // because it is a member — but the channel must NOT be re-homed, since fanOut
+    // keys on projectId AND sessionId and re-homing would cut the joined session's
+    // stream. Proven both ways: beta's snapshot arrives, AND a later publish to
+    // "default"/"auth" still reaches this channel (a broken guard would set
+    // channel.projectId = "beta" and fanOut("auth") would then skip it).
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    const { ws: browser, seen } = await member(hub.port, "default");
+    // A second project the browser belongs to (create_project auto-joins its
+    // creator) with no sessions of its own, so its snapshot is unmistakably empty.
+    browser.send(JSON.stringify({ type: "create_project", name: "beta" }));
+    await wait(40);
+    browser.send(join()); // joins session "auth" in "default"
+    await wait(40);
+    seen.length = 0;
+
+    browser.send(JSON.stringify({ type: "watch_project", projectId: "beta" }));
+    await wait(40);
+    // Answered with beta's (empty) snapshot — the member watch reached the
+    // re-home line rather than being turned away by the not_a_member gate.
+    const betaSnap = seen.find((m) => m.type === "project");
+    expect(betaSnap).toBeDefined();
+    expect(betaSnap.sessions).toEqual([]);
+
+    // But the channel was NOT re-homed: an event on its joined "default"/"auth"
+    // session still reaches it.
+    up.send(JSON.stringify({
+      t: "publish", sessionId: "auth", runId: "run-a",
+      events: [{ type: "intent_update", text: "still mine", seq: 0, ts: "2026-07-27T00:00:00.000Z" }],
+    }));
+    await wait(50);
+    expect(seen.filter((m) => m.type === "event").map((m) => m.event.text)).toEqual(["still mine"]);
+    browser.close(); up.close();
+  });
+
 
   it("flips a session offline when its laptop drops, and keeps the session listed", async () => {
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
