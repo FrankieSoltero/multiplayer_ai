@@ -171,6 +171,37 @@ describe("deriveTranscriptGroups", () => {
       },
     ]);
   });
+
+  it("T3xT1-attributed gate stays inline in MAIN — never swept into the subagent group (spec §2.3)", () => {
+    // A Task-1 × Task-3 interaction: Task 1 stamps parentToolUseId onto the
+    // gate events. They must NOT be swept into the collapsed subagent group
+    // (which renders bodiless in MAIN) — they stay ungrouped/inline so the
+    // driver still sees the gate card. Streaming events still group as before.
+    const log = [
+      ev({ type: "tool_call", toolName: "Agent", input: { description: "scan" }, toolUseId: "A" }, 0),
+      ev({ type: "agent_text_delta", text: "streaming", parentToolUseId: "A" }, 1),
+      ev({ type: "permission_request", requestId: "rg", toolName: "Bash", input: {}, parentToolUseId: "A" }, 2),
+      ev({ type: "permission_decision", requestId: "rg", decision: "allow", userId: "u1", parentToolUseId: "A" }, 3),
+    ];
+    const groups = deriveTranscriptGroups(log);
+    const subSeqs = groups
+      .filter((g) => g.kind === "subagent")
+      .flatMap((g) => g.events.map((e) => e.seq));
+    // streaming delta still groups…
+    expect(subSeqs).toContain(1);
+    // …but neither gate event is swept into any subagent group
+    expect(subSeqs).not.toContain(2);
+    expect(subSeqs).not.toContain(3);
+    // the gate events remain inline (in a main group)
+    const mainSeqs = groups
+      .filter((g) => g.kind === "main")
+      .flatMap((g) => g.events.map((e) => e.seq));
+    expect(mainSeqs).toContain(2);
+    expect(mainSeqs).toContain(3);
+    // regression guard on the UNCHANGED filter: the attributed gate events are
+    // still projected into the sub-session view.
+    expect(subSessionEvents(log, "A").map((e) => e.seq)).toEqual([1, 2, 3]);
+  });
 });
 
 describe("workflow tasks", () => {

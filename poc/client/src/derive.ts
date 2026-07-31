@@ -295,7 +295,16 @@ export function deriveTranscriptGroups(events: LoggedEvent[]): TranscriptGroup[]
   }
   const groups: TranscriptGroup[] = [];
   for (const ev of events) {
-    const parentId = ev.parentToolUseId;
+    // Gate events (permission_request/permission_decision) are excluded from
+    // the subagent sweep ALWAYS, even when Task 1 attributes them with a
+    // parentToolUseId — they render inline in the gate surface in EVERY view,
+    // MAIN included (spec §2.3). Sweeping them into the collapsed subagent
+    // group would hide the gate card (no tool name, no controls) from a driver
+    // on MAIN. They stay projected into the sub-session view separately, via
+    // subSessionEvents (a different, unchanged filter).
+    const isGate =
+      ev.type === "permission_request" || ev.type === "permission_decision";
+    const parentId = isGate ? undefined : ev.parentToolUseId;
     const last = groups.at(-1);
     if (parentId) {
       if (last?.kind === "subagent" && last.parentId === parentId) {

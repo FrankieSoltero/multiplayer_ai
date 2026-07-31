@@ -356,6 +356,39 @@ describe("Transcript — Task 3 sub-session views", () => {
     expect(onPermission).toHaveBeenCalledWith("rg", "deny");
   });
 
+  it("T3xT1-MAIN attributed pending gate renders inline as a full decidable card with the ⚒ prefix", () => {
+    // The reviewer's Task-1 × Task-3 interaction: a concurrent sub-session
+    // shows its compact row, AND an attributed gate must still render inline in
+    // MAIN as a full card (tool name, body, ⚒ prefix, decide controls) — not be
+    // swept into the bodiless subagent group (spec §2.3: gates render in the
+    // gate surface regardless of which view is active).
+    const attributedGate: LoggedEvent = {
+      seq: 30,
+      ts,
+      type: "permission_request",
+      requestId: "rg",
+      toolName: "Write",
+      input: { command: "rm -rf tmp" },
+      parentToolUseId: "A",
+    };
+    const events = [JOIN, SPAWN_A, ...BODY_A, attributedGate];
+    const markup = markupOfEl({ events, isDriver: true }); // view null = MAIN
+    const text = textLines(markup).join("\n");
+    // the concurrent sub-session still collapses to its compact row…
+    expect(text).toContain("⚒ SUB-QUEST");
+    // …and the attributed gate renders inline as a full card in MAIN:
+    expect(text).toContain("⚒ scan tests"); // attribution prefix (spec §2.3)
+    expect(text).toContain(EXISTING_LINE); // gate body
+    expect(text).toContain("Write"); // tool name
+    expect(markup).toContain("perm-sub");
+    // decide controls present for the driver sitting on MAIN
+    const nodes = renderTree(element({ events, view: null, isDriver: true }));
+    const approve = nodes.find((n) => hasClass(n, "btn") && hasClass(n, "green"));
+    const deny = nodes.find((n) => hasClass(n, "btn") && hasClass(n, "red"));
+    expect(approve).toBeDefined();
+    expect(deny).toBeDefined();
+  });
+
   it("T3-existing rendering regression leaves a main-only log unchanged", () => {
     const MSG: LoggedEvent = { seq: 5, ts, type: "user_message", userId: "frank", text: "hi there" };
     const DELTA: LoggedEvent = { seq: 6, ts, type: "agent_text_delta", text: "working on it" };
