@@ -6,7 +6,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type WebSocket from "ws";
 import { RELAY_PROTOCOL_VERSION } from "multiplayer-ai-server/relayProtocol";
-import { defaultFatal, startHub } from "../src/hub.js";
+import { defaultFatal, fatalMessage, startHub } from "../src/hub.js";
 import { HubDb, SCHEMA_VERSION } from "../src/hubDb.js";
 import { HubStore } from "../src/hubStore.js";
 import { browserReplay, collect, connect, wait } from "./helpers/uplinkHarness.js";
@@ -307,7 +307,7 @@ describe("runtime fail-stop", () => {
   });
 
   it("uses defaultFatal when no fatal is given", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const writeSpy = vi.spyOn(fs, "writeSync").mockImplementation(() => 0);
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
     const db = openDb(":memory:");
     const hub = await hubOn({ port: 0, host: "127.0.0.1", db });
@@ -319,16 +319,34 @@ describe("runtime fail-stop", () => {
     publish(up, 0, "lost");
     await wait(80);
 
-    expect(errorSpy).toHaveBeenCalledWith(boom);
+    expect(writeSpy).toHaveBeenCalledWith(2, fatalMessage(boom));
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
-  it("defaultFatal logs the error and exits 1", () => {
+  it("defaultFatal writes synchronously to stderr (fd 2) and exits 1", () => {
+    const writeSpy = vi.spyOn(fs, "writeSync").mockImplementation(() => 0);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
     const boom = new Error("io error");
     defaultFatal(boom);
-    expect(errorSpy).toHaveBeenCalledWith(boom);
+    expect(writeSpy).toHaveBeenCalledWith(2, fatalMessage(boom));
+    // console.error is no longer on this path (spec B5): the diagnostic write
+    // must be the synchronous one, not the buffered one it replaces.
+    expect(errorSpy).not.toHaveBeenCalled();
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("fatalMessage", () => {
+  it("returns 'hub fatal: <stack>\\n' when the error has a stack", () => {
+    const err = new Error("boom");
+    expect(typeof err.stack).toBe("string");
+    expect(fatalMessage(err)).toBe(`hub fatal: ${err.stack}\n`);
+  });
+
+  it("falls back to the message when stack is undefined", () => {
+    const err = new Error("boom");
+    err.stack = undefined;
+    expect(fatalMessage(err)).toBe(`hub fatal: ${err.message}\n`);
   });
 });

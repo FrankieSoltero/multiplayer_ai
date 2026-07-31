@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
@@ -121,8 +122,18 @@ export interface HubOptions {
  *  refusal (a hub version rollback) recovers by running the newer hub again or
  *  restoring the pre-upgrade backup — the back-up-before-upgrade convention,
  *  ruling 7 again. */
+/** The exact bytes `defaultFatal` writes to stderr: the stack when the error
+ *  has one, else the message — always newline-terminated so it reads cleanly
+ *  in a log tail. */
+export function fatalMessage(err: Error): string {
+  return `hub fatal: ${err.stack ?? err.message}\n`;
+}
+
 export function defaultFatal(err: Error): void {
-  console.error(err);
+  // Synchronous write (not console.error, which buffers): the process exits
+  // on the next line, and a buffered write can lose the crash's own
+  // diagnostic on the way out (spec B5, tech-debt §2.8's diagnostic half).
+  fs.writeSync(2, fatalMessage(err));
   process.exit(1);
 }
 
