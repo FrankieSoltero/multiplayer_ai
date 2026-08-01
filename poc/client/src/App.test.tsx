@@ -7,7 +7,9 @@ import { Transcript } from "./components/Transcript";
 import { SubSessionRail } from "./components/SubSessionRail";
 import { PromptBar } from "./components/PromptBar";
 import { Crt } from "./components/Crt";
-import { THEME_KEY } from "./theme";
+import { Header } from "./components/Header";
+import { ThinkingStrip } from "./components/ThinkingStrip";
+import { THEME_KEY, type Theme } from "./theme";
 
 /** App wiring for the sub-session rail (Task 4). This repo has no DOM test env
  *  (docs/tech-debt.md); SessionView is a hook-heavy component, so we mount it
@@ -196,7 +198,7 @@ const baseSocket = (events: LoggedEvent[], send: unknown) =>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }) as any;
 
-const baseProps = (over: Partial<{ userId: string; screen: string | null }> = {}) => ({
+const baseProps = (over: Partial<{ userId: string; screen: string | null; theme: Theme }> = {}) => ({
   userId: over.userId ?? "frank",
   sessionId: "s1",
   projectId: "default",
@@ -204,6 +206,10 @@ const baseProps = (over: Partial<{ userId: string; screen: string | null }> = {}
   screen: over.screen ?? null,
   onScreenChange: () => {},
   signedInAs: null,
+  // Task 7: SessionView consumes `theme` to gate the arcade's busy auto-open.
+  // Default arcade so the pre-Task-7 tests keep their as-shipped behavior.
+  theme: over.theme ?? ("arcade" as Theme),
+  onThemeToggle: () => {},
 });
 
 let send: ReturnType<typeof vi.fn>;
@@ -387,5 +393,88 @@ describe("App — sub-session rail wiring", () => {
       .filter(Boolean);
     const forbidden = /(ProjectPicker|SessionPicker|MachinePanel|RecordPanel)/;
     expect(changed.filter((f) => forbidden.test(f))).toEqual([]);
+  });
+});
+
+describe("App — games opt-in + clean busy status line (Task 7)", () => {
+  const stripOf = (nodes: El[]) => nodes.find((n) => n.type === ThinkingStrip);
+  const headerCompOf = (nodes: El[]) => nodes.find((n) => n.type === Header);
+
+  // A busy agent: a bare `tool_call` with no `turn_end` leaves
+  // `derived.agentBusy === true` (derive.ts). This is the state that, in Arcade,
+  // auto-opens the arcade lane.
+  const busyEvents = (): LoggedEvent[] => [
+    evt({ type: "presence_join", userId: "frank", name: "Frank" }, 1),
+    evt({ type: "control_change", userId: "frank" }, 2),
+    evt({ type: "tool_call", toolName: "Bash", input: { command: "ls" } }, 3),
+  ];
+  // Idle: the same log closed by a `turn_end` → `derived.agentBusy === false`.
+  const idleEvents = (): LoggedEvent[] => [...busyEvents(), evt({ type: "turn_end" }, 4)];
+  // A pending permission gate (undecided) while the agent is busy.
+  const gateEvents = (): LoggedEvent[] => [
+    ...busyEvents(),
+    evt({ type: "permission_request", requestId: "r1", toolName: "Bash", input: { command: "ls" } }, 4),
+  ];
+
+  it("T7-games-opt-in gates the busy auto-open of the game LANE to arcade; clean does not auto-open, but manual open still works", () => {
+    // The ONE allowed behavioral difference (constraint 2): with the agent busy,
+    // arcade auto-opens the game lane and clean does not.
+    socket.current = baseSocket(busyEvents(), send);
+    const arcadeBusy = stripOf(mount(SessionView as (p: unknown) => unknown, baseProps({ theme: "arcade" })).nodes())!;
+    socket.current = baseSocket(busyEvents(), send);
+    const cleanBusy = stripOf(mount(SessionView as (p: unknown) => unknown, baseProps({ theme: "clean" })).nodes())!;
+    expect(arcadeBusy.props.open).toBe(true); // arcade auto-opens the lane
+    expect(cleanBusy.props.open).toBe(false); // clean opts out — no auto-open
+    expect(cleanBusy.props.busy).toBe(true); // …but the strip is still mounted
+
+    // The ARCADE header button still opens the lane manually in Clean (idle).
+    socket.current = baseSocket(idleEvents(), send);
+    const cleanIdle = mount(SessionView as (p: unknown) => unknown, baseProps({ theme: "clean" }));
+    (headerCompOf(cleanIdle.nodes())!.props.onToggleArcade as () => void)();
+    expect(stripOf(cleanIdle.nodes())!.props.open).toBe(true); // manual open works identically
+  });
+
+  it("T7-arcade-unchanged auto-opens the game lane when the agent is busy in arcade, exactly as today", () => {
+    socket.current = baseSocket(busyEvents(), send);
+    const strip = stripOf(mount(SessionView as (p: unknown) => unknown, baseProps({ theme: "arcade" })).nodes())!;
+    expect(strip.props.busy).toBe(true);
+    expect(strip.props.open).toBe(true); // busy auto-opens the arcade lane
+  });
+
+  it("T7-busy-status-line renders the thinking strip's status line in clean-busy with the lane closed — the affordance exists in both themes", () => {
+    // Clean-busy: the strip is mounted (busy=true → the "IS THINKING" status line
+    // renders) while the game lane is NOT auto-opened (open=false) — spec §2.2.
+    socket.current = baseSocket(busyEvents(), send);
+    const cleanBusy = stripOf(mount(SessionView as (p: unknown) => unknown, baseProps({ theme: "clean" })).nodes())!;
+    expect(cleanBusy).toBeDefined();
+    expect(cleanBusy.props.busy).toBe(true); // status line renders…
+    expect(cleanBusy.props.open).toBe(false); // …without the game lane auto-opening
+
+    // The busy-thinking affordance exists in BOTH themes (arcade also mounts +
+    // busy), while the lane auto-open is the sole difference.
+    socket.current = baseSocket(busyEvents(), send);
+    const arcadeBusy = stripOf(mount(SessionView as (p: unknown) => unknown, baseProps({ theme: "arcade" })).nodes())!;
+    expect(arcadeBusy.props.busy).toBe(true);
+    expect(arcadeBusy.props.open).toBe(true);
+  });
+
+  it("T7-decidability keeps gate cards, wheel controls and buttons functional in clean (parity — constraint 2)", () => {
+    socket.current = baseSocket(gateEvents(), send);
+    const nodes = mount(SessionView as (p: unknown) => unknown, baseProps({ theme: "clean" })).nodes();
+
+    // Gate-card surface: the Transcript renders permission cards and carries the
+    // decision callback, unchanged by the Clean theme.
+    const transcript = transcriptOf(nodes)!;
+    expect(transcript).toBeDefined();
+    expect(typeof transcript.props.onPermission).toBe("function");
+
+    // The pending gate is counted and handed to the prompt bar (decidability).
+    const bar = promptBarOf(nodes)!;
+    expect(bar.props.gatesPending).toBe(1);
+    expect(typeof bar.props.onTakeWheel).toBe("function"); // wheel control present
+
+    // Deciding the gate sends a permission frame — functional, not just present.
+    (transcript.props.onPermission as (id: string, d: string) => void)("r1", "allow");
+    expect(send).toHaveBeenCalledWith({ type: "permission", requestId: "r1", decision: "allow" });
   });
 });

@@ -296,6 +296,13 @@ export function SessionView(props: {
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const [arcadeOpen, setArcadeOpen] = useState(false);
+  // Games opt-in (spec §2.2): the arcade game LANE auto-opens with the agent
+  // ONLY in Arcade. Clean's busy state keeps the thinking strip's STATUS LINE
+  // (the `busy` prop below, passed unchanged in both themes) but does NOT
+  // auto-open the game lane — the ARCADE header button and the `A` hotkey still
+  // open it manually, identically in both themes. This theme gate is the ONE
+  // allowed behavioral difference between the two skins (plan constraint 2).
+  const laneAutoOpen = props.theme === "arcade" && derived.agentBusy;
   // v5b final-review: whether a live arcade run currently has the keyboard
   // captured (game letters overlap a/d permission hotkeys).
   const [arcadeCapturing, setArcadeCapturing] = useState(false);
@@ -649,7 +656,7 @@ export function SessionView(props: {
 
       <ThinkingStrip
         busy={derived.agentBusy}
-        open={arcadeOpen}
+        open={arcadeOpen || laneAutoOpen}
         onClose={() => setArcadeOpen(false)}
         modelLabel={MODEL_LABELS[derived.model] ?? derived.model}
         currentTool={currentTool}
