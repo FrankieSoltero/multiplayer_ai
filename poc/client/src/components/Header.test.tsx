@@ -245,6 +245,11 @@ describe("Header — §8.5 PULLS click-through (Task 11)", () => {
     expect(badge).toBeDefined();
     // A real <button> — keyboard-operable by construction, unlike the span.
     expect(badge!.type).toBe("button");
+    // className is `conn pull-badge`, same as the span variant — this is the
+    // exact selector terminal.css's `button.pull-badge` rule depends on to
+    // neutralize the UA button chrome (border/background/padding) so the
+    // button renders like its plain-span sibling, not a framed control.
+    expect(badge!.props.className).toBe("conn pull-badge");
     // The exact badge text is unchanged.
     expect(textOf(badge!)).toBe("🔐 PULLS ▸ 3");
     // Clicking it fires the handler.
