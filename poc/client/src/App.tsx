@@ -136,7 +136,7 @@ export default function App() {
       case "invite-landing":
         return <InviteLanding token={inviteToken!} onAccept={setInviteTarget} />;
       case "entrance":
-        return <ProjectPicker userId={selfId} name={profile?.name ?? "anon"} signedInAs={auth?.status === "signed-in" ? auth.login : null} />;
+        return <ProjectPicker userId={selfId} name={profile?.name ?? "anon"} signedInAs={auth?.status === "signed-in" ? auth.login : null} theme={theme} onThemeToggle={onThemeToggle} />;
       case "picker":
         return (
           <SessionPicker
@@ -153,6 +153,8 @@ export default function App() {
             sessionId={activeSessionId!}
             defaultName={auth?.status === "signed-in" ? auth.login : `user-${localUserId.slice(0, 4)}`}
             lockedName={auth?.status === "signed-in" ? auth.login : undefined}
+            theme={theme}
+            onThemeToggle={onThemeToggle}
             onEnter={(p) => {
               saveProfile(p);
               setProfile(p);

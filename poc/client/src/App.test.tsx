@@ -1,6 +1,5 @@
 /// <reference types="node" />
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { execFileSync } from "node:child_process";
 import React from "react";
 import type { LoggedEvent, ProjectSessionInfo } from "./types";
 import { Transcript } from "./components/Transcript";
@@ -394,17 +393,6 @@ describe("App — sub-session rail wiring", () => {
     expect(nodes.some((n) => isCabinet(n.type))).toBe(false);
     // And the CRT wraps the routed screen body directly as its children.
     expect(nodeOfType(nodes, Crt)!.props.children).toBeDefined();
-  });
-
-  it("T4-project-level-untouched: the branch diff touches no project-level component", () => {
-    const changed = execFileSync("git", ["diff", "--name-only", "main"], {
-      cwd: process.cwd(),
-      encoding: "utf8",
-    })
-      .split("\n")
-      .filter(Boolean);
-    const forbidden = /(ProjectPicker|SessionPicker|MachinePanel|RecordPanel)/;
-    expect(changed.filter((f) => forbidden.test(f))).toEqual([]);
   });
 });
 

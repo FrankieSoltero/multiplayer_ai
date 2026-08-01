@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SERVER_URL, isProjectMember, projectMemberCount } from "../types";
 import type { ProjectSummary } from "../types";
+import type { Theme } from "../theme";
 import { sortProjects, projectSummaryLine } from "../projectList";
 
 /** Whether this screen's socket is up. `connecting` is the brief pre-open
@@ -21,7 +22,12 @@ const DISCONNECTED_TEXT =
  *  SessionView is wired). The pair-a-machine affordance is gated on it: only a
  *  signed-in browser can approve a device, and the hub rejects the POST from
  *  anyone else — so it is never offered to a viewer who cannot use it. */
-export function ProjectPicker(props: { userId: string; name: string; signedInAs: string | null }) {
+export function ProjectPicker(props: {
+  userId: string; name: string; signedInAs: string | null;
+  /** Same theme switch the session header carries — a theme changes how the
+   *  app reads, never whether the switch is there (parity, constraint 2). */
+  theme: Theme; onThemeToggle: () => void;
+}) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState<LinkState>("connecting");
@@ -97,6 +103,13 @@ export function ProjectPicker(props: { userId: string; name: string; signedInAs:
         <span className="pix lg">PROJECTS</span>
         <span className="rule" />
         <span className="pix">{props.name}</span>
+        <button
+          className="planmode"
+          onClick={props.onThemeToggle}
+          title={`switch the presentation theme (Arcade / Clean) — now ${props.theme}`}
+        >
+          ◐ THEME
+        </button>
       </div>
       <div className="scroll" style={{ flex: 1, minHeight: 0 }}>
         {link === "down" && (
