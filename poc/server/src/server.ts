@@ -359,6 +359,17 @@ export async function startServer(opts: {
     return false;
   };
 
+  // The solo project's lifecycle (plan 2026-08-01-project-lifecycle-controls
+  // §1.4), the standalone answer to the hub's `store.setLifecycle`: in-memory
+  // only, dying with the process like every other piece of solo state —
+  // parity of protocol, not of durability. Absent means "active"; only
+  // `set_project_lifecycle` writes here, and transitions are free
+  // (active↔closed↔archived), like the hub.
+  type ProjectLifecycle = "active" | "closed" | "archived";
+  const projectLifecycle = new Map<string, ProjectLifecycle>();
+  const lifecycleOfProject = (projectId: string): ProjectLifecycle =>
+    projectLifecycle.get(projectId) ?? "active";
+
   const overseer = new Overseer(
     opts.summarize ?? runOversightSummarize,
     (projectId) => {
@@ -947,7 +958,12 @@ export async function startServer(opts: {
         io.send({
           type: "projects",
           projects: [...projects.values()].map((p) => {
-            const summary = projectSummaryOf(p, identity?.userId ?? null, machineView());
+            const summary = projectSummaryOf(
+              p,
+              identity?.userId ?? null,
+              machineView(),
+              lifecycleOfProject(p.id),
+            );
             return { ...summary, memberCount: summary.members.length, isMember: true };
           }),
         });
@@ -986,6 +1002,11 @@ export async function startServer(opts: {
         }
         const project = projects.get(projectId);
         if (!project) return sendError(`no project "${projectId}"`);
+        // Mirrored from hub.ts's join_project: a non-active project stops new
+        // members, string for string.
+        if (lifecycleOfProject(projectId) !== "active") {
+          return sendError(`project "${projectId}" is not open to new members`);
+        }
         if (typeof msg.invite === "string" && msg.invite) {
           const token = msg.invite.slice(0, 64);
           const result = invites.redeem(token, identity.userId, projectId);
@@ -1009,7 +1030,12 @@ export async function startServer(opts: {
         io.send({
           type: "projects",
           projects: [...projects.values()].map((p) => {
-            const summary = projectSummaryOf(p, identity?.userId ?? null, machineView());
+            const summary = projectSummaryOf(
+              p,
+              identity?.userId ?? null,
+              machineView(),
+              lifecycleOfProject(p.id),
+            );
             return { ...summary, memberCount: summary.members.length, isMember: true };
           }),
         });
@@ -1077,6 +1103,45 @@ export async function startServer(opts: {
           return sendError(`unknown invite: ${id}`);
         }
         sendInviteList(projectId);
+        return;
+      }
+
+      // Project lifecycle (plan 2026-08-01-project-lifecycle-controls §1.4),
+      // mirrored from the hub's `set_project_lifecycle` (hub.ts) gate for
+      // gate, string for string: identify → slug → lifecycle value →
+      // membership → apply. A project that does not exist collapses to the
+      // membership refusal, exactly as the hub's `store.isMember` answers
+      // false for it. Transitions are free — no matrix, like the hub.
+      if (msg.type === "set_project_lifecycle") {
+        if (denyUnauthed()) return;
+        if (!identity) return sendError("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) {
+          return sendError("set_project_lifecycle requires a valid projectId");
+        }
+        const lifecycle = msg.lifecycle;
+        if (lifecycle !== "active" && lifecycle !== "closed" && lifecycle !== "archived") {
+          return sendError("lifecycle must be active, closed or archived");
+        }
+        const project = projects.get(projectId);
+        if (!project || !isProjectMember(project, identity.userId)) {
+          return sendError("join this project before changing it");
+        }
+        projectLifecycle.set(projectId, lifecycle);
+        // The hub answers set_project_lifecycle with a projects fan-out; the
+        // standalone equivalent of that ack, same as join_project's above.
+        io.send({
+          type: "projects",
+          projects: [...projects.values()].map((p) => {
+            const summary = projectSummaryOf(
+              p,
+              identity?.userId ?? null,
+              machineView(),
+              lifecycleOfProject(p.id),
+            );
+            return { ...summary, memberCount: summary.members.length, isMember: true };
+          }),
+        });
         return;
       }
 
@@ -1378,6 +1443,12 @@ export async function startServer(opts: {
           typeof msg.projectId === "string" ? msg.projectId : "default";
         if (!SLUG.test(projectId)) {
           return sendError("create_session requires a valid projectId");
+        }
+        // Mirrored from hub.ts's create_session: a non-active project stops
+        // new sessions, string for string. Checked before the name validation
+        // so the refusal order matches the hub's.
+        if (lifecycleOfProject(projectId) !== "active") {
+          return sendError(`project "${projectId}" is not open`);
         }
         if (typeof msg.name !== "string") {
           return sendError("create_session requires name");

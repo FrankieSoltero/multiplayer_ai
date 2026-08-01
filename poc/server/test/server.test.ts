@@ -2209,6 +2209,164 @@ describe("project invites", () => {
   });
 });
 
+describe("project lifecycle", () => {
+  // The shared preamble, same shape as "project invites": an identified
+  // founder creates and joins a project, leaving the socket positioned right
+  // after the join_project ack — which is what makes them a member.
+  async function foundProject(
+    port: number,
+    projectId: string,
+    userId: string,
+    name: string,
+  ): Promise<{ ws: WebSocket; sink: any[] }> {
+    const ws = await connect(port);
+    const sink: any[] = [];
+    collect(ws, sink);
+    ws.send(JSON.stringify({ type: "identify", userId, name }));
+    ws.send(JSON.stringify({ type: "create_project", name: projectId }));
+    await wait(30);
+    ws.send(JSON.stringify({ type: "join_project", projectId }));
+    await wait(30);
+    return { ws, sink };
+  }
+
+  const setLifecycle = (ws: WebSocket, projectId: string, lifecycle: string) =>
+    ws.send(JSON.stringify({ type: "set_project_lifecycle", projectId, lifecycle }));
+
+  it("round trips active→closed→active and active→archived→active, carried in the summary", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const a = await foundProject(server.port, "default", "u1", "ana");
+
+    // Free transitions, like the hub — no matrix. Each successful set acks
+    // with a fresh projects frame carrying the new lifecycle in the summary.
+    setLifecycle(a.ws, "default", "closed");
+    await wait(30);
+    let last = a.sink.filter((m) => m.type === "projects").at(-1);
+    expect(last.projects.find((p: any) => p.id === "default").lifecycle).toBe("closed");
+
+    setLifecycle(a.ws, "default", "active");
+    await wait(30);
+    last = a.sink.filter((m) => m.type === "projects").at(-1);
+    expect(last.projects.find((p: any) => p.id === "default").lifecycle).toBe("active");
+
+    setLifecycle(a.ws, "default", "archived");
+    await wait(30);
+    last = a.sink.filter((m) => m.type === "projects").at(-1);
+    expect(last.projects.find((p: any) => p.id === "default").lifecycle).toBe("archived");
+
+    setLifecycle(a.ws, "default", "active");
+    await wait(30);
+    last = a.sink.filter((m) => m.type === "projects").at(-1);
+    expect(last.projects.find((p: any) => p.id === "default").lifecycle).toBe("active");
+
+    // list_projects reports the same state — the summary carries it, so a
+    // fresh entrance read sees what the acks said.
+    setLifecycle(a.ws, "default", "closed");
+    await wait(30);
+    a.ws.send(JSON.stringify({ type: "list_projects" }));
+    await wait(30);
+    last = a.sink.filter((m) => m.type === "projects").at(-1);
+    expect(last.projects.find((p: any) => p.id === "default").lifecycle).toBe("closed");
+    a.ws.close();
+  });
+
+  it("refuses bad input with the hub's exact strings, in the hub's gate order", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const a = await foundProject(server.port, "default", "u1", "ana");
+
+    // An UNidentified connection is stopped at the first gate.
+    const n = await connect(server.port);
+    const sinkN: any[] = [];
+    collect(n, sinkN);
+    setLifecycle(n, "default", "closed");
+    await wait(30);
+    expect(sinkN.filter((m) => m.type === "error").map((m) => m.message)).toEqual([
+      "identify first",
+    ]);
+
+    // The founder, identified and a member: slug validation, then lifecycle
+    // value validation — missing projectId collapses to the slug refusal,
+    // missing lifecycle to the value refusal.
+    a.ws.send(JSON.stringify({ type: "set_project_lifecycle", projectId: "BAD SLUG", lifecycle: "closed" }));
+    a.ws.send(JSON.stringify({ type: "set_project_lifecycle", lifecycle: "closed" }));
+    setLifecycle(a.ws, "default", "deleted");
+    a.ws.send(JSON.stringify({ type: "set_project_lifecycle", projectId: "default" }));
+    await wait(30);
+    expect(a.sink.filter((m) => m.type === "error").map((m) => m.message)).toEqual([
+      "set_project_lifecycle requires a valid projectId",
+      "set_project_lifecycle requires a valid projectId",
+      "lifecycle must be active, closed or archived",
+      "lifecycle must be active, closed or archived",
+    ]);
+
+    // An identified NON-member gets the membership refusal — and a project
+    // that does not exist collapses to the same refusal, like the hub's
+    // `store.isMember` answering false for it.
+    const o = await connect(server.port);
+    const sinkO: any[] = [];
+    collect(o, sinkO);
+    o.send(JSON.stringify({ type: "identify", userId: "u9", name: "ode" }));
+    await wait(30);
+    setLifecycle(o, "default", "closed");
+    setLifecycle(o, "ghost", "closed");
+    await wait(30);
+    expect(sinkO.filter((m) => m.type === "error").map((m) => m.message)).toEqual([
+      "join this project before changing it",
+      "join this project before changing it",
+    ]);
+
+    // None of the refusals touched the state: still active.
+    a.ws.send(JSON.stringify({ type: "list_projects" }));
+    await wait(30);
+    const last = a.sink.filter((m) => m.type === "projects").at(-1);
+    expect(last.projects.find((p: any) => p.id === "default").lifecycle).toBe("active");
+    a.ws.close();
+    n.close();
+    o.close();
+  });
+
+  it("refuses join_project and create_session while closed with the hub's strings, and allows both after reopen", async () => {
+    const workspace = fakeWorkspace();
+    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
+    close = server.close;
+    const a = await foundProject(server.port, "default", "u1", "ana");
+    setLifecycle(a.ws, "default", "closed");
+    await wait(30);
+
+    const b = await connect(server.port);
+    const sinkB: any[] = [];
+    collect(b, sinkB);
+    b.send(JSON.stringify({ type: "identify", userId: "u2", name: "bob" }));
+    await wait(30);
+    b.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    b.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1" }));
+    await wait(30);
+    expect(sinkB.filter((m) => m.type === "error").map((m) => m.message)).toEqual([
+      'project "default" is not open to new members',
+      'project "default" is not open',
+    ]);
+    // The refused create_session provisioned nothing.
+    expect(workspace.calls).toHaveLength(0);
+    expect(sinkB.some((m) => m.type === "session_created")).toBe(false);
+
+    // Reopen: the same two messages go through.
+    setLifecycle(a.ws, "default", "active");
+    await wait(30);
+    b.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    b.send(JSON.stringify({ type: "create_session", projectId: "default", name: "s1" }));
+    await wait(30);
+    expect(sinkB.filter((m) => m.type === "error")).toHaveLength(2); // the two above, no new ones
+    expect(sinkB.some((m) => m.type === "projects")).toBe(true);
+    expect(sinkB.some((m) => m.type === "session_created")).toBe(true);
+    expect(workspace.calls).toEqual([{ projectId: "default", slug: "s1", baseRef: "main" }]);
+    a.ws.close();
+    b.close();
+  });
+});
+
 describe("auth gate on join", () => {
   const AUTH = {
     clientId: "cid",

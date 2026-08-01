@@ -352,9 +352,10 @@ export interface ProjectSummary {
  *  "you are spectating" or "run: mpai --hub <url> --project <id>" — there is
  *  no hub to attach to in this mode.
  *
- *  `lifecycle` is always "active": closing a project is a hub-only concept
- *  (`set_project_lifecycle`) this server does not implement, so there is
- *  nothing else it could honestly report. `machines` mirrors `projectSnapshot`
+ *  `lifecycle` is supplied by the caller: the server tracks it in memory per
+ *  project (plan 2026-08-01-project-lifecycle-controls §1.4) and reports it
+ *  verbatim — protocol parity with the hub, without the hub's durability.
+ *  `machines` mirrors `projectSnapshot`
  *  above: exactly one machine, this one, carrying its own name and repo list
  *  (D10) — a standalone server has no separate machine identity to report —
  *  omitted (empty array) when the server has no workspace (a test-only path;
@@ -363,12 +364,13 @@ export function projectSummaryOf(
   project: Project,
   memberUserId: string | null,
   machine: { machineId: string; name: string; repos: RepoDecl[] } | null,
+  lifecycle: "active" | "closed" | "archived",
 ): ProjectSummary {
   const sessions = [...project.sessions.values()];
   return {
     id: project.id,
     name: project.id,
-    lifecycle: "active",
+    lifecycle,
     members: memberUserId ? [memberUserId] : [],
     sessionCount: sessions.length,
     liveSessionCount: sessions.filter(
