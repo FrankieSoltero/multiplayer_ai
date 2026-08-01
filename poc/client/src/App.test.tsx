@@ -372,14 +372,23 @@ describe("App — sub-session rail wiring", () => {
     lsGet = () => null;
     const app = mount(App as (p: unknown) => unknown, {});
     const nodes = app.nodes();
-    // The outermost node the App renders is the CRT glass itself.
+    // This harness only materializes App's OWN returned JSX — nested components
+    // (Crt, Cabinet, …) are never executed (see the mount/collect seam above).
+    // So we discriminate against what App itself renders, by COMPONENT IDENTITY,
+    // not by the chrome classNames the old Cabinet emitted from inside its own
+    // body: those never materialize here, so asserting their absence passes
+    // vacuously and would stay green even if the cabinet were reinstated.
+    //
+    // The glass IS the page: the outermost element App returns is the CRT
+    // itself. A revert that re-wraps `<Crt>` in a `<Cabinet>` makes nodes[0] the
+    // Cabinet element and fails this line.
     expect(nodes[0].type).toBe(Crt);
-    // Cabinet's chrome surfaces are gone from the tree entirely.
-    const className = (n: El) =>
-      typeof n.props.className === "string" ? n.props.className : "";
-    for (const chrome of ["cabinet", "cabinet-inner", "crt-chrome-top", "marquee"]) {
-      expect(nodes.some((n) => className(n).split(" ").includes(chrome))).toBe(false);
-    }
+    // And the retired Cabinet appears NOWHERE in App's render output — checked
+    // by the component-function name, since the symbol no longer exists to
+    // import. A reinstated `<Cabinet>` (top-level or nested) trips this.
+    const isCabinet = (t: unknown): boolean =>
+      typeof t === "function" && (t as { name?: string }).name === "Cabinet";
+    expect(nodes.some((n) => isCabinet(n.type))).toBe(false);
     // And the CRT wraps the routed screen body directly as its children.
     expect(nodeOfType(nodes, Crt)!.props.children).toBeDefined();
   });
