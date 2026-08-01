@@ -334,7 +334,18 @@ export function Transcript(props: {
                 <div
                   key={`sub-${gi}-${group.parentId}`}
                   className="subagent-row"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => props.onOpenSubSession?.(group.parentId)}
+                  onKeyDown={(e) => {
+                    // Keyboard parity with the mouse: Enter and Space open the
+                    // sub-session through the SAME handler as onClick. Space's
+                    // default is page-scroll on a button role, so suppress it.
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      props.onOpenSubSession?.(group.parentId);
+                    }
+                  }}
                 >
                   <span className={group.status === "done" ? "lamp done" : "lamp"} />
                   <span className="pix sm">⚒ SUB-QUEST</span>

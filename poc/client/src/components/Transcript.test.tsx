@@ -402,3 +402,64 @@ describe("Transcript — Task 3 sub-session views", () => {
     expect(text).toEqual(["▸ Frank:", "hi there", "⏺ working on it"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 5 — PR-#32 rider: the MAIN compact sub-session row is keyboard-operable.
+// The row was mouse-only (onClick) from PR #32; it must expose button semantics
+// (`role="button"`, `tabIndex={0}`) and open on Enter and Space through the SAME
+// handler as click, with its PR-#32 text and click behavior byte-unchanged.
+// ---------------------------------------------------------------------------
+
+/** A keydown-ish event object for the tree-walked handler. `renderTree` never
+ *  runs the DOM, so we hand the onKeyDown its `.key` and a no-op preventDefault
+ *  (the handler suppresses Space's page-scroll default). */
+const keyEvent = (key: string) => ({ key, preventDefault: () => {} });
+
+describe("Transcript — Task 5 compact-row keyboard a11y", () => {
+  it("T5-row keyboard access exposes button semantics and opens on Enter and Space", () => {
+    const events = [JOIN, SPAWN_A, ...BODY_A];
+
+    // Button semantics on the compact row.
+    const onOpenSubSession = vi.fn();
+    const row = renderTree(element({ events, onOpenSubSession })).find((n) => hasClass(n, "subagent-row"));
+    expect(row).toBeDefined();
+    expect(row!.props.role).toBe("button");
+    expect(row!.props.tabIndex).toBe(0);
+
+    // Enter opens the sub-session — same handler, same key as click.
+    (row!.props.onKeyDown as (e: unknown) => void)(keyEvent("Enter"));
+    expect(onOpenSubSession).toHaveBeenNthCalledWith(1, "A");
+
+    // Space (" ") opens it too.
+    (row!.props.onKeyDown as (e: unknown) => void)(keyEvent(" "));
+    expect(onOpenSubSession).toHaveBeenNthCalledWith(2, "A");
+    expect(onOpenSubSession).toHaveBeenCalledTimes(2);
+
+    // An unrelated key does nothing.
+    (row!.props.onKeyDown as (e: unknown) => void)(keyEvent("x"));
+    expect(onOpenSubSession).toHaveBeenCalledTimes(2);
+
+    // No handler wired (pre-Task-4 App): keyboard activation is a harmless no-op.
+    const bare = renderTree(element({ events })).find((n) => hasClass(n, "subagent-row"));
+    expect(() => (bare!.props.onKeyDown as (e: unknown) => void)(keyEvent("Enter"))).not.toThrow();
+  });
+
+  it("T5-row semantics regression keeps the PR-#32 row text and click behavior byte-identical", () => {
+    const events = [JOIN, SPAWN_A, ...BODY_A];
+
+    // The PR-#32 text pieces are all still present, in order.
+    const text = textLines(markupOfEl({ events })).join("\n");
+    expect(text).toContain("⚒ SUB-QUEST");
+    expect(text).toContain("scan tests"); // label
+    expect(text).toContain("running…"); // status
+    expect(text).toContain("7 rows");
+    expect(text).toContain("open ▸");
+
+    // Click still invokes the open handler unchanged (regression row).
+    const onOpenSubSession = vi.fn();
+    const row = renderTree(element({ events, onOpenSubSession })).find((n) => hasClass(n, "subagent-row"));
+    expect(row).toBeDefined();
+    (row!.props.onClick as () => void)();
+    expect(onOpenSubSession).toHaveBeenCalledWith("A");
+  });
+});
