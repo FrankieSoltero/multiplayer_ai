@@ -338,6 +338,27 @@ export async function startServer(opts: {
     maxUses: opts.inviteMaxUses,
   });
 
+  // The ONLY project-membership registry solo mode has (plan
+  // 2026-08-01-project-invites §1.3): `projectSummaryOf` reports every
+  // reachable user as a member because anyone may join any session, so the
+  // invite gate and the REQUIRE_INVITE gate need something real to check.
+  // A successful `join_project` writes here; `isProjectMember` below also
+  // counts anyone a session of the project has already admitted (the
+  // founder included), which is what a direct session `join` records.
+  const projectMembers = new Map<string, Set<string>>();
+  const admitToProject = (projectId: string, userId: string): void => {
+    let set = projectMembers.get(projectId);
+    if (!set) projectMembers.set(projectId, (set = new Set()));
+    set.add(userId);
+  };
+  const isProjectMember = (project: Project, userId: string): boolean => {
+    if (projectMembers.get(project.id)?.has(userId)) return true;
+    for (const entry of project.sessions.values()) {
+      if (entry.session.hasBeenAdmitted(userId)) return true;
+    }
+    return false;
+  };
+
   const overseer = new Overseer(
     opts.summarize ?? runOversightSummarize,
     (projectId) => {
@@ -837,12 +858,18 @@ export async function startServer(opts: {
 
     const sendError = (message: string) => io.send({ type: "error", message });
 
+    // The membership refusal, mirrored from the hub (hub.ts's `denyMember`):
+    // `code: "not_a_member"` on top of the standard error shape so the client
+    // can turn "you are not in this project" into a join affordance.
+    const denyMember = (message: string) =>
+      io.send({ type: "error", message, code: "not_a_member" });
+
     // The token rides this reply and nothing else — never the session log,
     // which is replayed to every late joiner and cannot be un-replayed.
-    const sendInviteList = (c: ClientContext) =>
+    const sendInviteList = (projectId: string) =>
       io.send({
         type: "invite_list",
-        invites: invites.listFor(c.project.id, c.entry.session.id),
+        invites: invites.listFor(projectId),
       });
 
     const handleMessage = (msg: any): void => {
@@ -869,10 +896,12 @@ export async function startServer(opts: {
         return true;
       };
 
-      // The three messages the entrance (ProjectPicker) and the project
-      // screen (SessionPicker) send before any session exists, mirrored from
-      // the hub (hub.ts's `identify` / `list_projects` / `create_project`) so
-      // the hub rejects precisely what this server rejects, and vice versa.
+      // The messages the entrance (ProjectPicker) and the project screen
+      // (SessionPicker) send before any session exists — `identify` /
+      // `list_projects` / `create_project` here, `join_project` and the
+      // project-scoped invite messages below — mirrored from the hub
+      // (hub.ts) so the hub rejects precisely what this server rejects, and
+      // vice versa.
       // `identify` alone stays unguarded, like `peek_invite`: it sets
       // per-connection state and echoes it back, provisioning and disclosing
       // nothing. `list_projects` (reads the project roster) and
@@ -939,6 +968,115 @@ export async function startServer(opts: {
         // unauthenticated read.
         getOrCreateProject(projectId);
         io.send({ type: "project_created", projectId });
+        return;
+      }
+
+      // Project membership (plan 2026-08-01-project-invites §1.3), mirrored
+      // from the hub's `join_project` (hub.ts) so one client speaks one
+      // protocol. With a token: a CONSUMING redeem runs BEFORE membership is
+      // written — a failed token admits no one. Without: today's open join.
+      // Nothing here provisions; sessions are provisioned by `create_session`
+      // and `join`, which this message never touches.
+      if (msg.type === "join_project") {
+        if (denyUnauthed()) return;
+        if (!identity) return sendError("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) {
+          return sendError("join_project requires a valid projectId");
+        }
+        const project = projects.get(projectId);
+        if (!project) return sendError(`no project "${projectId}"`);
+        if (typeof msg.invite === "string" && msg.invite) {
+          const token = msg.invite.slice(0, 64);
+          const result = invites.redeem(token, identity.userId, projectId);
+          if (!result.ok) return sendError(result.error);
+        } else if (
+          opts.requireInvite &&
+          !isProjectMember(project, identity.userId) &&
+          [...project.sessions.values()].some(
+            (e) => e.session.participantList.length > 0,
+          )
+        ) {
+          // REQUIRE_INVITE, retargeted from the occupied session to the
+          // occupied PROJECT (plan §1.4): an empty project can still be
+          // opened by whoever arrives first (the founder slot), and a
+          // previously-admitted member — founder included — re-enters free.
+          return sendError("this project requires an invite");
+        }
+        admitToProject(projectId, identity.userId);
+        // The hub answers join_project by pushing the project directory;
+        // this is the standalone equivalent of that ack.
+        io.send({
+          type: "projects",
+          projects: [...projects.values()].map((p) => {
+            const summary = projectSummaryOf(p, identity?.userId ?? null, machineView());
+            return { ...summary, memberCount: summary.members.length, isMember: true };
+          }),
+        });
+        return;
+      }
+
+      // Project-scoped invite management (plan §1.3): mint/list/revoke are
+      // member-gated — the standalone analogue of the hub's `store.isMember`
+      // + `denyMember`, against the only membership solo mode tracks (the
+      // admitted set written above and by session joins). `peek_invite` and
+      // redeem-with-token stay open: the token itself is the capability.
+      // Inviting is team infrastructure, not a driver capability — any
+      // project member may mint, list, or revoke.
+      if (msg.type === "create_invite") {
+        if (denyUnauthed()) return;
+        if (!identity) return sendError("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) {
+          return sendError("create_invite requires a valid projectId");
+        }
+        const project = projects.get(projectId);
+        if (!project || !isProjectMember(project, identity.userId)) {
+          return denyMember("join this project before inviting to it");
+        }
+        invites.mint({
+          projectId,
+          createdBy: identity.userId,
+          createdByName: identity.name,
+        });
+        sendInviteList(projectId);
+        return;
+      }
+
+      if (msg.type === "list_invites") {
+        if (denyUnauthed()) return;
+        if (!identity) return sendError("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) {
+          return sendError("list_invites requires a valid projectId");
+        }
+        const project = projects.get(projectId);
+        if (!project || !isProjectMember(project, identity.userId)) {
+          return denyMember("join this project to see its invites");
+        }
+        sendInviteList(projectId);
+        return;
+      }
+
+      if (msg.type === "revoke_invite") {
+        if (denyUnauthed()) return;
+        if (!identity) return sendError("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) {
+          return sendError("revoke_invite requires a valid projectId");
+        }
+        if (typeof msg.inviteId !== "string" || !msg.inviteId) {
+          return sendError("revoke_invite requires an inviteId");
+        }
+        const project = projects.get(projectId);
+        if (!project || !isProjectMember(project, identity.userId)) {
+          return denyMember("join this project before revoking its invites");
+        }
+        const id = msg.inviteId.slice(0, 40);
+        if (!invites.revoke(id, projectId)) {
+          return sendError(`unknown invite: ${id}`);
+        }
+        sendInviteList(projectId);
         return;
       }
 
@@ -1048,8 +1186,8 @@ export async function startServer(opts: {
             "projectId and sessionId must be 1-40 chars of a-z, 0-9, -",
           );
         }
-        // Auth gate (spec §4.3). Before the invite gate and therefore before
-        // any provisioning: a rejected join must never create a worktree.
+        // Auth gate (spec §4.3). Before any provisioning: a rejected join
+        // must never create a worktree.
         // On success userId is REPLACED by the verified GitHub login — the
         // client's claim is discarded, which is the whole point of A2a
         // (spec §2). The display name is locked to the same login (spec
@@ -1072,30 +1210,10 @@ export async function startServer(opts: {
             msg.name = joinAuth.login;
           }
         }
-        // Invite gate (spec §4). Sits before getOrCreateProject/Session so a
-        // rejected join never provisions a git worktree.
-        let redeemedId: string | null = null;
-        if (typeof msg.invite === "string" && msg.invite) {
-          const token = msg.invite.slice(0, 64);
-          const result = invites.redeem(token, msg.userId, msg.sessionId, projectId);
-          if (!result.ok) return sendError(result.error);
-          redeemedId = result.invite.id;
-        } else if (opts.requireInvite) {
-          // The founder slot stays open: an empty room can be opened by
-          // whoever arrives first (spec §7 states this bound explicitly).
-          // A previously-admitted participant (including the founder) is
-          // also exempt: presence_leave drops them from participantList on
-          // disconnect, but the admitted set survives so a reconnect isn't
-          // mistaken for a stranger (spec §4).
-          const occupied = projects.get(projectId)?.sessions.get(msg.sessionId);
-          if (
-            occupied &&
-            occupied.session.participantList.length > 0 &&
-            !occupied.session.hasBeenAdmitted(msg.userId)
-          ) {
-            return sendError("this session requires an invite");
-          }
-        }
+        // No invite gate here any more (plan 2026-08-01-project-invites
+        // §1.4): invites are project-scoped and redeem at `join_project`;
+        // an `invite` field on this message is simply ignored, like any
+        // unknown field.
         const project = getOrCreateProject(projectId);
         const entry = getOrCreateSession(project, msg.sessionId);
         if ("error" in entry) return sendError(entry.error);
@@ -1125,13 +1243,6 @@ export async function startServer(opts: {
             ? msg.color.toLowerCase()
             : undefined;
         entry.session.join(msg.userId, msg.name.slice(0, 40), { glyph, color });
-        if (redeemedId) {
-          entry.session.append({
-            type: "invite_redeemed",
-            userId: msg.userId,
-            inviteId: redeemedId,
-          });
-        }
         // Immediate personal snapshot so the sidebar isn't blank until the
         // next throttled push.
         if (io.mode === "direct") io.send(snapshotFor(project));
@@ -1177,7 +1288,10 @@ export async function startServer(opts: {
         io.send({
           type: "invite_info",
           projectId: result.invite.projectId,
-          sessionId: result.invite.sessionId,
+          // A standalone project has no display name apart from its id
+          // (`projectSummaryOf` reports `name: project.id`); the hub's
+          // `invite_info` carries the real project name in this field.
+          projectName: result.invite.projectId,
           inviterName: result.invite.createdByName,
           expiresAt: result.invite.expiresAt,
           remaining: result.invite.maxUses - result.invite.redeemedBy.size,
@@ -1523,47 +1637,10 @@ export async function startServer(opts: {
         return;
       }
 
-      // Inviting is team infrastructure, not a driver capability (spec §9.3):
-      // any participant may mint, list, or revoke. Every action is attributed.
-      if (msg.type === "create_invite") {
-        const invite = invites.mint({
-          projectId: ctx.project.id,
-          sessionId: ctx.entry.session.id,
-          createdBy: ctx.userId,
-          createdByName: ctx.entry.session.nameOf(ctx.userId) ?? ctx.userId,
-        });
-        ctx.entry.session.append({
-          type: "invite_created",
-          userId: ctx.userId,
-          inviteId: invite.id,
-          expiresAt: invite.expiresAt,
-          maxUses: invite.maxUses,
-        });
-        sendInviteList(ctx);
-        return;
-      }
-
-      if (msg.type === "list_invites") {
-        sendInviteList(ctx);
-        return;
-      }
-
-      if (msg.type === "revoke_invite") {
-        if (typeof msg.inviteId !== "string" || !msg.inviteId) {
-          return sendError("revoke_invite requires an inviteId");
-        }
-        const id = msg.inviteId.slice(0, 40);
-        if (!invites.revoke(id, ctx.project.id, ctx.entry.session.id)) {
-          return sendError(`unknown invite: ${id}`);
-        }
-        ctx.entry.session.append({
-          type: "invite_revoked",
-          userId: ctx.userId,
-          inviteId: id,
-        });
-        sendInviteList(ctx);
-        return;
-      }
+      // Invites are PROJECT-scoped now (plan 2026-08-01-project-invites
+      // §1.9): create/list/revoke live above the join choke point with the
+      // other project messages, and the `invite_*` session events are gone —
+      // a project invite has no session to append them to.
 
       if (msg.type === "add_plugin") {
         if (typeof msg.url !== "string") {

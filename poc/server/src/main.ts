@@ -34,6 +34,8 @@ const port = Number(process.env.PORT ?? 3001);
 // reverse proxy. Set HOST=0.0.0.0 for LAN access, e.g. testing from a phone.
 const host = process.env.HOST ?? "127.0.0.1";
 // Off by default (spec §7's bound only applies once an operator opts in).
+// Project-scoped: with the gate on, joining an OCCUPIED project requires an
+// invite; the founder and previously-admitted members enter free.
 const requireInvite = process.env.REQUIRE_INVITE === "1";
 const inviteTtlMs = positiveIntEnv("INVITE_TTL_MS");
 const inviteMaxUses = positiveIntEnv("INVITE_MAX_USES");
