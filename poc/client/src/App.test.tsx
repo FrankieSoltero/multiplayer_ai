@@ -12,6 +12,11 @@ import { GateBar } from "./components/GateBar";
 import { THEME_KEY, type Theme } from "./theme";
 import { PULL_STORAGE_KEY } from "./pulls";
 import { sessionUrlFrom } from "./pickerUrl";
+// Not `terminal.css?raw`: vitest stubs every CSS import to "" (`css: false`,
+// SessionPicker.test.tsx:339-345 names the same wall). This file already opts
+// into node types (line 1), so node:fs reads the stylesheet for real.
+import { readFileSync } from "node:fs";
+const cssSource = readFileSync(new URL("./terminal.css", import.meta.url), "utf8");
 
 /** App wiring for the sub-session rail (Task 4). This repo has no DOM test env
  *  (docs/tech-debt.md); SessionView is a hook-heavy component, so we mount it
@@ -392,6 +397,17 @@ describe("App — sub-session rail wiring", () => {
     expect(nodes.some((n) => isCabinet(n.type))).toBe(false);
     // And the CRT wraps the routed screen body directly as its children.
     expect(nodeOfType(nodes, Crt)!.props.children).toBeDefined();
+  });
+
+  it("T3-root-is-the-flex-column: #root carries display:flex — the layout half of glass-is-the-page", () => {
+    // The Cabinet's `height: 100%; display: flex; flex-direction: column` is
+    // what .crt's `flex: 1` was written for. Retiring the Cabinet without
+    // moving that rule onto #root left the CRT sizing to CONTENT height —
+    // the app visibly shrank to half the viewport in a session, live, with
+    // every test green (caught by the user, 2026-08-01). The component pin
+    // above can't see CSS; this pins the rule from source, the house `?raw`
+    // pattern (SessionPicker.test.tsx).
+    expect(cssSource).toMatch(/#root\s*\{\s*display:\s*flex;\s*flex-direction:\s*column;/);
   });
 });
 
