@@ -1,10 +1,20 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-31 (session #28, hook at ~40% mid-execution — plan PASSED 85.3; lean-sdd MID-FLIGHT: 5 of 15 tasks committed, 2 implementers possibly still landing commits, 1 fix round pending).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-08-01 (Kimi Code CLI session — project-invites shipped on `feature/project-invites`; presentation cycle complete and folded in below).*
 
 ---
 
-## 🚀 START HERE (session #28 wrap) — PRESENTATION CYCLE EXECUTING via lean-sdd, MID-FLIGHT. ON `feature/presentation`. **THE SDD LEDGER IS THE AUTHORITY: `.soltero/lean-sdd/2026-07-31-presentation/progress.md` — read it ALL, then `git log`, before dispatching anything.**
+## 🚀 START HERE (2026-08-01, Kimi CLI) — PROJECT-SCOPED INVITES **SHIPPED** on `feature/project-invites` (base: presentation tip `e58bf5c`; the presentation cycle's 15 tasks + final whole-branch review were already complete per `.soltero/lean-sdd/2026-07-31-presentation/progress.md` — only its live-walk PR gate was outstanding).
+
+**What shipped (PRD §8.2 remainder, tech-debt §2.5 + §1.2 — plan `docs/plans/2026-08-01-project-invites.md`):** invites are project-scoped, hub-held, durable. Server: `InviteStore` retargeted session→project, five messages answered standalone, `REQUIRE_INVITE` now project-level (`98b4652`). Hub: schema **v3** (`invites` + `invite_redemptions`, migration mirrors v2 devices), `HubInviteStore`, hub-answered `peek_invite`/`create`/`list`/`revoke` + redeem-at-`join_project` (`5ea5925`). Client: InvitePanel moved to the project screen (members only), InviteLanding accepts for real (join_project → `?project=<id>` + `replaceState` token strip), OAuth round trip stashes the token in sessionStorage instead of `next`, session-level invite UI (Header button, `I` hotkey, `"invite"` screen) removed (`742db76`). Plus a rider: theme toggle on lobby + hub entrance (`db86f7f`; the presentation branch's T4 project-level-untouched guard was deleted — its premise is false on this branch).
+
+**Suites at head:** server **763** · hub **368** · client **509**, tsc ×3 clean. Executed in Kimi Code CLI — soltero-skills pipeline (spec council, lean-sdd model tiering) NOT available here; plan carried its own design section, no council was convened, implementation delegated to three coder subagents (server/hub/client) with the plan as contract.
+
+**Knowns / disclosures:** (1) solo-mode bypass — with the session-join invite gate removed, a hand-rolled client can skip `join_project` and session-join directly, bypassing `REQUIRE_INVITE` (hub is safe: session join gates on `store.isMember`); (2) hub has no invite-required policy — projects stay openly joinable from the entrance list, invites are directed links not gates; (3) old `/?invite=` links still peek/accept but land on the picker; (4) one non-reproducing server-test flake seen during a T5 sanity run (green on both reruns); (5) PR NOT opened — user merges; branch is local-only, never pushed. Next §8.2 remainder: close/archive client controls.
+
+---
+
+## (was) START HERE (session #28 wrap) — PRESENTATION CYCLE EXECUTING via lean-sdd, MID-FLIGHT. ON `feature/presentation`. **THE SDD LEDGER IS THE AUTHORITY: `.soltero/lean-sdd/2026-07-31-presentation/progress.md` — read it ALL, then `git log`, before dispatching anything.**
 
 **Where it stopped, exactly:** the ~40% hook fired while Tasks 4 and 7 implementers were STILL RUNNING as background agents of the old session (they commit autonomously — their commits and `task-4/7-report.md` files may exist by the time you read this; RECONCILE FIRST, see step 1). Committed so far (all on `feature/presentation`, base fd17264): Task 1 `030508d` ✅ review clean · Task 12 `a24df82` ✅ review clean · Task 2 `b1adb52` ✅ review clean · Task 3 `c4fa4c0` ✅ Approved WITH pending fix round (see ledger: non-discriminating T3 assertion loop, App.test.tsx:373-376 — dispatch AFTER Task 7 lands, App.test.tsx conflict) · Task 5 `cd1a44a` implemented, suite 450 — **review NOT dispatched**.
 
