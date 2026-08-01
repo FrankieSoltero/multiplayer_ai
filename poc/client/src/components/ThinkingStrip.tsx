@@ -84,6 +84,13 @@ export function ThinkingStrip(props: {
   sessionKey?: string;
 }) {
   const active = props.busy || (props.open ?? false);
+  // The game-lane surface (the `.lane` <pre> and its `.roster` game-picker row)
+  // is authored by `open` alone. `busy` still MOUNTS the strip (so the status
+  // line renders), but the lane shows only when opened: Clean-busy passes
+  // open=false → status line without the lane (spec §2.2); Arcade-busy passes
+  // open=true via App's `laneAutoOpen` → the full lane, exactly as today; manual
+  // open (ARCADE button / idle `A`) → open=true → identical lane in both themes.
+  const laneVisible = props.open ?? false;
 
   const [game, setGame] = useState("dino");
   const mkSeed = (gameKey: string) =>
@@ -139,7 +146,9 @@ export function ThinkingStrip(props: {
   // mute those hotkeys for the duration. Conservative on purpose: any
   // mounted+playing run mutes, dino included; permission cards' on-screen
   // buttons remain clickable throughout.
-  const capturing = mounted && playing && !!engine;
+  // Only a VISIBLE lane can capture the keyboard: a hidden lane (busy && !open)
+  // must never mute the transcript's a/d permission hotkeys.
+  const capturing = mounted && playing && !!engine && laneVisible;
   useEffect(() => {
     props.onPlayingChange?.(capturing);
     return () => props.onPlayingChange?.(false);
@@ -171,7 +180,7 @@ export function ThinkingStrip(props: {
   }, [mounted, game]);
 
   useEffect(() => {
-    if (!active || !playing || !engine) return;
+    if (!laneVisible || !playing || !engine) return;
     let raf = 0;
     let last = performance.now();
     const loop = (now: number) => {
@@ -182,7 +191,7 @@ export function ThinkingStrip(props: {
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [active, playing, engine]);
+  }, [laneVisible, playing, engine]);
 
   // settle a finished run exactly once: personal best + party submission
   useEffect(() => {
@@ -208,7 +217,11 @@ export function ThinkingStrip(props: {
   };
 
   useEffect(() => {
-    if (!active) return;
+    // Gate on the VISIBLE lane, not merely `active`: while the strip is mounted
+    // by busy alone (busy && !open) the lane is hidden, so its game keys (G swap,
+    // SPACE start, arrows) and ESC-close must NOT be live — no key capture and no
+    // game start behind a hidden lane.
+    if (!laneVisible) return;
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
@@ -236,7 +249,7 @@ export function ThinkingStrip(props: {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, playing, game, engine, props.busy, props.open, props.onClose]);
+  }, [laneVisible, playing, game, engine, props.busy, props.open, props.onClose]);
 
   if (!mounted) return null;
   const pad = (n: number) => String(n).padStart(4, "0");
@@ -266,46 +279,50 @@ export function ThinkingStrip(props: {
         )}
       </div>
 
-      {engine ? (
-        <pre
-          className="lane"
-          style={laneStyle}
-          onClick={() => {
-            if (!playing) start();
-            else setState((s: any) => engine.input(s, "click"));
-          }}
-        >
-          {engine.render(runState).join("\n")}
-        </pre>
-      ) : (
-        <pre className="lane" style={{ ...laneStyle, color: "var(--dim)" }}>
-          {"  cartridge not inserted — " + game + " has no engine yet\n" + "▁".repeat(40)}
-        </pre>
-      )}
+      {laneVisible && (
+        <>
+          {engine ? (
+            <pre
+              className="lane"
+              style={laneStyle}
+              onClick={() => {
+                if (!playing) start();
+                else setState((s: any) => engine.input(s, "click"));
+              }}
+            >
+              {engine.render(runState).join("\n")}
+            </pre>
+          ) : (
+            <pre className="lane" style={{ ...laneStyle, color: "var(--dim)" }}>
+              {"  cartridge not inserted — " + game + " has no engine yet\n" + "▁".repeat(40)}
+            </pre>
+          )}
 
-      <div className="roster">
-        <span className="pix sm">GAME ▸</span>
-        {ROSTER.map((g) => (
-          <button
-            key={g.key}
-            className={g.key === game ? "roster-item on" : "roster-item"}
-            onClick={() => setGame(g.key)}
-            title={g.engine ? "" : "no engine yet"}
-          >
-            {g.label}
-          </button>
-        ))}
-        <span className="hint">
-          {!engine
-            ? "G swaps game"
-            : playing
-              ? engine.hint(runState, true)
-              : over
-                ? "RUN COMPLETE — SPACE to play again"
-                : engine.hint(runState, false) + " · G swaps game"}
-          {!props.busy && " · ESC closes"}
-        </span>
-      </div>
+          <div className="roster">
+            <span className="pix sm">GAME ▸</span>
+            {ROSTER.map((g) => (
+              <button
+                key={g.key}
+                className={g.key === game ? "roster-item on" : "roster-item"}
+                onClick={() => setGame(g.key)}
+                title={g.engine ? "" : "no engine yet"}
+              >
+                {g.label}
+              </button>
+            ))}
+            <span className="hint">
+              {!engine
+                ? "G swaps game"
+                : playing
+                  ? engine.hint(runState, true)
+                  : over
+                    ? "RUN COMPLETE — SPACE to play again"
+                    : engine.hint(runState, false) + " · G swaps game"}
+              {!props.busy && " · ESC closes"}
+            </span>
+          </div>
+        </>
+      )}
     </div>
   );
 }

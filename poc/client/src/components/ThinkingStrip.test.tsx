@@ -134,3 +134,44 @@ describe("Task 12 — arcade lane footprint scale", () => {
     expect(clean).toBe(arcade);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 7 fix (round 1) — the game-lane surface is gated on `props.open`.
+// `active = busy || open` still MOUNTS the strip whenever busy, so the status
+// line always renders; but the game lane (`.lane`) and its game-picker row
+// (`.roster`) render only when `open` is true. Clean-busy passes open=false →
+// status line without the lane (spec §2.2); Arcade-busy passes open=true (via
+// App's `laneAutoOpen`) → the full lane, exactly as today; manual open (ARCADE
+// button / idle `A`) passes open=true → identical lane in both themes.
+// ---------------------------------------------------------------------------
+describe("Task 7 fix — game lane gated on props.open", () => {
+  const nodesFor = (busy: boolean, open: boolean): HostNode[] =>
+    renderTree(<ThinkingStrip busy={busy} open={open} modelLabel="claude" />);
+  const has = (nodes: HostNode[], cls: string): boolean => nodes.some((n) => hasClass(n, cls));
+
+  it("T7-fix-busy-no-open shows the thinking status line WITHOUT the game lane or roster", () => {
+    // Clean-busy: strip mounted via busy, but open=false → status line only.
+    const nodes = nodesFor(true, false);
+    expect(has(nodes, "thinking-head")).toBe(true); // status line renders…
+    expect(has(nodes, "lane")).toBe(false); // …but the game lane does NOT
+    expect(has(nodes, "roster")).toBe(false); // …and neither does the game-picker row
+    // the status line is the THINKING affordance (busy), not the idle coin prompt
+    const who = nodes.find((n) => hasClass(n, "who"));
+    expect(String(who!.props.children ?? "")).toContain("IS THINKING");
+  });
+
+  it("T7-fix-busy-open renders the full lane surface when open (arcade auto-open / manual open)", () => {
+    const nodes = nodesFor(true, true);
+    expect(has(nodes, "thinking-head")).toBe(true);
+    expect(has(nodes, "lane")).toBe(true); // lane present when open
+    expect(has(nodes, "roster")).toBe(true); // and its game-picker row
+  });
+
+  it("T7-fix-idle-open leaves the INSERT COIN idle arcade lane unchanged", () => {
+    const nodes = nodesFor(false, true);
+    expect(has(nodes, "lane")).toBe(true);
+    expect(has(nodes, "roster")).toBe(true);
+    const who = nodes.find((n) => hasClass(n, "who"));
+    expect(String(who!.props.children ?? "")).toContain("INSERT COIN");
+  });
+});
