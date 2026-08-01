@@ -17,7 +17,7 @@ import { Lobby } from "./components/Lobby";
 import { SessionPicker } from "./components/SessionPicker";
 import { ProjectPicker } from "./components/ProjectPicker";
 import { useArrowNav } from "./useArrowNav";
-import { Cabinet, Crt } from "./components/Crt";
+import { Crt } from "./components/Crt";
 import { SkillsPanel } from "./components/SkillsPanel";
 import { WorkflowsPanel } from "./components/WorkflowsPanel";
 import { OversightPanel } from "./components/OversightPanel";
@@ -36,8 +36,6 @@ import { activeProjectIdFrom, pickerUrlFrom } from "./pickerUrl";
 import { pullsFrom, thresholdFromStorage, PULL_STORAGE_KEY } from "./pulls";
 import { screenFor, selfIdFor } from "./authRoute";
 import { useTheme, type Theme } from "./theme";
-
-const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
 
 export default function App() {
   // The per-tab anonymous id. With auth on it is NOT the identity the wire
@@ -178,11 +176,11 @@ export default function App() {
     }
   }
 
-  return (
-    <Cabinet legend={LEGEND}>
-      <Crt intensity={theme === "clean" ? "off" : "full"}>{screenBody()}</Crt>
-    </Cabinet>
-  );
+  // The glass IS the page: the CRT is the App root, wrapping the routed screen
+  // directly. The Cabinet chrome (marquee + legend) it used to sit inside was
+  // retired in full-bleed — the .term-header breadcrumb is the sole identity
+  // line now.
+  return <Crt intensity={theme === "clean" ? "off" : "full"}>{screenBody()}</Crt>;
 }
 
 export function SessionView(props: {

@@ -183,33 +183,6 @@ code, pre { font-family: var(--fm); }
 
 /* ------------------------------------------------------------------- shell */
 
-/* The shell fits the viewport: the cabinet is exactly the window, the CRT
-   flexes into whatever height the marquee/legend leave over, and every scroll
-   happens inside a screen region — the page itself never scrolls. */
-.cabinet {
-  height: 100%;
-  display: flex; flex-direction: column; align-items: stretch;
-  gap: 0;
-  padding: 0;
-}
-.cabinet-inner {
-  width: 100%;
-  flex: 1; min-height: 0;
-  display: flex; flex-direction: column; gap: 0;
-}
-.crt-chrome-top {
-  padding: 10px var(--sp-4) 6px;
-  border-bottom: 2px solid var(--frame);
-  background: var(--panel);
-}
-.marquee { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-6); flex-wrap: wrap; }
-.marquee-title {
-  font-family: var(--pf); font-size: 19px; color: var(--gold);
-  text-shadow: 3px 3px 0 var(--bg);
-}
-.marquee-title span { color: var(--accent); }
-.marquee-sub { font-family: var(--pf); font-size: var(--fs-label); color: var(--dim); letter-spacing: 0.1em; margin-top: var(--sp-2); }
-
 /* CRT — the app lives inside the glass. Overlays are pointer-events:none and
    sit above the screen; --crt-op / --crt-flick let Crt.tsx dial them down or
    off without unmounting anything.

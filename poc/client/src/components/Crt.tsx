@@ -35,32 +35,3 @@ export function Crt(props: {
     </div>
   );
 }
-
-/** Cabinet chrome around the CRT: marquee on top, legend underneath. */
-export function Cabinet(props: { legend?: string[]; right?: ReactNode; children: ReactNode }) {
-  return (
-    <div className="cabinet">
-      <div className="cabinet-inner">
-        <div className="crt-chrome-top">
-          <div className="marquee">
-            <div>
-              <div className="marquee-title">
-                MULTIPLAYER<span>_</span>AI
-              </div>
-              <div className="marquee-sub">SHARED AGENT SESSIONS FOR TEAMS</div>
-            </div>
-            {props.right}
-          </div>
-        </div>
-        {props.children}
-        {props.legend && props.legend.length > 0 && (
-          <div className="lobby-foot" style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-            {props.legend.map((l) => (
-              <span key={l}>{l}</span>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}

@@ -362,6 +362,22 @@ describe("App — sub-session rail wiring", () => {
     expect(nodeOfType(nodes, SessionView)!.props.theme).toBe("arcade");
   });
 
+  it("T3-glass-is-the-page mounts Crt as the App root — no Cabinet chrome wraps it", () => {
+    lsGet = () => null;
+    const app = mount(App as (p: unknown) => unknown, {});
+    const nodes = app.nodes();
+    // The outermost node the App renders is the CRT glass itself.
+    expect(nodes[0].type).toBe(Crt);
+    // Cabinet's chrome surfaces are gone from the tree entirely.
+    const className = (n: El) =>
+      typeof n.props.className === "string" ? n.props.className : "";
+    for (const chrome of ["cabinet", "cabinet-inner", "crt-chrome-top", "marquee"]) {
+      expect(nodes.some((n) => className(n).split(" ").includes(chrome))).toBe(false);
+    }
+    // And the CRT wraps the routed screen body directly as its children.
+    expect(nodeOfType(nodes, Crt)!.props.children).toBeDefined();
+  });
+
   it("T4-project-level-untouched: the branch diff touches no project-level component", () => {
     const changed = execFileSync("git", ["diff", "--name-only", "main"], {
       cwd: process.cwd(),
