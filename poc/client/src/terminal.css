@@ -237,7 +237,7 @@ code, pre { font-family: var(--fm); }
 
 /* wrap, don't clip: `white-space: nowrap` stops the buttons shrinking below
  * their label, so a nowrap row silently amputated whatever ran past the frame
- * — INVITE and ONLINE were fully clipped and OVERSIGHT nearly so once the
+ * — the rightmost buttons were fully clipped and OVERSIGHT nearly so once the
  * button set grew. Same wrapping idiom as .statusline / .roster / .thinking-head. */
 .term-header {
   display: flex; align-items: center; gap: var(--sp-3);
@@ -820,7 +820,8 @@ code, pre { font-family: var(--fm); }
 .invhero { color: var(--gold); }
 
 /* ================================================================ invite panel
-   In-session invite screen (spec §5). Same idiom as oversight/workflows. */
+   The project screen's INVITE section (SessionPicker) — the rows survived the
+   retired in-session invite screen unchanged. */
 .invrow { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--frame); }
 .invlink { width: 100%; background: #000; color: var(--fg); border: 1px solid var(--frame); font: inherit; padding: 4px 6px; }
 

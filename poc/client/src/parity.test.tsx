@@ -245,7 +245,6 @@ const baseSocket = (events: LoggedEvent[], send: unknown) =>
     plugins: [],
     pluginsEnabled: false,
     oversight: { enabled: false, latest: null },
-    invites: [],
     send,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }) as any;

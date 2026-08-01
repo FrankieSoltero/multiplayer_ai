@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SERVER_URL, isProjectMember } from "../types";
-import type { MachineInfo, ProjectSessionInfo, ProjectSummary } from "../types";
+import type { InviteView, MachineInfo, ProjectSessionInfo, ProjectSummary } from "../types";
 import { slugPreview, sortSessions } from "../sessionRow";
 import { sessionBadgeLabel, sessionStateClass } from "../sessionState";
 import { groupByRepo } from "../repoGroups";
@@ -9,7 +9,9 @@ import { canAct, refusalText } from "../projectAccess";
 import { projectCollisions } from "../collisionView";
 import { freeSessionName } from "../sessionNames";
 import { entranceUrl, sessionUrlFrom } from "../pickerUrl";
+import { linkOrigin } from "../inviteLink";
 import { MachinesPanel } from "./MachinesPanel";
+import { InvitePanel } from "./InvitePanel";
 import { RECORD_CLOSED, RecordPanel, recordStep } from "./RecordPanel";
 import type { RecordEvent, RecordState } from "./RecordPanel";
 
@@ -94,6 +96,9 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   const [baseRef, setBaseRef] = useState<string | null>(null);
   const [recordState, setRecordState] = useState<RecordState>(RECORD_CLOSED);
   const [membership, setMembership] = useState<MembershipState>(MEMBERSHIP_IDLE);
+  // The INVITE section's list. Filled by `invite_list`, which only ever
+  // answers the requesting socket (it carries secret tokens — plan §2.2).
+  const [invites, setInvites] = useState<InviteView[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const createTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Mirrors `recordState` for the socket handler, which is installed once per
@@ -153,6 +158,11 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
       ws.send(JSON.stringify({ type: "identify", userId: props.userId, name: props.name }));
       ws.send(JSON.stringify({ type: "watch_project", projectId: props.projectId }));
       ws.send(JSON.stringify({ type: "list_projects" }));
+      // Ask for the invite list up front. For a spectator this draws the same
+      // not_a_member refusal watch_project does — which the membership flow
+      // below turns into the JOIN affordance, so the INVITE section degrades
+      // by disappearing, never by showing a red error (plan §1.8).
+      ws.send(JSON.stringify({ type: "list_invites", projectId: props.projectId }));
     };
     ws.onmessage = (e) => {
       try {
@@ -175,7 +185,13 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
           applyMembership(step);
           if (step.watch) {
             ws.send(JSON.stringify({ type: "watch_project", projectId: props.projectId }));
+            // A fresh member's first list was refused above; ask again now
+            // that membership (and with it the INVITE section) exists.
+            ws.send(JSON.stringify({ type: "list_invites", projectId: props.projectId }));
           }
+        }
+        if (msg.type === "invite_list") {
+          setInvites(msg.invites ?? []);
         }
         if (msg.type === "session_created") {
           clearCreateTimer();
@@ -265,6 +281,18 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
     applyMembership(membershipStep(membershipRef.current, { kind: "join" }));
   };
 
+  // The server re-answers the requesting socket with a fresh `invite_list`
+  // after every mutation (plan §1.3), so neither sends a follow-up list.
+  const createInvite = () => {
+    wsRef.current?.send(JSON.stringify({ type: "create_invite", projectId: props.projectId }));
+  };
+
+  const revokeInvite = (inviteId: string) => {
+    wsRef.current?.send(
+      JSON.stringify({ type: "revoke_invite", projectId: props.projectId, inviteId }),
+    );
+  };
+
   // ATTACH/DETACH from the MACHINES panel: routed commands on the same
   // one-slot reply bound as `create_session` (spec §12.1), so they share
   // `pending`/`error` and the same no-reply timeout — an attach in flight
@@ -316,6 +344,24 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
             projectId={props.projectId}
           />
         </div>
+        {/* INVITE (plan §1.8) — the session-level invite screen is gone;
+         *  invites are project-scoped and live here, on the project screen.
+         *  Members only (`actable`): mint/list/revoke are member-gated on the
+         *  wire, and a spectator's refusal lands in the membership flow above,
+         *  which hides this section quietly. */}
+        {actable && (
+          <>
+            <div className="panel pix top">INVITE</div>
+            <InvitePanel
+              projectId={props.projectId}
+              projectName={project?.name ?? props.projectId}
+              invites={invites}
+              origin={linkOrigin()}
+              onCreate={createInvite}
+              onRevoke={revokeInvite}
+            />
+          </>
+        )}
         {/* RECORD (spec §5) — collapsed by default: the record is a read a
          *  user asks for, not a wall of history the screen opens with. Outside
          *  the refusal gates on purpose: `get_record` requires identity, NOT

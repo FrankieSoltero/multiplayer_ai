@@ -84,7 +84,6 @@ const baseProps = (over: Partial<HeaderProps> = {}): HeaderProps => ({
   runningTasks: 0,
   onOpenOversight: () => {},
   oversightFresh: false,
-  onOpenInvite: () => {},
   onExit: () => {},
   theme: "arcade",
   onThemeToggle: () => {},

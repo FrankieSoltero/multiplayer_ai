@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { expiryLabel, inviteLinkFor, inviteTokenFrom, seatsLabel, seatsLeftLabel } from "./inviteLink";
+import {
+  INVITE_STASH_KEY,
+  expiryLabel,
+  inviteLinkFor,
+  inviteTokenFrom,
+  loginNextFrom,
+  seatsLabel,
+  seatsLeftLabel,
+} from "./inviteLink";
 
 describe("inviteTokenFrom", () => {
   it("reads the invite param", () => {
@@ -14,11 +22,35 @@ describe("inviteTokenFrom", () => {
 });
 
 describe("inviteLinkFor", () => {
-  it("builds a link carrying only the token", () => {
-    expect(inviteLinkFor("tok", "http://localhost:3001")).toBe("http://localhost:3001/?invite=tok");
+  it("builds a link carrying the project and the token (plan §1.5)", () => {
+    expect(inviteLinkFor("tok", "http://localhost:3001", "acme")).toBe(
+      "http://localhost:3001/?project=acme&invite=tok",
+    );
   });
   it("tolerates a trailing slash on the origin", () => {
-    expect(inviteLinkFor("tok", "http://localhost:3001/")).toBe("http://localhost:3001/?invite=tok");
+    expect(inviteLinkFor("tok", "http://localhost:3001/", "acme")).toBe(
+      "http://localhost:3001/?project=acme&invite=tok",
+    );
+  });
+  it("encodes both params", () => {
+    expect(inviteLinkFor("t&k=", "http://x", "a b")).toBe("http://x/?project=a%20b&invite=t%26k%3D");
+  });
+});
+
+describe("loginNextFrom — §1.7 OAuth round trip", () => {
+  it("strips the invite token and keeps the project", () => {
+    expect(loginNextFrom("/", "?project=acme&invite=tok")).toBe("/?project=acme");
+  });
+  it("drops a bare token's whole query rather than leaving a bare '?'", () => {
+    expect(loginNextFrom("/", "?invite=tok")).toBe("/");
+  });
+  it("leaves an invite-free address untouched", () => {
+    expect(loginNextFrom("/", "?project=acme")).toBe("/?project=acme");
+  });
+  it("names the stash key App reads the token back from", () => {
+    // Pinned as a literal: InviteSignIn writes it, App reads-and-removes it,
+    // and a typo on either side silently strands every OAuth invitee.
+    expect(INVITE_STASH_KEY).toBe("mpai-invite");
   });
 });
 
