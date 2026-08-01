@@ -858,3 +858,42 @@ code, pre { font-family: var(--fm); }
   border: 1px solid var(--red);
 }
 .exitconfirm .exitwhy { flex: 1; min-width: 0; }
+
+/* ===== CLEAN THEME (data-theme="clean") ===== */
+/* Same density, quieter skin (spec §2.2). Decoration only — fonts, colors,
+   shadows, animations, CRT effects, and letter-tracking. No geometry, spacing,
+   grid, row-height, or font-size token is touched (constraint 3). Ratios below
+   are vs the retained --bg #0b0d10, in the base-palette annotation style
+   (css:26-41): text tokens hold AA >= 4.5:1; --frame is a decorative rule,
+   >= 3:1 as the base file annotates its own rules. */
+:root[data-theme="clean"] {
+  /* type — mono carries the whole face; chrome sheds its pixel layer and track */
+  --pf: var(--fm);
+  --track-label: 0;
+
+  /* shadows — no hard 90s offset rectangles */
+  --chunk: none;
+  --chunk-sm: none;
+
+  /* semantic solids re-pointed to a calm, professional set (spec §2.2) */
+  --frame: #5b6472;      /* 3.25:1 — decorative rule, deliberately quiet */
+  --accent: #7ea2c9;     /* 7.32:1  "you can act here" only */
+  --gold: #c9a86a;       /* 8.61:1  system / awareness / quest */
+  --amber: #d0a85f;      /* 8.75:1  permission gate */
+  --green: #87b98a;      /* 8.65:1  affirmative / driving */
+  --red: #d38b82;        /* 7.21:1  errors */
+
+  /* derived alphas ride their re-pointed solids (ruling R5) — AA-exempt */
+  --amber-mute: rgba(208, 168, 95, 0.42);
+  --amber-wash: rgba(208, 168, 95, 0.07);
+  --gold-wash: rgba(201, 168, 106, 0.08);
+  --green-wash: rgba(135, 185, 138, 0.06);
+}
+
+/* hardcoded offset shadows (css:124, css:357) — stilled in Clean */
+[data-theme="clean"] .btn:active { box-shadow: none; }
+[data-theme="clean"] .perm:has(.perm-actions) { box-shadow: none; }
+
+/* flourishes stilled — the marquee sweep holds static (.crt-fx is already off
+   via Task 2's intensity="off" coupling, so it needs no rule here) */
+[data-theme="clean"] .wheelbanner { animation: none; }
