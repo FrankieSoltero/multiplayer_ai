@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Header } from "./Header";
 import { projectCollisions } from "../collisionView";
@@ -85,11 +86,57 @@ const baseProps = (over: Partial<HeaderProps> = {}): HeaderProps => ({
   oversightFresh: false,
   onOpenInvite: () => {},
   onExit: () => {},
+  theme: "arcade",
+  onThemeToggle: () => {},
   ...over,
 });
 
 const render = (over: Partial<HeaderProps> = {}): string =>
   renderToStaticMarkup(<Header {...baseProps(over)} />);
+
+/** Hooks-shim tree walk (Transcript.test.tsx pattern): `Header` uses no hooks,
+ *  so calling it under the inert runtime yields its full host-node tree — the
+ *  only way to reach an `onClick` handler that static markup drops. */
+const H_KEY = "__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE";
+type HostNode = { type: unknown; props: Record<string, unknown> };
+const renderTree = (element: React.ReactElement): HostNode[] => {
+  const internals = (React as unknown as Record<string, { H: unknown }>)[H_KEY];
+  const prev = internals.H;
+  internals.H = {
+    useRef: (v: unknown) => ({ current: v }),
+    useState: (v: unknown) => [typeof v === "function" ? (v as () => unknown)() : v, () => {}],
+    useEffect: () => {},
+    useMemo: (f: () => unknown) => f(),
+    useCallback: (f: unknown) => f,
+    useContext: () => undefined,
+  };
+  try {
+    const type = element.type as (props: unknown) => unknown;
+    const rendered = type(element.props);
+    const out: HostNode[] = [];
+    const visit = (node: unknown) => {
+      if (node == null || typeof node !== "object") return;
+      if (Array.isArray(node)) { node.forEach(visit); return; }
+      const n = node as HostNode;
+      if (n.props) { out.push(n); visit(n.props.children); }
+    };
+    visit(rendered);
+    return out;
+  } finally {
+    internals.H = prev;
+  }
+};
+const textOf = (node: unknown): string => {
+  if (node == null) return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join("");
+  const n = node as HostNode;
+  return n.props ? textOf(n.props.children) : "";
+};
+const themeButton = (over: Partial<HeaderProps> = {}): HostNode | undefined =>
+  renderTree(<Header {...baseProps(over)} />).find(
+    (n) => n.type === "button" && textOf(n).includes("THEME ▸"),
+  );
 
 describe("Header — CONTESTED badge (spec §5)", () => {
   it("reads exactly `⚠ CONTESTED ▸ N` for the CURRENT session's contested paths", () => {
@@ -150,6 +197,36 @@ describe("Header — the badge is calm, never the permission-gate amber", () => 
     // `.contested-calm` declaration is pinned by Task 9b's greps.
     expect(markup).not.toMatch(/contested-calm[^"]*pull-badge|pull-badge[^"]*contested-calm/);
     expect(markup.match(/contested-calm/g)).toHaveLength(1);
+  });
+});
+
+describe("Header — THEME toggle (Task 2, spec §2.1)", () => {
+  it("T2-button-label reads THEME ▸ ARCADE / THEME ▸ CLEAN per theme, in BOTH themes, class planmode", () => {
+    // Present and correctly labelled in arcade…
+    const arcade = textLines(render({ theme: "arcade" }));
+    expect(arcade).toContain("THEME ▸ ARCADE");
+    expect(arcade).not.toContain("THEME ▸ CLEAN");
+    // …and in clean — the control exists in both themes (parity, constraint 2).
+    const clean = textLines(render({ theme: "clean" }));
+    expect(clean).toContain("THEME ▸ CLEAN");
+    expect(clean).not.toContain("THEME ▸ ARCADE");
+    // It is a `planmode` header button, exactly like ARCADE/MODE beside it.
+    expect(themeButton({ theme: "arcade" })!.props.className).toBe("planmode");
+    expect(themeButton({ theme: "clean" })!.props.className).toBe("planmode");
+  });
+
+  it("T2-button-placement sits in the .term-header control run beside ARCADE", () => {
+    const markup = render({ theme: "arcade" });
+    // Immediately after the ARCADE button, inside the header control run.
+    expect(markup).toMatch(/▢ ARCADE<\/button><button class="planmode"[^>]*>THEME ▸ ARCADE<\/button>/);
+  });
+
+  it("T2-toggle click invokes onThemeToggle", () => {
+    const onThemeToggle = vi.fn();
+    const btn = themeButton({ theme: "arcade", onThemeToggle });
+    expect(btn).toBeDefined();
+    (btn!.props.onClick as () => void)();
+    expect(onThemeToggle).toHaveBeenCalledTimes(1);
   });
 });
 

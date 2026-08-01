@@ -35,6 +35,7 @@ import { ExitConfirm } from "./components/ExitConfirm";
 import { activeProjectIdFrom, pickerUrlFrom } from "./pickerUrl";
 import { pullsFrom, thresholdFromStorage, PULL_STORAGE_KEY } from "./pulls";
 import { screenFor, selfIdFor } from "./authRoute";
+import { useTheme, type Theme } from "./theme";
 
 const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
 
@@ -42,6 +43,13 @@ export default function App() {
   // The per-tab anonymous id. With auth on it is NOT the identity the wire
   // uses — see selfId below.
   const [localUserId] = useState(loadOrCreateUserId);
+
+  // The presentation look. `useTheme` owns persistence and mirrors the value
+  // onto `document.documentElement` (Task 1); here it drives the CRT intensity
+  // and the header toggle. Clean strips the CRT overlays entirely; Arcade keeps
+  // the full demo glass.
+  const { theme, setTheme } = useTheme();
+  const onThemeToggle = () => setTheme(theme === "arcade" ? "clean" : "arcade");
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   // No param → session picker (spec §4). Deep links keep exact old behavior.
   const sessionId = params.get("session");
@@ -163,6 +171,8 @@ export default function App() {
             onScreenChange={setScreen}
             invite={inviteToken ?? undefined}
             signedInAs={auth?.status === "signed-in" ? auth.login : null}
+            theme={theme}
+            onThemeToggle={onThemeToggle}
           />
         );
     }
@@ -170,7 +180,7 @@ export default function App() {
 
   return (
     <Cabinet legend={LEGEND}>
-      <Crt>{screenBody()}</Crt>
+      <Crt intensity={theme === "clean" ? "off" : "full"}>{screenBody()}</Crt>
     </Cabinet>
   );
 }
@@ -187,6 +197,10 @@ export function SessionView(props: {
    *  than derived from `userId`: with auth off `userId` is the anonymous
    *  per-tab UUID, which must never be offered as something to sign out of. */
   signedInAs: string | null;
+  /** The active theme and its toggle, threaded from `App`'s `useTheme` so the
+   *  header switch and the CRT coupling read one source of truth. */
+  theme: Theme;
+  onThemeToggle: () => void;
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
@@ -556,6 +570,8 @@ export function SessionView(props: {
         arcadeOpen={arcadeOpen}
         canToggleArcade={!derived.agentBusy}
         onToggleArcade={() => setArcadeOpen((v) => !v)}
+        theme={props.theme}
+        onThemeToggle={props.onThemeToggle}
         onOpenSkills={() => props.onScreenChange("skills")}
         onOpenWorkflows={() => props.onScreenChange("workflows")}
         onOpenOversight={() => props.onScreenChange("oversight")}

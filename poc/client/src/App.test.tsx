@@ -6,6 +6,8 @@ import type { LoggedEvent } from "./types";
 import { Transcript } from "./components/Transcript";
 import { SubSessionRail } from "./components/SubSessionRail";
 import { PromptBar } from "./components/PromptBar";
+import { Crt } from "./components/Crt";
+import { THEME_KEY } from "./theme";
 
 /** App wiring for the sub-session rail (Task 4). This repo has no DOM test env
  *  (docs/tech-debt.md); SessionView is a hook-heavy component, so we mount it
@@ -23,8 +25,36 @@ const socket = vi.hoisted(() => ({
 }));
 vi.mock("./useSessionSocket", () => ({ useSessionSocket: () => socket.current }));
 
+// Task 2: mounting the OUTER `App` needs its routing under test control — auth
+// is seeded null (its only setter lives in an effect, inert in this harness), so
+// the real `screenFor` would pin every mount to "checking". `screenOverride`
+// lets a test force the "session" route to reach the wired header/CRT; unset it
+// falls through to the real precedence.
+const screenOverride = vi.hoisted(() => ({ value: null as string | null }));
+vi.mock("./authRoute", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./authRoute")>();
+  return {
+    ...actual,
+    screenFor: (input: Parameters<typeof actual.screenFor>[0]) =>
+      screenOverride.value ?? actual.screenFor(input),
+  };
+});
+
+// `theme` reads live off localStorage in a useState initializer; `lsGet` lets a
+// test seed the stored theme without disturbing other keys (which stay null).
+let lsGet: (key: string) => string | null = () => null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).localStorage = {
+  getItem: (k: string) => lsGet(k),
+  setItem: () => {},
+  removeItem: () => {},
+  clear: () => {},
+  key: () => null,
+  length: 0,
+};
+// `App` (unlike `SessionView`) resolves identity from sessionStorage on render.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).sessionStorage = {
   getItem: () => null,
   setItem: () => {},
   removeItem: () => {},
@@ -32,9 +62,12 @@ vi.mock("./useSessionSocket", () => ({ useSessionSocket: () => socket.current })
   key: () => null,
   length: 0,
 };
+// `App`'s render reads window.location.search (URL routing). Overwritten per test.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).window = { location: { search: "" } };
 
 // Imported AFTER the mock so SessionView binds to the mocked socket hook.
-const { SessionView } = await import("./App");
+const { SessionView, default: App } = await import("./App");
 
 const H_KEY = "__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE";
 type El = { type: unknown; props: Record<string, unknown> };
@@ -176,7 +209,13 @@ const baseProps = (over: Partial<{ userId: string; screen: string | null }> = {}
 let send: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   send = vi.fn();
+  screenOverride.value = null;
+  lsGet = () => null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).window.location.search = "";
 });
+
+const nodeOfType = (nodes: El[], t: unknown) => nodes.find((n) => n.type === t);
 
 describe("App — sub-session rail wiring", () => {
   it("T4-App-state routes rail selection and MAIN compact-row clicks through the same setter, and the view starts at MAIN", () => {
@@ -279,6 +318,48 @@ describe("App — sub-session rail wiring", () => {
       expect(railOf(app.nodes())).toBeUndefined();
       expect(headerOf(app.nodes())).toBeUndefined();
     }
+  });
+
+  it("T2-crt-coupling maps the stored theme to CRT intensity at the App mount", () => {
+    // Clean → the CRT overlays are stripped (intensity="off").
+    lsGet = (k) => (k === THEME_KEY ? "clean" : null);
+    let app = mount(App as (p: unknown) => unknown, {});
+    expect(nodeOfType(app.nodes(), Crt)!.props.intensity).toBe("off");
+
+    // Absent / arcade → the full arcade CRT (intensity="full").
+    lsGet = () => null;
+    app = mount(App as (p: unknown) => unknown, {});
+    expect(nodeOfType(app.nodes(), Crt)!.props.intensity).toBe("full");
+  });
+
+  it("T2-toggle flips the theme through useTheme and re-couples the CRT and header", () => {
+    // Reach the wired session surface so App threads theme + onThemeToggle down.
+    screenOverride.value = "session";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).window.location.search = "?session=s1&project=default&name=Frank";
+    lsGet = () => null; // no stored theme → starts arcade
+    socket.current = baseSocket(driverEvents(), send);
+
+    const app = mount(App as (p: unknown) => unknown, {});
+    let nodes = app.nodes();
+
+    // Initial: arcade → CRT full, and the value is handed to SessionView.
+    expect(nodeOfType(nodes, Crt)!.props.intensity).toBe("full");
+    const sv = nodeOfType(nodes, SessionView)!;
+    expect(sv.props.theme).toBe("arcade");
+    expect(typeof sv.props.onThemeToggle).toBe("function");
+
+    // Toggle (the same callback the header button fires) flips to clean.
+    (sv.props.onThemeToggle as () => void)();
+    nodes = app.nodes();
+    expect(nodeOfType(nodes, Crt)!.props.intensity).toBe("off");
+    expect(nodeOfType(nodes, SessionView)!.props.theme).toBe("clean");
+
+    // …and back again — the toggle is a true flip, not a one-way set.
+    (nodeOfType(nodes, SessionView)!.props.onThemeToggle as () => void)();
+    nodes = app.nodes();
+    expect(nodeOfType(nodes, Crt)!.props.intensity).toBe("full");
+    expect(nodeOfType(nodes, SessionView)!.props.theme).toBe("arcade");
   });
 
   it("T4-project-level-untouched: the branch diff touches no project-level component", () => {

@@ -1,6 +1,7 @@
 import { browserSignOut } from "../signOut";
 import { contestedCountFor } from "../collisionView";
 import type { Collision } from "multiplayer-ai-server/collisions";
+import type { Theme } from "../theme";
 
 export const MODEL_LABELS: Record<string, string> = {
   opus: "opus 4.8", sonnet: "sonnet 5", haiku: "haiku 4.5",
@@ -27,6 +28,11 @@ export function Header(props: {
   objective: string | null; canSetModel: boolean; onSetModel: (key: string) => void;
   permissionMode: string; canCycleMode: boolean; onCycleMode: () => void;
   arcadeOpen: boolean; canToggleArcade: boolean; onToggleArcade: () => void;
+  /** The active presentation look and a toggle that flips it. Present in BOTH
+   *  themes (parity, constraint 2) — a theme changes how the app reads, never
+   *  whether the switch is there. `useTheme` (App) owns the state; this button
+   *  only fires the flip. */
+  theme: Theme; onThemeToggle: () => void;
   onOpenSkills: () => void;
   onOpenWorkflows: () => void; runningTasks: number;
   onOpenOversight: () => void; oversightFresh: boolean;
@@ -120,6 +126,13 @@ export function Header(props: {
           }
         >
           {props.arcadeOpen ? "◉ ARCADE" : "▢ ARCADE"}
+        </button>
+        <button
+          className="planmode"
+          onClick={props.onThemeToggle}
+          title="switch the presentation theme (Arcade / Clean)"
+        >
+          {props.theme === "clean" ? "THEME ▸ CLEAN" : "THEME ▸ ARCADE"}
         </button>
         <button
           className="planmode"
