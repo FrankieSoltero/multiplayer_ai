@@ -463,3 +463,26 @@ describe("Transcript — Task 5 compact-row keyboard a11y", () => {
     expect(onOpenSubSession).toHaveBeenCalledWith("A");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 9 — §8.5 jump-to-card: each gate card's root element carries an
+// id="perm-<requestId>" so the pinned GateBar's onJump can scroll it into view
+// (App owns the scroll; here we assert the anchor the scroll targets exists).
+// The permission_request card root (className="perm") is the ONLY node with the
+// exact `perm` class — perm-head/perm-title/etc. do not match hasClass(_,"perm").
+// ---------------------------------------------------------------------------
+describe("Transcript — Task 9 jump-to-card ids", () => {
+  it("T9-card-id gives each gate card root id=perm-<requestId>", () => {
+    const card = renderTree(element({ events: [JOIN, gate({ requestId: "r1" })] })).find((n) =>
+      hasClass(n, "perm"),
+    );
+    expect(card).toBeDefined();
+    expect(card!.props.id).toBe("perm-r1");
+
+    // The prefix is fixed and the id tracks the requestId verbatim.
+    const other = renderTree(element({ events: [JOIN, gate({ requestId: "rg" })] })).find((n) =>
+      hasClass(n, "perm"),
+    );
+    expect(other!.props.id).toBe("perm-rg");
+  });
+});

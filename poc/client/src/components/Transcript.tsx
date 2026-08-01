@@ -153,7 +153,7 @@ export function Transcript(props: {
         // byte-identical to today (constraint 1) — same posture as `reason`.
         const subOf = ev.parentToolUseId ? subLabel.get(ev.parentToolUseId) : undefined;
         return (
-          <div key={ev.seq} className="perm">
+          <div key={ev.seq} className="perm" id={ev.requestId ? `perm-${ev.requestId}` : undefined}>
             {subOf ? <div className="perm-sub">⚒ {subOf}</div> : null}
             <div className="perm-head">
               <span className="perm-title">🔐 PERMISSION CHECK</span>

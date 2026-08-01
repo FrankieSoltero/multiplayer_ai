@@ -593,3 +593,58 @@ describe("App — §8.5 pinned gate bar placement + derivation (Task 8)", () => 
     expect(send).toHaveBeenCalledWith({ type: "permission", requestId: "r1", decision: "allow" });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 9 — §8.5 jump-to-card: App's onJump handler scrolls the matching
+// `#perm-<requestId>` gate card into view. This repo has no DOM (docs/tech-debt.md),
+// so `document.getElementById` is stubbed to return a `scrollIntoView` spy (or
+// null) and the wired handler (GateBar's `onJump`) is invoked directly.
+// ---------------------------------------------------------------------------
+describe("App — §8.5 jump-to-card scroll (Task 9)", () => {
+  const gateBarOf = (nodes: El[]) => nodes.find((n) => n.type === GateBar);
+
+  const onePendingGate = (): LoggedEvent[] => [
+    evt({ type: "presence_join", userId: "frank", name: "Frank", glyph: "▲" }, 1),
+    evt({ type: "control_change", userId: "frank" }, 2),
+    evt({ type: "tool_call", toolName: "Bash", input: { command: "ls" } }, 3),
+    evt({ type: "permission_request", requestId: "r1", toolName: "Bash", input: { command: "ls" } }, 4),
+  ];
+
+  it("T9-jump scrolls the matching #perm-<requestId> card into view", () => {
+    socket.current = baseSocket(onePendingGate(), send);
+    const bar = gateBarOf(mount(SessionView as (p: unknown) => unknown, baseProps()).nodes())!;
+
+    const scrollIntoView = vi.fn();
+    const getElementById = vi.fn(() => ({ scrollIntoView }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prev = (globalThis as any).document;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).document = { getElementById };
+    try {
+      (bar.props.onJump as (id: string) => void)("r1");
+      expect(getElementById).toHaveBeenCalledWith("perm-r1");
+      expect(scrollIntoView).toHaveBeenCalled();
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (globalThis as any).document = prev;
+    }
+  });
+
+  it("T9-no-target is a harmless no-op when the card is not mounted", () => {
+    socket.current = baseSocket(onePendingGate(), send);
+    const bar = gateBarOf(mount(SessionView as (p: unknown) => unknown, baseProps()).nodes())!;
+
+    const getElementById = vi.fn(() => null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prev = (globalThis as any).document;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).document = { getElementById };
+    try {
+      expect(() => (bar.props.onJump as (id: string) => void)("does-not-exist")).not.toThrow();
+      expect(getElementById).toHaveBeenCalledWith("perm-does-not-exist");
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (globalThis as any).document = prev;
+    }
+  });
+});

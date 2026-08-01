@@ -491,9 +491,14 @@ export function SessionView(props: {
   }
 
   // Jump from the pinned gate bar (§8.5) to the gate card in the transcript.
-  // The scroll target lands in Task 9; the callback is wired now so the bar
-  // body is already an affordance and Task 9 only fills the body in.
-  function onGateJump(_requestId: string) {}
+  // Each gate card roots on `id="perm-<requestId>"` (Transcript.tsx, Task 9), so
+  // the newest-undecided gate the bar pins scrolls its full card into view.
+  // Smooth to match the transcript's own bottom-scroll (Transcript.tsx) — the
+  // one existing scroll authority; a gate whose card is not mounted resolves to
+  // null and the optional chain makes the jump a harmless no-op (behavior table).
+  function onGateJump(requestId: string) {
+    document.getElementById(`perm-${requestId}`)?.scrollIntoView({ behavior: "smooth" });
+  }
 
   function onSetModel(key: string) {
     send({ type: "set_model", model: key });
