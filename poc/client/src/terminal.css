@@ -624,6 +624,83 @@ code, pre { font-family: var(--fm); }
 .subagent .lamp.done { background: var(--green); animation: none; }
 .subagent-body { padding: 0 var(--sp-3) var(--sp-2); }
 
+/* ============================================================ sub-sessions
+   The sub-session surface (spec §2.5): the compact MAIN row, the chip rail,
+   the projected-view header, and the gate attribution line. Same 90s idiom as
+   the subagent group above — 2px frames, an inset dark line, pixel labels, and
+   token colours only. `.lamp` is lifted out of `.subagent .lamp` (which stays
+   until the legacy block is retired) so the compact row's status pip styles
+   too. */
+.lamp {
+  width: 10px; height: 10px; flex: none;
+  border: 1px solid var(--frame); background: var(--gold);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.subagent-row .lamp.done { background: var(--green); animation: none; }
+
+/* compact MAIN row — one collapsed line per sub-session, click to open */
+.subagent-row {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin: var(--sp-2) 0 var(--sp-2) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 2px solid var(--frame); border-left-width: 4px;
+  background: var(--panel); box-shadow: inset 0 0 0 2px var(--bg);
+  color: var(--dim); cursor: pointer;
+}
+.subagent-row:hover { border-color: var(--accent); color: var(--fg); }
+
+/* chip rail — a MAIN chip plus one `⚒` chip per sub-session. The element's
+   own inline overflowX/whiteSpace own the no-wrap horizontal scroll; this rule
+   adds only the frame line under the rail and the chips' spacing. */
+.subsession-rail {
+  padding: var(--sp-2) var(--sp-2) 0;
+  border-bottom: 2px solid var(--frame);
+}
+.subsession-chip {
+  font-family: var(--pf); font-size: var(--fs-label);
+  letter-spacing: var(--track-label);
+  padding: var(--sp-1) var(--sp-2);
+  margin: 0 var(--sp-1) var(--sp-2) 0;
+  background: transparent; border: 2px solid var(--frame); color: var(--dim);
+  box-shadow: var(--chunk-sm); cursor: pointer;
+}
+.subsession-chip:hover { color: var(--fg); border-color: var(--accent); }
+/* active = you're viewing it (accent); gated = a gate is pending (amber);
+   done = finished (dimmed, shadow dropped) */
+.subsession-chip.active { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 0 0 2px var(--bg); }
+.subsession-chip.gated { border-color: var(--amber); color: var(--amber); background: var(--amber-wash); }
+.subsession-chip.done { border-color: var(--frame); color: var(--dim); opacity: 0.7; box-shadow: none; }
+
+/* the `!` on a gate-pending chip */
+.badge {
+  font-family: var(--pf); font-size: var(--fs-label);
+  letter-spacing: var(--track-label); color: var(--amber);
+  margin-left: var(--sp-1);
+}
+
+/* projected sub-session view header — the `⚒ label · status` banner + STOP */
+.subsession-header {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin: var(--sp-2) 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 2px solid var(--frame); border-left-width: 4px;
+  background: var(--panel); box-shadow: inset 0 0 0 2px var(--bg);
+  color: var(--gold); font-family: var(--fm); font-size: var(--fs-sm);
+}
+
+/* gate attribution — `⚒ <label>` naming the sub-session a gate belongs to */
+.perm-sub {
+  font-family: var(--pf); font-size: var(--fs-label);
+  letter-spacing: var(--track-label); color: var(--dim);
+  margin-bottom: var(--sp-1);
+}
+
+/* the compact row's lamp animates; honour reduced-motion the way the group's
+   lamp does (the kill-list note ~line 550) — new surface, so a new guard */
+@media (prefers-reduced-motion: reduce) {
+  .subagent-row .lamp { animation: none; }
+}
+
 /* older wheel line (non-fresh) — older control changes render as gold text */
 .line.wheel-old { color: var(--gold); }
 
