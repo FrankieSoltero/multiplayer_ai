@@ -46,6 +46,12 @@ export function Header(props: {
    *  threshold. 0 renders nothing — an always-present PULLS ▸ 0 would train
    *  people to ignore the one place this feature speaks. */
   pulls?: number;
+  /** §8.5 pull click-through: jumps to the oldest-waiting pull's session.
+   *  Optional so a caller that has not wired navigation renders the badge
+   *  exactly as before — a plain, non-interactive `<span>` (regression
+   *  floor). Present, the badge becomes a real `<button>` so it is
+   *  keyboard-operable, not just clickable. */
+  onPullsClick?: () => void;
   /** Contested paths across the project, derived once in `App` from the shared
    *  `collisionsFrom` (spec §5). Optional so a caller that has not computed
    *  them renders no badge rather than crashing — and so no other call site
@@ -172,11 +178,21 @@ export function Header(props: {
         <span className={props.connected ? "conn" : "conn off"}>
           {props.connected ? "● ONLINE" : "○ OFFLINE"}
         </span>
-        {(props.pulls ?? 0) > 0 && (
-          <span className="conn pull-badge" title="sessions waiting on an approval">
-            🔐 PULLS ▸ {props.pulls}
-          </span>
-        )}
+        {(props.pulls ?? 0) > 0 &&
+          (props.onPullsClick ? (
+            <button
+              type="button"
+              className="conn pull-badge"
+              title="sessions waiting on an approval — click to jump to the oldest"
+              onClick={props.onPullsClick}
+            >
+              🔐 PULLS ▸ {props.pulls}
+            </button>
+          ) : (
+            <span className="conn pull-badge" title="sessions waiting on an approval">
+              🔐 PULLS ▸ {props.pulls}
+            </span>
+          ))}
         {contestedCount > 0 && (
           <span
             className="conn contested-calm"

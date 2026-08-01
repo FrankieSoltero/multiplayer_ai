@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import React from "react";
-import type { LoggedEvent } from "./types";
+import type { LoggedEvent, ProjectSessionInfo } from "./types";
 import { Transcript } from "./components/Transcript";
 import { SubSessionRail } from "./components/SubSessionRail";
 import { PromptBar } from "./components/PromptBar";
@@ -11,6 +11,8 @@ import { Header } from "./components/Header";
 import { ThinkingStrip } from "./components/ThinkingStrip";
 import { GateBar } from "./components/GateBar";
 import { THEME_KEY, type Theme } from "./theme";
+import { PULL_STORAGE_KEY } from "./pulls";
+import { sessionUrlFrom } from "./pickerUrl";
 
 /** App wiring for the sub-session rail (Task 4). This repo has no DOM test env
  *  (docs/tech-debt.md); SessionView is a hook-heavy component, so we mount it
@@ -660,5 +662,86 @@ describe("App — §8.5 jump-to-card scroll (Task 9)", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (globalThis as any).document = prev;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 11 — §8.5 pull click-through: the header PULLS badge's onPullsClick
+// wiring — navigate to the OLDEST-waiting pull's session (minimum sinceTs),
+// and no-op when the pull count has dropped to zero by click time. The
+// badge's own render behavior (button vs span, text, the zero-pulls gate)
+// lives in Header.test.tsx; these rows cover App's derivation + navigation.
+// ---------------------------------------------------------------------------
+describe("App — §8.5 pull badge click-through (Task 11)", () => {
+  const headerOf = (nodes: El[]) => nodes.find((n) => n.type === Header);
+
+  /** Two teammates' sessions, each with a pending gate, waiting different
+   *  amounts of time — both far past any threshold option so a pull always
+   *  surfaces regardless of wall-clock skew in CI. `peer-older`'s gate has
+   *  been waiting since 2020, `peer-newer` since 2021 — the MINIMUM sinceTs
+   *  (peer-older) is the one a click must jump to, not array order. */
+  const twoPulls = (): ProjectSessionInfo[] => [
+    {
+      id: "peer-newer",
+      participants: ["bo"],
+      driverName: "Bo",
+      intent: null,
+      lastActivityTs: null,
+      ended: false,
+      pendingGate: { toolName: "Write", sinceTs: "2021-01-01T00:00:00.000Z" },
+    },
+    {
+      id: "peer-older",
+      participants: ["ana"],
+      driverName: "Ana",
+      intent: null,
+      lastActivityTs: null,
+      ended: false,
+      pendingGate: { toolName: "Bash", sinceTs: "2020-01-01T00:00:00.000Z" },
+    },
+  ];
+
+  it("T11-navigation navigates to the OLDEST-waiting pull's session (minimum sinceTs) via sessionUrlFrom", () => {
+    // Threshold ON so pullsFrom surfaces both sessions above (pullThresholdMs
+    // is a useState initializer reading localStorage on mount).
+    lsGet = (k) => (k === PULL_STORAGE_KEY ? "30000" : null);
+    socket.current = { ...baseSocket([], send), projectSessions: twoPulls() };
+    const startSearch = "?session=s1&project=default";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).window.location.search = startSearch;
+
+    const app = mount(SessionView as (p: unknown) => unknown, baseProps());
+    const header = headerOf(app.nodes())!;
+    expect(typeof header.props.onPullsClick).toBe("function");
+    // Not the newer pull, and not array order — the MINIMUM sinceTs.
+    expect(header.props.pulls).toBe(2);
+
+    (header.props.onPullsClick as () => void)();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((globalThis as any).window.location.search).toBe(
+      sessionUrlFrom(startSearch, "peer-older", "default"),
+    );
+  });
+
+  it("T11-empty is a no-op when pulls is empty at click time — no navigation, no crash", () => {
+    // Threshold OFF (stored value absent) → pullsFrom returns [] regardless
+    // of any pendingGate data — simulating the count having dropped to zero
+    // between render and click.
+    lsGet = () => null;
+    socket.current = { ...baseSocket([], send), projectSessions: twoPulls() };
+    const startSearch = "?session=s1&project=default";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).window.location.search = startSearch;
+
+    const app = mount(SessionView as (p: unknown) => unknown, baseProps());
+    const header = headerOf(app.nodes())!;
+    expect(header.props.pulls).toBe(0);
+
+    expect(() => (header.props.onPullsClick as () => void)()).not.toThrow();
+
+    // No navigation: the URL is untouched (sessionUrlFrom never fired).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((globalThis as any).window.location.search).toBe(startSearch);
   });
 });

@@ -230,6 +230,50 @@ describe("Header — THEME toggle (Task 2, spec §2.1)", () => {
   });
 });
 
+/** The one PULLS badge node, found by its EXACT text so a container that also
+ *  contains the phrase (the whole header) can never be mistaken for it. Returns
+ *  a real host node (button or span) so its `type` and `onClick` are assertable. */
+const pullsBadge = (over: Partial<HeaderProps> = {}, pulls = 3): HostNode | undefined =>
+  renderTree(<Header {...baseProps({ pulls, ...over })} />).find(
+    (n) => textOf(n) === `🔐 PULLS ▸ ${pulls}`,
+  );
+
+describe("Header — §8.5 PULLS click-through (Task 11)", () => {
+  it("T11-pulls-badge-button renders the PULLS badge as a keyboard-operable <button> invoking onPullsClick, text unchanged", () => {
+    const onPullsClick = vi.fn();
+    const badge = pullsBadge({ onPullsClick });
+    expect(badge).toBeDefined();
+    // A real <button> — keyboard-operable by construction, unlike the span.
+    expect(badge!.type).toBe("button");
+    // The exact badge text is unchanged.
+    expect(textOf(badge!)).toBe("🔐 PULLS ▸ 3");
+    // Clicking it fires the handler.
+    (badge!.props.onClick as () => void)();
+    expect(onPullsClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("T11-prop-absent renders the badge exactly as today — a non-interactive <span>, no handler — when onPullsClick is absent", () => {
+    const badge = pullsBadge();
+    expect(badge).toBeDefined();
+    expect(badge!.type).toBe("span"); // not a button
+    expect(badge!.props.onClick).toBeUndefined(); // nothing to click
+    // Byte-identical to today's render: an absent prop is not a different screen.
+    expect(render({ pulls: 3 })).toBe(render({ pulls: 3, onPullsClick: undefined }));
+    // And the static markup still carries the badge span text.
+    expect(textLines(render({ pulls: 3 }))).toContain("🔐 PULLS ▸ 3");
+  });
+
+  it("T11-pulls-regression renders NO badge at pulls=0, exactly as today (Header.tsx pulls>0 gate)", () => {
+    const markup = render({ pulls: 0 });
+    expect(markup).not.toContain("PULLS");
+    expect(markup).not.toContain("pull-badge");
+    // Even with a handler present: zero pulls means there is nothing to jump to.
+    expect(render({ pulls: 0, onPullsClick: () => {} })).not.toContain("PULLS");
+    // Not vacuous — the header really did render.
+    expect(textLines(markup)).toContain("● ONLINE");
+  });
+});
+
 describe("Header — the `contested` prop is optional", () => {
   it("renders exactly as today when no caller passes it", () => {
     const today = render({ pulls: 4 });

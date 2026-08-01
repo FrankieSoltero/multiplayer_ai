@@ -33,7 +33,7 @@ import { InviteSignIn } from "./components/InviteSignIn";
 import { Denied } from "./components/Denied";
 import { authStateFrom, type AuthState } from "./authState";
 import { ExitConfirm } from "./components/ExitConfirm";
-import { activeProjectIdFrom, pickerUrlFrom } from "./pickerUrl";
+import { activeProjectIdFrom, pickerUrlFrom, sessionUrlFrom } from "./pickerUrl";
 import { pullsFrom, thresholdFromStorage, PULL_STORAGE_KEY } from "./pulls";
 import { screenFor, selfIdFor } from "./authRoute";
 import { useTheme, type Theme } from "./theme";
@@ -490,6 +490,23 @@ export function SessionView(props: {
     send({ type: "take_wheel" });
   }
 
+  // §8.5 pull click-through: jump to the OLDEST-waiting pull (minimum
+  // `sinceTs`) — the one that has been ignored longest. Guarded against the
+  // count dropping to zero between render and click (a resolved gate, a
+  // teammate's session ending): with nothing to jump to, this is a silent
+  // no-op rather than navigating with an undefined target. `projectId` is
+  // this Session component's own prop — `pulls` derives from
+  // `projectSessions`, this exact project's socket-scoped session list, so
+  // every pull's target session is already in the CURRENT project (council
+  // ruling; see Task 11 brief).
+  function onPullsClick() {
+    if (pulls.length === 0) return;
+    const oldest = pulls.reduce((min, p) =>
+      Date.parse(p.sinceTs) < Date.parse(min.sinceTs) ? p : min,
+    );
+    window.location.search = sessionUrlFrom(window.location.search, oldest.sessionId, projectId);
+  }
+
   // Jump from the pinned gate bar (§8.5) to the gate card in the transcript.
   // Each gate card roots on `id="perm-<requestId>"` (Transcript.tsx, Task 9), so
   // the newest-undecided gate the bar pins scrolls its full card into view.
@@ -594,6 +611,7 @@ export function SessionView(props: {
       <Header
         signedInAs={props.signedInAs}
         pulls={pulls.length}
+        onPullsClick={onPullsClick}
         contested={collisions}
         projectId={projectId}
         sessionId={sessionId}
