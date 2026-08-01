@@ -695,12 +695,6 @@ code, pre { font-family: var(--fm); }
   margin-bottom: var(--sp-1);
 }
 
-/* the compact row's lamp animates; honour reduced-motion the way the group's
-   lamp does (the kill-list note ~line 550) — new surface, so a new guard */
-@media (prefers-reduced-motion: reduce) {
-  .subagent-row .lamp { animation: none; }
-}
-
 /* older wheel line (non-fresh) — older control changes render as gold text */
 .line.wheel-old { color: var(--gold); }
 
@@ -755,7 +749,7 @@ code, pre { font-family: var(--fm); }
    anywhere below the main kill block must be added here too (or moved above
    it and added to its selector list). */
 @media (prefers-reduced-motion: reduce) {
-  .subagent .lamp { animation: none; }
+  .subagent .lamp, .subagent-row .lamp { animation: none; }
 }
 
 /* ================================================================ workflows
