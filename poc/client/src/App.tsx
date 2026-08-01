@@ -667,6 +667,9 @@ export function SessionView(props: {
           hotkeysMuted={arcadeCapturing}
           view={subSessionView}
           onOpenSubSession={setSubSessionView}
+          // §8.5 wheel-on-card: the SAME take-wheel handler the pinned GateBar
+          // fires (Task 8), so a non-driver's gate card offers TAKE THE WHEEL.
+          onTakeWheel={onTakeWheel}
         />
 
         <PartyPane

@@ -592,6 +592,20 @@ describe("App — §8.5 pinned gate bar placement + derivation (Task 8)", () => 
     (bar.props.onDecide as (id: string, d: string) => void)("r1", "allow");
     expect(send).toHaveBeenCalledWith({ type: "permission", requestId: "r1", decision: "allow" });
   });
+
+  it("T10-wheel-on-card App passes the SAME take-wheel handler to Transcript and the GateBar", () => {
+    socket.current = baseSocket(onePendingGate(), send);
+    const nodes = mount(SessionView as (p: unknown) => unknown, baseProps()).nodes();
+    const bar = gateBarOf(nodes)!;
+    const transcript = transcriptOf(nodes)!;
+    // One take-wheel path (onTakeWheel in App): the Transcript's wheel-on-card
+    // button and the bar's TAKE THE WHEEL fire the identical handler reference.
+    expect(typeof transcript.props.onTakeWheel).toBe("function");
+    expect(transcript.props.onTakeWheel).toBe(bar.props.onTakeWheel);
+    // …and invoking it sends the take_wheel frame.
+    (transcript.props.onTakeWheel as () => void)();
+    expect(send).toHaveBeenCalledWith({ type: "take_wheel" });
+  });
 });
 
 // ---------------------------------------------------------------------------

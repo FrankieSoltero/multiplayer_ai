@@ -30,6 +30,13 @@ export function Transcript(props: {
    *  the row a harmless no-op, never an error (attribution is display metadata,
    *  never load-bearing — constraint 2). */
   onOpenSubSession?: (key: string) => void;
+  /** §8.5 wheel-on-card: on a non-driver's undecided permission gate, the
+   *  `.perm-outcome` area offers `🛞 TAKE THE WHEEL` — the SAME take-wheel path
+   *  App wires to the pinned GateBar (Task 8). Optional so the card renders
+   *  byte-identically when a caller does not pass it (regression floor). Taking
+   *  the wheel does NOT auto-decide the gate — the new driver decides on the
+   *  card as normal. */
+  onTakeWheel?: () => void;
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -200,7 +207,14 @@ export function Transcript(props: {
                 )}
               </div>
             ) : (
-              <div className="perm-outcome">⏳ driver deciding…</div>
+              <div className="perm-outcome">
+                ⏳ driver deciding…
+                {props.onTakeWheel ? (
+                  <button className="btn gold" onClick={() => props.onTakeWheel!()}>
+                    🛞 TAKE THE WHEEL
+                  </button>
+                ) : null}
+              </div>
             )}
           </div>
         );

@@ -213,6 +213,7 @@ interface Over {
   isDriver?: boolean;
   onPermission?: (requestId: string, decision: "allow" | "deny") => void;
   onOpenSubSession?: (key: string) => void;
+  onTakeWheel?: () => void;
 }
 
 const element = (over: Over): React.ReactElement => (
@@ -226,6 +227,7 @@ const element = (over: Over): React.ReactElement => (
     onDecidePlan={() => {}}
     view={over.view}
     onOpenSubSession={over.onOpenSubSession}
+    onTakeWheel={over.onTakeWheel}
   />
 );
 
@@ -471,6 +473,71 @@ describe("Transcript — Task 5 compact-row keyboard a11y", () => {
 // The permission_request card root (className="perm") is the ONLY node with the
 // exact `perm` class — perm-head/perm-title/etc. do not match hasClass(_,"perm").
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Task 10 — §8.5 wheel-on-card: a NON-DRIVER's undecided gate card gains a
+// `🛞 TAKE THE WHEEL` button (`btn gold`) in its `.perm-outcome` area, invoking
+// Transcript's optional `onTakeWheel`. The card does NOT auto-decide after the
+// transfer — the driver decides on the card as normal. Absent for a decided
+// gate or an already-driver viewer, and absent entirely when the prop is not
+// passed (optional-prop regression floor).
+// ---------------------------------------------------------------------------
+const takeWheelBtn = (nodes: HostNode[]): HostNode | undefined =>
+  nodes.find((n) => n.type === "button" && hasClass(n, "btn") && hasClass(n, "gold"));
+
+describe("Transcript — Task 10 wheel-on-card", () => {
+  it("T10-wheel-on-card offers TAKE THE WHEEL on a non-driver undecided gate", () => {
+    const onTakeWheel = vi.fn();
+    const events = [JOIN, gate({ requestId: "r1" })];
+    const markup = markupOfEl({ events, onTakeWheel });
+    const text = textLines(markup).join("\n");
+
+    // The button carries the exact label, the `btn gold` class, and lives in
+    // the `.perm-outcome` area (never the driver's `.perm-actions`).
+    expect(text).toContain("🛞 TAKE THE WHEEL");
+    expect(markup).toContain("perm-outcome");
+    expect(markup).not.toContain("perm-actions");
+
+    const btn = takeWheelBtn(renderTree(element({ events, onTakeWheel })));
+    expect(btn).toBeDefined();
+    (btn!.props.onClick as () => void)();
+    expect(onTakeWheel).toHaveBeenCalledTimes(1);
+
+    // The card does NOT auto-decide: it still reads as an undecided gate.
+    expect(text).not.toContain("DECIDED");
+    expect(text).not.toContain("approved");
+    expect(text).not.toContain("denied");
+  });
+
+  it("T10-wheel-on-card absent on a DECIDED gate", () => {
+    const onTakeWheel = vi.fn();
+    const events = [JOIN, gate({ requestId: "r1" }), DECISION];
+    expect(takeWheelBtn(renderTree(element({ events, onTakeWheel })))).toBeUndefined();
+    expect(markupOfEl({ events, onTakeWheel })).not.toContain("TAKE THE WHEEL");
+  });
+
+  it("T10-wheel-on-card absent when already the driver — the driver keeps [A]/[D]", () => {
+    const onTakeWheel = vi.fn();
+    const events = [JOIN, gate({ requestId: "r1" })];
+    const nodes = renderTree(element({ events, isDriver: true, onTakeWheel }));
+    expect(takeWheelBtn(nodes)).toBeUndefined();
+    // the existing driver decide controls are the ones present
+    expect(nodes.find((n) => hasClass(n, "btn") && hasClass(n, "green"))).toBeDefined();
+    expect(nodes.find((n) => hasClass(n, "btn") && hasClass(n, "red"))).toBeDefined();
+  });
+
+  it("T10-prop absent renders no button and is byte-identical to today", () => {
+    const events = [JOIN, gate({ requestId: "r1" })];
+    // With no `onTakeWheel` prop the non-driver card renders exactly as before.
+    const without = markupOfEl({ events });
+    expect(without).not.toContain("TAKE THE WHEEL");
+    expect(without).toContain("⏳ driver deciding…");
+    // Byte-identity by subtraction (same technique as the perm-why test): the
+    // only difference the prop introduces is the added button node.
+    const withProp = markupOfEl({ events, onTakeWheel: () => {} });
+    expect(withProp.replace('<button class="btn gold">🛞 TAKE THE WHEEL</button>', "")).toBe(without);
+  });
+});
+
 describe("Transcript — Task 9 jump-to-card ids", () => {
   it("T9-card-id gives each gate card root id=perm-<requestId>", () => {
     const card = renderTree(element({ events: [JOIN, gate({ requestId: "r1" })] })).find((n) =>
