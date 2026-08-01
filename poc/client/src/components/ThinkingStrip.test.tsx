@@ -5,6 +5,7 @@ import {
   ARCADE_SIZE_KEY,
   clampScale,
   dragScale,
+  ignoresGameKey,
   persistScale,
   readStoredScale,
   stepScale,
@@ -264,6 +265,27 @@ describe("Task 13 — arcade footprint resize", () => {
     const lane = nodes.find((n) => hasClass(n, "lane"));
     expect(lane).toBeDefined();
     expect(typeof lane!.props.onClick).toBe("function");
+  });
+
+  it("T13-key-isolation: the window game-key guard ignores the resize handle (no leak into a live run)", () => {
+    // Pure predicate extracted from the window keydown early-return guard. A
+    // focused .arcade-resize handle is ignored, so ArrowUp on the handle resizes
+    // the strip WITHOUT reaching engine.input on a playing run (brief live-run
+    // integrity). Fake elements are used — the no-jsdom harness has no real DOM.
+    const fake = (tagName: string, matchesHandle: boolean) =>
+      ({
+        tagName,
+        closest: (sel: string) => (sel === ".arcade-resize" && matchesHandle ? {} : null),
+      }) as unknown as HTMLElement;
+    // discriminating case: a focused resize handle → ignore (a tag-only guard fails here).
+    expect(ignoresGameKey(fake("DIV", true))).toBe(true);
+    // form controls still ignored (unchanged from before).
+    expect(ignoresGameKey(fake("INPUT", false))).toBe(true);
+    expect(ignoresGameKey(fake("SELECT", false))).toBe(true);
+    expect(ignoresGameKey(fake("TEXTAREA", false))).toBe(true);
+    // a plain game-lane element is NOT ignored — game keys still reach the engine.
+    expect(ignoresGameKey(fake("PRE", false))).toBe(false);
+    expect(ignoresGameKey(null)).toBe(false);
   });
 
   it("T13-theme-independence: the mapping takes no theme input — identical in both themes", () => {

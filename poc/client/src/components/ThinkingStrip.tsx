@@ -38,6 +38,17 @@ export function stepScale(scale: number, delta: number): number {
   return clampScale(scale + delta);
 }
 
+/** Pure: should the window-level game-key handler IGNORE this element? Form
+ *  controls are excluded as before AND the focused `.arcade-resize` handle — so
+ *  ArrowUp/ArrowDown on the handle resizes the strip without leaking into a live
+ *  game's own keyboard handler (Task 13 live-run integrity). */
+export function ignoresGameKey(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return true;
+  return typeof el.closest === "function" && el.closest(".arcade-resize") != null;
+}
+
 /** Client-local write of the arcade footprint preference (constraint 6). Both
  *  directions of storage access are guarded: a throwing setItem (private mode /
  *  quota) is swallowed so the in-session resize still applies, persistence just
@@ -157,6 +168,10 @@ export function ThinkingStrip(props: {
   const onHandleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
     e.preventDefault();
+    // Belt-and-braces: stop the synthetic event so it does not also drive the
+    // game. The window-listener guard (ignoresGameKey) is the authoritative
+    // isolation — this is defence in depth.
+    e.stopPropagation();
     const next = stepScale(scale, e.key === "ArrowUp" ? ARCADE_SCALE.step : -ARCADE_SCALE.step);
     setScale(next);
     persistScale(next);
@@ -280,8 +295,10 @@ export function ThinkingStrip(props: {
     // game start behind a hidden lane.
     if (!laneVisible) return;
     const onKey = (e: KeyboardEvent) => {
-      const tag = (document.activeElement as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      // Ignore form controls AND the arcade resize handle: an ArrowUp/ArrowDown
+      // on the focused handle must resize the strip without reaching the live
+      // game's input (Task 13 live-run integrity).
+      if (ignoresGameKey(document.activeElement as HTMLElement | null)) return;
       if (e.key === "Escape" && !props.busy && props.open) {
         props.onClose?.();
         return;
