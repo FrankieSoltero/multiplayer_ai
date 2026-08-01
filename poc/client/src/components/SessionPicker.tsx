@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SERVER_URL, isProjectMember } from "../types";
-import type { InviteView, MachineInfo, ProjectSessionInfo, ProjectSummary } from "../types";
+import type { InviteView, MachineInfo, ProjectLifecycle, ProjectSessionInfo, ProjectSummary } from "../types";
 import { slugPreview, sortSessions } from "../sessionRow";
 import { sessionBadgeLabel, sessionStateClass } from "../sessionState";
 import { groupByRepo } from "../repoGroups";
@@ -36,6 +36,15 @@ const CREATE_TIMEOUT_TEXT =
  *  a later `projects` push showing membership can re-`watch_project` and load
  *  the now-unredacted project. */
 export type MembershipState = { notMember: boolean; joining: boolean };
+
+/** The lifecycle gate's non-member refusal, verbatim from the hub
+ *  (`set_project_lifecycle`, hub.ts). Unlike `watch_project`'s refusal it is a
+ *  PLAIN error with no `code: "not_a_member"` — but it means the same thing,
+ *  so the handler below normalizes it into the membership flow: a member raced
+ *  by a roster change sees the section disappear, never a red line. Kept as a
+ *  named constant because the string is the protocol — the standalone server
+ *  answers with the same one (plan §2.1). */
+export const LIFECYCLE_MEMBER_REFUSAL = "join this project before changing it";
 
 export const MEMBERSHIP_IDLE: MembershipState = { notMember: false, joining: false };
 
@@ -202,12 +211,16 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
           setPending(false);
         }
         if (msg.type === "error") {
-          if (msg.code !== "not_a_member") setError(msg.message);
+          // Normalize the lifecycle gate's UNCODED member refusal into the
+          // coded one, so it degrades through the same quiet membership flow.
+          const code: string | undefined =
+            msg.code ?? (msg.message === LIFECYCLE_MEMBER_REFUSAL ? "not_a_member" : undefined);
+          if (code !== "not_a_member") setError(msg.message);
           // A membership refusal shows the JOIN affordance below, NOT a toast
           // (spec A5); every other error surfaces on the one red line above.
           clearCreateTimer();
           setPending(false);
-          applyMembership(membershipStep(membershipRef.current, { kind: "error", code: msg.code }));
+          applyMembership(membershipStep(membershipRef.current, { kind: "error", code }));
         }
         // Last, and unconditionally: the RECORD panel reacts to `record` and
         // `project` and ignores everything else, so it sees every message
@@ -237,6 +250,16 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   // nothing (spec §4.4), so an in-flight refusal must not flash CREATE.
   const spectating = refusal === "not-a-member" || membership.notMember;
   const actable = refusal === null && !membership.notMember;
+  // The lifecycle section is member-gated, NOT `actable`-gated: on a closed or
+  // archived project `canAct` answers "not-active" (work stops), and the
+  // members who can no longer work are exactly the ones allowed to REOPEN or
+  // UNARCHIVE. Gating on `actable` would strand a closed project forever.
+  // Carries the project itself (null when not manageable) so the section below
+  // renders narrowed, and stays hidden while the first projects frame loads.
+  const manageable =
+    project !== null && isProjectMember(project, props.userId) && !membership.notMember
+      ? project
+      : null;
   const online = machines.filter((m) => m.online);
   // Every reachable destination, standalone included: a solo server reports
   // itself as one real machine with a real repo list, so the old `repo.key`
@@ -290,6 +313,16 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   const revokeInvite = (inviteId: string) => {
     wsRef.current?.send(
       JSON.stringify({ type: "revoke_invite", projectId: props.projectId, inviteId }),
+    );
+  };
+
+  // Lifecycle transitions are answered by a fresh projects push that repaints
+  // every screen (hub `pushProjects`), so the send needs no follow-up and no
+  // pending state — and this screen's section re-reads the new lifecycle from
+  // the same frame that fills the entrance list.
+  const setLifecycle = (lifecycle: ProjectLifecycle) => {
+    wsRef.current?.send(
+      JSON.stringify({ type: "set_project_lifecycle", projectId: props.projectId, lifecycle }),
     );
   };
 
@@ -359,6 +392,22 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
               origin={linkOrigin()}
               onCreate={createInvite}
               onRevoke={revokeInvite}
+            />
+          </>
+        )}
+        {/* PROJECT (plan 2026-08-01-project-lifecycle-controls §1.1–§1.2) —
+         *  close/reopen/archive live here, member-only. `key` remounts the
+         *  panel on every lifecycle change so an armed SURE? never survives
+         *  the transition it was armed for. A raced non-member refusal flows
+         *  through the membership flow above, which nulls `manageable` — the
+         *  section degrades by disappearing, never by showing a red error. */}
+        {manageable !== null && (
+          <>
+            <div className="panel pix top">PROJECT</div>
+            <LifecyclePanel
+              key={manageable.lifecycle}
+              lifecycle={manageable.lifecycle}
+              onSet={setLifecycle}
             />
           </>
         )}
@@ -451,6 +500,80 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** The §1.1 transition table — the WHOLE of it. From active: CLOSE, ARCHIVE.
+ *  From closed: REOPEN, ARCHIVE. From archived: UNARCHIVE. Delete does not
+ *  exist (spec :242), and there are no others to add: the hub takes free
+ *  transitions, so the destructiveness flag below is a UI concern only —
+ *  `arm` marks the two that take work away (CLOSE, ARCHIVE) for the two-step
+ *  confirm; the restorative two send immediately. */
+export type LifecycleTransition = { label: string; to: ProjectLifecycle; arm: boolean };
+
+export const LIFECYCLE_TRANSITIONS: Record<ProjectLifecycle, LifecycleTransition[]> = {
+  active: [
+    { label: "CLOSE PROJECT", to: "closed", arm: true },
+    { label: "ARCHIVE PROJECT", to: "archived", arm: true },
+  ],
+  closed: [
+    { label: "REOPEN", to: "active", arm: false },
+    { label: "ARCHIVE PROJECT", to: "archived", arm: true },
+  ],
+  archived: [{ label: "UNARCHIVE", to: "active", arm: false }],
+};
+
+/** The project screen's lifecycle section (plan §1.1–§1.2): the current state
+ *  and the transitions out of it.
+ *
+ *  Props-only except for the one piece of state that is genuinely local —
+ *  which destructive button is ARMED. Same no-DOM seam as `SessionGroups`: the
+ *  picker sources `lifecycle` from its socket-fed projects frame and effects
+ *  never run under this repo's static render, so the panel takes it as a prop
+ *  and reports through `onSet`, leaving the wire send (and the refusal
+ *  degrade) to the picker. `arm-and-confirm`: the first click on CLOSE/ARCHIVE
+ *  only renames the button to SURE?; the second sends. Arming another button
+ *  disarms the first — one armed slot, not one per button — and the picker
+ *  remounts the panel (`key={lifecycle}`) on every transition so an armed
+ *  SURE? never outlives the state it was armed in. */
+export function LifecyclePanel(props: {
+  lifecycle: ProjectLifecycle;
+  onSet: (lifecycle: ProjectLifecycle) => void;
+}) {
+  const [armed, setArmed] = useState<ProjectLifecycle | null>(null);
+  const click = (t: LifecycleTransition) => {
+    if (!t.arm || armed === t.to) {
+      // Immediate sends (REOPEN/UNARCHIVE restore, they don't destroy) and the
+      // second click of an armed pair both land here — and both clear the slot,
+      // so a sent transition never leaves a stale SURE? behind.
+      setArmed(null);
+      props.onSet(t.to);
+      return;
+    }
+    setArmed(t.to);
+  };
+  return (
+    <div className="panel">
+      <div className="line">
+        state:
+        {/* Badge idiom of the entrance rows: CLOSED wears the red `closed`
+         *  class because it interrupts work; ACTIVE and ARCHIVED stay neutral. */}
+        <span className={`spstate pix sm${props.lifecycle === "closed" ? " closed" : ""}`}>
+          {props.lifecycle.toUpperCase()}
+        </span>
+      </div>
+      <div className="line dim">
+        closing stops new sessions and new members; archiving hides the project from the
+        entrance list. nothing is deleted — every transition can be walked back.
+      </div>
+      <div className="line">
+        {LIFECYCLE_TRANSITIONS[props.lifecycle].map((t) => (
+          <button key={t.to} className="btn" onClick={() => click(t)}>
+            {armed === t.to ? "SURE?" : t.label}
+          </button>
+        ))}
       </div>
     </div>
   );

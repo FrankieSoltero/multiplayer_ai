@@ -1,10 +1,16 @@
 import type { ProjectSummary } from "./types";
 
-/** Archived projects are behind a toggle, not on the default list (spec §4.1).
- *  Closed ones stay: they are readable, just not workable. */
-export function sortProjects(projects: ProjectSummary[]): ProjectSummary[] {
+/** Archived projects are behind a toggle, not on the default list (spec §4.1):
+ *  the DEFAULT keeps dropping them; `includeArchived` is the toggle's ON arm,
+ *  which sorts them in like the rest (there is no second sort order for
+ *  archived projects — hidden is the whole distinction). Closed ones always
+ *  stay: they are readable, just not workable. */
+export function sortProjects(
+  projects: ProjectSummary[],
+  opts?: { includeArchived?: boolean },
+): ProjectSummary[] {
   return projects
-    .filter((p) => p.lifecycle !== "archived")
+    .filter((p) => opts?.includeArchived === true || p.lifecycle !== "archived")
     .sort((a, b) => b.liveSessionCount - a.liveSessionCount || a.name.localeCompare(b.name));
 }
 

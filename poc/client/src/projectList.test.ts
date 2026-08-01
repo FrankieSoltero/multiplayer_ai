@@ -22,6 +22,21 @@ describe("sortProjects", () => {
     expect(out.map((x) => x.id)).toEqual(["live"]);
   });
 
+  it("keeps archived projects on the includeArchived arm — sorted in, not appended", () => {
+    // The toggle's ON state is the SAME list with the filter off, so an
+    // archived project takes its ordinary sort seat (live count, then name) —
+    // not a tail position, which would read as a second-class list.
+    const out = sortProjects(
+      [
+        p({ id: "quiet", name: "Quiet" }),
+        p({ id: "old", name: "Aardvark", lifecycle: "archived", liveSessionCount: 1 }),
+        p({ id: "busy", name: "Busy", liveSessionCount: 2 }),
+      ],
+      { includeArchived: true },
+    );
+    expect(out.map((x) => x.id)).toEqual(["busy", "old", "quiet"]);
+  });
+
   it("keeps closed projects — they are readable, just not workable", () => {
     // Mixed in with an archived project so an implementation that filters
     // nothing at all (identity) is caught too, not just one that conflates

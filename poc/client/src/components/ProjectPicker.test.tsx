@@ -76,10 +76,27 @@ const project = (
   ...over,
 });
 
-const rowsText = (projects: ProjectSummary[], userId = "frank"): string =>
+const rowsText = (projects: ProjectSummary[], userId = "frank", includeArchived = false): string =>
   textLines(
-    renderToStaticMarkup(<ProjectRows projects={projects} userId={userId} />),
+    renderToStaticMarkup(
+      <ProjectRows
+        projects={projects}
+        userId={userId}
+        includeArchived={includeArchived}
+        onToggleArchived={() => {}}
+      />,
+    ),
   ).join("\n");
+
+const rowsMarkup = (projects: ProjectSummary[], includeArchived = false): string =>
+  renderToStaticMarkup(
+    <ProjectRows
+      projects={projects}
+      userId="frank"
+      includeArchived={includeArchived}
+      onToggleArchived={() => {}}
+    />,
+  );
 
 describe("ProjectRows — redaction-safe member count (spec A5)", () => {
   it("prefers memberCount over the possibly-redacted roster length", () => {
@@ -120,6 +137,48 @@ describe("ProjectRows — SPECTATING badge from isMember (spec A5)", () => {
     const specP = project({ id: "p2", name: "Beta", members: ["someone"] });
     expect(rowsText([memberP], "frank")).not.toContain("SPECTATING");
     expect(rowsText([specP], "frank")).toContain("SPECTATING");
+  });
+});
+
+describe("ProjectRows — SHOW ARCHIVED toggle (spec §4.1)", () => {
+  const archived = project({ id: "old", name: "Museum", lifecycle: "archived", members: ["frank"] });
+  const live = project({ id: "live", name: "Alpha", members: ["frank"] });
+
+  it("hides archived projects by default — the toggle's OFF arm is the entrance as it was", () => {
+    const text = rowsText([archived, live]);
+    expect(text).toContain("Alpha");
+    expect(text).not.toContain("Museum");
+  });
+
+  it("shows them with an ARCHIVED badge when toggled on", () => {
+    const markup = rowsMarkup([archived, live], true);
+    expect(textLines(markup)).toContain("Museum");
+    expect(markup).toContain('<span class="spstate pix sm">ARCHIVED</span>');
+  });
+
+  it("keeps ENTER live on an archived row — archived is still readable, only unworkable", () => {
+    const lines = textLines(rowsMarkup([archived], true));
+    expect(lines).toContain("ENTER ▸");
+  });
+
+  it("labels the toggle for the action the click performs, state carried by aria-pressed", () => {
+    expect(rowsMarkup([live], false)).toContain('aria-pressed="false"');
+    expect(rowsMarkup([live], true)).toContain('aria-pressed="true"');
+    expect(rowsText([live], "frank", false)).toContain("SHOW ARCHIVED");
+    expect(rowsText([live], "frank", true)).toContain("HIDE ARCHIVED");
+  });
+
+  it("keeps a theme-INDEPENDENT toggle label — the picker reads no theme (T14)", () => {
+    // The toggle lives on the picker-rendered list, so pin it through the
+    // picker's own static render under BOTH themes, like the THEME switch row.
+    const labelOf = (theme: "arcade" | "clean"): string[] =>
+      textLines(
+        renderToStaticMarkup(
+          <ProjectPicker userId="frank" name="Frank" signedInAs={null} theme={theme} onThemeToggle={() => {}} />,
+        ),
+      ).filter((line) => line.includes("ARCHIVED"));
+    expect(labelOf("arcade")).toEqual(["SHOW ARCHIVED"]);
+    expect(labelOf("arcade")).toEqual(labelOf("clean"));
   });
 });
 

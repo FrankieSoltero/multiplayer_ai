@@ -279,8 +279,11 @@ describe("RECORD error", () => {
     // surface: the state is untouched and nothing is re-sent.
     expect(step).toEqual({ state: open, send: [] });
     // ...and the picker's one error path still routes every `error` message to
-    // the one red line (SessionPicker.tsx:34, :295).
-    expect(pickerSource).toMatch(/msg\.type === "error"\)\s*\{\s*[\s\S]{0,120}setError\(msg\.message\)/);
+    // the one red line. The window is wider than it once was: the branch now
+    // normalizes the lifecycle gate's UNCODED member refusal to a
+    // `not_a_member` code first (plan 2026-08-01-project-lifecycle-controls),
+    // and those lines sit between the branch opening and the setError guard.
+    expect(pickerSource).toMatch(/msg\.type === "error"\)\s*\{\s*[\s\S]{0,480}setError\(msg\.message\)/);
     expect(pickerSource).toMatch(/\{error && <div className="line red">\{error\}<\/div>\}/);
   });
 });
