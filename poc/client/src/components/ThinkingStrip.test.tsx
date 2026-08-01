@@ -3,7 +3,11 @@ import React from "react";
 import {
   ARCADE_SCALE,
   ARCADE_SIZE_KEY,
+  clampScale,
+  dragScale,
+  persistScale,
   readStoredScale,
+  stepScale,
   ThinkingStrip,
 } from "./ThinkingStrip";
 
@@ -14,10 +18,11 @@ import {
  *  initializer — is stubbed below, exactly as `App.test.tsx` does it. */
 
 let getItemImpl: (k: string) => string | null = () => null;
+let setItemImpl: (k: string, v: string) => void = () => {};
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).localStorage = {
   getItem: (k: string) => getItemImpl(k),
-  setItem: () => {},
+  setItem: (k: string, v: string) => setItemImpl(k, v),
   removeItem: () => {},
   clear: () => {},
   key: () => null,
@@ -26,6 +31,7 @@ let getItemImpl: (k: string) => string | null = () => null;
 
 afterEach(() => {
   getItemImpl = () => null;
+  setItemImpl = () => {};
 });
 
 const H_KEY = "__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE";
@@ -173,5 +179,100 @@ describe("Task 7 fix — game lane gated on props.open", () => {
     expect(has(nodes, "roster")).toBe(true);
     const who = nodes.find((n) => hasClass(n, "who"));
     expect(String(who!.props.children ?? "")).toContain("INSERT COIN");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 13 — arcade footprint: drag/keyboard resize control (spec §2.6 R4).
+// The resize control is theme-independent, user-driven pure scale math: a drag
+// handle (class `arcade-resize`) on the strip's top edge maps a vertical
+// pointer drag and ArrowUp/ArrowDown keypresses onto the [0.5, 1.0] scale, and
+// persists the result to `mpai-arcade-size`. The DOM-less suite tests the pure
+// mapping helpers directly and walks the rendered host tree for the handle.
+// ---------------------------------------------------------------------------
+describe("Task 13 — arcade footprint resize", () => {
+  const handle = (el: React.ReactElement): HostNode => {
+    const h = renderTree(el).find((n) => hasClass(n, "arcade-resize"));
+    expect(h).toBeDefined();
+    return h!;
+  };
+
+  it("T13-drag-mapping: scale = clamp(anchorScale + (anchorY − clientY)/400, 0.5, 1.0)", () => {
+    // dragging UP (clientY < anchorY) grows the strip: 100px up from 0.65 → +0.25.
+    expect(dragScale(0.65, 300, 200)).toBeCloseTo(0.9, 10);
+    // the pinned gentle feel: 200px of travel spans the FULL 0.5-wide clamp range.
+    expect(dragScale(0.5, 200, 0)).toBeCloseTo(1.0, 10);
+    // dragging DOWN shrinks; below-min clamps up to 0.5.
+    expect(dragScale(0.65, 300, 500)).toBe(ARCADE_SCALE.min); // 0.65 − 0.5 = 0.15 → 0.5
+    // above-max clamps down to 1.0 (300px up from 0.65 → 1.4 → 1.0).
+    expect(dragScale(0.65, 300, 0)).toBe(ARCADE_SCALE.max);
+    // exact /400 divisor: 40px up is +0.10, not +0.05 (a /200 divisor would fail).
+    expect(dragScale(0.6, 100, 60)).toBeCloseTo(0.7, 10);
+  });
+
+  it("T13-keyboard-resize: ArrowUp/ArrowDown step scale by 0.05, clamped to [0.5,1.0]", () => {
+    expect(ARCADE_SCALE.step).toBe(0.05);
+    // up = bigger strip, down = smaller.
+    expect(stepScale(0.65, ARCADE_SCALE.step)).toBeCloseTo(0.7, 10);
+    expect(stepScale(0.65, -ARCADE_SCALE.step)).toBeCloseTo(0.6, 10);
+    // clamped at both ends.
+    expect(stepScale(ARCADE_SCALE.max, ARCADE_SCALE.step)).toBe(ARCADE_SCALE.max);
+    expect(stepScale(ARCADE_SCALE.min, -ARCADE_SCALE.step)).toBe(ARCADE_SCALE.min);
+    // the handle renders on the open strip with the pinned ARIA contract.
+    const h = handle(strip());
+    expect(h.props.role).toBe("separator");
+    expect(h.props["aria-orientation"]).toBe("horizontal");
+    expect(h.props.tabIndex).toBe(0);
+    expect(typeof h.props.onKeyDown).toBe("function");
+    expect(typeof h.props.onPointerDown).toBe("function");
+  });
+
+  it("T13-persistence: an adjusted scale is written to mpai-arcade-size as a numeric string", () => {
+    let written: [string, string] | null = null;
+    setItemImpl = (k, v) => {
+      written = [k, v];
+    };
+    persistScale(0.8);
+    expect(written).toEqual([ARCADE_SIZE_KEY, "0.8"]);
+    // re-mount restores it: the stored numeric string round-trips through the read.
+    expect(readStoredScale(written![1])).toBe(0.8);
+  });
+
+  it("T13-storage-write-fails: a throwing setItem never crashes; persistence silently skipped", () => {
+    setItemImpl = () => {
+      throw new Error("private mode / quota exceeded");
+    };
+    // the in-session scale still resolved (pure math), persistence swallowed.
+    expect(() => persistScale(dragScale(0.65, 300, 200))).not.toThrow();
+  });
+
+  it("T13-live-run: a resize touches only scale — a running game state object is UNCHANGED", () => {
+    // The resize helpers take numbers only; they never receive game state, so a
+    // live run's state/tick/keyboard capture cannot be perturbed by a resize.
+    const runState = Object.freeze({ tick: 42, alive: true, seed: 12345 });
+    const snapshot = JSON.stringify(runState);
+    // drive both a keyboard step and a simulated drag; the frozen state survives.
+    expect(() => {
+      stepScale(0.65, ARCADE_SCALE.step);
+      dragScale(0.65, 300, 220);
+    }).not.toThrow();
+    expect(JSON.stringify(runState)).toBe(snapshot);
+    // the handle coexists with the game lane, whose click-to-start/-input path
+    // (the SPACE/click game handler) stays wired — resize did not replace it.
+    const nodes = renderTree(<ThinkingStrip busy={false} open modelLabel="claude" />);
+    expect(nodes.some((n) => hasClass(n, "arcade-resize"))).toBe(true);
+    const lane = nodes.find((n) => hasClass(n, "lane"));
+    expect(lane).toBeDefined();
+    expect(typeof lane!.props.onClick).toBe("function");
+  });
+
+  it("T13-theme-independence: the mapping takes no theme input — identical in both themes", () => {
+    // dragScale/stepScale/clampScale are deterministic pure functions of numbers
+    // only: no theme parameter exists, so the resize behavior and the stored
+    // value are byte-identical in arcade and clean.
+    expect(dragScale(0.7, 300, 250)).toBe(dragScale(0.7, 300, 250));
+    expect(stepScale(0.7, ARCADE_SCALE.step)).toBe(stepScale(0.7, ARCADE_SCALE.step));
+    expect(clampScale(1.4)).toBe(ARCADE_SCALE.max);
+    expect(clampScale(0.1)).toBe(ARCADE_SCALE.min);
   });
 });

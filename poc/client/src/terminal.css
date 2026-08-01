@@ -883,6 +883,20 @@ code, pre { font-family: var(--fm); }
   flex-wrap: wrap; margin-left: auto;
 }
 
+/* Task 13 — arcade footprint resize handle (spec §2.6 R4). A slim grab strip on
+   the arcade lane's top edge: drag it (vertical) or focus + ArrowUp/ArrowDown to
+   scale the lane. Theme-independent and user-driven (NOT a density difference —
+   constraint 3); reuses the annotated --frame / --dim / --accent tokens only, no
+   new color (constraint 4). No animation, so reduced-motion needs no extra rule
+   (constraint 5). Base rule (both themes); lives above the Clean fence. */
+.arcade-resize {
+  height: 6px; margin: 0; padding: 0;
+  border-top: 1px dashed var(--frame);
+  cursor: ns-resize; touch-action: none;
+}
+.arcade-resize:hover { border-top-color: var(--accent); }
+.arcade-resize:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+
 /* ===== CLEAN THEME (data-theme="clean") ===== */
 /* Same density, quieter skin (spec §2.2). Decoration only — fonts, colors,
    shadows, animations, CRT effects, and letter-tracking. No geometry, spacing,

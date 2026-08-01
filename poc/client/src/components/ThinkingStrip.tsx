@@ -13,12 +13,41 @@ const LEAVE_MS = 600;
 export const ARCADE_SIZE_KEY = "mpai-arcade-size";
 export const ARCADE_SCALE = { min: 0.5, max: 1.0, default: 0.65, step: 0.05 } as const;
 
+/** Pure: clamp a scale into the arcade footprint range [min, max]. */
+export function clampScale(n: number): number {
+  return Math.min(ARCADE_SCALE.max, Math.max(ARCADE_SCALE.min, n));
+}
+
 /** Pure: parse a stored scale, clamp to [min,max]; NaN/absent → default. */
 export function readStoredScale(raw: string | null): number {
   if (raw == null) return ARCADE_SCALE.default;
   const n = Number.parseFloat(raw);
   if (Number.isNaN(n)) return ARCADE_SCALE.default;
-  return Math.min(ARCADE_SCALE.max, Math.max(ARCADE_SCALE.min, n));
+  return clampScale(n);
+}
+
+/** Pure drag mapping (pinned — council round-2). Vertical axis only, dragging
+ *  UP grows the strip (matches ArrowUp). The /400 divisor makes 200px of travel
+ *  span the full 0.5-wide clamp range — a deliberately gentle feel. */
+export function dragScale(anchorScale: number, anchorY: number, clientY: number): number {
+  return clampScale(anchorScale + (anchorY - clientY) / 400);
+}
+
+/** Pure keyboard step: ArrowUp = +step (bigger), ArrowDown = −step, clamped. */
+export function stepScale(scale: number, delta: number): number {
+  return clampScale(scale + delta);
+}
+
+/** Client-local write of the arcade footprint preference (constraint 6). Both
+ *  directions of storage access are guarded: a throwing setItem (private mode /
+ *  quota) is swallowed so the in-session resize still applies, persistence just
+ *  silently skipped — never a crash. */
+export function persistScale(scale: number): void {
+  try {
+    localStorage.setItem(ARCADE_SIZE_KEY, String(scale));
+  } catch {
+    /* private mode / quota — persistence silently skipped */
+  }
 }
 
 /** The initial lane scale. The READ is try/catch-wrapped so a blocked-storage
@@ -117,10 +146,38 @@ export function ThinkingStrip(props: {
       setState(runState);
     }
   }
-  // arcade footprint scale — read once on mount (constraint 6); Task 13 adds
-  // the resize control that writes it.
-  const [scale] = useState(readInitialScale);
+  // arcade footprint scale — read once on mount (constraint 6); Task 13's
+  // resize control (drag handle + ArrowUp/ArrowDown) writes it.
+  const [scale, setScale] = useState(readInitialScale);
   const laneStyle = { fontSize: `calc(var(--fs) * ${scale})` };
+  // Per-gesture drag anchor: captured on pointerdown, so every pointermove maps
+  // off the SAME anchor (stale-closure-safe). The stored key is written once
+  // per gesture on pointerup; keyboard steps persist per keypress.
+  const dragRef = useRef<{ anchorScale: number; anchorY: number } | null>(null);
+  const onHandleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    const next = stepScale(scale, e.key === "ArrowUp" ? ARCADE_SCALE.step : -ARCADE_SCALE.step);
+    setScale(next);
+    persistScale(next);
+  };
+  const onHandlePointerDown = (e: React.PointerEvent) => {
+    dragRef.current = { anchorScale: scale, anchorY: e.clientY };
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  };
+  const onHandlePointerMove = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    setScale(dragScale(d.anchorScale, d.anchorY, e.clientY));
+  };
+  const onHandlePointerUp = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const next = dragScale(d.anchorScale, d.anchorY, e.clientY);
+    setScale(next);
+    persistScale(next); // written once per gesture
+    dragRef.current = null;
+  };
   const [high, setHigh] = useState(() => readBest("dino"));
   const ledgerRef = useRef<RunLedger>({ submitted: false, localBest: readBest("dino") });
   const [elapsed, setElapsed] = useState(0);
@@ -281,6 +338,17 @@ export function ThinkingStrip(props: {
 
       {laneVisible && (
         <>
+          <div
+            className="arcade-resize"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize arcade strip (drag or Arrow Up/Down)"
+            tabIndex={0}
+            onKeyDown={onHandleKeyDown}
+            onPointerDown={onHandlePointerDown}
+            onPointerMove={onHandlePointerMove}
+            onPointerUp={onHandlePointerUp}
+          />
           {engine ? (
             <pre
               className="lane"
