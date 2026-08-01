@@ -9,6 +9,7 @@ import { PromptBar } from "./components/PromptBar";
 import { Crt } from "./components/Crt";
 import { Header } from "./components/Header";
 import { ThinkingStrip } from "./components/ThinkingStrip";
+import { GateBar } from "./components/GateBar";
 import { THEME_KEY, type Theme } from "./theme";
 
 /** App wiring for the sub-session rail (Task 4). This repo has no DOM test env
@@ -484,6 +485,111 @@ describe("App — games opt-in + clean busy status line (Task 7)", () => {
 
     // Deciding the gate sends a permission frame — functional, not just present.
     (transcript.props.onPermission as (id: string, d: string) => void)("r1", "allow");
+    expect(send).toHaveBeenCalledWith({ type: "permission", requestId: "r1", decision: "allow" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 8 — §8.5 pinned gate bar: placement above the prompt + gate derivation.
+// GateBar's own render/decide behavior lives in GateBar.test.tsx; these rows
+// cover App's wiring — placement, the newest-undecided derivation, the sub-label
+// join, and that the bar and the a/d hotkeys share one decision callback.
+// ---------------------------------------------------------------------------
+describe("App — §8.5 pinned gate bar placement + derivation (Task 8)", () => {
+  const gateBarOf = (nodes: El[]) => nodes.find((n) => n.type === GateBar);
+
+  const driverBase = (): LoggedEvent[] => [
+    evt({ type: "presence_join", userId: "frank", name: "Frank", glyph: "▲" }, 1),
+    evt({ type: "control_change", userId: "frank" }, 2),
+    evt({ type: "tool_call", toolName: "Bash", input: { command: "ls" } }, 3),
+  ];
+  const onePendingGate = (): LoggedEvent[] => [
+    ...driverBase(),
+    evt({ type: "permission_request", requestId: "r1", toolName: "Bash", input: { command: "ls" } }, 4),
+  ];
+
+  it("T8-placement renders the gate bar directly above the prompt on the default surface, in both themes", () => {
+    for (const theme of ["arcade", "clean"] as Theme[]) {
+      socket.current = baseSocket(onePendingGate(), send);
+      const nodes = mount(SessionView as (p: unknown) => unknown, baseProps({ theme })).nodes();
+      const bar = gateBarOf(nodes);
+      expect(bar, `gate bar present in ${theme}`).toBeDefined();
+      expect(bar!.props.gate).not.toBeNull();
+
+      // Directly above the prompt: in the `.term` container's children, the
+      // GateBar element immediately precedes the PromptBar element.
+      const term = nodes.find((n) => n.props.className === "term")!;
+      const kids = (term.props.children as unknown[])
+        .flat()
+        .filter((c): c is El => !!c && typeof c === "object" && "type" in (c as El));
+      const gi = kids.findIndex((c) => c.type === GateBar);
+      const pi = kids.findIndex((c) => c.type === PromptBar);
+      expect(gi).toBeGreaterThanOrEqual(0);
+      expect(pi).toBe(gi + 1);
+    }
+  });
+
+  it("T8-placement-scoped renders no gate bar on the workflows/skills/oversight/invite screens", () => {
+    for (const screen of ["workflows", "skills", "oversight", "invite"]) {
+      socket.current = baseSocket(onePendingGate(), send);
+      const nodes = mount(SessionView as (p: unknown) => unknown, baseProps({ screen })).nodes();
+      expect(gateBarOf(nodes), `no gate bar on ${screen}`).toBeUndefined();
+    }
+  });
+
+  it("T8-hidden hands the bar a null gate when nothing is pending (bar renders nothing)", () => {
+    // A decided gate is not pending — the bar has no gate to pin.
+    const decided: LoggedEvent[] = [
+      ...onePendingGate(),
+      evt({ type: "permission_decision", requestId: "r1", decision: "allow", userId: "frank" }, 5),
+    ];
+    socket.current = baseSocket(decided, send);
+    const nodes = mount(SessionView as (p: unknown) => unknown, baseProps()).nodes();
+    expect(gateBarOf(nodes)!.props.gate).toBeNull();
+  });
+
+  it("T8-newest-first pins the NEWEST undecided gate (same target rule as the a/d hotkeys)", () => {
+    const two: LoggedEvent[] = [
+      ...driverBase(),
+      evt({ type: "permission_request", requestId: "r1", toolName: "Bash", input: { command: "ls" } }, 4),
+      evt({ type: "permission_request", requestId: "r2", toolName: "Write", input: { file_path: "/a" } }, 5),
+    ];
+    socket.current = baseSocket(two, send);
+    const nodes = mount(SessionView as (p: unknown) => unknown, baseProps()).nodes();
+    const gate = gateBarOf(nodes)!.props.gate as { requestId: string; toolName: string };
+    expect(gate.requestId).toBe("r2");
+    expect(gate.toolName).toBe("Write");
+  });
+
+  it("T8-sub-label joins the gate's parentToolUseId to its sub-session label via deriveSubSessions", () => {
+    const attributed: LoggedEvent[] = [
+      evt({ type: "presence_join", userId: "frank", name: "Frank", glyph: "▲" }, 1),
+      evt({ type: "control_change", userId: "frank" }, 2),
+      evt({ type: "tool_call", toolName: "Agent", toolUseId: "A", input: { description: "scan tests" } }, 3),
+      evt({ type: "permission_request", requestId: "r1", toolName: "Bash", input: { command: "ls" }, parentToolUseId: "A" }, 4),
+    ];
+    socket.current = baseSocket(attributed, send);
+    const nodes = mount(SessionView as (p: unknown) => unknown, baseProps()).nodes();
+    const gate = gateBarOf(nodes)!.props.gate as { subLabel?: string };
+    expect(gate.subLabel).toBe("scan tests");
+  });
+
+  it("T8-hotkeys-regression: the bar and the a/d hotkeys share one decision callback (sendPermission)", () => {
+    socket.current = baseSocket(onePendingGate(), send);
+    const nodes = mount(SessionView as (p: unknown) => unknown, baseProps()).nodes();
+    const bar = gateBarOf(nodes)!;
+    const transcript = transcriptOf(nodes)!;
+    // The bar's decide callback is the SAME reference the Transcript hands its
+    // a/d hotkeys — one path, sendPermission (App). Driver info + jump are wired.
+    expect(bar.props.onDecide).toBe(transcript.props.onPermission);
+    expect(bar.props.isDriver).toBe(true);
+    expect(bar.props.driverName).toBe("Frank");
+    expect(bar.props.driverGlyph).toBe("▲");
+    expect(typeof bar.props.onTakeWheel).toBe("function");
+    expect(typeof bar.props.onJump).toBe("function");
+    // Deciding through the bar sends a permission frame — the identical wire
+    // effect the a/d hotkeys produce.
+    (bar.props.onDecide as (id: string, d: string) => void)("r1", "allow");
     expect(send).toHaveBeenCalledWith({ type: "permission", requestId: "r1", decision: "allow" });
   });
 });

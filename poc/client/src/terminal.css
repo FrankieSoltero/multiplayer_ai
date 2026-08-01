@@ -853,6 +853,36 @@ code, pre { font-family: var(--fm); }
 }
 .exitconfirm .exitwhy { flex: 1; min-width: 0; }
 
+/* ================================================================ gate bar
+   §8.5: the pinned gate bar above the prompt. A BASE-theme surface — these
+   rules sit OUTSIDE (above) the Clean fence below, so the bar is present and
+   identical in geometry in BOTH themes (constraints 1-3). It reuses the
+   permission-gate vocabulary: the --amber frame, the --amber-wash "act-here"
+   wash, the ⚒ sub-label (.perm-sub, styled above), and the btn green/red/gold
+   controls (no new button rules). No colour outside the token set; no
+   animation, so reduced-motion needs no extra rule. */
+.gatebar {
+  display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  margin: var(--sp-2) 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 2px solid var(--amber);
+  background: var(--amber-wash);
+  color: var(--fg);
+  cursor: pointer;
+}
+/* non-driver: the gate stays visible but recedes — the act-here wash and the
+   decide controls belong to the driver, so the frame drops to the muted amber. */
+.gatebar.nondriver { border-color: var(--amber-mute); }
+.gatebar-info {
+  display: flex; align-items: center; gap: var(--sp-2);
+  flex-wrap: wrap; min-width: 0;
+}
+.gatebar-tool { color: var(--amber); }
+.gatebar-actions {
+  display: flex; align-items: center; gap: var(--sp-2);
+  flex-wrap: wrap; margin-left: auto;
+}
+
 /* ===== CLEAN THEME (data-theme="clean") ===== */
 /* Same density, quieter skin (spec §2.2). Decoration only — fonts, colors,
    shadows, animations, CRT effects, and letter-tracking. No geometry, spacing,

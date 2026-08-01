@@ -13,6 +13,7 @@ import { PartyPane } from "./components/PartyPane";
 import { TodoPanel } from "./components/TodoPanel";
 import { ThinkingStrip } from "./components/ThinkingStrip";
 import type { PartyBest } from "./components/ThinkingStrip";
+import { GateBar } from "./components/GateBar";
 import { Lobby } from "./components/Lobby";
 import { SessionPicker } from "./components/SessionPicker";
 import { ProjectPicker } from "./components/ProjectPicker";
@@ -283,6 +284,28 @@ export function SessionView(props: {
     [derived.tasks],
   );
 
+  // The gate the pinned bar (§8.5) pins above the prompt: the NEWEST undecided
+  // permission_request — the SAME target rule the a/d hotkeys already use
+  // (Transcript.tsx). The sub-label joins on the gate's parentToolUseId through
+  // the existing deriveSubSessions label map (undefined -> no sub-label). null
+  // when nothing is pending, so the bar renders nothing and today's layout is
+  // untouched (regression floor).
+  const gate = useMemo(() => {
+    const pending = events.filter(
+      (e) => e.type === "permission_request" && e.requestId && !derived.permissionDecisions.has(e.requestId),
+    );
+    const newest = pending.at(-1);
+    if (!newest?.requestId) return null;
+    const subLabel = newest.parentToolUseId
+      ? new Map(deriveSubSessions(events).map((s) => [s.key, s.label])).get(newest.parentToolUseId)
+      : undefined;
+    return {
+      requestId: newest.requestId,
+      toolName: newest.toolName ?? "",
+      ...(subLabel ? { subLabel } : {}),
+    };
+  }, [events, derived.permissionDecisions]);
+
   const isDriver = derived.driverId === userId;
   const canSetModel = isDriver && !derived.agentBusy;
   const permissionMode = derived.permissionMode;
@@ -466,6 +489,11 @@ export function SessionView(props: {
   function onTakeWheel() {
     send({ type: "take_wheel" });
   }
+
+  // Jump from the pinned gate bar (§8.5) to the gate card in the transcript.
+  // The scroll target lands in Task 9; the callback is wired now so the bar
+  // body is already an affordance and Task 9 only fills the body in.
+  function onGateJump(_requestId: string) {}
 
   function onSetModel(key: string) {
     send({ type: "set_model", model: key });
@@ -675,6 +703,20 @@ export function SessionView(props: {
           onCancel={() => setExitReason(null)}
         />
       )}
+
+      {/* §8.5 pinned gate bar — pins the newest undecided permission decision
+          directly above the prompt, on the default transcript surface, in both
+          themes. Its decide callback is the SAME sendPermission the a/d hotkeys
+          hit (one path). onJump's scroll target lands in Task 9. */}
+      <GateBar
+        gate={gate}
+        isDriver={isDriver}
+        driverName={derived.driverId ? derived.participants.get(derived.driverId)?.name : undefined}
+        driverGlyph={derived.driverId ? derived.participants.get(derived.driverId)?.glyph : undefined}
+        onDecide={sendPermission}
+        onTakeWheel={onTakeWheel}
+        onJump={onGateJump}
+      />
 
       <PromptBar
         isDriver={isDriver}
