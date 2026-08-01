@@ -1,10 +1,20 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-08-01 (Kimi Code CLI session — project-invites shipped on `feature/project-invites`; presentation cycle complete and folded in below).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-08-01 (Kimi Code CLI session — §8.2 COMPLETE: lifecycle controls shipped on `feature/project-lifecycle`, stacked on `feature/project-invites`).*
 
 ---
 
-## 🚀 START HERE (2026-08-01, Kimi CLI) — PROJECT-SCOPED INVITES **SHIPPED** on `feature/project-invites` (base: presentation tip `e58bf5c`; the presentation cycle's 15 tasks + final whole-branch review were already complete per `.soltero/lean-sdd/2026-07-31-presentation/progress.md` — only its live-walk PR gate was outstanding).
+## 🚀 START HERE (2026-08-01, Kimi CLI #2) — §8.2 **COMPLETE**. PROJECT LIFECYCLE CONTROLS **SHIPPED** on `feature/project-lifecycle` (stacked on `feature/project-invites`; plan `docs/plans/2026-08-01-project-lifecycle-controls.md`).
+
+**What shipped (the PR-#22 gap — `set_project_lifecycle` had no client surface):** server parity — solo mode answers `set_project_lifecycle` with the hub's exact gates/strings, in-memory lifecycle, join/create refused non-active (`be8f077`); client — SHOW ARCHIVED toggle on the entrance (archived was a one-way door: `sortProjects` dropped it with no way back), ARCHIVED badge, and member-only lifecycle controls on the project screen (active→CLOSE/ARCHIVE, closed→REOPEN/ARCHIVE, archived→UNARCHIVE; arm-and-confirm SURE? on the destructive two) (`a903da2`).
+
+**Facts worth keeping:** (1) the hub's member refusal for `set_project_lifecycle` is a PLAIN uncoded error — the client normalizes the verbatim string `"join this project before changing it"` to `not_a_member` (`LIFECYCLE_MEMBER_REFUSAL`, SessionPicker); the server mirrors the uncoded shape byte-for-byte. (2) The controls gate on MEMBERSHIP, not `actable` — `canAct` returns not-active on closed projects, which would make REOPEN unreachable (plan §1.2's "actable/isMember" read as membership). (3) Suites at head: server **766** · hub **368** · client **531**, tsc ×3 clean.
+
+**Stack state:** three local branches — `feature/presentation` (e58bf5c, cycle complete incl. final review; only its live-walk PR gate outstanding) ← `feature/project-invites` ← `feature/project-lifecycle`. Stacked PRs opened this session; user merges. Remaining PRD: §8.6 agent surface (gap inventory first), §8.8 hub-side oversight, §8.10 real-box verification.
+
+---
+
+## (was) START HERE (2026-08-01, Kimi CLI) — PROJECT-SCOPED INVITES **SHIPPED** on `feature/project-invites` (base: presentation tip `e58bf5c`; the presentation cycle's 15 tasks + final whole-branch review were already complete per `.soltero/lean-sdd/2026-07-31-presentation/progress.md` — only its live-walk PR gate was outstanding).
 
 **What shipped (PRD §8.2 remainder, tech-debt §2.5 + §1.2 — plan `docs/plans/2026-08-01-project-invites.md`):** invites are project-scoped, hub-held, durable. Server: `InviteStore` retargeted session→project, five messages answered standalone, `REQUIRE_INVITE` now project-level (`98b4652`). Hub: schema **v3** (`invites` + `invite_redemptions`, migration mirrors v2 devices), `HubInviteStore`, hub-answered `peek_invite`/`create`/`list`/`revoke` + redeem-at-`join_project` (`5ea5925`). Client: InvitePanel moved to the project screen (members only), InviteLanding accepts for real (join_project → `?project=<id>` + `replaceState` token strip), OAuth round trip stashes the token in sessionStorage instead of `next`, session-level invite UI (Header button, `I` hotkey, `"invite"` screen) removed (`742db76`). Plus a rider: theme toggle on lobby + hub entrance (`db86f7f`; the presentation branch's T4 project-level-untouched guard was deleted — its premise is false on this branch).
 
