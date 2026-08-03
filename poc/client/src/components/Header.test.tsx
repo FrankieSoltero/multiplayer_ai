@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Header } from "./Header";
+import { Header, formatDurationMs } from "./Header";
 import { projectCollisions } from "../collisionView";
 import type { ProjectSessionInfo } from "../types";
 
@@ -291,5 +291,63 @@ describe("Header — the `contested` prop is optional", () => {
     expect(lines).toContain("● ONLINE");
     expect(lines).toContain("🔐 PULLS ▸ 4");
     expect(lines).toContain("▢ EXIT");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent surface (§8.6): the HUD segments the turn_end usage payload now feeds.
+// Plan §2.4 — no placeholder without a feed: CONTEXT and PARTY XP render NO
+// segment until a real value arrives, never an em dash.
+// ---------------------------------------------------------------------------
+
+describe("Header — agent-surface HUD (§8.6, plan §2.4)", () => {
+  it("CONTEXT renders the fed numbers and the fill bar", () => {
+    const markup = render({ hud: { turn: 3, contextUsed: 124400, contextMax: 200000 } });
+    const lines = textLines(markup);
+    expect(lines).toContain("CONTEXT");
+    expect(lines).toContain("124.4k / 200.0k");
+    // 62% fill, rounded.
+    expect(markup).toContain('class="seg-fill" style="width:62%"');
+  });
+
+  it("CONTEXT shows used tokens alone when no contextWindow ever arrived", () => {
+    const lines = textLines(render({ hud: { turn: 3, contextUsed: 124400 } }));
+    expect(lines).toContain("124.4k");
+    expect(lines).not.toContain("124.4k /");
+    // …and no fill without a max: the bar would invent a percentage.
+    expect(render({ hud: { turn: 3, contextUsed: 124400 } })).toContain('style="width:0%"');
+  });
+
+  it("CONTEXT renders NO segment at all when nothing feeds it — no dash", () => {
+    const markup = render({ hud: { turn: 1, toolsUsed: 2 } });
+    expect(markup).not.toContain("CONTEXT");
+    expect(markup).not.toContain("— / —");
+    // Not vacuous: the fed segments did render.
+    expect(textLines(markup)).toContain("TURN");
+    expect(textLines(markup)).toContain("TOOLS USED");
+  });
+
+  it("PARTY XP renders the session token total, labelled session — and no segment until fed", () => {
+    const lines = textLines(render({ hud: { turn: 3, partyXp: 12400 } }));
+    expect(lines).toContain("PARTY XP");
+    expect(lines).toContain("+12.4k");
+    expect(lines).toContain("session");
+    // Never "today" — the number is a session total, and the label must not
+    // claim a day it does not measure.
+    expect(lines).not.toContain("today");
+    // Unfed: no segment, no "+—".
+    const bare = render({ hud: { turn: 1 } });
+    expect(bare).not.toContain("PARTY XP");
+  });
+
+  it("TURN elapsed shows the fed duration, formatted", () => {
+    const lines = textLines(render({ hud: { turn: 4, elapsed: "12.3s" } }));
+    expect(lines).toContain("· 12.3s");
+  });
+
+  it("formatDurationMs: seconds under a minute, m:ss past it", () => {
+    expect(formatDurationMs(4200)).toBe("4.2s");
+    expect(formatDurationMs(61000)).toBe("1m01s");
+    expect(formatDurationMs(125000)).toBe("2m05s");
   });
 });

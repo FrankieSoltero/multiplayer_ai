@@ -104,3 +104,62 @@ describe("PromptBar — Escape is the way out of the prompt", () => {
     expect(blur).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Agent surface §2: the driver-only, busy-only ■ STOP on the prompt row —
+// the same idiom as the sub-session STOP (App), sending {type:"stop_turn"}
+// through App's onStopTurn. Hidden for non-drivers and when idle.
+// ---------------------------------------------------------------------------
+
+const stopBtnOf = (nodes: El[]): El | undefined =>
+  nodes.find(
+    (n) =>
+      n.type === "button" &&
+      typeof n.props.children === "string" &&
+      (n.props.children as string).includes("■ STOP"),
+  );
+
+describe("PromptBar — ■ STOP the turn (agent-surface §2)", () => {
+  it("shows for a driver while the agent is busy, and click invokes onStopTurn", () => {
+    const onStopTurn = vi.fn();
+    const app = mount(
+      PromptBar as (p: unknown) => unknown,
+      { ...baseProps(), agentBusy: true, onStopTurn },
+    );
+    const btn = stopBtnOf(app.nodes());
+    expect(btn).toBeDefined();
+    expect(btn!.props.className).toBe("btn"); // the sub-session STOP's idiom
+    (btn!.props.onClick as () => void)();
+    expect(onStopTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("is hidden for a non-driver, even while the agent is busy", () => {
+    const app = mount(
+      PromptBar as (p: unknown) => unknown,
+      { ...baseProps(), isDriver: false, agentBusy: true, onStopTurn: () => {} },
+    );
+    expect(stopBtnOf(app.nodes())).toBeUndefined();
+    // …and the watcher's own control is untouched.
+    expect(
+      app.nodes().some(
+        (n) => typeof n.props.children === "string" && (n.props.children as string).includes("TAKE THE WHEEL"),
+      ),
+    ).toBe(true);
+  });
+
+  it("is hidden for a driver when the agent is idle — nothing to stop", () => {
+    const app = mount(
+      PromptBar as (p: unknown) => unknown,
+      { ...baseProps(), agentBusy: false, onStopTurn: () => {} },
+    );
+    expect(stopBtnOf(app.nodes())).toBeUndefined();
+  });
+
+  it("is hidden when the handler prop is absent (optional-prop regression floor)", () => {
+    const app = mount(
+      PromptBar as (p: unknown) => unknown,
+      { ...baseProps(), agentBusy: true },
+    );
+    expect(stopBtnOf(app.nodes())).toBeUndefined();
+  });
+});

@@ -5,7 +5,7 @@ import { nextMode } from "./modes";
 import { hashIdentity, loadOrCreateUserId, loadProfile, saveProfile } from "./identity";
 import type { Profile } from "./identity";
 import { useSessionSocket } from "./useSessionSocket";
-import { Header, MODEL_LABELS } from "./components/Header";
+import { Header, MODEL_LABELS, formatDurationMs } from "./components/Header";
 import { PromptBar } from "./components/PromptBar";
 import { Transcript } from "./components/Transcript";
 import { SubSessionRail } from "./components/SubSessionRail";
@@ -286,14 +286,26 @@ export function SessionView(props: {
     else localStorage.setItem(PULL_STORAGE_KEY, String(ms));
   };
 
-  // HUD numbers that need no server change: counted off the event log (spec §1).
+  // HUD numbers: turn/tools/gates counted off the event log; elapsed, CONTEXT
+  // and PARTY XP fed by the turn_end usage payload through derive.ts
+  // (agent-surface §1). Fields stay undefined until a turn_end actually
+  // carries them — the Header then renders the segment not at all rather
+  // than a placeholder (plan §2.4). PARTY XP is the session's cumulative
+  // token total: the honest cumulative counter the segment was designed as,
+  // per-session and off the shared log, so nothing cross-machine leaks (§2.5).
   const hud = useMemo(
     () => ({
       turn: events.filter((e) => e.type === "turn_end").length + 1,
       toolsUsed: events.filter((e) => e.type === "tool_call").length,
       gated: events.filter((e) => e.type === "permission_request").length,
+      ...(derived.lastTurnDurationMs !== undefined
+        ? { elapsed: formatDurationMs(derived.lastTurnDurationMs) }
+        : {}),
+      ...(derived.contextUsed !== undefined ? { contextUsed: derived.contextUsed } : {}),
+      ...(derived.contextMax !== undefined ? { contextMax: derived.contextMax } : {}),
+      ...(derived.sessionTokens !== undefined ? { partyXp: derived.sessionTokens } : {}),
     }),
-    [events],
+    [events, derived.lastTurnDurationMs, derived.contextUsed, derived.contextMax, derived.sessionTokens],
   );
 
   const gatesPending = useMemo(
@@ -506,6 +518,10 @@ export function SessionView(props: {
     send({ type: "take_wheel" });
   }
 
+  function onStopTurn() {
+    send({ type: "stop_turn" });
+  }
+
   // §8.5 pull click-through: jump to the OLDEST-waiting pull (minimum
   // `sinceTs`) — the one that has been ignored longest. Guarded against the
   // count dropping to zero between render and click (a resolved gate, a
@@ -565,6 +581,20 @@ export function SessionView(props: {
       if (e.type === "turn_end") break;
       if (e.type === "tool_call") { currentTool = e.toolName; break; }
     }
+  }
+
+  // The thinking strip's agent_status line (agent-surface §3/§4): compacting
+  // and retrying get an explicit signal; "requesting" is already what
+  // "IS THINKING" says; refusal_fallback speaks in the transcript instead.
+  let statusLine: string | undefined;
+  if (derived.agentStatus?.status === "compacting") {
+    statusLine = "✦ compacting…";
+  } else if (derived.agentStatus?.status === "retrying") {
+    const { attempt, maxRetries } = derived.agentStatus;
+    statusLine =
+      attempt !== undefined && maxRetries !== undefined
+        ? `✦ retrying (${attempt}/${maxRetries})…`
+        : "✦ retrying…";
   }
 
   if (props.screen === "skills") {
@@ -719,6 +749,7 @@ export function SessionView(props: {
         onClose={() => setArcadeOpen(false)}
         modelLabel={MODEL_LABELS[derived.model] ?? derived.model}
         currentTool={currentTool}
+        statusLine={statusLine}
         partyBests={partyBests}
         onScore={(game, score) => send({ type: "game_score", game, score })}
         onPlayingChange={setArcadeCapturing}
@@ -757,6 +788,7 @@ export function SessionView(props: {
         gatesPending={gatesPending}
         onPrompt={onPrompt}
         onTakeWheel={onTakeWheel}
+        onStopTurn={onStopTurn}
         onSuggestSkill={onSuggestSkill}
         onClientCommand={(command) => {
           if (command.type === "exit") onExit();

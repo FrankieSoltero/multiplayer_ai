@@ -1,5 +1,27 @@
 import { socketUrlFor } from "./socketUrl";
 
+/** Turn-level token usage on `turn_end` (agent-surface §1). Field names mirror
+ *  the SDK result's `usage` verbatim; all optional — a turn logged before the
+ *  payload existed carries none of it. */
+export type TurnUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+};
+
+/** Per-model usage breakdown on `turn_end` (agent-surface §1), mirrored from
+ *  the SDK result's `modelUsage` values. All optional. */
+export type ModelUsageInfo = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  webSearchRequests?: number;
+  costUSD?: number;
+  contextWindow?: number;
+};
+
 export type LoggedEvent = {
   seq: number;
   ts: string;
@@ -49,6 +71,40 @@ export type LoggedEvent = {
   inviteId?: string;
   expiresAt?: number;
   maxUses?: number;
+  // --- agent surface (§8.6 cycle 1, server Task 1–5) — all additive on read:
+  // an event logged by an older server carries none of these. ---
+  /** turn_end: how the turn ended. Absent on old events = a clean end. */
+  outcome?: "success" | "interrupted" | "error";
+  total_cost_usd?: number;
+  usage?: TurnUsage;
+  modelUsage?: Record<string, ModelUsageInfo>;
+  duration_ms?: number;
+  num_turns?: number;
+  /** turn_end outcome "error" only: the SDK result subtype + human reason. */
+  errorSubtype?: string;
+  errorReason?: string;
+  /** agent_text_delta refusal-fallback signals: `supersedes` = this frame
+   *  replaced earlier refused content (renders retracted); `aborted` = the
+   *  frame was truncated by an interrupt. Both usually absent. */
+  supersedes?: true;
+  aborted?: true;
+  /** rate_limit event. `status` above already carries its state string. */
+  rateLimitType?: string;
+  utilization?: number;
+  resetsAt?: number;
+  /** agent_status event: `status` above carries the state; these carry the
+   *  retry counters / refusal-fallback detail. */
+  attempt?: number;
+  maxRetries?: number;
+  retryDelayMs?: number;
+  errorStatus?: number | null;
+  detail?: string;
+  /** compaction event: `durationMs` above carries its duration. */
+  trigger?: string;
+  preTokens?: number;
+  postTokens?: number;
+  /** task_event subtype "done": the subagent's full transcript path. */
+  outputFile?: string;
 };
 
 export type InviteView = {

@@ -553,3 +553,126 @@ describe("Transcript — Task 9 jump-to-card ids", () => {
     expect(other!.props.id).toBe("perm-rg");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Agent surface (§8.6 cycle 1): interrupted/error turn truth, compaction and
+// rate-limit markers, refusal-fallback signals. Everything additive — events
+// without the new fields render exactly as before.
+// ---------------------------------------------------------------------------
+
+describe("Transcript — agent surface: interrupted turns (§2)", () => {
+  it("turn_stop renders the attributed line and the interrupted turn_end stays silent", () => {
+    const events: LoggedEvent[] = [
+      JOIN,
+      { seq: 2, ts, type: "turn_stop", userId: "frank" },
+      { seq: 3, ts, type: "turn_end", outcome: "interrupted" },
+    ];
+    const text = textLines(markupOf(events));
+    expect(text).toContain("■ turn stopped by Frank");
+    // One truthful rendering: the turn_end adds no second line.
+    expect(text.filter((l) => l.includes("turn stopped") || l.includes("turn interrupted"))).toHaveLength(1);
+    // Visually distinct: the amber stopline class, not a plain line.
+    expect(markupOf(events)).toContain('class="line stopline"');
+  });
+
+  it("an interrupted turn_end with NO turn_stop (old log / mid-upgrade) still names the outcome", () => {
+    const events: LoggedEvent[] = [JOIN, { seq: 2, ts, type: "turn_end", outcome: "interrupted" }];
+    const text = textLines(markupOf(events));
+    expect(text).toContain("■ turn interrupted");
+  });
+
+  it("a clean/absent-outcome turn_end renders nothing, exactly as before", () => {
+    const base = markupOf([JOIN]);
+    expect(markupOf([JOIN, { seq: 2, ts, type: "turn_end" }])).toBe(base);
+    expect(markupOf([JOIN, { seq: 2, ts, type: "turn_end", outcome: "success", duration_ms: 4200 }])).toBe(base);
+  });
+});
+
+describe("Transcript — agent surface: error turns (§3)", () => {
+  it("an error turn_end folds into its agent_error line — one rendering, not two", () => {
+    const events: LoggedEvent[] = [
+      JOIN,
+      { seq: 2, ts, type: "agent_error", message: "turn failed (error_max_budget_usd): budget spent" },
+      { seq: 3, ts, type: "turn_end", outcome: "error", errorSubtype: "error_max_budget_usd", errorReason: "budget spent" },
+    ];
+    const text = textLines(markupOf(events));
+    expect(text).toContain("⚠ turn failed (error_max_budget_usd): budget spent");
+    expect(text.filter((l) => l.includes("turn failed"))).toHaveLength(1);
+  });
+
+  it("an error turn_end with NO agent_error composes subtype + reason inline", () => {
+    const events: LoggedEvent[] = [
+      JOIN,
+      { seq: 2, ts, type: "turn_end", outcome: "error", errorSubtype: "error_max_turns", errorReason: "max turns reached" },
+    ];
+    const text = textLines(markupOf(events));
+    expect(text).toContain("⚠ turn failed (error_max_turns): max turns reached");
+  });
+
+  it("a supersedes-flagged delta renders retracted; an unflagged one is byte-identical to before", () => {
+    const flagged = markupOf([JOIN, { seq: 2, ts, type: "agent_text_delta", text: "replaced text", supersedes: true }]);
+    expect(flagged).toContain('class="line retracted"');
+    expect(textLines(flagged)).toContain("⏺ replaced text");
+    // Unflagged: the ordinary line, no retracted class anywhere.
+    const plain = markupOf([JOIN, { seq: 2, ts, type: "agent_text_delta", text: "ordinary text" }]);
+    expect(plain).toContain('<div class="line">⏺ ordinary text</div>');
+    expect(plain).not.toContain("retracted");
+  });
+});
+
+describe("Transcript — agent surface: compaction, rate limit, refusal fallback (§1/§3/§4)", () => {
+  it("compaction renders the marker with pre → post token counts", () => {
+    const text = textLines(markupOf([JOIN, { seq: 2, ts, type: "compaction", preTokens: 120000, postTokens: 40000 }]));
+    expect(text).toContain("✦ context compacted — 120.0k → 40.0k tokens");
+  });
+
+  it("compaction degrades gracefully: pre-only, and payload-less", () => {
+    expect(
+      textLines(markupOf([JOIN, { seq: 2, ts, type: "compaction", preTokens: 120000 }])),
+    ).toContain("✦ context compacted — 120.0k tokens");
+    expect(
+      textLines(markupOf([JOIN, { seq: 2, ts, type: "compaction" }])),
+    ).toContain("✦ context compacted");
+  });
+
+  it("rate_limit renders a quiet dim line with utilization and reset time — never red", () => {
+    // resetsAt as epoch ms → a clock reading; computed here so the assertion
+    // is timezone-independent.
+    const resetsAt = new Date(2026, 7, 1, 14, 30).getTime();
+    const clock = "14:30";
+    const markup = markupOf([JOIN, { seq: 2, ts, type: "rate_limit", status: "allowed_warning", utilization: 87, resetsAt }]);
+    const text = textLines(markup);
+    expect(text).toContain(`✦ rate limit: allowed_warning · 87% · resets ${clock}`);
+    expect(markup).toContain('class="line dim"');
+    expect(markup).not.toContain("line red");
+  });
+
+  it("rate_limit without extras renders just the status", () => {
+    expect(
+      textLines(markupOf([JOIN, { seq: 2, ts, type: "rate_limit", status: "rejected" }])),
+    ).toContain("✦ rate limit: rejected");
+  });
+
+  it("refusal_fallback renders its detail ONCE per turn, then again next turn", () => {
+    const events: LoggedEvent[] = [
+      JOIN,
+      { seq: 2, ts, type: "agent_status", status: "refusal_fallback", detail: "opus refused — retrying with sonnet" },
+      { seq: 3, ts, type: "agent_status", status: "refusal_fallback", detail: "opus refused — retrying with sonnet" },
+      { seq: 4, ts, type: "turn_end" },
+      { seq: 5, ts, type: "agent_status", status: "refusal_fallback", detail: "opus refused — retrying with sonnet" },
+    ];
+    const text = textLines(markupOf(events));
+    expect(
+      text.filter((l) => l.includes("opus refused — retrying with sonnet")),
+    ).toHaveLength(2); // one per turn, not three
+  });
+
+  it("non-fallback agent_status events render no transcript line (the strip owns them)", () => {
+    const markup = markupOf([
+      JOIN,
+      { seq: 2, ts, type: "agent_status", status: "compacting" },
+      { seq: 3, ts, type: "agent_status", status: "retrying", attempt: 2, maxRetries: 5 },
+    ]);
+    expect(textLines(markup).some((l) => l.includes("compacting") || l.includes("retrying"))).toBe(false);
+  });
+});

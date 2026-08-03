@@ -7,9 +7,10 @@ export const MODEL_LABELS: Record<string, string> = {
   opus: "opus 4.8", sonnet: "sonnet 5", haiku: "haiku 4.5",
 };
 
-/** Every hud field is optional and renders an em dash when absent — the HUD is
- *  a design surface first; CONTEXT and PARTY XP stay "—" until server events
- *  exist (spec §1). turn/toolsUsed/gated are derived client-side in App. */
+/** Every hud field is optional. turn/toolsUsed/gated are derived client-side
+ *  in App; elapsed/contextUsed/contextMax/partyXp are fed by the turn_end
+ *  usage payload (agent-surface §1, derive.ts). Truthful-UI rule (plan §2.4):
+ *  a segment with no feed yet renders NOTHING, not an em dash. */
 export interface HudData {
   turn?: number;
   elapsed?: string;
@@ -18,6 +19,13 @@ export interface HudData {
   toolsUsed?: number;
   gated?: number;
   partyXp?: number;
+}
+
+/** Turn elapsed for the TURN cell: "12.3s" under a minute, "2m05s" past it. */
+export function formatDurationMs(ms: number): string {
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  return `${Math.floor(s / 60)}m${String(Math.round(s % 60)).padStart(2, "0")}s`;
 }
 
 const dash = (v: unknown) => (v === undefined || v === null ? "—" : String(v));
@@ -212,17 +220,20 @@ export function Header(props: {
             {dash(hud.turn)} <span className="sub">· {hud.elapsed ?? "—"}</span>
           </div>
         </div>
-        <div className="hud-cell wide panel">
-          <div className="hud-label pix sm">
-            <span>CONTEXT</span>
-            <span style={{ color: "var(--green)" }}>
-              {k(hud.contextUsed)} / {k(hud.contextMax)}
-            </span>
+        {hud.contextUsed !== undefined && (
+          <div className="hud-cell wide panel">
+            <div className="hud-label pix sm">
+              <span>CONTEXT</span>
+              <span style={{ color: "var(--green)" }}>
+                {k(hud.contextUsed)}
+                {hud.contextMax !== undefined && ` / ${k(hud.contextMax)}`}
+              </span>
+            </div>
+            <div className="seg">
+              <div className="seg-fill" style={{ width: `${pct}%` }} />
+            </div>
           </div>
-          <div className="seg">
-            <div className="seg-fill" style={{ width: `${pct}%` }} />
-          </div>
-        </div>
+        )}
         <div className="hud-cell panel">
           <div className="hud-label pix sm"><span>TOOLS USED</span></div>
           <div className="hud-val">
@@ -230,12 +241,14 @@ export function Header(props: {
             <span className="sub">· {hud.gated ?? 0} gated</span>
           </div>
         </div>
-        <div className="hud-cell panel">
-          <div className="hud-label pix sm"><span>PARTY XP</span></div>
-          <div className="hud-val" style={{ color: "var(--gold)" }}>
-            {hud.partyXp === undefined ? "—" : `+${hud.partyXp}`} <span className="sub">today</span>
+        {hud.partyXp !== undefined && (
+          <div className="hud-cell panel">
+            <div className="hud-label pix sm"><span>PARTY XP</span></div>
+            <div className="hud-val" style={{ color: "var(--gold)" }}>
+              +{k(hud.partyXp)} <span className="sub">session</span>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {props.objective && (

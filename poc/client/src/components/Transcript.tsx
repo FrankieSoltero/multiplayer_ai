@@ -10,6 +10,18 @@ import { pluginLine } from "../pluginLine";
 
 const isFresh = (ev: LoggedEvent) => Date.now() - new Date(ev.ts).getTime() < 5000;
 
+/** 12.4k-style token counts for the compaction marker (same shape as the HUD's). */
+const tok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+
+/** The SDK's resetsAt is an epoch number with unspecified units (sdk.d.ts:4222)
+ *  — read it as ms when it's clearly ms, else as seconds; unparseable → null. */
+const resetClock = (resetsAt: number): string | null => {
+  const ms = resetsAt > 1e12 ? resetsAt : resetsAt * 1000;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+
 export function Transcript(props: {
   events: LoggedEvent[]; derived: DerivedState; isDriver: boolean;
   selfId: string;
@@ -65,6 +77,45 @@ export function Transcript(props: {
   const colorOf = (id?: string) => (id && participants.get(id)?.color) ?? "var(--fg)";
   const watchers = [...participants.entries()].filter(([id]) => id !== props.selfId);
 
+  // One truthful rendering per turn outcome (agent-surface §2/§3): the server
+  // appends agent_error BEFORE an error turn_end and emits turn_stop before an
+  // interrupted one, so the line belongs to the FIRST of the pair and the
+  // turn_end itself stays silent (claimed). A turn_end whose partner never
+  // arrived — an old log, a solo server mid-upgrade — renders its own line, so
+  // the outcome is never invisible. refusal_fallback gets the same once-per-turn
+  // treatment: the SDK can repeat the notice, the transcript must not.
+  const claimedTurnEnds = new Set<number>();
+  const refusalFallbackSeqs = new Set<number>();
+  {
+    let sawStop = false;
+    let sawError = false;
+    let refusalPending = false;
+    for (const ev of props.events) {
+      switch (ev.type) {
+        case "turn_stop":
+          sawStop = true;
+          break;
+        case "agent_error":
+          sawError = true;
+          break;
+        case "agent_status":
+          if (ev.status === "refusal_fallback" && !refusalPending) {
+            refusalFallbackSeqs.add(ev.seq);
+            refusalPending = true;
+          }
+          break;
+        case "turn_end":
+          if ((ev.outcome === "interrupted" && sawStop) || (ev.outcome === "error" && sawError)) {
+            claimedTurnEnds.add(ev.seq);
+          }
+          sawStop = false;
+          sawError = false;
+          refusalPending = false;
+          break;
+      }
+    }
+  }
+
   // a/d keyboard shortcuts for the newest undecided permission (driver only)
   const pending = props.events.filter(
     (e) => e.type === "permission_request" && e.requestId && !permissionDecisions.has(e.requestId),
@@ -95,7 +146,73 @@ export function Transcript(props: {
           </div>
         );
       case "agent_text_delta":
-        return <div key={ev.seq} className="line">⏺ {ev.text}</div>;
+        // `supersedes` flags a refusal-fallback frame: it replaced content the
+        // first model refused — rendered retracted (dim + line-through, the
+        // `.retracted` token pair) so the transcript doesn't pass superseded
+        // text off as settled. Absent flag = the ordinary line, byte-identical.
+        return ev.supersedes ? (
+          <div key={ev.seq} className="line retracted">⏺ {ev.text}</div>
+        ) : (
+          <div key={ev.seq} className="line">⏺ {ev.text}</div>
+        );
+      case "turn_stop":
+        // The attributed half of an interrupted turn (§2): this line carries
+        // the story, and the following interrupted turn_end stays silent
+        // (claimedTurnEnds above) — one truthful rendering, not two.
+        return (
+          <div key={ev.seq} className="line stopline">
+            ■ turn stopped by {nameOf(ev.userId)}
+          </div>
+        );
+      case "turn_end": {
+        if (claimedTurnEnds.has(ev.seq)) return null;
+        if (ev.outcome === "interrupted")
+          // No turn_stop ever arrived (old log / mid-upgrade server) — the
+          // turn_end itself names the outcome, unattributed.
+          return (
+            <div key={ev.seq} className="line stopline">■ turn interrupted</div>
+          );
+        if (ev.outcome === "error") {
+          // No agent_error arrived to carry it — compose from the payload the
+          // same shape the server's agent_error uses (events.ts).
+          const why = ev.errorSubtype
+            ? `turn failed (${ev.errorSubtype})${ev.errorReason ? `: ${ev.errorReason}` : ""}`
+            : (ev.errorReason ?? "turn failed");
+          return <div key={ev.seq} className="line red">⚠ {why}</div>;
+        }
+        return null; // clean/absent outcome: no transcript line, exactly as before
+      }
+      case "compaction": {
+        let line = "✦ context compacted";
+        if (ev.preTokens !== undefined) line += ` — ${tok(ev.preTokens)}`;
+        if (ev.postTokens !== undefined) line += ` → ${tok(ev.postTokens)}`;
+        if (ev.preTokens !== undefined || ev.postTokens !== undefined) line += " tokens";
+        return (
+          <div key={ev.seq} className="line gold">{line}</div>
+        );
+      }
+      case "rate_limit": {
+        // A quiet signal, never the error red — throttled server-side already.
+        let line = `✦ rate limit: ${ev.status ?? "unknown"}`;
+        if (ev.utilization !== undefined) line += ` · ${ev.utilization}%`;
+        const clock = ev.resetsAt !== undefined ? resetClock(ev.resetsAt) : null;
+        if (clock) line += ` · resets ${clock}`;
+        return (
+          <div key={ev.seq} className="line dim">{line}</div>
+        );
+      }
+      case "agent_status":
+        // Only refusal_fallback speaks in the transcript, once per turn
+        // (refusalFallbackSeqs above); compacting/retrying live on the
+        // thinking strip instead (App → ThinkingStrip statusLine).
+        if (ev.status === "refusal_fallback" && refusalFallbackSeqs.has(ev.seq)) {
+          return (
+            <div key={ev.seq} className="line dim">
+              ✦ {ev.detail ?? "model refused — falling back"}
+            </div>
+          );
+        }
+        return null;
       case "tool_call": {
         const input = ev.input as { skill?: unknown; args?: unknown } | undefined;
         if (ev.toolName === "Skill") {
@@ -328,7 +445,7 @@ export function Transcript(props: {
           </div>
         );
       default:
-        return null; // presence_join/leave, turn_end: no transcript line
+        return null; // presence_join/leave and friends: no transcript line
     }
   };
 
