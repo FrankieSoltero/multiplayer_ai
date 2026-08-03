@@ -203,6 +203,28 @@ describe("error truth (T3)", () => {
     expect(err.message).toBe("turn failed (error_during_execution)");
   });
 
+  it("an API-level failure arrives as subtype \"success\" + is_error + terminal_reason — no \"turn failed (success)\" nonsense (live-found, 2026-08-03)", async () => {
+    // The weekly-limit/api_error shape the SDK really emits: subtype stays
+    // "success", is_error is true, terminal_reason carries the cause. The
+    // subtype must NOT be stamped or rendered as an errorSubtype — only
+    // error_* values are subtypes; the reason carries everything else.
+    const s = new Session("err4");
+    const driver = new AgentDriver(
+      s,
+      errorRun({ subtype: "success", is_error: true, terminal_reason: "api_error" }),
+    );
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => {
+      expect(s.eventsFrom(0).some((e) => e.type === "turn_end")).toBe(true);
+    });
+    const ev = s.eventsFrom(0).find((e) => e.type === "turn_end") as any;
+    expect(ev.outcome).toBe("error");
+    expect(ev.errorReason).toBe("api_error");
+    expect("errorSubtype" in ev).toBe(false);
+    const err = s.eventsFrom(0).find((e) => e.type === "agent_error") as any;
+    expect(err.message).toBe("turn failed: api_error");
+  });
+
   it("carries supersedes/aborted as additive flags on agent_text_delta", async () => {
     const flagRun: RunQuery = async function* (prompts) {
       for await (const _p of prompts) {

@@ -1057,13 +1057,22 @@ export class AgentDriver {
         // fields, just the distinct outcome on the turn_end.
         const interrupted = this.interruptPending;
         this.interruptPending = false;
+        const subtype =
+          typeof message.subtype === "string" ? message.subtype : undefined;
+        // An error SUBTYPE is one of the SDK's error_* values. Live proof
+        // (2026-08-03): an API-level failure arrives as subtype "success"
+        // with is_error true and terminal_reason set — composing "turn failed
+        // (success)" from that is nonsense, so only error_* subtypes are
+        // rendered/stamped as subtypes; the reason carries everything else.
+        const isErrorSubtype = subtype?.startsWith("error") === true;
         const isError =
           !interrupted &&
-          (message.is_error === true ||
-            (typeof message.subtype === "string" && message.subtype.startsWith("error")));
+          (message.is_error === true || isErrorSubtype);
         const outcome = interrupted ? "interrupted" : isError ? "error" : "success";
         const errorReason = isError
-          ? message.terminal_reason ?? message.errors?.[0] ?? message.subtype
+          ? message.terminal_reason ??
+            message.errors?.[0] ??
+            (isErrorSubtype ? subtype : undefined)
           : undefined;
         if (isError) {
           // Appended BEFORE the turn_end so record.ts groups the failure with
@@ -1072,8 +1081,9 @@ export class AgentDriver {
           this.session.append({
             type: "agent_error",
             message:
-              `turn failed (${message.subtype ?? "unknown subtype"})` +
-              (errorReason && errorReason !== message.subtype ? `: ${errorReason}` : ""),
+              "turn failed" +
+              (isErrorSubtype ? ` (${subtype})` : "") +
+              (errorReason && errorReason !== subtype ? `: ${errorReason}` : ""),
           });
         }
         this.session.append({
@@ -1088,7 +1098,7 @@ export class AgentDriver {
             ? { duration_ms: message.duration_ms }
             : {}),
           ...(typeof message.num_turns === "number" ? { num_turns: message.num_turns } : {}),
-          ...(isError && message.subtype ? { errorSubtype: message.subtype } : {}),
+          ...(isError && isErrorSubtype ? { errorSubtype: subtype } : {}),
           ...(errorReason ? { errorReason } : {}),
         });
       }
