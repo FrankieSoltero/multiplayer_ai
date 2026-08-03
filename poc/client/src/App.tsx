@@ -22,7 +22,6 @@ import { Crt } from "./components/Crt";
 import { SkillsPanel } from "./components/SkillsPanel";
 import { WorkflowsPanel } from "./components/WorkflowsPanel";
 import { OversightPanel } from "./components/OversightPanel";
-import { AgentStatus } from "./components/AgentStatus";
 import { oversightFresh } from "./oversightView";
 import { projectCollisions } from "./collisionView";
 import { InviteLanding } from "./components/InviteLanding";
@@ -56,8 +55,9 @@ export default function App() {
   // comment there for why it is neither unconditional nor absent.
   const projectId = activeProjectIdFrom(window.location.search);
   // v6a: screen is state seeded by ?screen= — deep links keep working, but
-  // SKILLS is reachable in-app without a reload. ?screen=status stays a
-  // URL-only design surface (no nav points at it).
+  // SKILLS is reachable in-app without a reload. (?screen=status's design
+  // screen was retired in the §8.6 cycle: its bars had no honest feed and its
+  // tool grid was static — the HUD now shows the real numbers.)
   const [screen, setScreen] = useState<string | null>(() => params.get("screen"));
 
   // An invite link carries the project and the token (plan §1.5); the landing
@@ -638,10 +638,6 @@ export function SessionView(props: {
       />
     );
   }
-  if (props.screen === "status") {
-    return <AgentStatus model={derived.model} canSetModel={canSetModel} onSetModel={onSetModel} rosterCount={derived.skills.length} />;
-  }
-
   return (
     <div className="term">
       <Header

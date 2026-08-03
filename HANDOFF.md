@@ -1,10 +1,22 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-08-01 (Kimi Code CLI session — §8.2 COMPLETE: lifecycle controls shipped on `feature/project-lifecycle`, stacked on `feature/project-invites`).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-08-01 (Kimi Code CLI session — §8.6 cycle 1 "the wire" shipped on `feature/agent-surface`, stacked on `feature/project-lifecycle`).*
 
 ---
 
-## 🚀 START HERE (2026-08-01, Kimi CLI #2) — §8.2 **COMPLETE**. PROJECT LIFECYCLE CONTROLS **SHIPPED** on `feature/project-lifecycle` (stacked on `feature/project-invites`; plan `docs/plans/2026-08-01-project-lifecycle-controls.md`).
+## 🚀 START HERE (2026-08-01, Kimi CLI #3) — §8.6 AGENT SURFACE, CYCLE 1 "THE WIRE" **SHIPPED** on `feature/agent-surface` (stacked on `feature/project-lifecycle`; inventory `docs/specs/2026-08-01-agent-surface-gap-inventory.md`, plan `docs/plans/2026-08-01-agent-surface.md`; deferrals recorded in tech-debt §2.9).
+
+**What shipped:** server wire (`e660be7`) — `turn_end` carries outcome/cost/usage/modelUsage/duration (error turns get `agent_error` FIRST with subtype+reason); `stop_turn` driver-gated → `Query.interrupt()`, interrupted ≠ success in the log; `rate_limit` (30s throttle), `agent_status` (compacting/requesting/idle/retrying/refusal_fallback), `compaction` events; `agent_text_delta` gains supersedes/aborted flags; `agentProgressSummaries: true`; `task_event.outputFile`; `commands_changed` → roster refetch, plugin add/remove → `reloadPlugins()`/`reloadSkills()`. Client (`c6db35f`) — ■ STOP on the prompt row (driver+busy only); HUD CONTEXT/elapsed/PARTY XP wired (XP = session token total — cost rejected as account state, not a party counter); turn_stop/error/compaction/rate_limit transcript lines; retracted deltas dim+strike; ThinkingStrip shows compacting/retrying. `?screen=status` design screen RETIRED (bars had no honest feed, tool grid static, no nav).
+
+**Suites at head:** server **788** · hub **368** · client **566**, tsc ×3 clean.
+
+**Facts worth keeping:** (1) `agent_error` is appended BEFORE its `turn_end` so record.ts groups the failure with the turn. (2) `system/api_retry` folds into `agent_status` "retrying" — one busy-state channel, not a second event type. (3) New plugin PATHS bind only in sessions created after the add (pre-existing bound, documented in `AgentDriver.reloadPlugins`); reload hot-refreshes skills of known plugins. (4) The `supersedes` flag's semantics are "this frame replaced earlier refused content" — the client marks the FLAGGED delta retracted per the T6 brief; recorded here so the semantic is settled one way. (5) `rate_limit.resetsAt` units are SDK-unspecified — client reads ms-if->1e12-else-seconds; confirm against a real event at the live-proof gate. (6) `sessionCostUsd` is derived+tested but has no HUD surface yet — natural home is the future /usage cycle.
+
+**Stack:** #33 (presentation, draft) ← #35 (invites) ← #34 (lifecycle + live-run fixes) ← `feature/agent-surface` (PR to open). Remaining PRD: §8.6 cycles 2+ (permissions rules next), §8.8 hub-side oversight, §8.10 real-box.
+
+---
+
+## (was) START HERE (2026-08-01, Kimi CLI #2) — §8.2 **COMPLETE**. PROJECT LIFECYCLE CONTROLS **SHIPPED** on `feature/project-lifecycle` (stacked on `feature/project-invites`; plan `docs/plans/2026-08-01-project-lifecycle-controls.md`).
 
 **What shipped (the PR-#22 gap — `set_project_lifecycle` had no client surface):** server parity — solo mode answers `set_project_lifecycle` with the hub's exact gates/strings, in-memory lifecycle, join/create refused non-active (`be8f077`); client — SHOW ARCHIVED toggle on the entrance (archived was a one-way door: `sortProjects` dropped it with no way back), ARCHIVED badge, and member-only lifecycle controls on the project screen (active→CLOSE/ARCHIVE, closed→REOPEN/ARCHIVE, archived→UNARCHIVE; arm-and-confirm SURE? on the destructive two) (`a903da2`).
 
