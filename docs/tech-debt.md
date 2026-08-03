@@ -392,6 +392,39 @@ a real box: §8.10's deploy artifacts (Caddyfile, systemd unit, RUNBOOK) are the
 **UNVERIFIED** (PRD §8.10), so the crash-loop-to-refusal claim rests on unit/integration coverage,
 not a live low-disk walk.
 
+### 2.9 §8.6 phased scope — the deferrals, recorded so they cannot ossify
+
+**Status, 2026-08-01:** the §8.6 gap inventory (`docs/specs/2026-08-01-agent-surface-gap-inventory.md`)
+diffed the SDK against the driver and Claude Code's TUI; cycle 1 (`docs/plans/2026-08-01-agent-surface.md`)
+ships the wire (usage/cost, interrupt, error truth, compaction, summaries, roster freshness). The
+items below were deliberately deferred. None of them rots on its own; the two flagged **watch**
+are the ones where every shipped cycle makes the eventual fix a bigger diff.
+
+- **Permission "always-allow" rules + the six SDK modes** — **watch.** Gate fatigue is the most
+  likely user complaint, and the existing divergence (relay `auto` is answered driver-side, never
+  sent to the SDK; the driver only ever sets `default`/`plan`) grows with every permission
+  feature added on the driver side. **Fixed looks like:** a design cycle for rule storage
+  (per project? per hub? who owns a rule in a multiplayer session?), mapping our three modes
+  onto the SDK's six, and surfacing the gate enrichments the driver currently drops
+  (`suggestions`/`updatedPermissions`, `title`/`displayName`, `matchedAskRule`).
+- **Token-level streaming** (`includePartialMessages`) — safe to defer; guarded by the
+  additive-only wire rule so old logs replay. **Fixed looks like:** a record-shape decision —
+  streaming multiplies event volume (~50×) into an events table that is unbounded by default
+  (§2.8), so retention/chunking gets decided first, then `agent_text_delta` becomes real deltas.
+- **Rewind / checkpoints / resume** — feature, not debt; the underlying pain (a dead driver
+  means "restart the server", `agentDriver.ts:538`) predates this plan and is unchanged by it.
+  **Fixed looks like:** a driver-persistence design (resume/forkSession/enableFileCheckpointing)
+  plus a ruling on what rewind means for the record (D11 — the log is append-only; rewound
+  history is a fork, never a deletion).
+- **SDK hooks as touched-set invalidation** — perf refactor; the current event-log heuristic
+  works. **Fixed looks like:** `Options.hooks` `PostToolUse` replaces the heuristic for the
+  awareness `touched` set.
+- **Effort/thinking controls, MCP lifecycle UI, background-tasks UI** — parity features with no
+  interaction with cycle 1; pull from the inventory when a cycle has room.
+- **Claude Code TUI idioms (vim, image paste, /diff, voice, /theme variants, statusline
+  scripts)** — out by product shape, recorded in the inventory §10 so the rejection is a
+  decision on file, not an oversight.
+
 ---
 
 ## 3. Test coverage gaps
