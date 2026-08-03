@@ -839,6 +839,50 @@ describe("plan mode", () => {
     wsA.close();
     wsB.close();
   });
+
+  it("guards stop_turn to the current driver and appends turn_stop for the driver", async () => {
+    // A stream whose turn stays open (no result) and that supports interrupt.
+    const interruptible: RunQuery = (prompts) => {
+      const gen = (async function* () {
+        for await (const prompt of prompts) {
+          yield {
+            type: "assistant",
+            content: [{ type: "text", text: `echo: ${prompt.message.content[0].text}` }],
+          } as SdkMessage;
+        }
+      })();
+      return Object.assign(gen, { interrupt: async () => {} });
+    };
+    const server = await startServer({ port: 0, runQuery: interruptible });
+    close = server.close;
+    const wsA = await connect(server.port);
+    const seenA: any[] = [];
+    collect(wsA, seenA);
+    wsA.send(JSON.stringify({ type: "join", sessionId: "st1", userId: "u1", name: "Ana" }));
+    await wait(50);
+    const wsB = await connect(server.port);
+    const seenB: any[] = [];
+    collect(wsB, seenB);
+    wsB.send(JSON.stringify({ type: "join", sessionId: "st1", userId: "u2", name: "Ben" }));
+    await wait(50);
+    wsB.send(JSON.stringify({ type: "stop_turn" })); // watcher: rejected
+    await wait(100);
+    expect(seenB.some((m) => m.type === "error" && /stop the turn/.test(m.message))).toBe(true);
+    expect(seenB.some((m) => m.event?.type === "turn_stop")).toBe(false);
+    // idle driver: no turn running — accepted as a no-op, no turn_stop appended
+    wsA.send(JSON.stringify({ type: "stop_turn" }));
+    await wait(100);
+    expect(seenA.some((m) => m.event?.type === "turn_stop")).toBe(false);
+    expect(seenA.some((m) => m.type === "error")).toBe(false);
+    // mid-turn: the driver's request lands on the wire
+    wsA.send(JSON.stringify({ type: "prompt", text: "long work" }));
+    await wait(100);
+    wsA.send(JSON.stringify({ type: "stop_turn" }));
+    await wait(100);
+    expect(seenA.some((m) => m.event?.type === "turn_stop" && m.event.userId === "u1")).toBe(true);
+    wsA.close();
+    wsB.close();
+  });
 });
 
 describe("auto mode (e2e)", () => {
@@ -996,6 +1040,47 @@ describe("plugin registry", () => {
     expect(change).toMatchObject({ action: "remove", name: "tools", userId: "u1" });
     const snap = seen.filter((m) => m.type === "project").at(-1);
     expect(snap.plugins).toEqual([]);
+    ws.close();
+  });
+
+  it("plugin_change hot-reloads the live session: reloadSkills/reloadPlugins + a fresh roster", async () => {
+    const { store } = storeWithFakeClone();
+    const reloads: string[] = [];
+    const reloadableRun: RunQuery = (prompts) => {
+      const gen = (async function* () {
+        for await (const prompt of prompts) {
+          yield {
+            type: "assistant",
+            content: [{ type: "text", text: `echo: ${prompt.message.content[0].text}` }],
+          } as SdkMessage;
+        }
+      })();
+      return Object.assign(gen, {
+        reloadSkills: async () => {
+          reloads.push("skills");
+        },
+        reloadPlugins: async () => {
+          reloads.push("plugins");
+        },
+        supportedCommands: async () => [{ name: "alpha", description: "live" }],
+      });
+    };
+    const server = await startServer({ port: 0, runQuery: reloadableRun, plugins: store });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "phr", projectId: "prj5", userId: "u1", name: "Ana" }));
+    await wait(100);
+    // session-seed roster (plugin scan) + startup roster (live supportedCommands)
+    expect(seen.filter((m) => m.event?.type === "skill_roster").length).toBe(2);
+    ws.send(JSON.stringify({ type: "add_plugin", url: "https://github.com/x/tools" }));
+    await wait(200);
+    expect(seen.some((m) => m.event?.type === "plugin_change")).toBe(true);
+    expect(reloads.sort()).toEqual(["plugins", "skills"]);
+    // the reload's roster refetch appended a THIRD skill_roster
+    expect(seen.filter((m) => m.event?.type === "skill_roster").length).toBe(3);
     ws.close();
   });
 
