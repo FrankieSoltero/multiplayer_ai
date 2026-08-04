@@ -294,6 +294,70 @@ describe("Header — the `contested` prop is optional", () => {
   });
 });
 
+describe("Header — model picker reads the server roster (local-models plan §1.2, Task 2)", () => {
+  const ROSTER = [
+    { key: "opus", id: "claude-opus-4-8", label: "opus 4.8" },
+    { key: "sonnet", id: "claude-sonnet-5", label: "sonnet 5" },
+    {
+      key: "qwen3-32b",
+      id: "qwen3-32b",
+      label: "QWEN3 32B (LOCAL)",
+      local: true,
+      degradedNote: "local model — no cost/rate-limit reporting; gates may be noisier",
+    },
+  ];
+
+  it("options come from the roster, not the hardcoded table", () => {
+    const markup = render({ models: ROSTER });
+    expect(markup).toContain('<option value="qwen3-32b"');
+    expect(markup).toContain("QWEN3 32B (LOCAL)");
+    // The roster's own labels render too — the picker is not a merge.
+    expect(markup).toContain('<option value="opus"');
+  });
+
+  it("a roster WITHOUT the hardcoded trio does not resurrect it", () => {
+    const markup = render({
+      models: [{ key: "qwen3-32b", id: "qwen3-32b", label: "QWEN3 32B (LOCAL)", local: true }],
+    });
+    expect(markup).toContain('<option value="qwen3-32b"');
+    expect(markup).not.toContain('<option value="sonnet"');
+  });
+
+  it("local entries carry a theme-independent LOCAL tag and the degradedNote on the option title (T14, plan §1.3)", () => {
+    const markup = render({ models: ROSTER });
+    // Plain text in the option label — no color, no class, both themes (T14).
+    expect(markup).toContain("QWEN3 32B (LOCAL) · LOCAL");
+    // Honest at the point of choice: the note rides the option's title.
+    expect(markup).toContain(
+      'title="local model — no cost/rate-limit reporting; gates may be noisier"',
+    );
+    // Cloud entries carry no tag and no fabricated note.
+    expect(markup).not.toContain("opus 4.8 · LOCAL");
+  });
+
+  it("old-server tolerance: an absent roster falls back to the hardcoded labels, byte-identical to today", () => {
+    const markup = render();
+    expect(markup).toContain('<option value="opus"');
+    expect(markup).toContain('<option value="sonnet"');
+    expect(markup).toContain('<option value="haiku"');
+    expect(markup).not.toContain("LOCAL");
+    // Absent and empty are the same screen — an empty roster is not a picker
+    // with zero options.
+    expect(render({ models: [] })).toBe(markup);
+  });
+
+  it("selecting a roster option sends its key verbatim", () => {
+    const onSetModel = vi.fn();
+    const select = renderTree(<Header {...baseProps({ models: ROSTER, onSetModel })} />).find(
+      (n) => n.type === "select" && n.props["aria-label"] === "agent model",
+    )!;
+    (select.props.onChange as (e: { target: { value: string } }) => void)({
+      target: { value: "qwen3-32b" },
+    });
+    expect(onSetModel).toHaveBeenCalledWith("qwen3-32b");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Agent surface (§8.6): the HUD segments the turn_end usage payload now feeds.
 // Plan §2.4 — no placeholder without a feed: CONTEXT and PARTY XP render NO

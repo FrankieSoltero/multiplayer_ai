@@ -1,6 +1,6 @@
 import { hashIdentity } from "./identity";
 import { notRemoved } from "./slashMatch";
-import type { LoggedEvent } from "./types";
+import type { LoggedEvent, ModelRosterEntry } from "./types";
 
 export interface Participant {
   name: string;
@@ -39,6 +39,10 @@ export interface DerivedState {
   model: string;
   agentBusy: boolean;
   skills: { name: string; description: string }[];
+  /** The session's selectable-model roster from skill_roster's additive
+   *  `models` field (local-models plan §1.2). Empty until one arrives — the
+   *  picker falls back to its hardcoded labels then (old-server tolerance). */
+  models: ModelRosterEntry[];
   todos: { text: string; status: string }[];
   suggestDecisions: Map<string, { decision: string; userId: string }>;
   planDecisions: Map<string, { decision: string; userId: string }>;
@@ -101,6 +105,7 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
     model: "opus",
     agentBusy: false,
     skills: [],
+    models: [],
     todos: [],
     suggestDecisions: new Map(),
     planDecisions: new Map(),
@@ -143,6 +148,9 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
         break;
       case "skill_roster":
         s.skills = (ev.skills ?? []).filter(notRemoved);
+        // Additive: a skills-only refresh (or an old server's roster) must
+        // not clear a model roster the session already announced.
+        if (ev.models) s.models = ev.models;
         break;
       case "todo_update":
         s.todos = ev.todos ?? [];
