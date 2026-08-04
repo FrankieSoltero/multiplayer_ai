@@ -509,10 +509,14 @@ changes. The `?screen=status` design screen was retired in the same cycle — it
 honest feed and its tool grid was static; the HUD shows the real numbers now.
 
 *Final state:* the gap inventory the PRD called for is done
-(`docs/specs/2026-08-01-agent-surface-gap-inventory.md`) and cycle 1 ships the wire. What
-remains is phased and recorded in tech-debt §2.9: permission "always-allow" rules + the six SDK
-modes (the next cycle's natural subject), token-level streaming, rewind/checkpoints, SDK hooks,
-effort controls, background-tasks UI.
+(`docs/specs/2026-08-01-agent-surface-gap-inventory.md`) and cycle 1 ships the wire. Local
+models ride the same surface (`feature/local-models`): the model registry is the single source
+(`poc/server/src/models.ts`), operators add entries via `MPAI_EXTRA_MODELS`, and a LiteLLM proxy
+routes the Anthropic API by model id (`claude-*` pass-through, local ids to Ollama) so a session
+can pick a local model from the same picker with gates and record intact
+(`deploy/local-models.md`). What remains is phased and recorded in tech-debt §2.9: permission
+"always-allow" rules + the six SDK modes (plan written: `docs/plans/2026-08-03-permission-rules.md`),
+token-level streaming, rewind/checkpoints, SDK hooks, effort controls, background-tasks UI.
 
 ### 8.7 The record
 
