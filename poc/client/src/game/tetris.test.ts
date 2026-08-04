@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { LANE_WIDTH } from "./engine";
 import {
   tetrisEngine, initialState, tick, input, stepDown, spawn, rotate,
-  normalize, collides, SHAPES, WELL_W, WELL_H, TETRIS_ROWS,
+  collides, WELL_W, WELL_H, TETRIS_ROWS,
   type TetrisState, type Piece,
 } from "./tetris";
 
