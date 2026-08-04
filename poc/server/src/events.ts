@@ -1,3 +1,5 @@
+import type { ModelRosterEntry } from "./models.js";
+
 export interface SkillInfo {
   name: string;
   description: string;
@@ -100,7 +102,11 @@ export type SessionEvent =
    *  sdk.d.ts:2922; agent-surface §4). preTokens is the context size before
    *  compaction; postTokens is absent until the compacted size is known. */
   | { type: "compaction"; trigger?: string; preTokens?: number; postTokens?: number; durationMs?: number }
-  | { type: "skill_roster"; skills: SkillInfo[] }
+  | { type: "skill_roster"; skills: SkillInfo[];
+      /** Additive (local-models plan §1.2): the session's selectable-model
+       *  roster, straight from the registry. The picker reads it instead of
+       *  hardcoding labels; events logged before it existed carry none. */
+      models?: ModelRosterEntry[] }
   | { type: "skill_suggest"; suggestId: string; userId: string; skill: string; args: string }
   | { type: "skill_decision"; suggestId: string; decision: "run" | "dismiss"; userId: string }
   | { type: "todo_update"; todos: TodoItem[] }
