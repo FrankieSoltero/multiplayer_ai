@@ -12,7 +12,7 @@
 
 **➡️ REMAINING FOR A LIVE LOCAL-MODEL SESSION (user action):** install Ollama + LiteLLM (NOT on the box as of 2026-08-03), `ollama pull qwen3:32b` (or `qwen3:30b-a3b` for laptop speed), then follow `deploy/local-models.md` §2–4. The scripted live demo was deferred per the plan's done gate 4 (recorded here, not silently skipped). Claude account weekly-limit reset (Aug 4 ~7pm ET) also unblocks the deferred successful-turn proof from cycle 1.
 
-**Still pending:** permission-rules plan (`docs/plans/2026-08-03-permission-rules.md`, still UNTRACKED — it follows the checkout; commit it as the first commit of its own branch when that cycle starts, per house convention). Stack: #33 ← #35 ← #34 ← #36 ← `feature/local-models` (PR to open).
+**Still pending:** permission-rules plan (`docs/plans/2026-08-03-permission-rules.md`, still UNTRACKED — it follows the checkout; commit it as the first commit of its own branch when that cycle starts, per house convention). Stack: #33 ← #35 ← #34 ← #36 ← **#37 `feature/local-models`** (PR OPEN).
 
 ---
 
