@@ -124,6 +124,30 @@ describe("parseExtraModels — the operator env seam (MPAI_EXTRA_MODELS)", () =>
     // The built-in registry itself is untouched by the parse attempt.
     expect(MODELS.opus.label).toBe("opus 4.8");
   });
+
+  it("reserved ids (__proto__, constructor, prototype) warn and are skipped — never silently vanish", () => {
+    const warn = vi.fn();
+    const extra = parseExtraModels(
+      JSON.stringify([
+        { id: "__proto__", label: "PROTO POLLUTION", contextWindow: 1 },
+        { id: "constructor", label: "CTOR", contextWindow: 1 },
+        { id: "prototype", label: "PROTOTYPE", contextWindow: 1 },
+        { id: "ok-7b", label: "OK 7B", contextWindow: 8192 },
+      ]),
+      warn,
+    );
+    expect(Object.keys(extra)).toEqual(["ok-7b"]);
+    expect(Object.hasOwn(extra, "__proto__")).toBe(false);
+    // The reserved-id entry must not silently repoint extra's own prototype
+    // either — that's the exact way it used to vanish with no warning, and
+    // it would leak the skipped entry's fields (id/label/contextWindow) as
+    // inherited properties on every lookup.
+    expect("id" in extra).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(3);
+    for (const id of ["__proto__", "constructor", "prototype"]) {
+      expect(warn.mock.calls.some((c) => String(c[0]).includes(id))).toBe(true);
+    }
+  });
 });
 
 describe("modelRoster — the additive `models` field shape", () => {

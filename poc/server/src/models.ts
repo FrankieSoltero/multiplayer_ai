@@ -29,6 +29,15 @@ export interface ModelRosterEntry {
   degradedNote?: string;
 }
 
+/** Ids that would collide with JS object internals if used as a plain-object
+ *  key: "__proto__" hits the Object.prototype setter (the assignment is
+ *  swallowed by [[Prototype]] instead of creating an own property, so the
+ *  entry silently vanishes from the roster with no warning), and
+ *  "constructor"/"prototype" shadow inherited members other code may rely
+ *  on. Rejected explicitly rather than trusted to Object.create(null) alone,
+ *  so the warn-and-skip contract holds regardless of how `extra` is built. */
+const RESERVED_MODEL_IDS = new Set(["__proto__", "constructor", "prototype"]);
+
 const BUILTIN_MODELS: Record<string, ModelEntry> = {
   opus: { id: "claude-opus-4-8", label: "opus 4.8", contextWindow: 200000 },
   sonnet: { id: "claude-sonnet-5", label: "sonnet 5", contextWindow: 200000 },
@@ -59,7 +68,10 @@ export function parseExtraModels(
     warn("MPAI_EXTRA_MODELS must be a JSON array — ignoring");
     return {};
   }
-  const extra: Record<string, ModelEntry> = {};
+  // Object.create(null) so a "__proto__" id can never reach the
+  // Object.prototype setter in the first place — belt to the explicit
+  // reserved-id check below (suspenders), not a substitute for it.
+  const extra: Record<string, ModelEntry> = Object.create(null);
   for (const raw of parsed) {
     const e = raw as Partial<ModelEntry> | null;
     if (
@@ -71,6 +83,10 @@ export function parseExtraModels(
       !Number.isFinite(e.contextWindow)
     ) {
       warn(`MPAI_EXTRA_MODELS entry skipped — needs string id, string label, numeric contextWindow: ${JSON.stringify(raw)}`);
+      continue;
+    }
+    if (RESERVED_MODEL_IDS.has(e.id)) {
+      warn(`MPAI_EXTRA_MODELS entry "${e.id}" skipped — reserved id`);
       continue;
     }
     if (e.local !== undefined && typeof e.local !== "boolean") {
