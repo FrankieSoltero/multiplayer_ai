@@ -18,6 +18,14 @@ export interface PendingGate {
    *  the relay validator normalizes an absent field to null, so a peer built
    *  before it keeps validating and keeps rendering the gate. */
   reason: string | null;
+  /** Gate enrichment + rule display (§8.6 cycle 2), derived from the same
+   *  `permission_request` EVENT fields as `reason` — one source behind both
+   *  surfaces, conditional-spread so a gate the SDK said nothing about is
+   *  byte-identical to today. `ruleSuggestion` is what makes an ALWAYS answer
+   *  possible for this gate; absent otherwise. */
+  title?: string;
+  description?: string;
+  ruleSuggestion?: string;
 }
 
 /** `GATE_REASON_CAP` (declared in `collisions.ts`, beside the path cap it
@@ -43,6 +51,9 @@ export function pendingGateOf(events: LoggedEvent[]): PendingGate | null {
         toolName: ev.toolName,
         sinceTs: ev.ts,
         reason: ev.reason === undefined ? null : ev.reason.slice(0, GATE_REASON_CAP),
+        ...(ev.title ? { title: ev.title.slice(0, GATE_REASON_CAP) } : {}),
+        ...(ev.description ? { description: ev.description.slice(0, GATE_REASON_CAP) } : {}),
+        ...(ev.ruleSuggestion ? { ruleSuggestion: ev.ruleSuggestion } : {}),
       };
     }
   }

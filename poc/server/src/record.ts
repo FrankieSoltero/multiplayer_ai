@@ -14,7 +14,7 @@ export interface RecordSessionInput {
  *  `permission_request`, and is not part of the record (spec §8a ruling 4). */
 export interface TurnApproval {
   kind: "permission" | "plan";
-  decision: "allow" | "deny" | "approve" | "reject";
+  decision: "allow" | "deny" | "always" | "approve" | "reject";
   userId: string;
   toolName: string | null;
   auto: boolean;

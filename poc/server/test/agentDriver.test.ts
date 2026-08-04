@@ -3,9 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Session } from "../src/session.js";
+import type { PermissionUpdate } from "@anthropic-ai/claude-agent-sdk";
 import {
   AgentDriver,
   runAgentQuery,
+  type PermissionRequestMeta,
   type RunQuery,
   type SdkMessage,
 } from "../src/agentDriver.js";
@@ -357,12 +359,12 @@ describe("driver approval gate", () => {
   it("rejects unknown and already-decided requestIds", async () => {
     const session = new Session("s-perm-3");
     const driver = new AgentDriver(session, permissionRun);
-    expect(driver.resolvePermission("nope", "allow", "u1")).toBe(false);
+    expect(driver.resolvePermission("nope", "allow", "u1")).toBe("unknown");
 
     driver.sendPrompt("u1", "go");
     const request = await waitForEvent(session, "permission_request");
     expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(true);
-    expect(driver.resolvePermission(request.requestId, "deny", "u1")).toBe(false);
+    expect(driver.resolvePermission(request.requestId, "deny", "u1")).toBe("unknown");
     // exactly one decision event
     const decisions = session
       .eventsFrom(0)
@@ -401,11 +403,11 @@ describe("driver approval gate", () => {
     const echoed = await waitForEvent(session, "agent_text_delta");
     expect(echoed.text).toBe("decision: deny");
 
-    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(false);
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe("unknown");
   });
 
   it("flushes a still-pending permission request as a system deny when the stream ends without deciding it", async () => {
-    let capturedDecision: Promise<"allow" | "deny"> | undefined;
+    let capturedDecision: Promise<"allow" | "deny" | "always"> | undefined;
     const streamDiesWhilePendingRun: RunQuery = async function* (prompts, hooks) {
       for await (const _prompt of prompts) {
         capturedDecision = hooks.onPermissionRequest("Bash", {
@@ -431,7 +433,7 @@ describe("driver approval gate", () => {
       userId: "system",
     });
 
-    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(false);
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe("unknown");
   });
 });
 
@@ -937,7 +939,7 @@ describe("auto permission mode", () => {
       auto: true,
     });
     // swept request is closed out — a later manual decision must be rejected
-    expect(driver.resolvePermission(request.requestId, "deny", "u1")).toBe(false);
+    expect(driver.resolvePermission(request.requestId, "deny", "u1")).toBe("unknown");
   });
 
   it("leaving auto restores gating", async () => {
@@ -1421,8 +1423,8 @@ describe("sub-session gate attribution (T1)", () => {
   });
 
   it("T1-interleaved-concurrency: two live sub-agents never cross-attribute, even with out-of-order deletes", async () => {
-    let d1!: Promise<"allow" | "deny">;
-    let d2!: Promise<"allow" | "deny">;
+    let d1!: Promise<"allow" | "deny" | "always">;
+    let d2!: Promise<"allow" | "deny" | "always">;
     const interleavedRun: RunQuery = async function* (prompts, hooks) {
       for await (const _p of prompts) {
         // Two sub-agents' inner calls stream in, interleaved.
@@ -1579,5 +1581,144 @@ describe("task join field (T1)", () => {
       if (ev.subtype === "started") continue;
       expect("toolUseId" in ev).toBe(false);
     }
+  });
+});
+
+// §8.6 cycle 2: the ALWAYS decision path, gate enrichments on the wire, and
+// the no-suggestion refusal — all at the Session+AgentDriver seam (the same
+// held-promise machinery the server drives over the wire).
+describe("permission always-allow (§8.6)", () => {
+  const NPM_TEST_SUGGESTIONS: PermissionUpdate[] = [
+    {
+      type: "addRules",
+      rules: [{ toolName: "Bash", ruleContent: "npm test:*" }],
+      behavior: "allow",
+      destination: "userSettings",
+    },
+  ];
+
+  // Raises one Bash gate carrying the given meta, echoes the decision.
+  const gateRun = (meta?: PermissionRequestMeta): RunQuery =>
+    async function* (prompts, hooks) {
+      for await (const _p of prompts) {
+        const d = await hooks.onPermissionRequest("Bash", { command: "npm test" }, undefined, meta);
+        yield { type: "assistant", content: [{ type: "text", text: `d:${d}` }] } as SdkMessage;
+        return;
+      }
+    };
+
+  it("the request event carries the SDK enrichments + derived ruleSuggestion when provided", async () => {
+    const session = new Session("s-always-enrich");
+    const driver = new AgentDriver(
+      session,
+      gateRun({
+        suggestions: NPM_TEST_SUGGESTIONS,
+        title: "Claude wants to run npm test",
+        displayName: "Run tests",
+        description: "Claude will run the test suite",
+        decisionReason: "command not in allowlist",
+        blockedPath: "/outside/worktree",
+        matchedAskRule: { source: "userSettings", toolName: "Bash", ruleContent: "npm test:*" },
+      }),
+    );
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "permission_request");
+    expect(request).toMatchObject({
+      toolName: "Bash",
+      title: "Claude wants to run npm test",
+      displayName: "Run tests",
+      description: "Claude will run the test suite",
+      decisionReason: "command not in allowlist",
+      blockedPath: "/outside/worktree",
+      matchedAskRule: { source: "userSettings", ruleContent: "npm test:*" },
+      ruleSuggestion: "Bash(npm test:*)",
+    });
+    driver.resolvePermission(request.requestId, "deny", "u1");
+  });
+
+  it("an always decision is recorded with decider + rule display, and resolves the hook as always", async () => {
+    const session = new Session("s-always-decide");
+    const driver = new AgentDriver(session, gateRun({ suggestions: NPM_TEST_SUGGESTIONS }));
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "permission_request");
+    expect(request.ruleSuggestion).toBe("Bash(npm test:*)");
+    expect(driver.resolvePermission(request.requestId, "always", "u1")).toBe(true);
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({
+      requestId: request.requestId,
+      decision: "always",
+      userId: "u1",
+      rule: "Bash(npm test:*)",
+    });
+    const echoed = await waitForEvent(session, "agent_text_delta");
+    expect(echoed.text).toBe("d:always");
+  });
+
+  it("always with no held suggestion is refused: no decision event, the gate stays answerable", async () => {
+    const session = new Session("s-always-norule");
+    const driver = new AgentDriver(session, gateRun()); // no meta at all
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "permission_request");
+    expect("ruleSuggestion" in request).toBe(false);
+
+    expect(driver.resolvePermission(request.requestId, "always", "u1")).toBe("no_rule");
+    // Nothing was appended — the refusal is silent in the log, like a malformed
+    // decision (the server surfaces it as an error to the decider only).
+    expect(session.eventsFrom(0).some((e) => e.type === "permission_decision")).toBe(false);
+    // The gate is still pending and answerable by an ordinary decision.
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(true);
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({ decision: "allow", userId: "u1" });
+    expect("rule" in decision).toBe(false);
+  });
+
+  it("a sub-session attributed gate takes the same always path, attribution inherited", async () => {
+    const attributedRun: RunQuery = async function* (prompts, hooks) {
+      for await (const _p of prompts) {
+        yield {
+          type: "assistant",
+          parent_tool_use_id: "task-P9",
+          content: [{ type: "tool_use", id: "sub-9", name: "Bash", input: { command: "npm test" } }],
+        } as SdkMessage;
+        const d = await hooks.onPermissionRequest(
+          "Bash",
+          { command: "npm test" },
+          undefined,
+          { toolUseId: "sub-9", suggestions: NPM_TEST_SUGGESTIONS },
+        );
+        yield { type: "assistant", content: [{ type: "text", text: `d:${d}` }] } as SdkMessage;
+        return;
+      }
+    };
+    const session = new Session("s-always-sub");
+    const driver = new AgentDriver(session, attributedRun);
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "permission_request");
+    expect(request.parentToolUseId).toBe("task-P9");
+    expect(request.ruleSuggestion).toBe("Bash(npm test:*)");
+    expect(driver.resolvePermission(request.requestId, "always", "u1")).toBe(true);
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(decision).toMatchObject({
+      decision: "always",
+      userId: "u1",
+      rule: "Bash(npm test:*)",
+      parentToolUseId: "task-P9",
+    });
+  });
+
+  it("old approve flow is byte-identical when no enrichments arrive", async () => {
+    const session = new Session("s-always-oldlog");
+    const driver = new AgentDriver(session, gateRun()); // no meta
+    driver.sendPrompt("u1", "go");
+    const request = await waitForEvent(session, "permission_request");
+    // None of the §8.6 keys exist on an ordinary gate's event.
+    const requestJson = JSON.stringify(request);
+    for (const key of ["title", "displayName", "description", "decisionReason", "blockedPath", "matchedAskRule", "ruleSuggestion"]) {
+      expect(requestJson).not.toContain(`"${key}"`);
+    }
+    expect(driver.resolvePermission(request.requestId, "allow", "u1")).toBe(true);
+    const decision = await waitForEvent(session, "permission_decision");
+    expect(JSON.stringify(decision)).not.toContain('"rule"');
+    expect(decision).toMatchObject({ decision: "allow", userId: "u1" });
   });
 });

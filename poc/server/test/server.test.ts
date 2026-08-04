@@ -571,6 +571,101 @@ describe("driver approval gate over the wire", () => {
   });
 });
 
+// §8.6 cycle 2: ALWAYS over the wire — driver-gated exactly like approve/deny,
+// recorded with decider + rule, refused when the gate holds no suggestion.
+describe("permission always over the wire", () => {
+  const suggestedAskRun: RunQuery = async function* (prompts, hooks) {
+    for await (const prompt of prompts) {
+      const decision = await hooks.onPermissionRequest(
+        "Bash",
+        { command: "npm test" },
+        undefined,
+        {
+          suggestions: [
+            {
+              type: "addRules",
+              rules: [{ toolName: "Bash", ruleContent: "npm test:*" }],
+              behavior: "allow",
+              destination: "userSettings",
+            },
+          ],
+        },
+      );
+      yield { type: "assistant", content: [{ type: "text", text: `bash: ${decision}` }] };
+    }
+  };
+
+  it("driver always is recorded with decider + rule; non-driver always is refused", async () => {
+    const server = await startServer({ port: 0, runQuery: suggestedAskRun });
+    close = server.close;
+
+    const wsAna = await connect(server.port);
+    const seenAna: any[] = [];
+    collect(wsAna, seenAna);
+    wsAna.send(JSON.stringify({ type: "join", sessionId: "pa1", userId: "u1", name: "Ana" }));
+    wsAna.send(JSON.stringify({ type: "prompt", text: "test it" }));
+    await wait(200);
+
+    const wsBen = await connect(server.port);
+    const seenBen: any[] = [];
+    collect(wsBen, seenBen);
+    wsBen.send(JSON.stringify({ type: "join", sessionId: "pa1", userId: "u2", name: "Ben", lastSeq: 0 }));
+    await wait(200);
+
+    const req = seenAna.map((m) => m.event).find((e) => e?.type === "permission_request");
+    expect(req?.ruleSuggestion).toBe("Bash(npm test:*)");
+
+    // Ben (not driving) may not ALWAYS either — same gate as approve/deny.
+    wsBen.send(JSON.stringify({ type: "permission", requestId: req.requestId, decision: "always" }));
+    await wait(100);
+    expect(seenBen.some((m) => m.type === "error" && /driver/.test(m.message))).toBe(true);
+
+    // Ana (driver) ALWAYS-decides; the decision event carries the rule display.
+    wsAna.send(JSON.stringify({ type: "permission", requestId: req.requestId, decision: "always" }));
+    await wait(200);
+    const decision = seenBen.map((m) => m.event).find((e) => e?.type === "permission_decision");
+    expect(decision).toMatchObject({
+      requestId: req.requestId,
+      decision: "always",
+      userId: "u1",
+      rule: "Bash(npm test:*)",
+    });
+    const echoed = seenBen.map((m) => m.event).find((e) => e?.type === "agent_text_delta");
+    expect(echoed?.text).toBe("bash: always");
+
+    wsAna.close();
+    wsBen.close();
+  });
+
+  it("always on a gate with no suggestion is refused with a named error", async () => {
+    const plainAskRun: RunQuery = async function* (prompts, hooks) {
+      for await (const prompt of prompts) {
+        const decision = await hooks.onPermissionRequest("Bash", { command: "rm -rf build" });
+        yield { type: "assistant", content: [{ type: "text", text: `bash: ${decision}` }] };
+      }
+    };
+    const server = await startServer({ port: 0, runQuery: plainAskRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "pa2", userId: "u1", name: "Ana" }));
+    ws.send(JSON.stringify({ type: "prompt", text: "clean" }));
+    await wait(200);
+
+    const req = seen.map((m) => m.event).find((e) => e?.type === "permission_request");
+    expect(req && "ruleSuggestion" in req).toBe(false);
+    ws.send(JSON.stringify({ type: "permission", requestId: req.requestId, decision: "always" }));
+    await wait(100);
+    expect(seen.some((m) => m.type === "error" && /cannot always-allow/.test(m.message))).toBe(true);
+    // Refused like a malformed decision: no decision event, gate still pending.
+    expect(seen.map((m) => m.event).some((e) => e?.type === "permission_decision")).toBe(false);
+
+    ws.close();
+  });
+});
+
 describe("set_model", () => {
   it("driver can switch; non-driver and bad model rejected", async () => {
     // run fake: reply then result, stream stays open (same shape as resultRun above)

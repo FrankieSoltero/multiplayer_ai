@@ -3,8 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isAutoApprovedBash } from "../src/permissions.js";
-import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
-import { buildCanUseTool, contestedWrite } from "../src/permissions.js";
+import type { CanUseTool, PermissionUpdate } from "@anthropic-ai/claude-agent-sdk";
+import {
+  buildCanUseTool,
+  contestedWrite,
+  forceSessionDestination,
+  ruleSuggestionDisplay,
+} from "../src/permissions.js";
 import type { DriverHooks } from "../src/agentDriver.js";
 
 describe("isAutoApprovedBash", () => {
@@ -599,5 +604,190 @@ describe("worktree containment resolves symlinks (audit M3)", () => {
     expect(
       contestedWrite("Write", { file_path: "escape/x.ts" }, workdir, new Set(["x.ts"])),
     ).toBeNull();
+  });
+});
+
+// §8.6 cycle 2, plan §0 gate 2: the ALWAYS contract. A driver's "always"
+// decision resolves the SDK callback with every suggestion's destination
+// FORCED to "session" — even when the suggestion itself names a settings file.
+describe("buildCanUseTool always-allow (§8.6)", () => {
+  const alwaysHooks = (): DriverHooks => ({
+    onIntent: () => {},
+    onPermissionRequest: () => Promise.resolve("always" as const),
+    onPlanRequest: async () => "approve" as const,
+  });
+
+  it("§0-gate-2 contract: always resolves allow with EVERY destination forced to session", async () => {
+    const suggestions: PermissionUpdate[] = [
+      {
+        type: "addRules",
+        rules: [{ toolName: "Bash", ruleContent: "npm test:*" }],
+        behavior: "allow",
+        destination: "userSettings",
+      },
+      {
+        type: "addRules",
+        rules: [{ toolName: "WebFetch", ruleContent: "domain:example.com" }],
+        behavior: "allow",
+        destination: "projectSettings",
+      },
+    ];
+    // `npm test` itself is allowlisted (auto-approved before the driver ask),
+    // so the gate rides a non-allowlisted command.
+    const result = await buildCanUseTool(alwaysHooks())(
+      "Bash",
+      { command: "npm run deploy" },
+      { ...opts(), suggestions } as Parameters<CanUseTool>[2],
+    );
+    expect(result).toEqual({
+      behavior: "allow",
+      updatedPermissions: [
+        { ...suggestions[0], destination: "session" },
+        { ...suggestions[1], destination: "session" },
+      ],
+    });
+    // Pin the forcing explicitly, not just through the spread: no destination
+    // the SDK suggested may survive.
+    const updated = result?.behavior === "allow" ? (result.updatedPermissions ?? []) : [];
+    expect(updated.length).toBe(2);
+    expect(updated.every((u) => u.destination === "session")).toBe(true);
+  });
+
+  it("a suggestion already saying session passes through unchanged in effect", async () => {
+    const suggestions: PermissionUpdate[] = [
+      {
+        type: "addRules",
+        rules: [{ toolName: "Bash", ruleContent: "npm run build:*" }],
+        behavior: "allow",
+        destination: "session",
+      },
+    ];
+    const result = await buildCanUseTool(alwaysHooks())(
+      "Bash",
+      { command: "npm run build" },
+      { ...opts(), suggestions } as Parameters<CanUseTool>[2],
+    );
+    expect(result).toEqual({ behavior: "allow", updatedPermissions: suggestions });
+  });
+
+  it("passes the SDK's enrichments and raw suggestions through to the hook as meta", async () => {
+    let seenMeta: unknown;
+    const suggestions: PermissionUpdate[] = [
+      {
+        type: "addRules",
+        rules: [{ toolName: "Bash", ruleContent: "npm test:*" }],
+        behavior: "allow",
+        destination: "userSettings",
+      },
+    ];
+    const hooks: DriverHooks = {
+      onIntent: () => {},
+      onPermissionRequest: (_toolName, _input, _signal, meta) => {
+        seenMeta = meta;
+        return Promise.resolve("allow" as const);
+      },
+      onPlanRequest: async () => "approve" as const,
+    };
+    const options = {
+      signal: new AbortController().signal,
+      toolUseID: "toolu_1",
+      requestId: "cr1",
+      suggestions,
+      title: "Claude wants to run npm test",
+      displayName: "Run tests",
+      description: "Claude will run the test suite",
+      decisionReason: "command not in allowlist",
+      blockedPath: "/outside/worktree",
+      matchedAskRule: { source: "userSettings", toolName: "Bash", ruleContent: "npm test:*" },
+    } as Parameters<CanUseTool>[2];
+    const result = await buildCanUseTool(hooks)("Bash", { command: "npm run deploy" }, options);
+    expect(result).toEqual({ behavior: "allow" });
+    expect(seenMeta).toEqual({
+      toolUseId: "toolu_1",
+      agentId: undefined,
+      suggestions,
+      title: "Claude wants to run npm test",
+      displayName: "Run tests",
+      description: "Claude will run the test suite",
+      decisionReason: "command not in allowlist",
+      blockedPath: "/outside/worktree",
+      matchedAskRule: { source: "userSettings", toolName: "Bash", ruleContent: "npm test:*" },
+    });
+  });
+
+  it("approve stays a plain allow even when suggestions arrive", async () => {
+    const { hooks } = fakeHooks("allow");
+    const suggestions: PermissionUpdate[] = [
+      {
+        type: "addRules",
+        rules: [{ toolName: "Bash", ruleContent: "npm test:*" }],
+        behavior: "allow",
+        destination: "userSettings",
+      },
+    ];
+    const result = await buildCanUseTool(hooks)(
+      "Bash",
+      { command: "npm test" },
+      { ...opts(), suggestions } as Parameters<CanUseTool>[2],
+    );
+    expect(result).toEqual({ behavior: "allow" });
+  });
+});
+
+describe("forceSessionDestination", () => {
+  it("rewrites any variant's destination to session, keeping every other field", () => {
+    expect(
+      forceSessionDestination({
+        type: "addRules",
+        rules: [{ toolName: "Bash", ruleContent: "npm test:*" }],
+        behavior: "allow",
+        destination: "localSettings",
+      }),
+    ).toEqual({
+      type: "addRules",
+      rules: [{ toolName: "Bash", ruleContent: "npm test:*" }],
+      behavior: "allow",
+      destination: "session",
+    });
+    expect(
+      forceSessionDestination({ type: "setMode", mode: "default", destination: "cliArg" }),
+    ).toEqual({ type: "setMode", mode: "default", destination: "session" });
+  });
+});
+
+describe("ruleSuggestionDisplay", () => {
+  const addRules = (
+    rules: { toolName: string; ruleContent?: string }[],
+  ): PermissionUpdate => ({
+    type: "addRules",
+    rules,
+    behavior: "allow",
+    destination: "userSettings",
+  });
+
+  it("derives the compact display form from the first addRules rule", () => {
+    expect(ruleSuggestionDisplay([addRules([{ toolName: "Bash", ruleContent: "npm test:*" }])])).toBe(
+      "Bash(npm test:*)",
+    );
+  });
+
+  it("displays the bare tool name when the rule carries no content", () => {
+    expect(ruleSuggestionDisplay([addRules([{ toolName: "WebSearch" }])])).toBe("WebSearch");
+  });
+
+  it("skips non-addRules suggestions to find the first addRules one", () => {
+    const setMode: PermissionUpdate = { type: "setMode", mode: "acceptEdits", destination: "session" };
+    expect(
+      ruleSuggestionDisplay([setMode, addRules([{ toolName: "Bash", ruleContent: "git push:*" }])]),
+    ).toBe("Bash(git push:*)");
+  });
+
+  it("is undefined when the SDK suggests nothing a driver could always-allow", () => {
+    expect(ruleSuggestionDisplay(undefined)).toBeUndefined();
+    expect(ruleSuggestionDisplay([])).toBeUndefined();
+    expect(
+      ruleSuggestionDisplay([{ type: "setMode", mode: "acceptEdits", destination: "session" }]),
+    ).toBeUndefined();
+    expect(ruleSuggestionDisplay([addRules([])])).toBeUndefined();
   });
 });

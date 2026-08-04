@@ -59,8 +59,26 @@ export type SessionEvent =
    *  replays and renders (`Transcript.tsx`'s `case "permission_request"`);
    *  `pendingGateOf` derives `PendingGate.reason` from this same field, so there
    *  is one source behind both surfaces. */
-  | { type: "permission_request"; requestId: string; toolName: string; input: unknown; reason?: string; parentToolUseId?: string }
-  | { type: "permission_decision"; requestId: string; decision: "allow" | "deny"; userId: string; auto?: true; parentToolUseId?: string }
+  /** Gate enrichment text (§8.6 cycle 2, plan §1.1): the SDK's own rendering of
+   *  WHY this call asks — `title` (the bridge's full prompt sentence),
+   *  `displayName` (short action phrase), `description` (subtitle),
+   *  `decisionReason`, `blockedPath`, and `matchedAskRule` (the user-configured
+   *  ask rule that forced the prompt: source + optional ruleContent). All
+   *  OPTIONAL and additive, passed through verbatim from canUseTool's options
+   *  (sdk.d.ts:206-266); absent when the SDK provides nothing.
+   *  `ruleSuggestion` is the compact display form of the first addRules
+   *  suggestion (e.g. `Bash(npm test:*)`), derived SERVER-SIDE at gate
+   *  creation — the client never re-derives it, and its presence is exactly
+   *  what makes an ALWAYS answer possible for this gate. */
+  | { type: "permission_request"; requestId: string; toolName: string; input: unknown; reason?: string; parentToolUseId?: string;
+      title?: string; displayName?: string; description?: string; decisionReason?: string; blockedPath?: string;
+      matchedAskRule?: { source: string; ruleContent?: string }; ruleSuggestion?: string }
+  /** `decision: "always"` (§8.6 cycle 2) is a standing approval: the driver
+   *  accepted the SDK's suggested rule session-scoped. `rule` carries the
+   *  display form (the request's `ruleSuggestion`) — decider + rule + timestamp
+   *  are the record of the standing approval (plan §0.3, D11). Only present on
+   *  "always". */
+  | { type: "permission_decision"; requestId: string; decision: "allow" | "deny" | "always"; userId: string; auto?: true; parentToolUseId?: string; rule?: string }
   | { type: "model_change"; model: string; userId: string }
   /** Turn boundary (agent-surface §1–§3). All fields optional and additive:
    *  events logged before this payload existed are the bare `{type}` shape.
