@@ -383,10 +383,16 @@ export class AgentDriver {
   private pendingProgress = new Map<string, SessionEvent & { type: "task_event" }>();
   private progressTimers = new Map<string, NodeJS.Timeout>();
   // Set when a driver stop_turn request is issued (agent-surface §2) and
-  // consumed by the NEXT result message, whose turn_end is then stamped
-  // outcome "interrupted". Query.interrupt() emits no wire message of its
-  // own, so without this flag an interrupted turn would be indistinguishable
-  // from a finished one — and the record rule (§0 constraint 2) forbids that.
+  // consumed by the NEXT result message, which clears it exactly once. It is
+  // only a TIE-BREAKER, not a verdict: the turn_end reads "interrupted" only
+  // when this flag was set AND the result is error-shaped (is_error / error_*
+  // subtype) — the shape a genuinely interrupted turn takes (aborted_streaming/
+  // aborted_tools, sdk.d.ts). The SDK honors the interrupt asynchronously, so
+  // a turn can finish on its own in the race window; a clean success result
+  // then keeps outcome "success" with its real usage/cost. Query.interrupt()
+  // emits no wire message of its own, so the flag is how an error-shaped
+  // interrupt is told apart from an ordinary failure — but the record rule
+  // (§0 constraint 2) forbids overwriting a completed turn's true outcome.
   private interruptPending = false;
   // Leading-edge throttle for rate_limit events (agent-surface §1): the SDK
   // re-emits rate_limit_event on every info change (potentially per request);
@@ -790,10 +796,16 @@ export class AgentDriver {
   /**
    * Human-requested interrupt of the running turn (agent-surface §2). Driver-
    * gated by the server exactly like stopTask. The attributed turn_stop lands
-   * on the wire BEFORE the SDK call — the request is a fact even if the turn
-   * finishes first. The interrupted OUTCOME is not synthesized here: the next
-   * result's turn_end carries `outcome: "interrupted"` via interruptPending
-   * (Query.interrupt() emits no wire message of its own, sdk.d.ts:2274).
+   * on the wire BEFORE the SDK call — the request is a recorded fact even if
+   * the turn finishes first. The interrupted OUTCOME is not synthesized here:
+   * the next result decides. Because the SDK honors the interrupt async, the
+   * in-flight turn may complete on its own in the race window; the result
+   * handler stamps `outcome: "interrupted"` only when interruptPending was set
+   * AND the result is error-shaped (the shape an interrupted turn takes —
+   * aborted_streaming/aborted_tools, sdk.d.ts:6864; the interrupted turn
+   * result follows the interrupt receipt, sdk.d.ts:2274/3457). A clean success
+   * in that window is a COMPLETED turn and keeps outcome "success" with its
+   * real usage/cost — the turn_stop event still records the request.
    * No-op (ok, nothing appended) when no turn is running — there is nothing
    * to interrupt and an event would claim otherwise. Fire-and-forget like
    * setModel: SDK rejection surfaces as agent_error.
@@ -1051,12 +1063,17 @@ export class AgentDriver {
         // a genuinely queued cycle follows, the client re-raises busy from
         // that cycle's first activity event.
         this.pendingTurns = 0;
-        // Outcome classification (agent-surface §2/§3). A stop_turn interrupt
-        // wins over the SDK's own error subtype: an interrupted turn is a
-        // deliberate human act, not a failure — no agent_error, no error
-        // fields, just the distinct outcome on the turn_end.
-        const interrupted = this.interruptPending;
-        this.interruptPending = false;
+        // Outcome classification (agent-surface §2/§3). The outcome reflects
+        // what the RESULT says actually happened; a pending stop_turn only
+        // breaks the tie on an ERROR-SHAPED result. The SDK honors an
+        // interrupt asynchronously, so an in-flight turn can complete on its
+        // own in the window between stopTurn() and the abort — record truth
+        // (§0 constraint 2) requires the turn_end to report the real outcome,
+        // not the requested one. The turn_stop event already recorded the
+        // request as a fact regardless (see stopTurn's jsdoc), so nothing is
+        // lost by letting a completed turn read as completed.
+        const interruptPending = this.interruptPending;
+        this.interruptPending = false; // cleared on EVERY result, exactly once
         const subtype =
           typeof message.subtype === "string" ? message.subtype : undefined;
         // An error SUBTYPE is one of the SDK's error_* values. Live proof
@@ -1065,9 +1082,18 @@ export class AgentDriver {
         // (success)" from that is nonsense, so only error_* subtypes are
         // rendered/stamped as subtypes; the reason carries everything else.
         const isErrorSubtype = subtype?.startsWith("error") === true;
-        const isError =
-          !interrupted &&
-          (message.is_error === true || isErrorSubtype);
+        // Error-shaped: computed FIRST, without any interrupt guard.
+        const isErrorShaped = message.is_error === true || isErrorSubtype;
+        // An interrupted turn surfaces from the SDK as an error-shaped result
+        // (its terminal_reason is aborted_streaming/aborted_tools, and the
+        // interrupted turn result follows the interrupt receipt — sdk.d.ts
+        // TerminalReason / the interrupt-receipt ordering note). So a stop_turn
+        // request is only rendered as "interrupted" when the result is in fact
+        // error-shaped; a clean success in the race window is a completed turn.
+        const interrupted = interruptPending && isErrorShaped;
+        // A human interrupt is a deliberate act, not a failure: no agent_error,
+        // no error fields. Only a NON-interrupted error-shaped result is "error".
+        const isError = isErrorShaped && !interrupted;
         const outcome = interrupted ? "interrupted" : isError ? "error" : "success";
         const errorReason = isError
           ? message.terminal_reason ??

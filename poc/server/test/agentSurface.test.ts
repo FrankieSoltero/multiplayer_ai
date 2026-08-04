@@ -375,6 +375,135 @@ describe("turn interrupt (T2)", () => {
     expect(s.eventsFrom(0).some((e) => e.type === "agent_error")).toBe(false);
   });
 
+  // Race window (agent-surface §0 constraint 2 — record truth): stop_turn set
+  // the flag, but the in-flight turn actually COMPLETED before the SDK honored
+  // the interrupt, so the result is a clean success with real usage/cost. The
+  // turn_end must report what happened (success), not what was requested. The
+  // turn_stop event still records the request as a fact. "interrupted" is
+  // reserved for error-shaped results (see the SDK's aborted_streaming/
+  // aborted_tools terminal reasons and the interrupt-receipt ordering note,
+  // sdk.d.ts).
+  const raceRun = (onInterrupt: () => void): RunQuery => (prompts) => {
+    let release!: () => void;
+    const interrupted = new Promise<void>((r) => {
+      release = r;
+    });
+    const gen = (async function* () {
+      for await (const _p of prompts) {
+        yield { type: "assistant", content: [{ type: "text", text: "working" }] } as SdkMessage;
+        await interrupted;
+        // The turn finished on its own in the interrupt window: a genuine
+        // success result carrying real usage/cost, is_error false.
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          total_cost_usd: 0.042,
+          num_turns: 2,
+          duration_ms: 900,
+          usage: {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        } as SdkMessage;
+        return;
+      }
+    })();
+    return Object.assign(gen, {
+      interrupt: async () => {
+        onInterrupt();
+        release();
+      },
+    });
+  };
+
+  it("does NOT relabel a completed turn: a clean success in the race window stays outcome success", async () => {
+    const s = new Session("intRace");
+    const driver = new AgentDriver(s, raceRun(() => {}));
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => {
+      expect(s.eventsFrom(0).some((e) => e.type === "agent_text_delta")).toBe(true);
+    });
+    expect(driver.stopTurn("u1")).toEqual({ ok: true });
+    await vi.waitFor(() => {
+      expect(s.eventsFrom(0).some((e) => e.type === "turn_end")).toBe(true);
+    });
+    // the stop request is a recorded fact regardless of what the turn did
+    expect(s.eventsFrom(0).some((e) => e.type === "turn_stop")).toBe(true);
+    const end = s.eventsFrom(0).find((e) => e.type === "turn_end") as any;
+    // the turn actually completed — the truthful outcome is success, with its
+    // real usage/cost intact, NOT a synthesized "interrupted"
+    expect(end.outcome).toBe("success");
+    expect(end.total_cost_usd).toBe(0.042);
+    expect(end.num_turns).toBe(2);
+    expect(end.usage).toMatchObject({ input_tokens: 100, output_tokens: 50 });
+    expect("errorSubtype" in end).toBe(false);
+    expect("errorReason" in end).toBe(false);
+    // a completed turn is not a failure and not a human interrupt
+    expect(s.eventsFrom(0).some((e) => e.type === "agent_error")).toBe(false);
+  });
+
+  it("clears the interrupt flag on the racing result so a later turn is classified on its own merits", async () => {
+    // Turn 1 wins the race (clean success after interrupt); turn 2 genuinely
+    // errors. The flag set by stopTurn must have been cleared by turn 1's
+    // result, so turn 2 is "error", never a stale "interrupted".
+    const twoTurnRun: RunQuery = (prompts) => {
+      let release!: () => void;
+      const interrupted = new Promise<void>((r) => {
+        release = r;
+      });
+      let first = true;
+      const gen = (async function* () {
+        for await (const _p of prompts) {
+          if (first) {
+            first = false;
+            yield { type: "assistant", content: [{ type: "text", text: "working" }] } as SdkMessage;
+            await interrupted;
+            yield {
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              total_cost_usd: 0.01,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            } as SdkMessage;
+          } else {
+            yield {
+              type: "result",
+              subtype: "error_during_execution",
+              is_error: true,
+              duration_ms: 5,
+              errors: [],
+            } as SdkMessage;
+          }
+        }
+      })();
+      return Object.assign(gen, {
+        interrupt: async () => {
+          release();
+        },
+      });
+    };
+    const s = new Session("intClear");
+    const driver = new AgentDriver(s, twoTurnRun);
+    driver.sendPrompt("u1", "go");
+    await vi.waitFor(() => {
+      expect(s.eventsFrom(0).some((e) => e.type === "agent_text_delta")).toBe(true);
+    });
+    driver.stopTurn("u1");
+    await vi.waitFor(() => {
+      expect(s.eventsFrom(0).filter((e) => e.type === "turn_end").length).toBe(1);
+    });
+    driver.sendPrompt("u1", "again");
+    await vi.waitFor(() => {
+      expect(s.eventsFrom(0).filter((e) => e.type === "turn_end").length).toBe(2);
+    });
+    const ends = s.eventsFrom(0).filter((e) => e.type === "turn_end") as any[];
+    expect(ends[0].outcome).toBe("success");
+    expect(ends[1].outcome).toBe("error");
+  });
+
   it("is a no-op (ok, no event, no SDK call) when no turn is running", async () => {
     const calls: number[] = [];
     const s = new Session("int2");
