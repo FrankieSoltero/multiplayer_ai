@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import Database from "better-sqlite3";
 import type { LoggedEvent } from "multiplayer-ai-server/events";
 import type { RepoDecl, SessionFacts } from "multiplayer-ai-server/relayProtocol";
@@ -12,8 +13,9 @@ import type {
 
 /** Bumped only by a migration. A DB stamped higher than this is refused at boot
  *  rather than read with the wrong assumptions (spec §3.2, §3.6); a DB stamped
- *  LOWER is migrated forward at open (v1→v2 adds `devices`). */
-export const SCHEMA_VERSION = 2;
+ *  LOWER is migrated forward at open (v1→v2 adds `devices`, v2→v3 adds the
+ *  project-invite tables). */
+export const SCHEMA_VERSION = 3;
 
 /** The v2 addition (spec §A2, §A3): revocable device records for uplink auth,
  *  read per-lookup and never hydrated into `HubStore`. Its own constant so the
@@ -25,6 +27,27 @@ const DEVICES_DDL = `CREATE TABLE IF NOT EXISTS devices
                 (machine_id TEXT PRIMARY KEY, name TEXT NOT NULL,
                  token_hash TEXT NOT NULL, approved_by TEXT NOT NULL,
                  approved_at TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);`;
+
+/** The v3 addition (plan 2026-08-01-project-invites §1.2): project-scoped
+ *  invites and their redemptions, the hub-held half of the invite protocol.
+ *  Like `DEVICES_DDL`, its own constant so the fresh-file sweep and the v2→v3
+ *  migration create both tables from ONE source of truth. The token is stored
+ *  PLAINTEXT — a deliberate choice (plan §1.2): the hub operator already holds
+ *  every project's events, and the panel's copy-link-later UX needs the token
+ *  back. `revoked` is an integer flag, as on `devices`. Redemptions are keyed
+ *  on (invite_id, user_id) because a seat is a DISTINCT userId — a reload
+ *  mints a fresh browser identity, so counting raw joins would burn seats on
+ *  the same human. No FK cascade on purpose: the lazy prune deletes both
+ *  tables' dead rows itself. */
+const INVITES_DDL = `CREATE TABLE IF NOT EXISTS invites
+                (id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL,
+                 project_id TEXT NOT NULL, created_by TEXT NOT NULL,
+                 created_by_name TEXT NOT NULL, created_at INTEGER NOT NULL,
+                 expires_at INTEGER NOT NULL, max_uses INTEGER NOT NULL,
+                 revoked INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS invite_redemptions
+                (invite_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                 PRIMARY KEY (invite_id, user_id));`;
 
 /** Verbatim from spec §3.2. `IF NOT EXISTS` because opening an existing record
  *  is the normal case and creating one is the exception.
@@ -58,6 +81,7 @@ CREATE TABLE IF NOT EXISTS events
                  id INTEGER NOT NULL, run_id TEXT NOT NULL, event_json TEXT NOT NULL,
                  PRIMARY KEY (project_id, session_id, id));
 ${DEVICES_DDL}
+${INVITES_DDL}
 `;
 
 const MEMORY_PATH = ":memory:";
@@ -124,6 +148,90 @@ interface DeviceRowOut {
   name: string;
 }
 
+/** base64url of 24 bytes is always exactly 32 chars. Anything else is rejected
+ *  before it reaches the table — the same pre-check the standalone server's
+ *  InviteStore runs, so the two refuse byte-identically. */
+const INVITE_TOKEN_LEN = 32;
+/** The seat defaults, mirrored from the standalone server (plan §1.3): a
+ *  24 h TTL and 10 distinct-userId seats per invite. */
+const DEFAULT_INVITE_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_INVITE_MAX_USES = 10;
+/** Dead invites linger this long past expiry so failures can still say *why*
+ *  rather than collapsing to "not found". */
+const INVITE_PRUNE_GRACE_MS = 60 * 60 * 1000;
+
+/** The invite row with its seat count resolved in the same query, so a
+ *  classify and a view can never disagree about `uses`. Shared by the
+ *  token lookup and `listFor`. */
+const INVITE_SELECT = `SELECT i.id, i.token, i.project_id, i.created_by, i.created_by_name,
+                i.created_at, i.expires_at, i.max_uses, i.revoked,
+                (SELECT COUNT(*) FROM invite_redemptions r WHERE r.invite_id = i.id) AS uses
+              FROM invites i`;
+
+/** The exact refusal strings of the invite protocol — the same four the
+ *  standalone server sends, so one client speaks one protocol (plan §2.1). */
+export type InviteFailure =
+  | "invite not found"
+  | "invite expired"
+  | "invite revoked"
+  | "invite is full";
+
+/** What a project member sees — and all the wire ever carries. The token is
+ *  in this shape, which is why it only ever leaves the hub in an `invite_list`
+ *  reply to the socket that asked (plan §2.2). */
+export interface HubInviteView {
+  id: string;
+  token: string;
+  projectId: string;
+  createdByName: string;
+  expiresAt: number;
+  uses: number;
+  maxUses: number;
+}
+
+export type HubInviteResult =
+  | { ok: true; invite: HubInviteView }
+  | { ok: false; error: InviteFailure };
+
+/** Project-scoped invites, served per-lookup like the device record and never
+ *  hydrated into `HubStore` (plan §1.2). The durable hub half of the invite
+ *  protocol the standalone server answers from memory: same shapes, same seat
+ *  semantics, same refusal strings — one protocol, two answerers. */
+export interface HubInviteStore {
+  /** Mint an invite for a project. `createdByName` is the inviter's stamped
+   *  (verified) display name. Returns the member-facing view, token included. */
+  mint(args: { projectId: string; createdBy: string; createdByName: string }): HubInviteView;
+  /** Non-consuming preview, open to anyone holding the token — the invitee is
+   *  by definition not a member and maybe not even signed in, so the token
+   *  itself is the capability (plan §2.3). */
+  peek(token: unknown): HubInviteResult;
+  /** Consuming check: takes a seat for `userId` unless they already hold one
+   *  (a re-join is free). A token that exists for ANOTHER project reports
+   *  "invite not found" rather than confirming it is real somewhere else. */
+  redeem(token: unknown, userId: string, projectId: string): HubInviteResult;
+  /** The live invites of ONE project, full ones included (they show zero
+   *  seats left); revoked and expired ones are hidden. */
+  listFor(projectId: string): HubInviteView[];
+  /** Revoke one invite of ONE project; `true` if a row changed. The
+   *  projectId is in the WHERE clause, so an id from another project is a
+   *  no-op, never a cross-project mutation. */
+  revoke(id: string, projectId: string): boolean;
+}
+
+interface InviteRowOut {
+  id: string;
+  token: string;
+  project_id: string;
+  created_by: string;
+  created_by_name: string;
+  created_at: number;
+  expires_at: number;
+  max_uses: number;
+  revoked: number;
+  /** Seat count, resolved in the same query as the row itself. */
+  uses: number;
+}
+
 /** The hub's record on disk: a `HubPersister` that writes through to SQLite,
  *  plus the two lifecycle operations only the owner of the file can perform —
  *  `load()` at boot (spec §3.4) and `close()` at shutdown.
@@ -138,8 +246,11 @@ interface DeviceRowOut {
  *  **One writer per file.** A PID lockfile beside the DB (`<dbPath>.lock`)
  *  makes a second hub on the same record refuse to start instead of interleaving
  *  two event streams into one journal (spec §3.1, §8a.3). */
-export class HubDb implements HubPersister, DeviceStore {
+export class HubDb implements HubPersister, DeviceStore, HubInviteStore {
   private readonly db: Database.Database;
+  /** Clock for invite TTL/expiry/prune — injectable so a test can pin time and
+   *  walk an invite through live → expired → pruned without waiting. */
+  private readonly nowFn: () => number;
   /** `true` for a `:memory:` record — nothing durable, so there is nothing to
    *  back up (spec B1). Read by the hub to decide whether a configured backup
    *  runs at all; `lockPath` can't answer this, since `{ skipLock: true }` is
@@ -168,8 +279,11 @@ export class HubDb implements HubPersister, DeviceStore {
    *  @param opts.skipLock the crash-test seam ONLY — it lets a test open a
    *  second handle on a file whose first handle was abandoned without closing,
    *  standing in for a killed hub process. Never set in production wiring: two
-   *  live writers on one record is the failure the lock exists to prevent. */
-  constructor(dbPath: string, opts?: { skipLock?: boolean }) {
+   *  live writers on one record is the failure the lock exists to prevent.
+   *  @param opts.now the invite clock (test seam). Defaults to `Date.now`; a
+   *  test pins it so TTL, expiry and the lazy prune are deterministic. */
+  constructor(dbPath: string, opts?: { skipLock?: boolean; now?: () => number }) {
+    this.nowFn = opts?.now ?? Date.now;
     const inMemory = dbPath === MEMORY_PATH;
     this.inMemory = inMemory;
     if (!inMemory) {
@@ -268,19 +382,19 @@ export class HubDb implements HubPersister, DeviceStore {
   }
 
   /** Migrates an older record up to `SCHEMA_VERSION`, forward only and additive:
-   *  today the single step is v1→v2, which adds the `devices` table and bumps
-   *  the stamp. Two invariants make a crash mid-migration a non-event:
+   *  v1→v2 adds the `devices` table, v2→v3 adds the invite tables, each landing
+   *  with the stamp bump. Two invariants make a crash mid-migration a non-event:
    *
    *  1. **Backup first.** A file (never `:memory:`, which has nothing to lose)
-   *     is copied to `<dbPath>.v<found>.bak` while it is still pure v1 — BEFORE
-   *     the transaction opens — so a rollback is a file copy back. The WAL is
-   *     checkpointed into the main file first, because the backup is a main-file
-   *     copy and an un-checkpointed frame would otherwise be lost from it. The
-   *     copy is tightened to `0600`: it holds the same prompts, userIds and file
-   *     paths the live record does (spec §8a.7).
-   *  2. **One transaction.** The `devices` DDL and the meta bump commit together
-   *     or not at all, so a crash leaves the file stamped v1 and untouched — the
-   *     backup is belt to that braces. */
+   *     is copied to `<dbPath>.v<found>.bak` while it is still pure v<found> —
+   *     BEFORE the transaction opens — so a rollback is a file copy back. The
+   *     WAL is checkpointed into the main file first, because the backup is a
+   *     main-file copy and an un-checkpointed frame would otherwise be lost
+   *     from it. The copy is tightened to `0600`: it holds the same prompts,
+   *     userIds and file paths the live record does (spec §8a.7).
+   *  2. **One transaction.** Every pending step's DDL and the meta bump commit
+   *     together or not at all, so a crash leaves the file stamped v<found> and
+   *     untouched — the backup is belt to that braces. */
   private migrateForward(dbPath: string, found: number, inMemory: boolean): void {
     if (!inMemory) {
       // Flush any committed-but-un-checkpointed frames into the main file so the
@@ -291,7 +405,10 @@ export class HubDb implements HubPersister, DeviceStore {
       fs.chmodSync(backupPath, 0o600);
     }
     const migrate = this.db.transaction(() => {
-      this.db.exec(DEVICES_DDL);
+      // Each step keyed on the stamp the file actually carries, so a v1 file
+      // picks up BOTH arms on its way to current.
+      if (found < 2) this.db.exec(DEVICES_DDL);
+      if (found < 3) this.db.exec(INVITES_DDL);
       this.db
         .prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'")
         .run(String(SCHEMA_VERSION));
@@ -602,6 +719,151 @@ export class HubDb implements HubPersister, DeviceStore {
       .prepare("UPDATE devices SET revoked = 1 WHERE machine_id = ?")
       .run(machineId);
     return result.changes > 0;
+  }
+
+  /** Mint a project invite (plan §1.2). Synchronous and write-through, like
+   *  every method on this class: if this returns, the row is committed.
+   *  Separate draws for id and token: a public id must never be derived from a
+   *  secret. */
+  mint(args: { projectId: string; createdBy: string; createdByName: string }): HubInviteView {
+    this.pruneInvites();
+    const now = this.nowFn();
+    const id = randomBytes(6).toString("base64url");
+    const token = randomBytes(24).toString("base64url");
+    const expiresAt = now + DEFAULT_INVITE_TTL_MS;
+    this.db
+      .prepare(
+        `INSERT INTO invites
+           (id, token, project_id, created_by, created_by_name, created_at, expires_at, max_uses, revoked)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      )
+      .run(id, token, args.projectId, args.createdBy, args.createdByName, now, expiresAt,
+        DEFAULT_INVITE_MAX_USES);
+    return {
+      id,
+      token,
+      projectId: args.projectId,
+      createdByName: args.createdByName,
+      expiresAt,
+      uses: 0,
+      maxUses: DEFAULT_INVITE_MAX_USES,
+    };
+  }
+
+  /** Non-consuming preview (plan §2.3: open — the token is the capability). */
+  peek(token: unknown): HubInviteResult {
+    this.pruneInvites();
+    const row = this.inviteByToken(token);
+    const failure = this.classifyInvite(row);
+    return failure ? { ok: false, error: failure } : { ok: true, invite: this.inviteView(row!) };
+  }
+
+  /** Consuming redeem (plan §1.3). ONE transaction: the seat is written and
+   *  committed before the caller hears "ok", and the classify-then-seat
+   *  sequence cannot interleave with another redeem — durable before visible,
+   *  the same ordering rule the frame writer lives by. */
+  redeem(token: unknown, userId: string, projectId: string): HubInviteResult {
+    this.pruneInvites();
+    const spend = this.db.transaction((): HubInviteResult => {
+      const row = this.inviteByToken(token);
+      // Checked BEFORE classify, exactly like the standalone store: a token
+      // that exists for another project reports "not found", so its
+      // revoked/expired/full state doesn't leak across projects either.
+      if (row && row.project_id !== projectId) {
+        return { ok: false, error: "invite not found" };
+      }
+      const failure = this.classifyInvite(row, userId);
+      if (failure) return { ok: false, error: failure };
+      // `OR IGNORE` is the free re-join: a userId that already holds a seat
+      // changes nothing and burns nothing.
+      this.db
+        .prepare("INSERT OR IGNORE INTO invite_redemptions (invite_id, user_id) VALUES (?, ?)")
+        .run(row!.id, userId);
+      // Re-read AFTER the seat write: the view's `uses` must count the seat
+      // this call just took, and the row above predates it.
+      return { ok: true, invite: this.inviteView(this.inviteByToken(row!.token)!) };
+    });
+    return spend();
+  }
+
+  /** The live invites of one project (plan §1.3): full invites included (they
+   *  show zero seats left), revoked and expired hidden — the standalone
+   *  `listFor`'s exact filter, in SQL. */
+  listFor(projectId: string): HubInviteView[] {
+    this.pruneInvites();
+    const rows = this.db
+      .prepare(
+        `${INVITE_SELECT} WHERE i.project_id = ? AND i.revoked = 0 AND i.expires_at > ?
+         ORDER BY i.expires_at`,
+      )
+      .all(projectId, this.nowFn()) as InviteRowOut[];
+    return rows.map((row) => this.inviteView(row));
+  }
+
+  /** `project_id` in the WHERE clause is the cross-project guard: an id that
+   *  belongs to another project changes nothing and reports `false`, so
+   *  revocation can never reach across projects. */
+  revoke(id: string, projectId: string): boolean {
+    this.pruneInvites();
+    const result = this.db
+      .prepare("UPDATE invites SET revoked = 1 WHERE id = ? AND project_id = ?")
+      .run(id, projectId);
+    return result.changes > 0;
+  }
+
+  /** Token-shape check first (exactly 32 base64url chars — anything else is
+   *  "not found" before it reaches the table), then the row with its seat
+   *  count resolved in the same query. */
+  private inviteByToken(token: unknown): InviteRowOut | undefined {
+    if (typeof token !== "string" || token.length !== INVITE_TOKEN_LEN) return undefined;
+    return this.db.prepare(`${INVITE_SELECT} WHERE i.token = ?`).get(token) as
+      | InviteRowOut
+      | undefined;
+  }
+
+  /** Revoked before expired: a human action is the more useful explanation
+   *  when both are true. A `userId` that already holds a seat passes even a
+   *  full invite — the free re-join, checked before the seat count. */
+  private classifyInvite(row: InviteRowOut | undefined, userId?: string): InviteFailure | null {
+    if (!row) return "invite not found";
+    if (row.revoked) return "invite revoked";
+    if (row.expires_at <= this.nowFn()) return "invite expired";
+    if (userId !== undefined) {
+      const held = this.db
+        .prepare("SELECT 1 AS x FROM invite_redemptions WHERE invite_id = ? AND user_id = ?")
+        .get(row.id, userId);
+      if (held) return null;
+    }
+    if (row.uses >= row.max_uses) return "invite is full";
+    return null;
+  }
+
+  private inviteView(row: InviteRowOut): HubInviteView {
+    return {
+      id: row.id,
+      token: row.token,
+      projectId: row.project_id,
+      createdByName: row.created_by_name,
+      expiresAt: row.expires_at,
+      uses: row.uses,
+      maxUses: row.max_uses,
+    };
+  }
+
+  /** Called from every public entry point, so the store needs no sweep timer —
+   *  and therefore no teardown path to get wrong. Dead invites linger
+   *  `INVITE_PRUNE_GRACE_MS` past expiry first, so a failure can still say
+   *  *why*; their redemptions go with them (orphan rows would count against
+   *  nothing, but they would pile up forever). */
+  private pruneInvites(): void {
+    const cutoff = this.nowFn() - INVITE_PRUNE_GRACE_MS;
+    const prune = this.db.transaction(() => {
+      this.db
+        .prepare("DELETE FROM invite_redemptions WHERE invite_id IN (SELECT id FROM invites WHERE expires_at <= ?)")
+        .run(cutoff);
+      this.db.prepare("DELETE FROM invites WHERE expires_at <= ?").run(cutoff);
+    });
+    prune();
   }
 
   private releaseLock(): void {

@@ -18,7 +18,9 @@ export interface RouteInput {
   /** null while the /auth/me probe is in flight. */
   auth: AuthState | null;
   inviteToken: string | null;
-  inviteTarget: { projectId: string; sessionId: string } | null;
+  /** Set once the invite landing's accept has joined the project (plan §1.6):
+   *  carries the project only — the invitee picks a session like any member. */
+  inviteTarget: { projectId: string } | null;
   activeSessionId: string | null;
   /** null when the URL names no project at all — the hub entrance, not a hidden
    *  default project (spec §4.1/§4.3). A legacy `?session=X` link with no

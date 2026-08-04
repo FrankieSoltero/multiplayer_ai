@@ -377,8 +377,10 @@ project LIST stays hub-wide, as the join affordance — each entry is redacted p
 (`memberCount`/`isMember`, `members: []` for a non-member) rather than gated outright
 (`hub.ts:388-403`, `:822`).
 
-*Final state:* reached, except for one narrowing: invites still predate projects. The remaining
-gap is scoping the invite flow to a project (§8.2, tech-debt §2.5) — the identity and membership
+*Final state:* reached. The one narrowing is closed: invites are now project-scoped, hub-held
+and durable (branch `feature/project-invites`) — the hub mints, lists, revokes, peeks and redeems
+invites for a project from a schema-v3 `invites` table, redemption happens at `join_project`, and
+the standalone server answers the same five messages for solo mode. The identity and membership
 planes themselves are both enforced end to end, not merely designed.
 
 ### 8.2 Projects
@@ -393,8 +395,9 @@ mode lands on a one-item entrance. Known plan gap, disclosed in PR #22: `close_p
 `archive_project` exist and are tested hub-side but have **no client surface** yet, so archived
 state is unreachable from the UI.
 
-*Final state:* the invite flow scoped to projects (invites today predate projects), and the
-close/archive client controls. Everything else here is done.
+*Final state:* the invite flow is scoped to projects (shipped on `feature/project-invites` —
+tech-debt §2.5 resolved). The one remaining gap is the close/archive client controls. Everything
+else here is done.
 
 ### 8.3 Machines & repos
 

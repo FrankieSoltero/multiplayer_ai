@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { GLYPHS, IDENTITY_COLORS, type Profile } from "../identity";
+import type { Theme } from "../theme";
 import { SERVER_URL, type ProjectSessionInfo } from "../types";
 
 /** Optional — a card of your own numbers on the select screen. Nothing on the
@@ -19,6 +20,9 @@ export function Lobby(props: {
    *  the verified login regardless of what the client sends. */
   lockedName?: string;
   onEnter: (p: Profile) => void;
+  /** Same theme switch the session header carries — a theme changes how the
+   *  app reads, never whether the switch is there (parity, constraint 2). */
+  theme: Theme; onThemeToggle: () => void;
   stats?: PlayerStats;
 }) {
   const [name, setName] = useState(props.lockedName ?? props.defaultName);
@@ -148,7 +152,16 @@ export function Lobby(props: {
         </div>
       </div>
 
-      <div className="lobby-foot">NAME &amp; SPRITE ARE EDITABLE LATER · ?name= IN THE URL SKIPS THIS SCREEN</div>
+      <div className="lobby-foot">
+        <button
+          className="planmode"
+          onClick={props.onThemeToggle}
+          title="switch the presentation theme (Arcade / Clean)"
+        >
+          {props.theme === "clean" ? "THEME ▸ CLEAN" : "THEME ▸ ARCADE"}
+        </button>{" "}
+        NAME &amp; SPRITE ARE EDITABLE LATER · ?name= IN THE URL SKIPS THIS SCREEN
+      </div>
     </div>
   );
 }

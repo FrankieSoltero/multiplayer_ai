@@ -1,10 +1,33 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-07-31 (session #28 — plan **PASSED council 85.3** after 4 rounds/2 cycles; branch `feature/presentation` cut, first docs commit made, lean-sdd execution starting).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-08-01 (Kimi Code CLI session — project-invites shipped on `feature/project-invites`; presentation cycle complete and folded in below).*
 
 ---
 
-## 🚀 START HERE (session #28) — PRESENTATION CYCLE (§8.5+§8.9): PLAN **PASSED (85.3, cycle 2)**. ON `feature/presentation`. EXECUTING via lean-sdd (15 tasks). THE SDD LEDGER IS THE AUTHORITY once it exists: `.soltero/lean-sdd/2026-07-31-presentation/progress.md`.
+## 🚀 START HERE (2026-08-01, Kimi CLI) — PROJECT-SCOPED INVITES **SHIPPED** on `feature/project-invites` (base: presentation tip `e58bf5c`; the presentation cycle's 15 tasks + final whole-branch review were already complete per `.soltero/lean-sdd/2026-07-31-presentation/progress.md` — only its live-walk PR gate was outstanding).
+
+**What shipped (PRD §8.2 remainder, tech-debt §2.5 + §1.2 — plan `docs/plans/2026-08-01-project-invites.md`):** invites are project-scoped, hub-held, durable. Server: `InviteStore` retargeted session→project, five messages answered standalone, `REQUIRE_INVITE` now project-level (`98b4652`). Hub: schema **v3** (`invites` + `invite_redemptions`, migration mirrors v2 devices), `HubInviteStore`, hub-answered `peek_invite`/`create`/`list`/`revoke` + redeem-at-`join_project` (`5ea5925`). Client: InvitePanel moved to the project screen (members only), InviteLanding accepts for real (join_project → `?project=<id>` + `replaceState` token strip), OAuth round trip stashes the token in sessionStorage instead of `next`, session-level invite UI (Header button, `I` hotkey, `"invite"` screen) removed (`742db76`). Plus a rider: theme toggle on lobby + hub entrance (`db86f7f`; the presentation branch's T4 project-level-untouched guard was deleted — its premise is false on this branch).
+
+**Suites at head:** server **763** · hub **368** · client **509**, tsc ×3 clean. Executed in Kimi Code CLI — soltero-skills pipeline (spec council, lean-sdd model tiering) NOT available here; plan carried its own design section, no council was convened, implementation delegated to three coder subagents (server/hub/client) with the plan as contract.
+
+**Knowns / disclosures:** (1) solo-mode bypass — with the session-join invite gate removed, a hand-rolled client can skip `join_project` and session-join directly, bypassing `REQUIRE_INVITE` (hub is safe: session join gates on `store.isMember`); (2) hub has no invite-required policy — projects stay openly joinable from the entrance list, invites are directed links not gates; (3) old `/?invite=` links still peek/accept but land on the picker; (4) one non-reproducing server-test flake seen during a T5 sanity run (green on both reruns); (5) PR NOT opened — user merges; branch is local-only, never pushed. Next §8.2 remainder: close/archive client controls.
+
+---
+
+## (was) START HERE (session #28 wrap) — PRESENTATION CYCLE EXECUTING via lean-sdd, MID-FLIGHT. ON `feature/presentation`. **THE SDD LEDGER IS THE AUTHORITY: `.soltero/lean-sdd/2026-07-31-presentation/progress.md` — read it ALL, then `git log`, before dispatching anything.**
+
+**Where it stopped, exactly:** the ~40% hook fired while Tasks 4 and 7 implementers were STILL RUNNING as background agents of the old session (they commit autonomously — their commits and `task-4/7-report.md` files may exist by the time you read this; RECONCILE FIRST, see step 1). Committed so far (all on `feature/presentation`, base fd17264): Task 1 `030508d` ✅ review clean · Task 12 `a24df82` ✅ review clean · Task 2 `b1adb52` ✅ review clean · Task 3 `c4fa4c0` ✅ Approved WITH pending fix round (see ledger: non-discriminating T3 assertion loop, App.test.tsx:373-376 — dispatch AFTER Task 7 lands, App.test.tsx conflict) · Task 5 `cd1a44a` implemented, suite 450 — **review NOT dispatched**.
+
+**➡️ ORDERED NEXT STEPS (fresh session):**
+1. **Reconcile in-flight work:** `git log --oneline fd17264..HEAD` + `ls .soltero/lean-sdd/2026-07-31-presentation/`. If Task 4's commit (terminal.css only, msg "feat(client): sub-session surface styled…") and/or Task 7's (App.tsx+App.test.tsx, msg "feat(client): clean games opt-in…") exist with reports → treat as implemented, dispatch their reviews (sonnet FULL). If absent and no agent alive → re-dispatch that implementer (briefs exist: task-4-brief.md / task-7-brief.md).
+2. **Dispatch Task 5's review** (sonnet FULL; package `scripts/review-package PLAN c4fa4c0 cd1a44a` — careful: if 4/7 commits interleaved, build the package from cd1a44a's parent instead).
+3. **Task 3 fix round 1/3** after Task 7 is landed+reviewed: fresh implementer (opus), told "a prior implementer attempted this; read task-3-report.md", findings verbatim from the Task-3 review (in the old session transcript — summarized in the ledger line), scoped re-review after.
+4. **Continue the pipeline** (plan `docs/plans/2026-07-31-presentation.md`, dependency table): 6 after 4 → 8 after 6+7 → 9→10→11 · 13 after 8 (12 done) ‖ 9–11 · 14‖15 after 1–13 → final whole-branch review (opus) → ONE fix wave → **objective live walk per Plan done gate step 2** → lean-finishing: fresh suites → push → **open PR, user merges**.
+5. lean-sdd contract: briefs via `scripts/task-brief`, packages via `scripts/review-package` (never HEAD~1 — use recorded BASE), tiering mechanical→sonnet/haiku · standard→opus/sonnet · judgment→opus/opus (opus alias = claude-opus-4-8 via `.claude/settings.json`), one writer per file set, path-scoped staging, commit trailers Co-Authored-By + Claude-Session.
+
+**Council record (docs/plan-reviews/2026-07-31-presentation-review.md):** rounds 1–3 BLOCKED (84.2 / 82.2 / 85.2-with-1-blocking) → re-authored per max-round rule → cycle 2 **PASS 85.3**; post-PASS mechanical fixes applied. Disclose to user when relevant: ruling R5 extended spec §2.2's Clean overrides with the four derived alpha tokens (rgba() derivations of the re-pointed solids) — logged, not user-confirmed.
+
+**Suites at cd1a44a: client 450, tsc clean (server 762 · hub 352 untouched — constraint 7 keeps it that way).** Baselines in the plan header. Never predict totals; read them from runs.
 
 **Council history (full record in `docs/plan-reviews/2026-07-31-presentation-review.md`):**
 round 1 BLOCKED 84.2 (D2 floor) → fixes → round 2 BLOCKED 82.2 (D2/D4 floors, 3 blockings:

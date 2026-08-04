@@ -33,7 +33,7 @@ const textLines = (markup: string): string[] =>
 const pickerText = (signedInAs: string | null = null): string[] =>
   textLines(
     renderToStaticMarkup(
-      <ProjectPicker userId="frank" name="Frank" signedInAs={signedInAs} />,
+      <ProjectPicker userId="frank" name="Frank" signedInAs={signedInAs} theme="arcade" onThemeToggle={() => {}} />,
     ),
   );
 
@@ -213,6 +213,22 @@ describe("pairMessage — what the entrance shows for a result (spec A2)", () =>
     expect(pairMessage({ ok: false, error: "unknown or expired code" })).toBe(
       "unknown or expired code",
     );
+  });
+});
+
+describe("ProjectPicker — theme toggle on the entrance (parity)", () => {
+  it("carries the same theme switch the session header does, in the screen head", () => {
+    expect(pickerText()).toContain("◐ THEME");
+  });
+
+  it("keeps a theme-INDEPENDENT label — the current theme rides the title, so the executed control set is identical across themes (T14)", () => {
+    const labelOf = (theme: "arcade" | "clean"): string[] =>
+      textLines(
+        renderToStaticMarkup(
+          <ProjectPicker userId="frank" name="Frank" signedInAs={null} theme={theme} onThemeToggle={() => {}} />,
+        ),
+      ).filter((line) => line.includes("THEME"));
+    expect(labelOf("arcade")).toEqual(labelOf("clean"));
   });
 });
 

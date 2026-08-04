@@ -34,7 +34,18 @@ both now cap at 1 MB and both answer an oversized frame with a 1009 close before
 authentication. What remains open, unrelated to the cap itself: §4's missing client reconnect
 still leaves a tab on a dead socket after any 1009 close until a manual reload.
 
-### 1.2 Invite token travels in query parameters and persists in the address bar
+### 1.2 Invite token travels in query parameters and persists in the address bar — RESOLVED (2026-08-01, `feature/project-invites`)
+
+**What closed it.** Both halves of the "fixed looks like" below landed with the project-invites
+rework. The signed-out path stashes the token in `sessionStorage` (`mpai-invite`) and strips
+`invite` from the `next` param before building the login URL (`loginNextFrom`,
+`poc/client/src/inviteLink.ts`), so the token no longer rides the OAuth round trip in the
+address bar. After a successful accept, `history.replaceState` rewrites the URL to
+`?project=<id>` (`InviteLanding.tsx`), so the token leaves the address bar and the current
+history entry. A lost stash (different tab/browser) degrades to the project screen via the
+surviving `project` param — never a wrong join.
+
+**Was (the original entry, kept for the record):**
 
 `poc/client/src/components/InviteSignIn.tsx:29` passes `location.pathname + location.search` —
 containing `&invite=<192-bit bearer token>` — into `loginUrl()`
@@ -233,7 +244,28 @@ picker row renders `OFFLINE`, JOIN still navigates, and the session view opens e
 `PARTY · 0`. Observed live during Task 8's walk (item 6). The fix is to replay and snapshot
 first and only refuse the *drive/approve* paths, which `tunnel()` already does on its own.
 
-### 2.5 The invite flow is dead through the hub — needs design, not a patch
+### 2.5 The invite flow is dead through the hub — needs design, not a patch — RESOLVED (PRD §8.2, 2026-08-01)
+
+**What closed it.** Branch `feature/project-invites` shipped option (c), narrowed as this entry's
+2026-07-31 update prescribed: a hub-side invite store, project-scoped. The hub mints, lists,
+revokes, peeks and redeems invites itself from a schema-v3 `invites` + `invite_redemptions` table
+(`poc/hub/src/hubDb.ts`, `HubInviteStore`); `peek_invite` is answered hub-side with no identity
+required — the death scenario below ("join a session first" → every link broken against a hub) is
+now the first routing test, green. Redemption is a consuming check at `join_project` before
+membership is written; the invite URL carries the project (`/?project=<id>&invite=<token>`) so the
+accept routes to the project's picker. The standalone server answers the same five messages for
+solo mode (its `InviteStore` retargeted from session to project scope, `REQUIRE_INVITE` now
+project-level). The session-level invite UI is gone; invite management lives on the project
+screen, members only. Plan: `docs/plans/2026-08-01-project-invites.md`.
+
+**What remains, honestly.** The hub has no invite-required policy: projects stay openly joinable
+from the hub-wide entrance list (PRD §8.1 names the list the join affordance) — invites are
+directed landing+join links, not gates. With the session-join invite gate removed, a hand-rolled
+client in solo mode can skip `join_project` and session-join directly, bypassing `REQUIRE_INVITE`
+(the hub has no such hole — it gates session join on `store.isMember`). Old `/?invite=<token>`
+links still resolve (peek needs only the token) but land on the project picker, not a session.
+
+**Was (the original entry, kept for the record):**
 
 **Status, 2026-07-31 (PRD §8.1, identity-and-access branch): partially unblocked, still open.**
 This entry's blocker was "it has no identity plane of its own until v7b2" — that plane now exists

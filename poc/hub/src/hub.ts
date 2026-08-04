@@ -17,7 +17,7 @@ import {
   type DownFrame,
 } from "multiplayer-ai-server/relayProtocol";
 import { HubStore, type MachineInfo } from "./hubStore.js";
-import { HubDb } from "./hubDb.js";
+import { HubDb, type HubInviteStore } from "./hubDb.js";
 import { pairingRoutes, hashToken } from "./pairing.js";
 import {
   TokenBucket,
@@ -402,6 +402,18 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     // once so the operator knows the setting had no effect.
     if (opts.backup) console.log(BACKUPS_DISABLED);
   }
+  // Invites are hub-level (plan 2026-08-01-project-invites §1.2): laptops
+  // never see them, so they are answered from the record directly rather than
+  // hydrated into `HubStore`. A record-less hub still speaks the protocol —
+  // backed LAZILY by one in-memory HubDb, built on the first invite message
+  // and closed alongside the real record below, so the ephemeral hub's
+  // "opens no database at all" boot contract holds until invites are used.
+  let lazyInviteDb: HubDb | null = null;
+  const inviteStore = (): HubInviteStore => {
+    if (db) return db;
+    if (!lazyInviteDb) lazyInviteDb = new HubDb(":memory:");
+    return lazyInviteDb;
+  };
   const uplinks = new Map<string, WebSocket>();
   /** The last `contested` frame sent for each session, so a push only writes
    *  down an uplink when that session's collision state actually CHANGED
@@ -1204,8 +1216,21 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         if (msg.type === "join_project" && store.lifecycleOf(projectId) !== "active") {
           return error(`project "${projectId}" is not open to new members`);
         }
-        if (msg.type === "join_project") store.joinProject(projectId, channel.identity.userId);
-        else store.leaveProject(projectId, channel.identity.userId);
+        if (msg.type === "join_project") {
+          // With a token: a CONSUMING redeem runs BEFORE membership is written
+          // — a failed token admits no one, and the seat is committed to the
+          // record before the join below becomes visible (durable before
+          // visible). Without: today's open join — the hub has no
+          // REQUIRE_INVITE policy (plan §1.4), the project list is the join
+          // affordance. Mirrored from server.ts's join_project, byte for byte.
+          if (typeof msg.invite === "string" && msg.invite) {
+            const result = inviteStore().redeem(msg.invite.slice(0, 64), channel.identity.userId, projectId);
+            if (!result.ok) return error(result.error);
+          }
+          store.joinProject(projectId, channel.identity.userId);
+        } else {
+          store.leaveProject(projectId, channel.identity.userId);
+        }
         pushProjects();
         return;
       }
@@ -1466,6 +1491,85 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         return;
       }
 
+      /** Project-scoped invites (plan 2026-08-01-project-invites §1.3),
+       *  answered from the hub's own invite store — laptops never see them.
+       *  create/list/revoke are member-gated exactly like the record and the
+       *  snapshot: the invite list carries tokens, and team infrastructure is
+       *  members-only. The reply goes to the REQUESTING socket only — the
+       *  token rides `invite_list` and nothing else (plan §2.2). Mirrored
+       *  from server.ts's handlers, byte for byte, so one client speaks one
+       *  protocol (plan §2.1). */
+      if (msg?.type === "create_invite") {
+        if (!channel.identity) return error("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) return error("create_invite requires a valid projectId");
+        if (!store.isMember(projectId, channel.identity.userId)) {
+          return denyMember("join this project before inviting to it");
+        }
+        inviteStore().mint({
+          projectId,
+          createdBy: channel.identity.userId,
+          createdByName: channel.identity.name,
+        });
+        send(socket, { type: "invite_list", invites: inviteStore().listFor(projectId) });
+        return;
+      }
+
+      if (msg?.type === "list_invites") {
+        if (!channel.identity) return error("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) return error("list_invites requires a valid projectId");
+        if (!store.isMember(projectId, channel.identity.userId)) {
+          return denyMember("join this project to see its invites");
+        }
+        send(socket, { type: "invite_list", invites: inviteStore().listFor(projectId) });
+        return;
+      }
+
+      if (msg?.type === "revoke_invite") {
+        if (!channel.identity) return error("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) return error("revoke_invite requires a valid projectId");
+        if (typeof msg.inviteId !== "string" || !msg.inviteId) {
+          return error("revoke_invite requires an inviteId");
+        }
+        if (!store.isMember(projectId, channel.identity.userId)) {
+          return denyMember("join this project before revoking its invites");
+        }
+        const id = msg.inviteId.slice(0, 40);
+        if (!inviteStore().revoke(id, projectId)) return error(`unknown invite: ${id}`);
+        send(socket, { type: "invite_list", invites: inviteStore().listFor(projectId) });
+        return;
+      }
+
+      /** The one invite message with NO identity gate (plan §1.3): the
+       *  invitee is by definition neither a member nor necessarily signed in,
+       *  so the unguessable token itself is the capability — and it is never
+       *  spent here, only previewed. Cross-project probing still collapses to
+       *  "invite not found" inside the store. */
+      if (msg?.type === "peek_invite") {
+        if (typeof msg.token !== "string" || !msg.token) {
+          return error("peek_invite requires a token");
+        }
+        const result = inviteStore().peek(msg.token);
+        if (!result.ok) return error(result.error);
+        // The project record supplies the display name the landing page
+        // shows; if the row is somehow absent (an invite outliving its
+        // project), the id stands in, as it does on the standalone server.
+        const projectName =
+          store.listProjects().find((p) => p.id === result.invite.projectId)?.name ??
+          result.invite.projectId;
+        send(socket, {
+          type: "invite_info",
+          projectId: result.invite.projectId,
+          projectName,
+          inviterName: result.invite.createdByName,
+          expiresAt: result.invite.expiresAt,
+          remaining: result.invite.maxUses - result.invite.uses,
+        });
+        return;
+      }
+
       /** The project record (spec §4.3). Hub-answered for the same reason as
        *  `HUB_HANDLED` above — only the hub sees every laptop, so only the hub
        *  can stamp each session with the machine that owns it — but its own
@@ -1552,6 +1656,8 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
           let dbErr: unknown;
           try {
             db?.close();
+            // The record-less hub's lazy in-memory invite store goes too.
+            lazyInviteDb?.close();
           } catch (thrown) {
             dbErr = thrown;
           }

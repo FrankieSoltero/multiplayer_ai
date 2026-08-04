@@ -54,7 +54,7 @@ export type LoggedEvent = {
 export type InviteView = {
   id: string;
   token: string;
-  sessionId: string;
+  projectId: string;
   createdByName: string;
   expiresAt: number;
   uses: number;

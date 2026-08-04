@@ -286,6 +286,32 @@ describe("SessionPicker — membership refusal wiring (spec A5)", () => {
   });
 });
 
+/** The INVITE section's socket wiring (plan 2026-08-01-project-invites §1.8).
+ *  Static rendering never runs the picker's socket effect, and the section's
+ *  own render is pinned in `InvitePanel.test.tsx` — so the three decisions
+ *  that live in the picker (when to ask, what scope to send, who may see the
+ *  section) are pinned here from source, the house `?raw` pattern. */
+describe("SessionPicker — INVITE section wiring (plan §1.8)", () => {
+  it("asks for the invite list project-scoped, on open and again after a JOIN lands", () => {
+    const asks = pickerSource.match(/"list_invites", projectId: props\.projectId/g);
+    // Once in onopen, once beside the post-join re-watch — a fresh member's
+    // first ask was refused as not_a_member before the join.
+    expect(asks).toHaveLength(2);
+  });
+
+  it("sends project-scoped create/revoke and no follow-up list (the server re-answers)", () => {
+    expect(pickerSource).toMatch(/"create_invite", projectId: props\.projectId/);
+    expect(pickerSource).toMatch(/"revoke_invite", projectId: props\.projectId, inviteId/);
+  });
+
+  it("gates the section on membership (`actable`) — hidden for a spectator, never a red error", () => {
+    // The same gate the NEW SESSION form uses: a spectator acts on nothing
+    // (spec §4.4), and a not_a_member refusal flows into `membership`, which
+    // flips `actable` off — the section degrades by disappearing.
+    expect(pickerSource).toMatch(/\{actable && \([\s\S]{0,200}<InvitePanel/);
+  });
+});
+
 describe("SessionGroups — calm styling", () => {
   it("puts BOTH surfaces on the contested-calm class", () => {
     const markup = render(CONTESTED);

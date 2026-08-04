@@ -45,10 +45,17 @@ describe("screenFor — spec §3.5 routing precedence", () => {
     expect(route({ inviteToken: "tok", inviteTarget: null })).toBe("invite-landing");
   });
 
-  it("leaves the invite landing once the invite has been accepted", () => {
+  it("leaves the invite landing once the invite has been accepted — for the project picker, not a session", () => {
+    // The accept target names a project and nothing else (plan §1.6): the
+    // invitee lands on the picker and joins a session like any member.
     expect(
-      route({ inviteToken: "tok", inviteTarget: { projectId: "p", sessionId: "s1" } }),
-    ).toBe("session");
+      route({
+        inviteToken: "tok",
+        inviteTarget: { projectId: "p" },
+        activeProjectId: "p",
+        activeSessionId: null,
+      }),
+    ).toBe("picker");
   });
 
   // §3.5 row 5 — everything below the auth arms is the pre-A2a chain.

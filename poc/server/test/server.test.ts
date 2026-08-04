@@ -1800,38 +1800,86 @@ describe("oversight wire", () => {
     ws.close();
   });
 
+});
+
+describe("project invites", () => {
+  // The shared preamble: an identified founder creates and joins a project,
+  // leaving the socket positioned right after the join_project ack.
+  async function foundProject(
+    port: number,
+    projectId: string,
+    userId: string,
+    name: string,
+  ): Promise<{ ws: WebSocket; sink: any[] }> {
+    const ws = await connect(port);
+    const sink: any[] = [];
+    collect(ws, sink);
+    ws.send(JSON.stringify({ type: "identify", userId, name }));
+    ws.send(JSON.stringify({ type: "create_project", name: projectId }));
+    await wait(30);
+    ws.send(JSON.stringify({ type: "join_project", projectId }));
+    await wait(30);
+    return { ws, sink };
+  }
+
+  async function joinProject(
+    port: number,
+    projectId: string,
+    userId: string,
+    name: string,
+    invite?: string,
+  ): Promise<{ ws: WebSocket; sink: any[] }> {
+    const ws = await connect(port);
+    const sink: any[] = [];
+    collect(ws, sink);
+    ws.send(JSON.stringify({ type: "identify", userId, name }));
+    await wait(30);
+    ws.send(
+      JSON.stringify({ type: "join_project", projectId, ...(invite ? { invite } : {}) }),
+    );
+    await wait(30);
+    return { ws, sink };
+  }
+
   it("mints an invite, keeps the token off the wire, and previews it", async () => {
     const server = await startServer({ port: 0, runQuery: echoRun });
     close = server.close;
-    const a = await connect(server.port);
-    const sinkA: any[] = [];
-    collect(a, sinkA);
-    a.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
-    await wait(30);
-    a.send(JSON.stringify({ type: "create_invite" }));
+    const a = await foundProject(server.port, "default", "u1", "ana");
+    a.ws.send(JSON.stringify({ type: "create_invite", projectId: "default" }));
     await wait(30);
 
-    const list = sinkA.find((m) => m.type === "invite_list");
+    const list = a.sink.find((m) => m.type === "invite_list");
     expect(list.invites).toHaveLength(1);
     const token = list.invites[0].token;
     expect(token).toHaveLength(32);
+    // The view is project-scoped: it carries the project and no session.
+    expect(list.invites[0].projectId).toBe("default");
+    expect(list.invites[0]).not.toHaveProperty("sessionId");
+    // Project invites emit NO session events (plan §1.9): nothing named
+    // invite_* may appear in any event frame.
+    expect(a.sink.some((m) => m.event?.type === "invite_created")).toBe(false);
+    // The token rides invite_list to the requesting socket and nothing else.
+    for (const m of a.sink) {
+      if (m.type !== "invite_list") expect(JSON.stringify(m)).not.toContain(token);
+    }
 
-    const created = sinkA.find((m) => m.event?.type === "invite_created")?.event;
-    expect(created).toMatchObject({ userId: "u1", inviteId: list.invites[0].id, maxUses: 10 });
-    expect(JSON.stringify(created)).not.toContain(token);
-
+    // peek_invite stays unauthenticated: a fresh socket, no identify.
     const b = await connect(server.port);
     const sinkB: any[] = [];
     collect(b, sinkB);
     b.send(JSON.stringify({ type: "peek_invite", token }));
     await wait(30);
-    expect(sinkB.find((m) => m.type === "invite_info")).toMatchObject({
+    const info = sinkB.find((m) => m.type === "invite_info");
+    expect(info).toMatchObject({
       projectId: "default",
-      sessionId: "alpha",
+      projectName: "default",
       inviterName: "ana",
       remaining: 10,
     });
-    a.close();
+    expect(info).not.toHaveProperty("sessionId");
+    // ...and the answer never echoes the token back.
+    expect(JSON.stringify(sinkB)).not.toContain(token);
+    a.ws.close();
     b.close();
   });
 
@@ -1850,56 +1898,92 @@ describe("oversight wire", () => {
     ws.close();
   });
 
-  it("attributes a redeemed invite on the wire and counts one seat per user", async () => {
+  it("redeems at join_project, counts one seat per user, and writes membership", async () => {
     const server = await startServer({ port: 0, runQuery: echoRun });
     close = server.close;
-    const a = await connect(server.port);
-    const sinkA: any[] = [];
-    collect(a, sinkA);
-    a.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
+    const a = await foundProject(server.port, "default", "u1", "ana");
+    a.ws.send(JSON.stringify({ type: "create_invite", projectId: "default" }));
     await wait(30);
-    a.send(JSON.stringify({ type: "create_invite" }));
-    await wait(30);
-    const invite = sinkA.find((m) => m.type === "invite_list").invites[0];
+    const invite = a.sink.find((m) => m.type === "invite_list").invites[0];
 
-    const b = await connect(server.port);
-    b.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u2", name: "bob", invite: invite.token }));
+    // The invitee redeems the token TWICE (a reload re-joins) — one seat.
+    const b = await joinProject(server.port, "default", "u2", "bob", invite.token);
+    expect(b.sink.some((m) => m.type === "error")).toBe(false);
+    b.ws.send(
+      JSON.stringify({ type: "join_project", projectId: "default", invite: invite.token }),
+    );
     await wait(30);
-    const redeemed = sinkA.find((m) => m.event?.type === "invite_redeemed")?.event;
-    expect(redeemed).toMatchObject({ userId: "u2", inviteId: invite.id });
+    expect(b.sink.some((m) => m.type === "error")).toBe(false);
 
-    a.send(JSON.stringify({ type: "list_invites" }));
+    a.ws.send(JSON.stringify({ type: "list_invites", projectId: "default" }));
     await wait(30);
-    const lists = sinkA.filter((m) => m.type === "invite_list");
+    const lists = a.sink.filter((m) => m.type === "invite_list");
     expect(lists[lists.length - 1].invites[0].uses).toBe(1);
-    a.close();
-    b.close();
+
+    // Membership was written by the redeem: bob may now manage invites.
+    b.ws.send(JSON.stringify({ type: "create_invite", projectId: "default" }));
+    await wait(30);
+    expect(b.sink.some((m) => m.type === "invite_list")).toBe(true);
+
+    // No invite_redeemed session event exists any more (plan §1.9).
+    expect(a.sink.some((m) => m.event?.type === "invite_redeemed")).toBe(false);
+    a.ws.close();
+    b.ws.close();
+  });
+
+  it("a failed redeem writes no membership, and session join ignores a stray invite field", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const a = await foundProject(server.port, "default", "u1", "ana");
+
+    const c = await joinProject(server.port, "default", "u3", "cal", "x".repeat(32));
+    expect(c.sink.find((m) => m.type === "error")?.message).toBe("invite not found");
+    // No membership: cal cannot manage the project's invites.
+    c.ws.send(JSON.stringify({ type: "create_invite", projectId: "default" }));
+    await wait(30);
+    const refusal = c.sink.filter((m) => m.type === "error").at(-1);
+    expect(refusal).toMatchObject({
+      message: "join this project before inviting to it",
+      code: "not_a_member",
+    });
+
+    // The session-join invite field is gone (plan §1.4): a stray one is
+    // simply ignored, like any unknown field — the join itself succeeds.
+    const errorCount = c.sink.filter((m) => m.type === "error").length;
+    c.ws.send(
+      JSON.stringify({
+        type: "join",
+        sessionId: "alpha",
+        userId: "u3",
+        name: "cal",
+        projectId: "default",
+        invite: "x".repeat(32),
+      }),
+    );
+    await wait(30);
+    expect(c.sink.filter((m) => m.type === "error")).toHaveLength(errorCount);
+    expect(c.sink.some((m) => m.type === "project")).toBe(true);
+    a.ws.close();
+    c.ws.close();
   });
 
   it("revokes an invite and reports the exact reason afterwards", async () => {
     const server = await startServer({ port: 0, runQuery: echoRun });
     close = server.close;
-    const a = await connect(server.port);
-    const sinkA: any[] = [];
-    collect(a, sinkA);
-    a.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
+    const a = await foundProject(server.port, "default", "u1", "ana");
+    a.ws.send(JSON.stringify({ type: "create_invite", projectId: "default" }));
     await wait(30);
-    a.send(JSON.stringify({ type: "create_invite" }));
-    await wait(30);
-    const invite = sinkA.find((m) => m.type === "invite_list").invites[0];
+    const invite = a.sink.find((m) => m.type === "invite_list").invites[0];
 
-    a.send(JSON.stringify({ type: "revoke_invite" }));
-    a.send(JSON.stringify({ type: "revoke_invite", inviteId: "nope1234" }));
-    a.send(JSON.stringify({ type: "revoke_invite", inviteId: invite.id }));
+    a.ws.send(JSON.stringify({ type: "revoke_invite", projectId: "default" }));
+    a.ws.send(JSON.stringify({ type: "revoke_invite", projectId: "default", inviteId: "nope1234" }));
+    a.ws.send(JSON.stringify({ type: "revoke_invite", projectId: "default", inviteId: invite.id }));
     await wait(30);
-    const errors = sinkA.filter((m) => m.type === "error").map((m) => m.message);
+    const errors = a.sink.filter((m) => m.type === "error").map((m) => m.message);
     expect(errors).toContain("revoke_invite requires an inviteId");
     expect(errors).toContain("unknown invite: nope1234");
-    expect(sinkA.find((m) => m.event?.type === "invite_revoked")?.event).toMatchObject({
-      userId: "u1",
-      inviteId: invite.id,
-    });
-    const lists = sinkA.filter((m) => m.type === "invite_list");
+    expect(a.sink.some((m) => m.event?.type === "invite_revoked")).toBe(false);
+    const lists = a.sink.filter((m) => m.type === "invite_list");
     expect(lists[lists.length - 1].invites).toHaveLength(0);
 
     const b = await connect(server.port);
@@ -1908,49 +1992,127 @@ describe("oversight wire", () => {
     b.send(JSON.stringify({ type: "peek_invite", token: invite.token }));
     await wait(30);
     expect(sinkB.find((m) => m.type === "error")?.message).toBe("invite revoked");
-    a.close();
+    a.ws.close();
     b.close();
   });
 
-  it("cross-project attacker cannot list or revoke another project's invites for the same session id", async () => {
+  it("gates invite management on project membership and validates like the other project messages", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+    const a = await foundProject(server.port, "default", "u1", "ana");
+    a.ws.send(JSON.stringify({ type: "create_invite", projectId: "default" }));
+    await wait(30);
+    const invite = a.sink.find((m) => m.type === "invite_list").invites[0];
+
+    // An identified non-member gets the not_a_member refusal on all three.
+    // Management of a project that does not exist collapses to the same
+    // refusal — there is no membership to have in it.
+    const o = await connect(server.port);
+    const sinkO: any[] = [];
+    collect(o, sinkO);
+    o.send(JSON.stringify({ type: "identify", userId: "u9", name: "ode" }));
+    await wait(30);
+    o.send(JSON.stringify({ type: "create_invite", projectId: "default" }));
+    o.send(JSON.stringify({ type: "list_invites", projectId: "default" }));
+    o.send(JSON.stringify({ type: "revoke_invite", projectId: "default", inviteId: invite.id }));
+    o.send(JSON.stringify({ type: "create_invite", projectId: "ghost" }));
+    await wait(30);
+    const refusals = sinkO.filter((m) => m.type === "error");
+    expect(refusals.map((m) => m.message)).toEqual([
+      "join this project before inviting to it",
+      "join this project to see its invites",
+      "join this project before revoking its invites",
+      "join this project before inviting to it",
+    ]);
+    expect(refusals.every((m) => m.code === "not_a_member")).toBe(true);
+    expect(sinkO.some((m) => m.type === "invite_list")).toBe(false);
+
+    // An UNidentified connection is stopped earlier still.
+    const n = await connect(server.port);
+    const sinkN: any[] = [];
+    collect(n, sinkN);
+    n.send(JSON.stringify({ type: "create_invite", projectId: "default" }));
+    n.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    await wait(30);
+    expect(sinkN.filter((m) => m.type === "error").map((m) => m.message)).toEqual([
+      "identify first",
+      "identify first",
+    ]);
+
+    // join_project's own validation: slug shape and project existence.
+    const v = await connect(server.port);
+    const sinkV: any[] = [];
+    collect(v, sinkV);
+    v.send(JSON.stringify({ type: "identify", userId: "u8", name: "vic" }));
+    await wait(30);
+    v.send(JSON.stringify({ type: "join_project", projectId: "BAD SLUG" }));
+    v.send(JSON.stringify({ type: "join_project", projectId: "ghost" }));
+    v.send(JSON.stringify({ type: "create_invite", projectId: "BAD SLUG" }));
+    await wait(30);
+    expect(sinkV.filter((m) => m.type === "error").map((m) => m.message)).toEqual([
+      "join_project requires a valid projectId",
+      'no project "ghost"',
+      "create_invite requires a valid projectId",
+    ]);
+
+    // The failed management attempts left the live invite untouched.
+    const b = await connect(server.port);
+    const sinkB: any[] = [];
+    collect(b, sinkB);
+    b.send(JSON.stringify({ type: "peek_invite", token: invite.token }));
+    await wait(30);
+    expect(sinkB.some((m) => m.type === "invite_info")).toBe(true);
+    a.ws.close();
+    o.close();
+    n.close();
+    v.close();
+    b.close();
+  });
+
+  it("cross-project attacker cannot list, revoke, or redeem another project's invite", async () => {
     const server = await startServer({ port: 0, runQuery: echoRun });
     close = server.close;
 
-    // Victim founds project "default", session "alpha", and mints an invite.
-    const victim = await connect(server.port);
-    const sinkVictim: any[] = [];
-    collect(victim, sinkVictim);
-    victim.send(
-      JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana", projectId: "default" }),
+    // Victim founds project "default" and mints an invite.
+    const victim = await foundProject(server.port, "default", "u1", "ana");
+    victim.ws.send(JSON.stringify({ type: "create_invite", projectId: "default" }));
+    await wait(30);
+    const victimInvite = victim.sink.find((m) => m.type === "invite_list").invites[0];
+
+    // Attacker founds a DIFFERENT project — project ids are guessable
+    // `mpai` slugs, and founding an empty project is open by design.
+    const attacker = await foundProject(server.port, "evil", "u2", "eve");
+    attacker.ws.send(JSON.stringify({ type: "create_invite", projectId: "evil" }));
+    await wait(30);
+
+    // Their own project lists exactly their own invite, never the victim's.
+    attacker.ws.send(JSON.stringify({ type: "list_invites", projectId: "evil" }));
+    await wait(30);
+    const lists = attacker.sink.filter((m) => m.type === "invite_list");
+    const own = lists[lists.length - 1].invites;
+    expect(own).toHaveLength(1);
+    expect(own[0].id).not.toBe(victimInvite.id);
+
+    // Listing the VICTIM's project is a membership refusal; scoping the
+    // revoke to the attacker's own project collapses to "unknown invite";
+    // redeeming the victim's token against the attacker's project collapses
+    // to "invite not found" — the token never confirms it is real elsewhere.
+    attacker.ws.send(JSON.stringify({ type: "list_invites", projectId: "default" }));
+    attacker.ws.send(
+      JSON.stringify({ type: "revoke_invite", projectId: "evil", inviteId: victimInvite.id }),
+    );
+    attacker.ws.send(
+      JSON.stringify({ type: "join_project", projectId: "evil", invite: victimInvite.token }),
     );
     await wait(30);
-    victim.send(JSON.stringify({ type: "create_invite" }));
-    await wait(30);
-    const victimInvite = sinkVictim.find((m) => m.type === "invite_list").invites[0];
+    const attackerErrors = attacker.sink.filter((m) => m.type === "error");
+    expect(attackerErrors.map((m) => m.message)).toEqual([
+      "join this project to see its invites",
+      `unknown invite: ${victimInvite.id}`,
+      "invite not found",
+    ]);
 
-    // Attacker founds an empty room with the SAME session id "alpha" but a
-    // DIFFERENT project — the founder slot is open by design, and session
-    // ids are guessable `mpai new` slugs (alpha, demo, fix-login).
-    const attacker = await connect(server.port);
-    const sinkAttacker: any[] = [];
-    collect(attacker, sinkAttacker);
-    attacker.send(
-      JSON.stringify({ type: "join", sessionId: "alpha", userId: "u2", name: "eve", projectId: "evil" }),
-    );
-    await wait(30);
-
-    attacker.send(JSON.stringify({ type: "list_invites" }));
-    await wait(30);
-    const attackerLists = sinkAttacker.filter((m) => m.type === "invite_list");
-    expect(attackerLists[attackerLists.length - 1].invites).toEqual([]);
-
-    attacker.send(JSON.stringify({ type: "revoke_invite", inviteId: victimInvite.id }));
-    await wait(30);
-    const attackerErrors = sinkAttacker.filter((m) => m.type === "error").map((m) => m.message);
-    expect(attackerErrors).toContain(`unknown invite: ${victimInvite.id}`);
-
-    // The victim's invite must still be live — unaffected by the failed
-    // cross-project revoke attempt.
+    // The victim's invite must still be live — unaffected by all of it.
     const checker = await connect(server.port);
     const sinkChecker: any[] = [];
     collect(checker, sinkChecker);
@@ -1958,129 +2120,92 @@ describe("oversight wire", () => {
     await wait(30);
     expect(sinkChecker.find((m) => m.type === "invite_info")).toMatchObject({
       projectId: "default",
-      sessionId: "alpha",
+      projectName: "default",
     });
 
-    victim.close();
-    attacker.close();
+    victim.ws.close();
+    attacker.ws.close();
     checker.close();
   });
 
-  it("requireInvite blocks an uninvited join of an occupied session without provisioning", async () => {
+  it("requireInvite blocks an uninvited join of an occupied project without provisioning", async () => {
     const workspace = fakeWorkspace();
     const server = await startServer({ port: 0, runQuery: echoRun, workspace, requireInvite: true });
     close = server.close;
-    const a = await connect(server.port);
-    a.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
+    const a = await foundProject(server.port, "default", "u1", "ana");
+    a.ws.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
     await wait(30);
-    // The founder's join provisions exactly one worktree for "alpha".
+    // The founder's session join provisions exactly one worktree for "alpha".
     expect(workspace.calls).toHaveLength(1);
 
-    const b = await connect(server.port);
-    const sinkB: any[] = [];
-    collect(b, sinkB);
-    b.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u2", name: "bob" }));
-    await wait(30);
-    expect(sinkB.find((m) => m.type === "error")?.message).toBe("this session requires an invite");
-    expect(sinkB.some((m) => m.type === "project")).toBe(false);
-    // The rejected join must not provision a second worktree for "alpha".
+    const b = await joinProject(server.port, "default", "u2", "bob");
+    expect(b.sink.find((m) => m.type === "error")?.message).toBe("this project requires an invite");
+    expect(b.sink.some((m) => m.type === "projects")).toBe(false);
+    // The rejected join provisions nothing and writes no membership.
     expect(workspace.calls).toHaveLength(1);
-
-    const c = await connect(server.port);
-    const sinkC: any[] = [];
-    collect(c, sinkC);
-    c.send(JSON.stringify({ type: "join", sessionId: "bravo", userId: "u3", name: "cal" }));
+    b.ws.send(JSON.stringify({ type: "create_invite", projectId: "default" }));
     await wait(30);
-    expect(sinkC.some((m) => m.type === "error")).toBe(false);
-    expect(sinkC.some((m) => m.type === "project")).toBe(true);
-    a.close();
-    b.close();
-    c.close();
+    expect(b.sink.filter((m) => m.type === "error").at(-1)?.code).toBe("not_a_member");
+
+    // An EMPTY project stays open to whoever arrives first — the founder slot.
+    const c = await foundProject(server.port, "other", "u3", "cal");
+    expect(c.sink.some((m) => m.type === "error")).toBe(false);
+    a.ws.close();
+    b.ws.close();
+    c.ws.close();
   });
 
-  it("rejects a join with an unknown invite token before ever provisioning the brand-new session it targets", async () => {
-    // A session that already exists (founded by a prior join) can't
-    // distinguish correct gate ordering from broken ordering, because
-    // getOrCreateSession only calls workspace.provision for a session that
-    // doesn't yet exist. This test targets a sessionId that has never been
-    // created, so any provisioning at all would prove the gate ran too late.
-    const workspace = fakeWorkspace();
-    const server = await startServer({ port: 0, runQuery: echoRun, workspace });
-    close = server.close;
-    const ws = await connect(server.port);
-    const sink: any[] = [];
-    collect(ws, sink);
-    ws.send(
-      JSON.stringify({
-        type: "join",
-        sessionId: "never-created",
-        userId: "u1",
-        name: "eve",
-        invite: "x".repeat(32),
-      }),
-    );
-    await wait(30);
-    expect(sink.find((m) => m.type === "error")?.message).toBe("invite not found");
-    expect(workspace.calls).toHaveLength(0);
-    ws.close();
-  });
-
-  it("requireInvite admits a reconnecting founder without a token even while the room stays occupied", async () => {
+  it("requireInvite admits a reconnecting founder without a token even while the project stays occupied", async () => {
     const server = await startServer({ port: 0, runQuery: echoRun, requireInvite: true });
     close = server.close;
 
-    const a = await connect(server.port);
-    const sinkA: any[] = [];
-    collect(a, sinkA);
-    a.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
+    const a = await foundProject(server.port, "default", "u1", "ana");
+    a.ws.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
     await wait(30);
 
-    // Admit a second participant with a minted invite so the room is
+    // Admit a second member with a minted invite so the project stays
     // occupied by more than just the reconnecting founder.
-    a.send(JSON.stringify({ type: "create_invite" }));
+    a.ws.send(JSON.stringify({ type: "create_invite", projectId: "default" }));
     await wait(30);
-    const invite = sinkA.find((m) => m.type === "invite_list").invites[0];
-    const b = await connect(server.port);
-    b.send(
-      JSON.stringify({ type: "join", sessionId: "alpha", userId: "u2", name: "bob", invite: invite.token }),
-    );
+    const invite = a.sink.find((m) => m.type === "invite_list").invites[0];
+    const b = await joinProject(server.port, "default", "u2", "bob", invite.token);
+    expect(b.sink.some((m) => m.type === "error")).toBe(false);
+    b.ws.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u2", name: "bob" }));
     await wait(30);
 
     // Founder's tab refreshes: socket drops, presence_leave fires.
-    a.close();
+    a.ws.close();
     await wait(30);
 
-    // Reconnect with the same userId and no token. The room is still
+    // Reconnect with the same userId and no token. The project is still
     // occupied (by bob), but u1 was admitted before, so this must succeed.
     const a2 = await connect(server.port);
     const sinkA2: any[] = [];
     collect(a2, sinkA2);
-    a2.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
+    a2.send(JSON.stringify({ type: "identify", userId: "u1", name: "ana" }));
+    await wait(30);
+    a2.send(JSON.stringify({ type: "join_project", projectId: "default" }));
     await wait(30);
     expect(sinkA2.some((m) => m.type === "error")).toBe(false);
-    expect(sinkA2.some((m) => m.type === "project")).toBe(true);
+    expect(sinkA2.some((m) => m.type === "projects")).toBe(true);
 
     a2.close();
-    b.close();
+    b.ws.close();
   });
 
-  it("requireInvite still rejects a genuinely new userId with no token in an occupied room", async () => {
+  it("requireInvite still rejects a genuinely new userId with no token in an occupied project", async () => {
     const server = await startServer({ port: 0, runQuery: echoRun, requireInvite: true });
     close = server.close;
 
-    const a = await connect(server.port);
-    a.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
+    const a = await foundProject(server.port, "default", "u1", "ana");
+    a.ws.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u1", name: "ana" }));
     await wait(30);
 
-    const c = await connect(server.port);
-    const sinkC: any[] = [];
-    collect(c, sinkC);
-    c.send(JSON.stringify({ type: "join", sessionId: "alpha", userId: "u3", name: "cal" }));
-    await wait(30);
-    expect(sinkC.find((m) => m.type === "error")?.message).toBe("this session requires an invite");
+    const c = await joinProject(server.port, "default", "u3", "cal");
+    expect(c.sink.find((m) => m.type === "error")?.message).toBe("this project requires an invite");
 
-    a.close();
-    c.close();
+    a.ws.close();
+    c.ws.close();
   });
 });
 
@@ -2422,6 +2547,33 @@ describe("auth gate on the pre-join message types", () => {
     const err = seen.find((m) => m.type === "error");
     expect(err).toBeTruthy();
     expect(err.message).not.toMatch(/authentication required/);
+    ws.close();
+  });
+
+  // The PROJECT-level invite messages (plan 2026-08-01-project-invites) sit
+  // above the join choke point too, so they take the same cookie gate as
+  // list_projects/create_project — only peek_invite stays open.
+  it("rejects join_project and invite management with no cookie", async () => {
+    const server = await startServer({ port: 0, runQuery: echoRun, auth: AUTH });
+    close = server.close;
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+
+    ws.send(JSON.stringify({ type: "identify", userId: "mallory", name: "M" }));
+    ws.send(JSON.stringify({ type: "join_project", projectId: "default" }));
+    ws.send(JSON.stringify({ type: "create_invite", projectId: "default" }));
+    ws.send(JSON.stringify({ type: "list_invites", projectId: "default" }));
+    ws.send(JSON.stringify({ type: "revoke_invite", projectId: "default", inviteId: "nope1234" }));
+    await wait(60);
+
+    const errors = seen.filter((m) => m.type === "error");
+    // identify answered; the four gated types each refused before any
+    // membership check could run.
+    expect(seen.some((m) => m.type === "identified")).toBe(true);
+    expect(errors).toHaveLength(4);
+    expect(errors.every((m) => /authentication required/.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "invite_list" || m.type === "projects")).toBe(false);
     ws.close();
   });
 

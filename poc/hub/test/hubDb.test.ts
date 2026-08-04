@@ -91,7 +91,7 @@ function raw<T>(dbPath: string, fn: (db: Database.Database) => T): T {
 const isDir = (p: string) => fs.statSync(p).isDirectory();
 
 describe("HubDb — fresh file", () => {
-  it("creates the file, the v2 schema, WAL mode and a 0700 parent dir", () => {
+  it("creates the file, the v3 schema, WAL mode and a 0700 parent dir", () => {
     const dbPath = path.join(tmp(), "nested", "deep", "hub.db");
     openDb(dbPath);
 
@@ -117,6 +117,8 @@ describe("HubDb — fresh file", () => {
       expect(tables).toEqual([
         "devices",
         "events",
+        "invite_redemptions",
+        "invites",
         "machines",
         "meta",
         "project_members",
@@ -601,14 +603,14 @@ describe("HubDb — boot refusals (spec §3.6)", () => {
   it("refuses a DB whose schema is newer than it understands", () => {
     const dbPath = path.join(tmp(), "hub.db");
     openDb(dbPath).close();
-    // A stamp ABOVE the current version: migration runs forward only, so a v3
+    // A stamp ABOVE the current version: migration runs forward only, so a v4
     // record is refused with the existing message shape rather than downgraded.
     const bump = new Database(dbPath);
-    bump.prepare("UPDATE meta SET value = '3' WHERE key = 'schema_version'").run();
+    bump.prepare("UPDATE meta SET value = '4' WHERE key = 'schema_version'").run();
     bump.close();
 
     expect(() => openDb(dbPath)).toThrow(
-      `hub.db schema is v3; this hub understands v${SCHEMA_VERSION} — refusing to start`,
+      `hub.db schema is v4; this hub understands v${SCHEMA_VERSION} — refusing to start`,
     );
     // And it did not consume its own lock on the way out.
     expect(fs.existsSync(`${dbPath}.lock`)).toBe(false);
@@ -618,7 +620,7 @@ describe("HubDb — boot refusals (spec §3.6)", () => {
       const meta = db
         .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
         .get() as { value: string };
-      expect(meta.value).toBe("3");
+      expect(meta.value).toBe("4");
     });
   });
 
@@ -756,7 +758,7 @@ describe("HubDb — v1→v2 forward migration", () => {
     }
   });
 
-  it("reopening a migrated file is a plain v2 open — no second backup, no re-migration", () => {
+  it("reopening a migrated file is a plain current-version open — no second backup, no re-migration", () => {
     const dbPath = path.join(tmp(), "hub.db");
     writeV1File(dbPath);
     openDb(dbPath).close();
@@ -766,6 +768,205 @@ describe("HubDb — v1→v2 forward migration", () => {
     const reopened = openDb(dbPath);
     expect(fs.existsSync(`${dbPath}.v1.bak`)).toBe(false);
     expect(reopened.load().projects.map((p) => p.id)).toEqual(["acme"]);
+  });
+});
+
+/** The v2 schema, VERBATIM as it shipped — the v1 table set plus `devices` —
+ *  so a test can forge a genuine v2 record with raw SQL and prove the v2→v3
+ *  forward migration adds the invite tables and nothing else. */
+const V2_SCHEMA_DDL = `${V1_SCHEMA_DDL}
+CREATE TABLE IF NOT EXISTS devices
+                (machine_id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                 token_hash TEXT NOT NULL, approved_by TEXT NOT NULL,
+                 approved_at TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+`;
+
+/** Forges a v2 record on disk with raw SQL and a representative row in the v2
+ *  tables, then closes it — exactly the file a pre-invites hub left behind. */
+function writeV2File(dbPath: string): void {
+  const db = new Database(dbPath);
+  try {
+    db.exec(V2_SCHEMA_DDL);
+    db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '2')").run();
+    db.prepare(
+      "INSERT INTO projects (id, name, created_by, created_at, lifecycle) VALUES (?, ?, ?, ?, ?)",
+    ).run("acme", "Acme", "ana", "2026-07-29T10:00:00.000Z", "active");
+    db.prepare("INSERT INTO project_members (project_id, user_id) VALUES (?, ?)").run("acme", "ana");
+    db.prepare(
+      "INSERT INTO sessions (project_id, session_id, uplink_id, facts_json, last_run_id, last_seq) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("acme", "auth", "lap-1", JSON.stringify(facts()), "run-a", 1);
+    db.prepare(
+      "INSERT INTO devices (machine_id, name, token_hash, approved_by, approved_at, revoked) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("lap-1", "ana-mbp", "hash-a", "ana", "2026-07-29T10:00:00.000Z", 0);
+  } finally {
+    db.close();
+  }
+}
+
+describe("HubDb — v2→v3 forward migration", () => {
+  it("migrates a genuine v2 record: adds the invite tables, bumps meta, leaves every v2 row untouched", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    writeV2File(dbPath);
+
+    const db = openDb(dbPath);
+
+    // The stamp is now current and BOTH invite tables exist — empty, because a
+    // migration is additive and invents no rows.
+    raw(dbPath, (rdb) => {
+      const meta = rdb
+        .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+        .get() as { value: string };
+      expect(meta.value).toBe(String(SCHEMA_VERSION));
+      for (const table of ["invites", "invite_redemptions"]) {
+        expect(
+          rdb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),
+        ).toBeDefined();
+      }
+      expect((rdb.prepare("SELECT count(*) AS n FROM invites").get() as { n: number }).n).toBe(0);
+    });
+
+    // Every v2 row survives — projects, members, sessions AND devices.
+    const h = db.load();
+    expect(h.projects.map((p) => p.id)).toEqual(["acme"]);
+    expect(h.projects[0]?.members).toEqual(["ana"]);
+    expect(h.sessions.map((s) => s.sessionId)).toEqual(["auth"]);
+    expect(db.deviceByTokenHash("hash-a")).toEqual({ machineId: "lap-1", name: "ana-mbp" });
+    // And the store the migration made room for works against the migrated file.
+    const view = db.mint({ projectId: "acme", createdBy: "ana", createdByName: "ana" });
+    expect(db.peek(view.token)).toEqual({ ok: true, invite: view });
+  });
+
+  it("copies the pure-v2 file to <dbPath>.v2.bak BEFORE migrating (blast radius / rollback)", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    writeV2File(dbPath);
+
+    openDb(dbPath);
+
+    const bakPath = `${dbPath}.v2.bak`;
+    expect(fs.existsSync(bakPath)).toBe(true);
+    // Owner-only, same rule as the v1 backup (spec §8a.7).
+    expect((fs.statSync(bakPath).mode & 0o777).toString(8)).toBe("600");
+    // A PRE-migration snapshot: still stamped v2, still without the invite
+    // tables — a rollback restores an intact v2 record.
+    const bak = new Database(bakPath);
+    try {
+      const meta = bak
+        .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+        .get() as { value: string };
+      expect(meta.value).toBe("2");
+      expect(
+        bak.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'invites'").get(),
+      ).toBeUndefined();
+      expect((bak.prepare("SELECT count(*) AS n FROM devices").get() as { n: number }).n).toBe(1);
+    } finally {
+      bak.close();
+    }
+  });
+});
+
+describe("HubDb — HubInviteStore", () => {
+  /** A pinned clock, walked forward by hand, so TTL/expiry/prune are exact. */
+  const clocked = (start = 1_000_000) => {
+    let now = start;
+    const db = new HubDb(":memory:", { now: () => now });
+    open.push(db);
+    return { db, advance: (ms: number) => (now += ms) };
+  };
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  it("mints a 24h/10-seat invite and peeks it back by token", () => {
+    const { db } = clocked();
+    const view = db.mint({ projectId: "acme", createdBy: "ana", createdByName: "Ana" });
+    expect(view.token).toHaveLength(32);
+    expect(view.id).not.toBe(view.token);
+    expect(view).toMatchObject({ projectId: "acme", createdByName: "Ana", uses: 0, maxUses: 10 });
+    expect(view.expiresAt).toBe(1_000_000 + DAY_MS);
+    expect(db.peek(view.token)).toEqual({ ok: true, invite: view });
+  });
+
+  it("collapses unknown and malformed tokens to 'invite not found'", () => {
+    const { db } = clocked();
+    expect(db.peek("nope")).toEqual({ ok: false, error: "invite not found" });
+    expect(db.peek("a".repeat(32))).toEqual({ ok: false, error: "invite not found" });
+    expect(db.peek(42)).toEqual({ ok: false, error: "invite not found" });
+  });
+
+  it("redeem burns one seat per DISTINCT userId; a re-join by the same userId is free", () => {
+    const { db } = clocked();
+    const view = db.mint({ projectId: "acme", createdBy: "ana", createdByName: "Ana" });
+    const first = db.redeem(view.token, "ben", "acme");
+    expect(first.ok && first.invite.uses).toBe(1);
+    const rejoin = db.redeem(view.token, "ben", "acme");
+    expect(rejoin.ok && rejoin.invite.uses).toBe(1);
+    const second = db.redeem(view.token, "cy", "acme");
+    expect(second.ok && second.invite.uses).toBe(2);
+  });
+
+  it("reports 'invite not found' for a token of ANOTHER project — before any state leaks", () => {
+    const { db } = clocked();
+    const view = db.mint({ projectId: "acme", createdBy: "ana", createdByName: "Ana" });
+    db.revoke(view.id, "acme");
+    // Revoked, but the cross-project caller learns only "not found".
+    expect(db.redeem(view.token, "ben", "other")).toEqual({ ok: false, error: "invite not found" });
+    expect(db.revoke(view.id, "other")).toBe(false);
+    expect(db.listFor("other")).toEqual([]);
+  });
+
+  it("precedence: revoked > expired > full", () => {
+    const { db, advance } = clocked();
+    // Full: mint, burn all 10 seats, eleventh distinct userId is refused.
+    const full = db.mint({ projectId: "acme", createdBy: "ana", createdByName: "Ana" });
+    for (let i = 0; i < 10; i += 1) db.redeem(full.token, `u${i}`, "acme");
+    expect(db.redeem(full.token, "u10", "acme")).toEqual({ ok: false, error: "invite is full" });
+    // Full AND expired → expired wins over full…
+    advance(DAY_MS + 1);
+    expect(db.redeem(full.token, "u10", "acme")).toEqual({ ok: false, error: "invite expired" });
+    // …and revoked wins over both.
+    db.revoke(full.id, "acme");
+    expect(db.redeem(full.token, "u10", "acme")).toEqual({ ok: false, error: "invite revoked" });
+    expect(db.peek(full.token)).toEqual({ ok: false, error: "invite revoked" });
+  });
+
+  it("lazy prune: a dead invite says why for an hour, then collapses to 'not found'", () => {
+    const { db, advance } = clocked();
+    const view = db.mint({ projectId: "acme", createdBy: "ana", createdByName: "Ana" });
+    advance(DAY_MS + 1);
+    expect(db.peek(view.token)).toEqual({ ok: false, error: "invite expired" });
+    advance(60 * 60 * 1000);
+    expect(db.peek(view.token)).toEqual({ ok: false, error: "invite not found" });
+  });
+
+  it("listFor shows live invites (full ones included) and hides revoked and expired", () => {
+    const { db, advance } = clocked();
+    const live = db.mint({ projectId: "acme", createdBy: "ana", createdByName: "Ana" });
+    const revoked = db.mint({ projectId: "acme", createdBy: "ana", createdByName: "Ana" });
+    const expiring = db.mint({ projectId: "acme", createdBy: "ana", createdByName: "Ana" });
+    db.revoke(revoked.id, "acme");
+    db.redeem(live.token, "ben", "acme");
+    expect(db.listFor("acme").map((v) => v.id)).toEqual([live.id, expiring.id]);
+    expect(db.listFor("acme")[0]?.uses).toBe(1);
+    // `expiring` dies with the clock; `live` was minted at the same instant —
+    // walk just past the TTL and only the revoked row's absence is stable.
+    advance(DAY_MS + 1);
+    expect(db.listFor("acme")).toEqual([]);
+  });
+
+  it("revoke is durable immediately — a fresh handle on the same file agrees", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    const db = openDb(dbPath);
+    const view = db.mint({ projectId: "acme", createdBy: "ana", createdByName: "Ana" });
+    db.redeem(view.token, "ben", "acme");
+    expect(db.revoke(view.id, "acme")).toBe(true);
+    db.close();
+
+    const reopened = openDb(dbPath);
+    expect(reopened.peek(view.token)).toEqual({ ok: false, error: "invite revoked" });
+    // The seat survived too: `uses` is the record's, not memory's.
+    raw(dbPath, (rdb) => {
+      expect(
+        (rdb.prepare("SELECT count(*) AS n FROM invite_redemptions").get() as { n: number }).n,
+      ).toBe(1);
+    });
   });
 });
 

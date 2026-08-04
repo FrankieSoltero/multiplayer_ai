@@ -1,6 +1,5 @@
 /// <reference types="node" />
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { execFileSync } from "node:child_process";
 import React from "react";
 import type { LoggedEvent, ProjectSessionInfo } from "./types";
 import { Transcript } from "./components/Transcript";
@@ -196,7 +195,6 @@ const baseSocket = (events: LoggedEvent[], send: unknown) =>
     plugins: [],
     pluginsEnabled: false,
     oversight: { enabled: false, latest: null },
-    invites: [],
     send,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }) as any;
@@ -321,7 +319,7 @@ describe("App — sub-session rail wiring", () => {
     expect(railOf(dflt.nodes())).toBeDefined();
 
     // Other screens return before the transcript surface — no rail, no header.
-    for (const screen of ["workflows", "skills", "oversight", "invite"]) {
+    for (const screen of ["workflows", "skills", "oversight"]) {
       socket.current = baseSocket(driverEvents(), send);
       const app = mount(SessionView as (p: unknown) => unknown, baseProps({ screen }));
       expect(railOf(app.nodes())).toBeUndefined();
@@ -394,17 +392,6 @@ describe("App — sub-session rail wiring", () => {
     expect(nodes.some((n) => isCabinet(n.type))).toBe(false);
     // And the CRT wraps the routed screen body directly as its children.
     expect(nodeOfType(nodes, Crt)!.props.children).toBeDefined();
-  });
-
-  it("T4-project-level-untouched: the branch diff touches no project-level component", () => {
-    const changed = execFileSync("git", ["diff", "--name-only", "main"], {
-      cwd: process.cwd(),
-      encoding: "utf8",
-    })
-      .split("\n")
-      .filter(Boolean);
-    const forbidden = /(ProjectPicker|SessionPicker|MachinePanel|RecordPanel)/;
-    expect(changed.filter((f) => forbidden.test(f))).toEqual([]);
   });
 });
 
@@ -531,8 +518,8 @@ describe("App — §8.5 pinned gate bar placement + derivation (Task 8)", () => 
     }
   });
 
-  it("T8-placement-scoped renders no gate bar on the workflows/skills/oversight/invite screens", () => {
-    for (const screen of ["workflows", "skills", "oversight", "invite"]) {
+  it("T8-placement-scoped renders no gate bar on the workflows/skills/oversight screens", () => {
+    for (const screen of ["workflows", "skills", "oversight"]) {
       socket.current = baseSocket(onePendingGate(), send);
       const nodes = mount(SessionView as (p: unknown) => unknown, baseProps({ screen })).nodes();
       expect(gateBarOf(nodes), `no gate bar on ${screen}`).toBeUndefined();

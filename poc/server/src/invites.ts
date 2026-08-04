@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-/** A session-scoped join capability. In-memory only: invites die with the
+/** A project-scoped join capability. In-memory only: invites die with the
  *  process, like every other piece of server state in this POC. */
 export interface Invite {
   /** Public, safe for the wire and the transcript. */
@@ -9,7 +9,6 @@ export interface Invite {
    *  socket that asked — never in the replayed session log. */
   token: string;
   projectId: string;
-  sessionId: string;
   createdBy: string;
   createdByName: string;
   createdAt: number;
@@ -21,12 +20,12 @@ export interface Invite {
   revoked: boolean;
 }
 
-/** What a participant sees. Carries the token, which is why this shape only
- *  ever goes to the requesting socket. */
+/** What a project member sees. Carries the token, which is why this shape
+ *  only ever goes to the requesting socket. */
 export interface InviteView {
   id: string;
   token: string;
-  sessionId: string;
+  projectId: string;
   createdByName: string;
   expiresAt: number;
   uses: number;
@@ -62,7 +61,6 @@ export class InviteStore {
 
   mint(args: {
     projectId: string;
-    sessionId: string;
     createdBy: string;
     createdByName: string;
   }): Invite {
@@ -73,7 +71,6 @@ export class InviteStore {
       id: randomBytes(6).toString("base64url"),
       token: randomBytes(24).toString("base64url"),
       projectId: args.projectId,
-      sessionId: args.sessionId,
       createdBy: args.createdBy,
       createdByName: args.createdByName,
       createdAt: now,
@@ -95,15 +92,13 @@ export class InviteStore {
   }
 
   /** Consuming check. Takes a seat unless this user already holds one. */
-  redeem(token: unknown, userId: string, sessionId: string, projectId: string): InviteResult {
+  redeem(token: unknown, userId: string, projectId: string): InviteResult {
     this.prune();
     const invite = this.lookup(token);
-    // A token that exists but belongs elsewhere reports "not found" rather
-    // than confirming it is real for some other session — checked before
-    // classify() so revoked/expired/full states don't leak either. Both ids
-    // must match: a token is a capability for one project+session pair, not
-    // for a session-id string that another project might reuse.
-    if (invite && (invite.sessionId !== sessionId || invite.projectId !== projectId)) {
+    // A token that exists but belongs to another project reports "not found"
+    // rather than confirming it is real somewhere else — checked before
+    // classify() so revoked/expired/full states don't leak either.
+    if (invite && invite.projectId !== projectId) {
       return { ok: false, error: "invite not found" };
     }
     const failure = this.classify(invite, userId);
@@ -112,19 +107,17 @@ export class InviteStore {
     return { ok: true, invite: invite! };
   }
 
-  listFor(projectId: string, sessionId: string): InviteView[] {
+  listFor(projectId: string): InviteView[] {
     this.prune();
     const live: InviteView[] = [];
     for (const invite of this.byToken.values()) {
-      // Sessions are per-project, so a bare sessionId is not unique across
-      // projects — both must match or this leaks another project's tokens.
-      if (invite.projectId !== projectId || invite.sessionId !== sessionId) continue;
+      if (invite.projectId !== projectId) continue;
       // Include full invites (they show zero seats left); hide only revoked/expired
       if (invite.revoked || invite.expiresAt <= this.now()) continue;
       live.push({
         id: invite.id,
         token: invite.token,
-        sessionId: invite.sessionId,
+        projectId: invite.projectId,
         createdByName: invite.createdByName,
         expiresAt: invite.expiresAt,
         uses: invite.redeemedBy.size,
@@ -135,10 +128,10 @@ export class InviteStore {
     return live;
   }
 
-  revoke(id: string, projectId: string, sessionId: string): boolean {
+  revoke(id: string, projectId: string): boolean {
     this.prune();
     for (const invite of this.byToken.values()) {
-      if (invite.id === id && invite.projectId === projectId && invite.sessionId === sessionId) {
+      if (invite.id === id && invite.projectId === projectId) {
         invite.revoked = true;
         return true;
       }

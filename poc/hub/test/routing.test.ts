@@ -1974,3 +1974,238 @@ describe("hub membership gates on participation", () => {
     browser.close(); up.close();
   });
 });
+
+describe("hub project invites (plan 2026-08-01-project-invites §1.3)", () => {
+  /** A browser that identified, created the project and joined it — the
+   *  founder-member every invite test starts from. */
+  async function founder(port: number, name: string, projectId: string, userId = "ana") {
+    const ws = await connect(`ws://127.0.0.1:${port}`);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "identify", userId, name: userId }));
+    ws.send(JSON.stringify({ type: "create_project", name }));
+    ws.send(JSON.stringify({ type: "join_project", projectId }));
+    await wait(40);
+    seen.length = 0;
+    return { ws, seen };
+  }
+
+  /** Mint one invite over an already-member socket and return its view. */
+  async function mint(ws: WebSocket, seen: any[], projectId: string) {
+    ws.send(JSON.stringify({ type: "create_invite", projectId }));
+    await wait(40);
+    const list = seen.find((m) => m.type === "invite_list");
+    seen.length = 0;
+    return list.invites[0] as { id: string; token: string; expiresAt: number };
+  }
+
+  it("answers peek_invite from a socket that has joined NOTHING — the §2.5 death scenario, green", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const f = await founder(hub.port, "Acme", "acme");
+    const invite = await mint(f.ws, f.seen, "acme");
+
+    // A cold browser: no identify, no session, no project. Yesterday this
+    // socket heard only "join a session first" from the tunnel fallback and
+    // every invite link against a hub was dead (tech-debt §2.5).
+    const guest = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(guest, seen);
+    guest.send(JSON.stringify({ type: "peek_invite", token: invite.token }));
+    await wait(40);
+    expect(seen).toEqual([
+      {
+        type: "invite_info",
+        projectId: "acme",
+        projectName: "Acme",
+        inviterName: "ana",
+        expiresAt: invite.expiresAt,
+        remaining: 10,
+      },
+    ]);
+    f.ws.close(); guest.close();
+  });
+
+  it("sends invite_list to the requesting socket ONLY — the token never reaches another member's frames", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const a = await founder(hub.port, "Acme", "acme");
+    const b = await member(hub.port, "acme", "ben");
+    const invite = await mint(a.ws, a.seen, "acme");
+
+    // Ben is a member of the same project and still hears nothing about the
+    // mint — no invite_list, and the token in no frame of any type (the rule
+    // of plan §2.2: the token rides invite_list to the requester and nothing
+    // else).
+    await wait(60);
+    expect(b.seen.filter((m) => m.type === "invite_list")).toEqual([]);
+    expect(b.seen.some((m) => JSON.stringify(m).includes(invite.token))).toBe(false);
+    // And the requester's own later pushes stay token-free too.
+    expect(a.seen.some((m) => m.type !== "invite_list" && JSON.stringify(m).includes(invite.token))).toBe(false);
+    a.ws.close(); b.ws.close();
+  });
+
+  it("gates create/list/revoke on membership with the exact not_a_member refusals", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const f = await founder(hub.port, "Acme", "acme");
+    // Identified, but never joined "acme".
+    const outsider = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(outsider, seen);
+    outsider.send(JSON.stringify({ type: "identify", userId: "mallory", name: "m" }));
+    await wait(30);
+    seen.length = 0;
+    outsider.send(JSON.stringify({ type: "create_invite", projectId: "acme" }));
+    outsider.send(JSON.stringify({ type: "list_invites", projectId: "acme" }));
+    outsider.send(JSON.stringify({ type: "revoke_invite", projectId: "acme", inviteId: "x" }));
+    await wait(50);
+    expect(seen).toEqual([
+      { type: "error", message: "join this project before inviting to it", code: "not_a_member" },
+      { type: "error", message: "join this project to see its invites", code: "not_a_member" },
+      { type: "error", message: "join this project before revoking its invites", code: "not_a_member" },
+    ]);
+    f.ws.close(); outsider.close();
+  });
+
+  it("collapses unknown, malformed and cross-project tokens to 'invite not found'", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const f = await founder(hub.port, "Acme", "acme");
+    const g = await founder(hub.port, "Beta", "beta", "ben");
+    const invite = await mint(f.ws, f.seen, "acme");
+
+    const guest = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(guest, seen);
+    guest.send(JSON.stringify({ type: "peek_invite", token: "a".repeat(32) }));
+    guest.send(JSON.stringify({ type: "peek_invite", token: "too-short" }));
+    await wait(40);
+    expect(seen).toEqual([
+      { type: "error", message: "invite not found" },
+      { type: "error", message: "invite not found" },
+    ]);
+
+    // A real token, but spent against the WRONG project: the redeem path
+    // confirms nothing — not even that the token exists somewhere else.
+    seen.length = 0;
+    guest.send(JSON.stringify({ type: "identify", userId: "cy", name: "cy" }));
+    guest.send(JSON.stringify({ type: "join_project", projectId: "beta", invite: invite.token }));
+    await wait(40);
+    expect(seen.filter((m) => m.type === "error")).toEqual([
+      { type: "error", message: "invite not found" },
+    ]);
+    // And the failed redeem wrote no membership: cy is still gated out.
+    seen.length = 0;
+    guest.send(JSON.stringify({ type: "list_invites", projectId: "beta" }));
+    await wait(40);
+    expect(seen).toEqual([
+      { type: "error", message: "join this project to see its invites", code: "not_a_member" },
+    ]);
+    f.ws.close(); g.ws.close(); guest.close();
+  });
+
+  it("redeems at join_project BEFORE membership: one seat per userId, re-join free, open join unchanged", async () => {
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const f = await founder(hub.port, "Acme", "acme");
+    const invite = await mint(f.ws, f.seen, "acme");
+
+    const guest = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen: any[] = [];
+    collect(guest, seen);
+    guest.send(JSON.stringify({ type: "identify", userId: "ben", name: "ben" }));
+    guest.send(JSON.stringify({ type: "join_project", projectId: "acme", invite: invite.token }));
+    await wait(40);
+    expect(seen.filter((m) => m.type === "error")).toEqual([]);
+
+    // Membership is written (list_invites is member-gated) and exactly one
+    // seat burned.
+    seen.length = 0;
+    guest.send(JSON.stringify({ type: "list_invites", projectId: "acme" }));
+    await wait(40);
+    const first = seen.find((m) => m.type === "invite_list");
+    expect(first.invites[0].uses).toBe(1);
+
+    // A re-join by the same userId burns nothing.
+    guest.send(JSON.stringify({ type: "join_project", projectId: "acme", invite: invite.token }));
+    await wait(40);
+    seen.length = 0;
+    guest.send(JSON.stringify({ type: "list_invites", projectId: "acme" }));
+    await wait(40);
+    expect(seen.find((m) => m.type === "invite_list").invites[0].uses).toBe(1);
+
+    // No invite field → today's open join, unchanged (plan §1.4: the hub has
+    // no REQUIRE_INVITE policy).
+    const open = await connect(`ws://127.0.0.1:${hub.port}`);
+    const openSeen: any[] = [];
+    collect(open, openSeen);
+    open.send(JSON.stringify({ type: "identify", userId: "cy", name: "cy" }));
+    open.send(JSON.stringify({ type: "join_project", projectId: "acme" }));
+    await wait(40);
+    expect(openSeen.filter((m) => m.type === "error")).toEqual([]);
+    openSeen.length = 0;
+    open.send(JSON.stringify({ type: "list_invites", projectId: "acme" }));
+    await wait(40);
+    // Cy joined WITHOUT the token, so no seat burned for them.
+    expect(openSeen.find((m) => m.type === "invite_list").invites[0].uses).toBe(1);
+    f.ws.close(); guest.close(); open.close();
+  });
+
+  it("precedence revoked > expired > full at the wire, and revoke then peek says 'invite revoked'", async () => {
+    let now = 1_000_000;
+    const hub = await startHub({
+      port: 0,
+      host: "127.0.0.1",
+      db: new HubDb(":memory:", { now: () => now }),
+    });
+    close = hub.close;
+    const f = await founder(hub.port, "Acme", "acme");
+    const invite = await mint(f.ws, f.seen, "acme");
+
+    // Burn all ten seats with ten distinct userIds.
+    for (let i = 0; i < 10; i += 1) {
+      const joiner = await connect(`ws://127.0.0.1:${hub.port}`);
+      const seen: any[] = [];
+      collect(joiner, seen);
+      joiner.send(JSON.stringify({ type: "identify", userId: `u${i}`, name: `u${i}` }));
+      joiner.send(JSON.stringify({ type: "join_project", projectId: "acme", invite: invite.token }));
+      await wait(30);
+      expect(seen.filter((m) => m.type === "error")).toEqual([]);
+      joiner.close();
+    }
+
+    // The eleventh distinct userId hears "invite is full".
+    const eleventh = await connect(`ws://127.0.0.1:${hub.port}`);
+    const seen11: any[] = [];
+    collect(eleventh, seen11);
+    eleventh.send(JSON.stringify({ type: "identify", userId: "u10", name: "u10" }));
+    eleventh.send(JSON.stringify({ type: "join_project", projectId: "acme", invite: invite.token }));
+    await wait(40);
+    expect(seen11.filter((m) => m.type === "error")).toEqual([
+      { type: "error", message: "invite is full" },
+    ]);
+
+    // Past the TTL, expiry outranks full…
+    now += 24 * 60 * 60 * 1000 + 1;
+    seen11.length = 0;
+    eleventh.send(JSON.stringify({ type: "join_project", projectId: "acme", invite: invite.token }));
+    await wait(40);
+    expect(seen11.filter((m) => m.type === "error")).toEqual([
+      { type: "error", message: "invite expired" },
+    ]);
+
+    // …and a human revocation outranks both — at redeem AND at peek.
+    f.ws.send(JSON.stringify({ type: "revoke_invite", projectId: "acme", inviteId: invite.id }));
+    await wait(40);
+    seen11.length = 0;
+    eleventh.send(JSON.stringify({ type: "join_project", projectId: "acme", invite: invite.token }));
+    eleventh.send(JSON.stringify({ type: "peek_invite", token: invite.token }));
+    await wait(40);
+    expect(seen11.filter((m) => m.type === "error")).toEqual([
+      { type: "error", message: "invite revoked" },
+      { type: "error", message: "invite revoked" },
+    ]);
+    f.ws.close(); eleventh.close();
+  });
+});

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./terminal.css";
 import { deriveState, deriveSubSessions, deriveTranscriptGroups } from "./derive";
 import { nextMode } from "./modes";
@@ -22,12 +22,11 @@ import { Crt } from "./components/Crt";
 import { SkillsPanel } from "./components/SkillsPanel";
 import { WorkflowsPanel } from "./components/WorkflowsPanel";
 import { OversightPanel } from "./components/OversightPanel";
-import { InvitePanel } from "./components/InvitePanel";
 import { AgentStatus } from "./components/AgentStatus";
 import { oversightFresh } from "./oversightView";
 import { projectCollisions } from "./collisionView";
 import { InviteLanding } from "./components/InviteLanding";
-import { inviteTokenFrom } from "./inviteLink";
+import { INVITE_STASH_KEY, inviteTokenFrom } from "./inviteLink";
 import { Landing } from "./components/Landing";
 import { InviteSignIn } from "./components/InviteSignIn";
 import { Denied } from "./components/Denied";
@@ -61,10 +60,28 @@ export default function App() {
   // URL-only design surface (no nav points at it).
   const [screen, setScreen] = useState<string | null>(() => params.get("screen"));
 
-  // An invite link carries only the token; the landing screen resolves it to a
-  // project/session and hands them back here (spec §5).
-  const inviteToken = useMemo(() => inviteTokenFrom(window.location.search), []);
-  const [inviteTarget, setInviteTarget] = useState<{ projectId: string; sessionId: string } | null>(null);
+  // An invite link carries the project and the token (plan §1.5); the landing
+  // screen redeems the token and hands the project back here. The stash is the
+  // OAuth round trip's half (§1.7): InviteSignIn strips `invite` from `next`
+  // and parks the token in sessionStorage, so a returning invitee restores it
+  // from there. Read-once — a stale stash must not outlive the load it
+  // restored, and a lost one degrades to the project screen, never a wrong join.
+  const inviteToken = useMemo(() => {
+    const fromUrl = inviteTokenFrom(window.location.search);
+    if (fromUrl !== null) return fromUrl;
+    const stashed = sessionStorage.getItem(INVITE_STASH_KEY);
+    if (stashed !== null) sessionStorage.removeItem(INVITE_STASH_KEY);
+    return stashed;
+  }, []);
+  const [inviteTarget, setInviteTarget] = useState<{ projectId: string } | null>(null);
+
+  // The landing's accept consumed the token; clear any stash whether this load
+  // restored from it or carried the token in the URL — a sign-in done in
+  // another tab could have left one behind.
+  const onInviteAccept = useCallback((target: { projectId: string }) => {
+    sessionStorage.removeItem(INVITE_STASH_KEY);
+    setInviteTarget(target);
+  }, []);
 
   // null = probe in flight. Anything unexpected degrades to anonymous, so a
   // failed probe never locks the app out (authState.ts).
@@ -114,7 +131,9 @@ export default function App() {
     setProfile(corrected);
   }, [auth, profile]);
 
-  const activeSessionId = inviteTarget?.sessionId ?? sessionId;
+  // An accepted invite names a project only: the invitee lands on its picker
+  // and joins a session like any member (plan §1.6).
+  const activeSessionId = sessionId;
   const activeProjectId = inviteTarget?.projectId ?? projectId;
 
   // The precedence itself lives in authRoute.ts so it can be tested (spec
@@ -134,9 +153,16 @@ export default function App() {
         // only for a denied AuthState, so the empty branch is unreachable.
         return <Denied login={auth?.status === "denied" ? auth.login : ""} />;
       case "invite-landing":
-        return <InviteLanding token={inviteToken!} onAccept={setInviteTarget} />;
+        return (
+          <InviteLanding
+            token={inviteToken!}
+            userId={selfId}
+            name={profile?.name ?? (auth?.status === "signed-in" ? auth.login : "anon")}
+            onAccept={onInviteAccept}
+          />
+        );
       case "entrance":
-        return <ProjectPicker userId={selfId} name={profile?.name ?? "anon"} signedInAs={auth?.status === "signed-in" ? auth.login : null} />;
+        return <ProjectPicker userId={selfId} name={profile?.name ?? "anon"} signedInAs={auth?.status === "signed-in" ? auth.login : null} theme={theme} onThemeToggle={onThemeToggle} />;
       case "picker":
         return (
           <SessionPicker
@@ -153,6 +179,8 @@ export default function App() {
             sessionId={activeSessionId!}
             defaultName={auth?.status === "signed-in" ? auth.login : `user-${localUserId.slice(0, 4)}`}
             lockedName={auth?.status === "signed-in" ? auth.login : undefined}
+            theme={theme}
+            onThemeToggle={onThemeToggle}
             onEnter={(p) => {
               saveProfile(p);
               setProfile(p);
@@ -168,7 +196,6 @@ export default function App() {
             profile={profile!}
             screen={screen}
             onScreenChange={setScreen}
-            invite={inviteToken ?? undefined}
             signedInAs={auth?.status === "signed-in" ? auth.login : null}
             theme={theme}
             onThemeToggle={onThemeToggle}
@@ -191,7 +218,6 @@ export function SessionView(props: {
   profile: Profile;
   screen: string | null;
   onScreenChange: (screen: string | null) => void;
-  invite?: string;
   /** Verified GitHub login, or null when auth is off. Passed explicitly rather
    *  than derived from `userId`: with auth off `userId` is the anonymous
    *  per-tab UUID, which must never be offered as something to sign out of. */
@@ -203,12 +229,11 @@ export function SessionView(props: {
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
-  const { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, oversight, invites, send } = useSessionSocket({
+  const { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, oversight, send } = useSessionSocket({
     sessionId,
     projectId,
     userId,
     profile,
-    invite: props.invite,
   });
 
   const derived = useMemo(() => deriveState(events), [events]);
@@ -383,7 +408,7 @@ export function SessionView(props: {
   }, [isDriver, arcadeCapturing, permissionMode, send, props.screen]);
 
   // "S" toggles the skills screen; "W" toggles the workflows screen; "O" toggles the oversight screen;
-  // "I" toggles the invite screen; Esc always returns to the session.
+  // Esc always returns to the session.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
@@ -401,13 +426,9 @@ export function SessionView(props: {
         e.preventDefault();
         props.onScreenChange(props.screen === "oversight" ? null : "oversight");
       }
-      if ((e.key === "i" || e.key === "I") && !arcadeCapturing) {
-        e.preventDefault();
-        props.onScreenChange(props.screen === "invite" ? null : "invite");
-      }
       if (
         e.key === "Escape" &&
-        (props.screen === "skills" || props.screen === "workflows" || props.screen === "oversight" || props.screen === "invite")
+        (props.screen === "skills" || props.screen === "workflows" || props.screen === "oversight")
       ) {
         props.onScreenChange(null);
       }
@@ -415,11 +436,6 @@ export function SessionView(props: {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [props.screen, props.onScreenChange, arcadeCapturing]);
-
-  // the invite panel needs a fresh list as soon as it opens.
-  useEffect(() => {
-    if (props.screen === "invite") send({ type: "list_invites" });
-  }, [props.screen, send]);
 
   // per-game party records; glyph/color fall back to hashIdentity like derive.ts
   const partyBests = useMemo(() => {
@@ -592,16 +608,6 @@ export function SessionView(props: {
       />
     );
   }
-  if (props.screen === "invite") {
-    return (
-      <InvitePanel
-        invites={invites}
-        onCreate={() => send({ type: "create_invite" })}
-        onRevoke={(id) => send({ type: "revoke_invite", inviteId: id })}
-        onBack={() => props.onScreenChange(null)}
-      />
-    );
-  }
   if (props.screen === "status") {
     return <AgentStatus model={derived.model} canSetModel={canSetModel} onSetModel={onSetModel} rosterCount={derived.skills.length} />;
   }
@@ -632,7 +638,6 @@ export function SessionView(props: {
         onOpenWorkflows={() => props.onScreenChange("workflows")}
         onOpenOversight={() => props.onScreenChange("oversight")}
         oversightFresh={oversightFresh(oversight, seenOversightSeq)}
-        onOpenInvite={() => props.onScreenChange("invite")}
         onExit={onExit}
         runningTasks={runningTasks}
         hud={hud}
