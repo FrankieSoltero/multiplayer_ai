@@ -13,11 +13,12 @@ import { PartyPane } from "./components/PartyPane";
 import { TodoPanel } from "./components/TodoPanel";
 import { ThinkingStrip } from "./components/ThinkingStrip";
 import type { PartyBest } from "./components/ThinkingStrip";
+import { GateBar } from "./components/GateBar";
 import { Lobby } from "./components/Lobby";
 import { SessionPicker } from "./components/SessionPicker";
 import { ProjectPicker } from "./components/ProjectPicker";
 import { useArrowNav } from "./useArrowNav";
-import { Cabinet, Crt } from "./components/Crt";
+import { Crt } from "./components/Crt";
 import { SkillsPanel } from "./components/SkillsPanel";
 import { WorkflowsPanel } from "./components/WorkflowsPanel";
 import { OversightPanel } from "./components/OversightPanel";
@@ -32,16 +33,22 @@ import { InviteSignIn } from "./components/InviteSignIn";
 import { Denied } from "./components/Denied";
 import { authStateFrom, type AuthState } from "./authState";
 import { ExitConfirm } from "./components/ExitConfirm";
-import { activeProjectIdFrom, pickerUrlFrom } from "./pickerUrl";
+import { activeProjectIdFrom, pickerUrlFrom, sessionUrlFrom } from "./pickerUrl";
 import { pullsFrom, thresholdFromStorage, PULL_STORAGE_KEY } from "./pulls";
 import { screenFor, selfIdFor } from "./authRoute";
-
-const LEGEND = ["PALETTE + GLYPHS FROM terminal.css", "?SCREEN=STATUS IS DESIGN-ONLY"];
+import { useTheme, type Theme } from "./theme";
 
 export default function App() {
   // The per-tab anonymous id. With auth on it is NOT the identity the wire
   // uses — see selfId below.
   const [localUserId] = useState(loadOrCreateUserId);
+
+  // The presentation look. `useTheme` owns persistence and mirrors the value
+  // onto `document.documentElement` (Task 1); here it drives the CRT intensity
+  // and the header toggle. Clean strips the CRT overlays entirely; Arcade keeps
+  // the full demo glass.
+  const { theme, setTheme } = useTheme();
+  const onThemeToggle = () => setTheme(theme === "arcade" ? "clean" : "arcade");
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   // No param → session picker (spec §4). Deep links keep exact old behavior.
   const sessionId = params.get("session");
@@ -163,16 +170,18 @@ export default function App() {
             onScreenChange={setScreen}
             invite={inviteToken ?? undefined}
             signedInAs={auth?.status === "signed-in" ? auth.login : null}
+            theme={theme}
+            onThemeToggle={onThemeToggle}
           />
         );
     }
   }
 
-  return (
-    <Cabinet legend={LEGEND}>
-      <Crt>{screenBody()}</Crt>
-    </Cabinet>
-  );
+  // The glass IS the page: the CRT is the App root, wrapping the routed screen
+  // directly. The Cabinet chrome (marquee + legend) it used to sit inside was
+  // retired in full-bleed — the .term-header breadcrumb is the sole identity
+  // line now.
+  return <Crt intensity={theme === "clean" ? "off" : "full"}>{screenBody()}</Crt>;
 }
 
 export function SessionView(props: {
@@ -187,6 +196,10 @@ export function SessionView(props: {
    *  than derived from `userId`: with auth off `userId` is the anonymous
    *  per-tab UUID, which must never be offered as something to sign out of. */
   signedInAs: string | null;
+  /** The active theme and its toggle, threaded from `App`'s `useTheme` so the
+   *  header switch and the CRT coupling read one source of truth. */
+  theme: Theme;
+  onThemeToggle: () => void;
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
@@ -271,6 +284,28 @@ export function SessionView(props: {
     [derived.tasks],
   );
 
+  // The gate the pinned bar (§8.5) pins above the prompt: the NEWEST undecided
+  // permission_request — the SAME target rule the a/d hotkeys already use
+  // (Transcript.tsx). The sub-label joins on the gate's parentToolUseId through
+  // the existing deriveSubSessions label map (undefined -> no sub-label). null
+  // when nothing is pending, so the bar renders nothing and today's layout is
+  // untouched (regression floor).
+  const gate = useMemo(() => {
+    const pending = events.filter(
+      (e) => e.type === "permission_request" && e.requestId && !derived.permissionDecisions.has(e.requestId),
+    );
+    const newest = pending.at(-1);
+    if (!newest?.requestId) return null;
+    const subLabel = newest.parentToolUseId
+      ? new Map(deriveSubSessions(events).map((s) => [s.key, s.label])).get(newest.parentToolUseId)
+      : undefined;
+    return {
+      requestId: newest.requestId,
+      toolName: newest.toolName ?? "",
+      ...(subLabel ? { subLabel } : {}),
+    };
+  }, [events, derived.permissionDecisions]);
+
   const isDriver = derived.driverId === userId;
   const canSetModel = isDriver && !derived.agentBusy;
   const permissionMode = derived.permissionMode;
@@ -284,6 +319,13 @@ export function SessionView(props: {
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const [arcadeOpen, setArcadeOpen] = useState(false);
+  // Games opt-in (spec §2.2): the arcade game LANE auto-opens with the agent
+  // ONLY in Arcade. Clean's busy state keeps the thinking strip's STATUS LINE
+  // (the `busy` prop below, passed unchanged in both themes) but does NOT
+  // auto-open the game lane — the ARCADE header button and the `A` hotkey still
+  // open it manually, identically in both themes. This theme gate is the ONE
+  // allowed behavioral difference between the two skins (plan constraint 2).
+  const laneAutoOpen = props.theme === "arcade" && derived.agentBusy;
   // v5b final-review: whether a live arcade run currently has the keyboard
   // captured (game letters overlap a/d permission hotkeys).
   const [arcadeCapturing, setArcadeCapturing] = useState(false);
@@ -448,6 +490,33 @@ export function SessionView(props: {
     send({ type: "take_wheel" });
   }
 
+  // §8.5 pull click-through: jump to the OLDEST-waiting pull (minimum
+  // `sinceTs`) — the one that has been ignored longest. Guarded against the
+  // count dropping to zero between render and click (a resolved gate, a
+  // teammate's session ending): with nothing to jump to, this is a silent
+  // no-op rather than navigating with an undefined target. `projectId` is
+  // this Session component's own prop — `pulls` derives from
+  // `projectSessions`, this exact project's socket-scoped session list, so
+  // every pull's target session is already in the CURRENT project (council
+  // ruling; see Task 11 brief).
+  function onPullsClick() {
+    if (pulls.length === 0) return;
+    const oldest = pulls.reduce((min, p) =>
+      Date.parse(p.sinceTs) < Date.parse(min.sinceTs) ? p : min,
+    );
+    window.location.search = sessionUrlFrom(window.location.search, oldest.sessionId, projectId);
+  }
+
+  // Jump from the pinned gate bar (§8.5) to the gate card in the transcript.
+  // Each gate card roots on `id="perm-<requestId>"` (Transcript.tsx, Task 9), so
+  // the newest-undecided gate the bar pins scrolls its full card into view.
+  // Smooth to match the transcript's own bottom-scroll (Transcript.tsx) — the
+  // one existing scroll authority; a gate whose card is not mounted resolves to
+  // null and the optional chain makes the jump a harmless no-op (behavior table).
+  function onGateJump(requestId: string) {
+    document.getElementById(`perm-${requestId}`)?.scrollIntoView({ behavior: "smooth" });
+  }
+
   function onSetModel(key: string) {
     send({ type: "set_model", model: key });
   }
@@ -542,6 +611,7 @@ export function SessionView(props: {
       <Header
         signedInAs={props.signedInAs}
         pulls={pulls.length}
+        onPullsClick={onPullsClick}
         contested={collisions}
         projectId={projectId}
         sessionId={sessionId}
@@ -556,6 +626,8 @@ export function SessionView(props: {
         arcadeOpen={arcadeOpen}
         canToggleArcade={!derived.agentBusy}
         onToggleArcade={() => setArcadeOpen((v) => !v)}
+        theme={props.theme}
+        onThemeToggle={props.onThemeToggle}
         onOpenSkills={() => props.onScreenChange("skills")}
         onOpenWorkflows={() => props.onScreenChange("workflows")}
         onOpenOversight={() => props.onScreenChange("oversight")}
@@ -613,6 +685,9 @@ export function SessionView(props: {
           hotkeysMuted={arcadeCapturing}
           view={subSessionView}
           onOpenSubSession={setSubSessionView}
+          // §8.5 wheel-on-card: the SAME take-wheel handler the pinned GateBar
+          // fires (Task 8), so a non-driver's gate card offers TAKE THE WHEEL.
+          onTakeWheel={onTakeWheel}
         />
 
         <PartyPane
@@ -635,7 +710,7 @@ export function SessionView(props: {
 
       <ThinkingStrip
         busy={derived.agentBusy}
-        open={arcadeOpen}
+        open={arcadeOpen || laneAutoOpen}
         onClose={() => setArcadeOpen(false)}
         modelLabel={MODEL_LABELS[derived.model] ?? derived.model}
         currentTool={currentTool}
@@ -654,6 +729,20 @@ export function SessionView(props: {
           onCancel={() => setExitReason(null)}
         />
       )}
+
+      {/* §8.5 pinned gate bar — pins the newest undecided permission decision
+          directly above the prompt, on the default transcript surface, in both
+          themes. Its decide callback is the SAME sendPermission the a/d hotkeys
+          hit (one path). onJump's scroll target lands in Task 9. */}
+      <GateBar
+        gate={gate}
+        isDriver={isDriver}
+        driverName={derived.driverId ? derived.participants.get(derived.driverId)?.name : undefined}
+        driverGlyph={derived.driverId ? derived.participants.get(derived.driverId)?.glyph : undefined}
+        onDecide={sendPermission}
+        onTakeWheel={onTakeWheel}
+        onJump={onGateJump}
+      />
 
       <PromptBar
         isDriver={isDriver}

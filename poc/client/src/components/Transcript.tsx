@@ -30,6 +30,13 @@ export function Transcript(props: {
    *  the row a harmless no-op, never an error (attribution is display metadata,
    *  never load-bearing — constraint 2). */
   onOpenSubSession?: (key: string) => void;
+  /** §8.5 wheel-on-card: on a non-driver's undecided permission gate, the
+   *  `.perm-outcome` area offers `🛞 TAKE THE WHEEL` — the SAME take-wheel path
+   *  App wires to the pinned GateBar (Task 8). Optional so the card renders
+   *  byte-identically when a caller does not pass it (regression floor). Taking
+   *  the wheel does NOT auto-decide the gate — the new driver decides on the
+   *  card as normal. */
+  onTakeWheel?: () => void;
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -153,7 +160,7 @@ export function Transcript(props: {
         // byte-identical to today (constraint 1) — same posture as `reason`.
         const subOf = ev.parentToolUseId ? subLabel.get(ev.parentToolUseId) : undefined;
         return (
-          <div key={ev.seq} className="perm">
+          <div key={ev.seq} className="perm" id={ev.requestId ? `perm-${ev.requestId}` : undefined}>
             {subOf ? <div className="perm-sub">⚒ {subOf}</div> : null}
             <div className="perm-head">
               <span className="perm-title">🔐 PERMISSION CHECK</span>
@@ -200,7 +207,14 @@ export function Transcript(props: {
                 )}
               </div>
             ) : (
-              <div className="perm-outcome">⏳ driver deciding…</div>
+              <div className="perm-outcome">
+                ⏳ driver deciding…
+                {props.onTakeWheel ? (
+                  <button className="btn gold" onClick={() => props.onTakeWheel!()}>
+                    🛞 TAKE THE WHEEL
+                  </button>
+                ) : null}
+              </div>
             )}
           </div>
         );
@@ -334,7 +348,18 @@ export function Transcript(props: {
                 <div
                   key={`sub-${gi}-${group.parentId}`}
                   className="subagent-row"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => props.onOpenSubSession?.(group.parentId)}
+                  onKeyDown={(e) => {
+                    // Keyboard parity with the mouse: Enter and Space open the
+                    // sub-session through the SAME handler as onClick. Space's
+                    // default is page-scroll on a button role, so suppress it.
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      props.onOpenSubSession?.(group.parentId);
+                    }
+                  }}
                 >
                   <span className={group.status === "done" ? "lamp done" : "lamp"} />
                   <span className="pix sm">⚒ SUB-QUEST</span>

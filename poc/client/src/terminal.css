@@ -183,33 +183,6 @@ code, pre { font-family: var(--fm); }
 
 /* ------------------------------------------------------------------- shell */
 
-/* The shell fits the viewport: the cabinet is exactly the window, the CRT
-   flexes into whatever height the marquee/legend leave over, and every scroll
-   happens inside a screen region — the page itself never scrolls. */
-.cabinet {
-  height: 100%;
-  display: flex; flex-direction: column; align-items: stretch;
-  gap: 0;
-  padding: 0;
-}
-.cabinet-inner {
-  width: 100%;
-  flex: 1; min-height: 0;
-  display: flex; flex-direction: column; gap: 0;
-}
-.crt-chrome-top {
-  padding: 10px var(--sp-4) 6px;
-  border-bottom: 2px solid var(--frame);
-  background: var(--panel);
-}
-.marquee { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-6); flex-wrap: wrap; }
-.marquee-title {
-  font-family: var(--pf); font-size: 19px; color: var(--gold);
-  text-shadow: 3px 3px 0 var(--bg);
-}
-.marquee-title span { color: var(--accent); }
-.marquee-sub { font-family: var(--pf); font-size: var(--fs-label); color: var(--dim); letter-spacing: 0.1em; margin-top: var(--sp-2); }
-
 /* CRT — the app lives inside the glass. Overlays are pointer-events:none and
    sit above the screen; --crt-op / --crt-flick let Crt.tsx dial them down or
    off without unmounting anything.
@@ -651,6 +624,77 @@ code, pre { font-family: var(--fm); }
 .subagent .lamp.done { background: var(--green); animation: none; }
 .subagent-body { padding: 0 var(--sp-3) var(--sp-2); }
 
+/* ============================================================ sub-sessions
+   The sub-session surface (spec §2.5): the compact MAIN row, the chip rail,
+   the projected-view header, and the gate attribution line. Same 90s idiom as
+   the subagent group above — 2px frames, an inset dark line, pixel labels, and
+   token colours only. `.lamp` is lifted out of `.subagent .lamp` (which stays
+   until the legacy block is retired) so the compact row's status pip styles
+   too. */
+.lamp {
+  width: 10px; height: 10px; flex: none;
+  border: 1px solid var(--frame); background: var(--gold);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.subagent-row .lamp.done { background: var(--green); animation: none; }
+
+/* compact MAIN row — one collapsed line per sub-session, click to open */
+.subagent-row {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin: var(--sp-2) 0 var(--sp-2) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 2px solid var(--frame); border-left-width: 4px;
+  background: var(--panel); box-shadow: inset 0 0 0 2px var(--bg);
+  color: var(--dim); cursor: pointer;
+}
+.subagent-row:hover { border-color: var(--accent); color: var(--fg); }
+
+/* chip rail — a MAIN chip plus one `⚒` chip per sub-session. The element's
+   own inline overflowX/whiteSpace own the no-wrap horizontal scroll; this rule
+   adds only the frame line under the rail and the chips' spacing. */
+.subsession-rail {
+  padding: var(--sp-2) var(--sp-2) 0;
+  border-bottom: 2px solid var(--frame);
+}
+.subsession-chip {
+  font-family: var(--pf); font-size: var(--fs-label);
+  letter-spacing: var(--track-label);
+  padding: var(--sp-1) var(--sp-2);
+  margin: 0 var(--sp-1) var(--sp-2) 0;
+  background: transparent; border: 2px solid var(--frame); color: var(--dim);
+  box-shadow: var(--chunk-sm); cursor: pointer;
+}
+.subsession-chip:hover { color: var(--fg); border-color: var(--accent); }
+/* active = you're viewing it (accent); gated = a gate is pending (amber);
+   done = finished (dimmed, shadow dropped) */
+.subsession-chip.active { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 0 0 2px var(--bg); }
+.subsession-chip.gated { border-color: var(--amber); color: var(--amber); background: var(--amber-wash); }
+.subsession-chip.done { border-color: var(--frame); color: var(--dim); opacity: 0.7; box-shadow: none; }
+
+/* the `!` on a gate-pending chip */
+.badge {
+  font-family: var(--pf); font-size: var(--fs-label);
+  letter-spacing: var(--track-label); color: var(--amber);
+  margin-left: var(--sp-1);
+}
+
+/* projected sub-session view header — the `⚒ label · status` banner + STOP */
+.subsession-header {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin: var(--sp-2) 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 2px solid var(--frame); border-left-width: 4px;
+  background: var(--panel); box-shadow: inset 0 0 0 2px var(--bg);
+  color: var(--gold); font-family: var(--fm); font-size: var(--fs-sm);
+}
+
+/* gate attribution — `⚒ <label>` naming the sub-session a gate belongs to */
+.perm-sub {
+  font-family: var(--pf); font-size: var(--fs-label);
+  letter-spacing: var(--track-label); color: var(--dim);
+  margin-bottom: var(--sp-1);
+}
+
 /* older wheel line (non-fresh) — older control changes render as gold text */
 .line.wheel-old { color: var(--gold); }
 
@@ -705,7 +749,7 @@ code, pre { font-family: var(--fm); }
    anywhere below the main kill block must be added here too (or moved above
    it and added to its selector list). */
 @media (prefers-reduced-motion: reduce) {
-  .subagent .lamp { animation: none; }
+  .subagent .lamp, .subagent-row .lamp { animation: none; }
 }
 
 /* ================================================================ workflows
@@ -797,6 +841,12 @@ code, pre { font-family: var(--fm); }
 .member.pull { border-color: var(--amber); }
 .member-pull { color: var(--amber); font-size: 11px; margin-top: 2px; }
 .pull-badge { color: var(--amber); }
+/* §8.5 pull click-through (Task 11): the badge is a real <button> when
+   interactive, but must render like its plain-<span> sibling, not like a
+   framed .planmode control — the global reset (button, input, select {
+   font: inherit; color: inherit; }, above) only covers font/color, so
+   without this the UA default border/background/padding still show. */
+button.pull-badge { background: transparent; border: 0; padding: 0; appearance: none; cursor: pointer; }
 .pull-setting { display: inline-flex; gap: 4px; align-items: center; font-size: 10px; margin-left: 8px; }
 
 .exitconfirm {
@@ -808,3 +858,86 @@ code, pre { font-family: var(--fm); }
   border: 1px solid var(--red);
 }
 .exitconfirm .exitwhy { flex: 1; min-width: 0; }
+
+/* ================================================================ gate bar
+   §8.5: the pinned gate bar above the prompt. A BASE-theme surface — these
+   rules sit OUTSIDE (above) the Clean fence below, so the bar is present and
+   identical in geometry in BOTH themes (constraints 1-3). It reuses the
+   permission-gate vocabulary: the --amber frame, the --amber-wash "act-here"
+   wash, the ⚒ sub-label (.perm-sub, styled above), and the btn green/red/gold
+   controls (no new button rules). No colour outside the token set; no
+   animation, so reduced-motion needs no extra rule. */
+.gatebar {
+  display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  margin: var(--sp-2) 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 2px solid var(--amber);
+  background: var(--amber-wash);
+  color: var(--fg);
+  cursor: pointer;
+}
+/* non-driver: the gate stays visible but recedes — the act-here wash and the
+   decide controls belong to the driver, so the frame drops to the muted amber. */
+.gatebar.nondriver { border-color: var(--amber-mute); }
+.gatebar-info {
+  display: flex; align-items: center; gap: var(--sp-2);
+  flex-wrap: wrap; min-width: 0;
+}
+.gatebar-tool { color: var(--amber); }
+.gatebar-actions {
+  display: flex; align-items: center; gap: var(--sp-2);
+  flex-wrap: wrap; margin-left: auto;
+}
+
+/* Task 13 — arcade footprint resize handle (spec §2.6 R4). A slim grab strip on
+   the arcade lane's top edge: drag it (vertical) or focus + ArrowUp/ArrowDown to
+   scale the lane. Theme-independent and user-driven (NOT a density difference —
+   constraint 3); reuses the annotated --frame / --dim / --accent tokens only, no
+   new color (constraint 4). No animation, so reduced-motion needs no extra rule
+   (constraint 5). Base rule (both themes); lives above the Clean fence. */
+.arcade-resize {
+  height: 6px; margin: 0; padding: 0;
+  border-top: 1px dashed var(--frame);
+  cursor: ns-resize; touch-action: none;
+}
+.arcade-resize:hover { border-top-color: var(--accent); }
+.arcade-resize:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+/* ===== CLEAN THEME (data-theme="clean") ===== */
+/* Same density, quieter skin (spec §2.2). Decoration only — fonts, colors,
+   shadows, animations, CRT effects, and letter-tracking. No geometry, spacing,
+   grid, row-height, or font-size token is touched (constraint 3). Ratios below
+   are vs the retained --bg #0b0d10, in the base-palette annotation style
+   (css:26-41): text tokens hold AA >= 4.5:1; --frame is a decorative rule,
+   >= 3:1 as the base file annotates its own rules. */
+:root[data-theme="clean"] {
+  /* type — mono carries the whole face; chrome sheds its pixel layer and track */
+  --pf: var(--fm);
+  --track-label: 0;
+
+  /* shadows — no hard 90s offset rectangles */
+  --chunk: none;
+  --chunk-sm: none;
+
+  /* semantic solids re-pointed to a calm, professional set (spec §2.2) */
+  --frame: #5b6472;      /* 3.25:1 — decorative rule, deliberately quiet */
+  --accent: #7ea2c9;     /* 7.32:1  "you can act here" only */
+  --gold: #c9a86a;       /* 8.61:1  system / awareness / quest */
+  --amber: #d0a85f;      /* 8.75:1  permission gate */
+  --green: #87b98a;      /* 8.65:1  affirmative / driving */
+  --red: #d38b82;        /* 7.21:1  errors */
+
+  /* derived alphas ride their re-pointed solids (ruling R5) — AA-exempt */
+  --amber-mute: rgba(208, 168, 95, 0.42);
+  --amber-wash: rgba(208, 168, 95, 0.07);
+  --gold-wash: rgba(201, 168, 106, 0.08);
+  --green-wash: rgba(135, 185, 138, 0.06);
+}
+
+/* hardcoded offset shadows (css:124, css:357) — stilled in Clean */
+[data-theme="clean"] .btn:active { box-shadow: none; }
+[data-theme="clean"] .perm:has(.perm-actions) { box-shadow: none; }
+
+/* flourishes stilled — the marquee sweep holds static (.crt-fx is already off
+   via Task 2's intensity="off" coupling, so it needs no rule here) */
+[data-theme="clean"] .wheelbanner { animation: none; }

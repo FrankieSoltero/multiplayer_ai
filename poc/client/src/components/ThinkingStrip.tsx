@@ -6,6 +6,74 @@ import { tetrisEngine } from "../game/tetris";
 import { doodleEngine } from "../game/doodle";
 
 const LEAVE_MS = 600;
+
+/** Client-local arcade footprint preference (constraint 6). The stored value is
+ *  a lane font-size multiplier of the mono base token `--fs` (13px); Task 13
+ *  owns the resize control that WRITES it. */
+export const ARCADE_SIZE_KEY = "mpai-arcade-size";
+export const ARCADE_SCALE = { min: 0.5, max: 1.0, default: 0.65, step: 0.05 } as const;
+
+/** Pure: clamp a scale into the arcade footprint range [min, max]. */
+export function clampScale(n: number): number {
+  return Math.min(ARCADE_SCALE.max, Math.max(ARCADE_SCALE.min, n));
+}
+
+/** Pure: parse a stored scale, clamp to [min,max]; NaN/absent → default. */
+export function readStoredScale(raw: string | null): number {
+  if (raw == null) return ARCADE_SCALE.default;
+  const n = Number.parseFloat(raw);
+  if (Number.isNaN(n)) return ARCADE_SCALE.default;
+  return clampScale(n);
+}
+
+/** Pure drag mapping (pinned — council round-2). Vertical axis only, dragging
+ *  UP grows the strip (matches ArrowUp). The /400 divisor makes 200px of travel
+ *  span the full 0.5-wide clamp range — a deliberately gentle feel. */
+export function dragScale(anchorScale: number, anchorY: number, clientY: number): number {
+  return clampScale(anchorScale + (anchorY - clientY) / 400);
+}
+
+/** Pure keyboard step: ArrowUp = +step (bigger), ArrowDown = −step, clamped. */
+export function stepScale(scale: number, delta: number): number {
+  return clampScale(scale + delta);
+}
+
+/** Pure: should the window-level game-key handler IGNORE this element? Form
+ *  controls are excluded as before AND the focused `.arcade-resize` handle — so
+ *  ArrowUp/ArrowDown on the handle resizes the strip without leaking into a live
+ *  game's own keyboard handler (Task 13 live-run integrity). */
+export function ignoresGameKey(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return true;
+  return typeof el.closest === "function" && el.closest(".arcade-resize") != null;
+}
+
+/** Client-local write of the arcade footprint preference (constraint 6). Both
+ *  directions of storage access are guarded: a throwing setItem (private mode /
+ *  quota) is swallowed so the in-session resize still applies, persistence just
+ *  silently skipped — never a crash. */
+export function persistScale(scale: number): void {
+  try {
+    localStorage.setItem(ARCADE_SIZE_KEY, String(scale));
+  } catch {
+    /* private mode / quota — persistence silently skipped */
+  }
+}
+
+/** The initial lane scale. The READ is try/catch-wrapped so a blocked-storage
+ *  sandbox (getItem throws) falls back silently to the default, never a crash
+ *  (constraint 6). This task adds the READ path only. */
+function readInitialScale(): number {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(ARCADE_SIZE_KEY);
+  } catch {
+    raw = null;
+  }
+  return readStoredScale(raw);
+}
+
 const bestKey = (game: string) => `mpai-${game}-high`;
 const readBest = (game: string) => {
   const n = Number(localStorage.getItem(bestKey(game)) ?? 0);
@@ -56,6 +124,13 @@ export function ThinkingStrip(props: {
   sessionKey?: string;
 }) {
   const active = props.busy || (props.open ?? false);
+  // The game-lane surface (the `.lane` <pre> and its `.roster` game-picker row)
+  // is authored by `open` alone. `busy` still MOUNTS the strip (so the status
+  // line renders), but the lane shows only when opened: Clean-busy passes
+  // open=false → status line without the lane (spec §2.2); Arcade-busy passes
+  // open=true via App's `laneAutoOpen` → the full lane, exactly as today; manual
+  // open (ARCADE button / idle `A`) → open=true → identical lane in both themes.
+  const laneVisible = props.open ?? false;
 
   const [game, setGame] = useState("dino");
   const mkSeed = (gameKey: string) =>
@@ -82,6 +157,42 @@ export function ThinkingStrip(props: {
       setState(runState);
     }
   }
+  // arcade footprint scale — read once on mount (constraint 6); Task 13's
+  // resize control (drag handle + ArrowUp/ArrowDown) writes it.
+  const [scale, setScale] = useState(readInitialScale);
+  const laneStyle = { fontSize: `calc(var(--fs) * ${scale})` };
+  // Per-gesture drag anchor: captured on pointerdown, so every pointermove maps
+  // off the SAME anchor (stale-closure-safe). The stored key is written once
+  // per gesture on pointerup; keyboard steps persist per keypress.
+  const dragRef = useRef<{ anchorScale: number; anchorY: number } | null>(null);
+  const onHandleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    // Belt-and-braces: stop the synthetic event so it does not also drive the
+    // game. The window-listener guard (ignoresGameKey) is the authoritative
+    // isolation — this is defence in depth.
+    e.stopPropagation();
+    const next = stepScale(scale, e.key === "ArrowUp" ? ARCADE_SCALE.step : -ARCADE_SCALE.step);
+    setScale(next);
+    persistScale(next);
+  };
+  const onHandlePointerDown = (e: React.PointerEvent) => {
+    dragRef.current = { anchorScale: scale, anchorY: e.clientY };
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  };
+  const onHandlePointerMove = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    setScale(dragScale(d.anchorScale, d.anchorY, e.clientY));
+  };
+  const onHandlePointerUp = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const next = dragScale(d.anchorScale, d.anchorY, e.clientY);
+    setScale(next);
+    persistScale(next); // written once per gesture
+    dragRef.current = null;
+  };
   const [high, setHigh] = useState(() => readBest("dino"));
   const ledgerRef = useRef<RunLedger>({ submitted: false, localBest: readBest("dino") });
   const [elapsed, setElapsed] = useState(0);
@@ -107,7 +218,9 @@ export function ThinkingStrip(props: {
   // mute those hotkeys for the duration. Conservative on purpose: any
   // mounted+playing run mutes, dino included; permission cards' on-screen
   // buttons remain clickable throughout.
-  const capturing = mounted && playing && !!engine;
+  // Only a VISIBLE lane can capture the keyboard: a hidden lane (busy && !open)
+  // must never mute the transcript's a/d permission hotkeys.
+  const capturing = mounted && playing && !!engine && laneVisible;
   useEffect(() => {
     props.onPlayingChange?.(capturing);
     return () => props.onPlayingChange?.(false);
@@ -139,7 +252,7 @@ export function ThinkingStrip(props: {
   }, [mounted, game]);
 
   useEffect(() => {
-    if (!active || !playing || !engine) return;
+    if (!laneVisible || !playing || !engine) return;
     let raf = 0;
     let last = performance.now();
     const loop = (now: number) => {
@@ -150,7 +263,7 @@ export function ThinkingStrip(props: {
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [active, playing, engine]);
+  }, [laneVisible, playing, engine]);
 
   // settle a finished run exactly once: personal best + party submission
   useEffect(() => {
@@ -176,10 +289,16 @@ export function ThinkingStrip(props: {
   };
 
   useEffect(() => {
-    if (!active) return;
+    // Gate on the VISIBLE lane, not merely `active`: while the strip is mounted
+    // by busy alone (busy && !open) the lane is hidden, so its game keys (G swap,
+    // SPACE start, arrows) and ESC-close must NOT be live — no key capture and no
+    // game start behind a hidden lane.
+    if (!laneVisible) return;
     const onKey = (e: KeyboardEvent) => {
-      const tag = (document.activeElement as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      // Ignore form controls AND the arcade resize handle: an ArrowUp/ArrowDown
+      // on the focused handle must resize the strip without reaching the live
+      // game's input (Task 13 live-run integrity).
+      if (ignoresGameKey(document.activeElement as HTMLElement | null)) return;
       if (e.key === "Escape" && !props.busy && props.open) {
         props.onClose?.();
         return;
@@ -204,7 +323,7 @@ export function ThinkingStrip(props: {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, playing, game, engine, props.busy, props.open, props.onClose]);
+  }, [laneVisible, playing, game, engine, props.busy, props.open, props.onClose]);
 
   if (!mounted) return null;
   const pad = (n: number) => String(n).padStart(4, "0");
@@ -234,45 +353,61 @@ export function ThinkingStrip(props: {
         )}
       </div>
 
-      {engine ? (
-        <pre
-          className="lane"
-          onClick={() => {
-            if (!playing) start();
-            else setState((s: any) => engine.input(s, "click"));
-          }}
-        >
-          {engine.render(runState).join("\n")}
-        </pre>
-      ) : (
-        <pre className="lane" style={{ color: "var(--dim)" }}>
-          {"  cartridge not inserted — " + game + " has no engine yet\n" + "▁".repeat(40)}
-        </pre>
-      )}
+      {laneVisible && (
+        <>
+          <div
+            className="arcade-resize"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize arcade strip (drag or Arrow Up/Down)"
+            tabIndex={0}
+            onKeyDown={onHandleKeyDown}
+            onPointerDown={onHandlePointerDown}
+            onPointerMove={onHandlePointerMove}
+            onPointerUp={onHandlePointerUp}
+          />
+          {engine ? (
+            <pre
+              className="lane"
+              style={laneStyle}
+              onClick={() => {
+                if (!playing) start();
+                else setState((s: any) => engine.input(s, "click"));
+              }}
+            >
+              {engine.render(runState).join("\n")}
+            </pre>
+          ) : (
+            <pre className="lane" style={{ ...laneStyle, color: "var(--dim)" }}>
+              {"  cartridge not inserted — " + game + " has no engine yet\n" + "▁".repeat(40)}
+            </pre>
+          )}
 
-      <div className="roster">
-        <span className="pix sm">GAME ▸</span>
-        {ROSTER.map((g) => (
-          <button
-            key={g.key}
-            className={g.key === game ? "roster-item on" : "roster-item"}
-            onClick={() => setGame(g.key)}
-            title={g.engine ? "" : "no engine yet"}
-          >
-            {g.label}
-          </button>
-        ))}
-        <span className="hint">
-          {!engine
-            ? "G swaps game"
-            : playing
-              ? engine.hint(runState, true)
-              : over
-                ? "RUN COMPLETE — SPACE to play again"
-                : engine.hint(runState, false) + " · G swaps game"}
-          {!props.busy && " · ESC closes"}
-        </span>
-      </div>
+          <div className="roster">
+            <span className="pix sm">GAME ▸</span>
+            {ROSTER.map((g) => (
+              <button
+                key={g.key}
+                className={g.key === game ? "roster-item on" : "roster-item"}
+                onClick={() => setGame(g.key)}
+                title={g.engine ? "" : "no engine yet"}
+              >
+                {g.label}
+              </button>
+            ))}
+            <span className="hint">
+              {!engine
+                ? "G swaps game"
+                : playing
+                  ? engine.hint(runState, true)
+                  : over
+                    ? "RUN COMPLETE — SPACE to play again"
+                    : engine.hint(runState, false) + " · G swaps game"}
+              {!props.busy && " · ESC closes"}
+            </span>
+          </div>
+        </>
+      )}
     </div>
   );
 }

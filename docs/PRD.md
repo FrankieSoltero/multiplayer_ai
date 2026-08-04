@@ -183,20 +183,20 @@ arcade.
 
 ### 5.1 The layout requirement
 
-**The terminal UI occupies the full page.** Today the whole app is pinned to a 1296px centred
-column (`terminal.css:196`, `.cabinet-inner { width: 1296px }`) inside 22px of cabinet padding
-(`:193`), with the marquee band above (`:200`) and the legend row below (`Crt.tsx:54-60`) each
-taking a slice of the height. On a wide display that is a small letterboxed screen in a large empty
-room.
+**The terminal UI occupies the full page.** Shipped: the glass is the page. The fixed-width,
+centred-column `.cabinet-inner` pin this section used to describe was already gone before the
+presentation cycle started; what the cycle closed out was the marquee and legend, which used to
+stack outside the glass in a `Cabinet` wrapper. `Cabinet` is retired — `App`'s root renders `<Crt>`
+directly around the routed screen (`App.tsx:184`), with the `.term-header` breadcrumb as the sole
+identity line (`App.tsx:180-184`) — rather than a marquee band above and a legend row below. The
+bezel, scanlines, vignette and roll survive in `.crt`/`.crt-bezel`/`.crt-roll`
+(`terminal.css:193-221`): the arcade identity was never what was being removed; the letterboxing
+was.
 
-Final state: the glass is the page. The marquee and legend fold **into** the CRT as chrome rather
-than stacking outside it. The bezel, scanlines, vignette and roll survive — the arcade identity is
-not what's being removed; the letterboxing is.
-
-**This is a requirement, not a cosmetic.** At 1296px the project screen has room for one column,
-which is *why* today's session picker is a flat list. Full-bleed is what makes "repos down one
-side, sessions in the middle, who's where on the right" possible at all. The screen designs in §8
-depend on it.
+**This is a requirement, not a cosmetic.** At that old pinned width the project screen had room for
+only one column, which is *why* today's session picker is a flat list. Full-bleed is what makes
+"repos down one side, sessions in the middle, who's where on the right" possible at all. The screen
+designs in §8 depend on it.
 
 ### 5.2 Two presentations
 
@@ -205,7 +205,8 @@ The product ships **two themes over one interface**:
 - **Arcade** — the 90s gamified terminal: CRT glass, scanlines, bezel, pixel-face chrome, chunky
   frames with hard offset shadows, the marquee. The product's identity.
 - **Clean** — corporate-friendly. No CRT, no scanlines, no pixel type, no cabinet. Quieter frames,
-  standard type, calmer density. The version you screen-share in a client meeting.
+  standard type, same density as Arcade — a quieter skin, not a tighter layout (ruling R2, spec
+  §0, 2026-07-31). The version you screen-share in a client meeting.
 
 **Functional parity is absolute.** Every control, every state, every affordance exists in both.
 A theme may change how something *reads*; it may never change *whether it is there*. No feature is
@@ -474,10 +475,16 @@ everything lands on the session's one branch.
 
 *Today:* **built, and proven end to end across the relay** — joining another machine's session and
 taking the wheel, including answering a permission gate that then executed on the other machine.
-Pull notifications for unanswered gates are built and verified in a browser.
+Pull notifications for unanswered gates are built and verified in a browser. Surfacing shipped this
+cycle: a pinned gate bar above the prompt (`GateBar.tsx`) that jumps to the full gate card on click
+and needs no scroll to reach the pending decision; wheel-on-card, so a non-driver can take the wheel
+directly from an undecided permission gate in the transcript (`Transcript.tsx`); and pull
+click-through, jumping from the header pull badge / per-session pull rows to the oldest-waiting
+pull's session (`App.tsx`). All three ship identically in both themes, per §5.2's parity rule.
 
-*Final state:* mostly a matter of surfacing it well — this section is closer to done than any
-other, and its remaining work is presentation, not mechanism.
+*Final state:* **the surfacing work this section called out is done.** See
+`docs/specs/2026-07-31-presentation-design.md` for the design this cycle shipped against. Nothing
+else in §8.5 is currently open.
 
 ### 8.6 The agent surface
 
@@ -547,17 +554,22 @@ keys and will not be grouped, though they will conflict upstream.
 
 *What:* the two themes (§5.2), the full-bleed layout (§5.1), and the games.
 
-*Today:* one theme — the 90s gamified terminal — pinned to a 1296px centred column. The games are
-built and client-side; since the client is served by the hub, they come along for free under D2.
-`Crt.tsx`'s `intensity` knob is a partial theming precedent; shape and density are not yet behind
-tokens.
+*Today:* **shipped.** Full-bleed is done (§5.1). Two themes ship over one component tree: `Arcade`
+(default) and `Clean`, switchable per user at runtime via a `data-theme="arcade" | "clean"` attribute
+on `document.documentElement`, backed by a `useTheme()` hook that reads/writes localStorage
+`mpai-theme` (`theme.ts`) — absent or invalid falls back to Arcade. Clean is a decoration-only
+override layer fenced in `terminal.css` (`[data-theme="clean"]` rules), not a second layout: same
+density as Arcade, per ruling R2 (spec §0, 2026-07-31) — a quieter skin, not a tighter one. The games
+are built and client-side, and now have a smaller default footprint: the arcade lane renders at
+`0.65` of `--fs` by default and is user-resizable (drag handle or arrow keys) between `0.5` and
+`1.0`, persisted per user to localStorage `mpai-arcade-size` (`ThinkingStrip.tsx`) — the same
+client-local preference pattern as `mpai-theme`. In Clean, games are opt-in: while an agent is busy
+the thinking-strip status line renders without the game lane until the user opens it manually; a
+manual open renders identically in both themes — the one sanctioned behavioral difference between
+the themes, since parity governs everything else.
 
 *Final state:* full-bleed, and Arcade / Clean switchable per user at runtime with absolute
 functional parity. Both hold the AA contrast floor and honour reduced motion.
-
-*Open:* whether Clean warrants its own information density (more rows visible, tighter panels) or
-only a quieter skin at the same density. Density changes are where parity is most likely to break
-by accident.
 
 ### 8.10 Operating a hub
 
@@ -628,7 +640,9 @@ correctly.** The gap is surface and workflow, not the data model.
    and participation is membership-gated throughout (`hub.ts`'s `isMember` checks).
 7. The hub's log does not survive a restart.
 8. Sub-sessions do not exist as a product concept.
-9. The UI is a 1296px centred column.
+9. ~~The UI is a fixed-width centred column.~~ **Resolved** (§5.1, `feature/presentation`): the
+   pin was already gone before this cycle, and the marquee/legend that used to stack outside the
+   glass are folded away with `Cabinet` retired.
 10. There is one theme. Shape and density are not behind tokens, so Clean cannot be expressed
     without extracting them.
 

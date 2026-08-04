@@ -213,6 +213,7 @@ interface Over {
   isDriver?: boolean;
   onPermission?: (requestId: string, decision: "allow" | "deny") => void;
   onOpenSubSession?: (key: string) => void;
+  onTakeWheel?: () => void;
 }
 
 const element = (over: Over): React.ReactElement => (
@@ -226,6 +227,7 @@ const element = (over: Over): React.ReactElement => (
     onDecidePlan={() => {}}
     view={over.view}
     onOpenSubSession={over.onOpenSubSession}
+    onTakeWheel={over.onTakeWheel}
   />
 );
 
@@ -400,5 +402,154 @@ describe("Transcript — Task 3 sub-session views", () => {
     expect(markup).not.toContain("perm-sub");
     const text = textLines(markup);
     expect(text).toEqual(["▸ Frank:", "hi there", "⏺ working on it"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 5 — PR-#32 rider: the MAIN compact sub-session row is keyboard-operable.
+// The row was mouse-only (onClick) from PR #32; it must expose button semantics
+// (`role="button"`, `tabIndex={0}`) and open on Enter and Space through the SAME
+// handler as click, with its PR-#32 text and click behavior byte-unchanged.
+// ---------------------------------------------------------------------------
+
+/** A keydown-ish event object for the tree-walked handler. `renderTree` never
+ *  runs the DOM, so we hand the onKeyDown its `.key` and a no-op preventDefault
+ *  (the handler suppresses Space's page-scroll default). */
+const keyEvent = (key: string) => ({ key, preventDefault: () => {} });
+
+describe("Transcript — Task 5 compact-row keyboard a11y", () => {
+  it("T5-row keyboard access exposes button semantics and opens on Enter and Space", () => {
+    const events = [JOIN, SPAWN_A, ...BODY_A];
+
+    // Button semantics on the compact row.
+    const onOpenSubSession = vi.fn();
+    const row = renderTree(element({ events, onOpenSubSession })).find((n) => hasClass(n, "subagent-row"));
+    expect(row).toBeDefined();
+    expect(row!.props.role).toBe("button");
+    expect(row!.props.tabIndex).toBe(0);
+
+    // Enter opens the sub-session — same handler, same key as click.
+    (row!.props.onKeyDown as (e: unknown) => void)(keyEvent("Enter"));
+    expect(onOpenSubSession).toHaveBeenNthCalledWith(1, "A");
+
+    // Space (" ") opens it too.
+    (row!.props.onKeyDown as (e: unknown) => void)(keyEvent(" "));
+    expect(onOpenSubSession).toHaveBeenNthCalledWith(2, "A");
+    expect(onOpenSubSession).toHaveBeenCalledTimes(2);
+
+    // An unrelated key does nothing.
+    (row!.props.onKeyDown as (e: unknown) => void)(keyEvent("x"));
+    expect(onOpenSubSession).toHaveBeenCalledTimes(2);
+
+    // No handler wired (pre-Task-4 App): keyboard activation is a harmless no-op.
+    const bare = renderTree(element({ events })).find((n) => hasClass(n, "subagent-row"));
+    expect(() => (bare!.props.onKeyDown as (e: unknown) => void)(keyEvent("Enter"))).not.toThrow();
+  });
+
+  it("T5-row semantics regression keeps the PR-#32 row text and click behavior byte-identical", () => {
+    const events = [JOIN, SPAWN_A, ...BODY_A];
+
+    // The PR-#32 text pieces are all still present, in order.
+    const text = textLines(markupOfEl({ events })).join("\n");
+    expect(text).toContain("⚒ SUB-QUEST");
+    expect(text).toContain("scan tests"); // label
+    expect(text).toContain("running…"); // status
+    expect(text).toContain("7 rows");
+    expect(text).toContain("open ▸");
+
+    // Click still invokes the open handler unchanged (regression row).
+    const onOpenSubSession = vi.fn();
+    const row = renderTree(element({ events, onOpenSubSession })).find((n) => hasClass(n, "subagent-row"));
+    expect(row).toBeDefined();
+    (row!.props.onClick as () => void)();
+    expect(onOpenSubSession).toHaveBeenCalledWith("A");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 9 — §8.5 jump-to-card: each gate card's root element carries an
+// id="perm-<requestId>" so the pinned GateBar's onJump can scroll it into view
+// (App owns the scroll; here we assert the anchor the scroll targets exists).
+// The permission_request card root (className="perm") is the ONLY node with the
+// exact `perm` class — perm-head/perm-title/etc. do not match hasClass(_,"perm").
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Task 10 — §8.5 wheel-on-card: a NON-DRIVER's undecided gate card gains a
+// `🛞 TAKE THE WHEEL` button (`btn gold`) in its `.perm-outcome` area, invoking
+// Transcript's optional `onTakeWheel`. The card does NOT auto-decide after the
+// transfer — the driver decides on the card as normal. Absent for a decided
+// gate or an already-driver viewer, and absent entirely when the prop is not
+// passed (optional-prop regression floor).
+// ---------------------------------------------------------------------------
+const takeWheelBtn = (nodes: HostNode[]): HostNode | undefined =>
+  nodes.find((n) => n.type === "button" && hasClass(n, "btn") && hasClass(n, "gold"));
+
+describe("Transcript — Task 10 wheel-on-card", () => {
+  it("T10-wheel-on-card offers TAKE THE WHEEL on a non-driver undecided gate", () => {
+    const onTakeWheel = vi.fn();
+    const events = [JOIN, gate({ requestId: "r1" })];
+    const markup = markupOfEl({ events, onTakeWheel });
+    const text = textLines(markup).join("\n");
+
+    // The button carries the exact label, the `btn gold` class, and lives in
+    // the `.perm-outcome` area (never the driver's `.perm-actions`).
+    expect(text).toContain("🛞 TAKE THE WHEEL");
+    expect(markup).toContain("perm-outcome");
+    expect(markup).not.toContain("perm-actions");
+
+    const btn = takeWheelBtn(renderTree(element({ events, onTakeWheel })));
+    expect(btn).toBeDefined();
+    (btn!.props.onClick as () => void)();
+    expect(onTakeWheel).toHaveBeenCalledTimes(1);
+
+    // The card does NOT auto-decide: it still reads as an undecided gate.
+    expect(text).not.toContain("DECIDED");
+    expect(text).not.toContain("approved");
+    expect(text).not.toContain("denied");
+  });
+
+  it("T10-wheel-on-card absent on a DECIDED gate", () => {
+    const onTakeWheel = vi.fn();
+    const events = [JOIN, gate({ requestId: "r1" }), DECISION];
+    expect(takeWheelBtn(renderTree(element({ events, onTakeWheel })))).toBeUndefined();
+    expect(markupOfEl({ events, onTakeWheel })).not.toContain("TAKE THE WHEEL");
+  });
+
+  it("T10-wheel-on-card absent when already the driver — the driver keeps [A]/[D]", () => {
+    const onTakeWheel = vi.fn();
+    const events = [JOIN, gate({ requestId: "r1" })];
+    const nodes = renderTree(element({ events, isDriver: true, onTakeWheel }));
+    expect(takeWheelBtn(nodes)).toBeUndefined();
+    // the existing driver decide controls are the ones present
+    expect(nodes.find((n) => hasClass(n, "btn") && hasClass(n, "green"))).toBeDefined();
+    expect(nodes.find((n) => hasClass(n, "btn") && hasClass(n, "red"))).toBeDefined();
+  });
+
+  it("T10-prop absent renders no button and is byte-identical to today", () => {
+    const events = [JOIN, gate({ requestId: "r1" })];
+    // With no `onTakeWheel` prop the non-driver card renders exactly as before.
+    const without = markupOfEl({ events });
+    expect(without).not.toContain("TAKE THE WHEEL");
+    expect(without).toContain("⏳ driver deciding…");
+    // Byte-identity by subtraction (same technique as the perm-why test): the
+    // only difference the prop introduces is the added button node.
+    const withProp = markupOfEl({ events, onTakeWheel: () => {} });
+    expect(withProp.replace('<button class="btn gold">🛞 TAKE THE WHEEL</button>', "")).toBe(without);
+  });
+});
+
+describe("Transcript — Task 9 jump-to-card ids", () => {
+  it("T9-card-id gives each gate card root id=perm-<requestId>", () => {
+    const card = renderTree(element({ events: [JOIN, gate({ requestId: "r1" })] })).find((n) =>
+      hasClass(n, "perm"),
+    );
+    expect(card).toBeDefined();
+    expect(card!.props.id).toBe("perm-r1");
+
+    // The prefix is fixed and the id tracks the requestId verbatim.
+    const other = renderTree(element({ events: [JOIN, gate({ requestId: "rg" })] })).find((n) =>
+      hasClass(n, "perm"),
+    );
+    expect(other!.props.id).toBe("perm-rg");
   });
 });
