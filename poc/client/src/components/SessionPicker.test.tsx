@@ -1,8 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MEMBERSHIP_IDLE, SessionGroups, membershipStep } from "./SessionPicker";
+import {
+  LIFECYCLE_MEMBER_REFUSAL,
+  LIFECYCLE_TRANSITIONS,
+  LifecyclePanel,
+  MEMBERSHIP_IDLE,
+  SessionGroups,
+  membershipStep,
+} from "./SessionPicker";
 import pickerSource from "./SessionPicker.tsx?raw";
-import type { MachineInfo, ProjectSessionInfo, ProjectSummary } from "../types";
+import type { MachineInfo, ProjectLifecycle, ProjectSessionInfo, ProjectSummary } from "../types";
 
 /** The session list's contested surfaces (spec §5): a per-repo chip on the
  *  group head and a per-session marker beside the state badge.
@@ -271,8 +279,17 @@ describe("membershipStep — redacted-entrance join flow (spec A5)", () => {
  *  (`RecordPanel.test.tsx:13`). */
 describe("SessionPicker — membership refusal wiring (spec A5)", () => {
   it("suppresses the error toast for a membership refusal only", () => {
-    // `setError` runs for every error whose code is NOT the membership refusal.
-    expect(pickerSource).toMatch(/msg\.code !== "not_a_member"\)\s*setError\(msg\.message\)/);
+    // `setError` runs for every error whose (possibly normalized) code is NOT
+    // the membership refusal.
+    expect(pickerSource).toMatch(/code !== "not_a_member"\)\s*setError\(msg\.message\)/);
+  });
+
+  it("normalizes the lifecycle gate's UNCODED refusal into the same flow", () => {
+    // `set_project_lifecycle` refuses a non-member with a plain error — no
+    // `code` field (hub.ts) — so the string is the only signal. It must land
+    // in the membership flow (quiet degrade), not on the red line.
+    expect(pickerSource).toMatch(/msg\.message === LIFECYCLE_MEMBER_REFUSAL \? "not_a_member"/);
+    expect(LIFECYCLE_MEMBER_REFUSAL).toBe("join this project before changing it");
   });
 
   it("re-watches on the projects push when the reducer asks for it", () => {
@@ -330,5 +347,221 @@ describe("SessionGroups — calm styling", () => {
     expect(markup).not.toMatch(/class="[^"]*contested-calm[^"]*(spstate|sprow|spname)/);
     // Nothing else on this screen borrows it.
     expect(markup.match(/contested-calm/g)).toHaveLength(4);
+  });
+});
+
+
+/** ── PROJECT lifecycle section (plan 2026-08-01-project-lifecycle-controls
+ *  §1.1–§1.2). Two seams, both house-standard: the panel's RENDER is pinned
+ *  through props-only static markup, and the arm-and-confirm SEQUENCE is
+ *  exercised through the stateful hooks-shim mount (verbatim from
+ *  App.test.tsx — the panel's only hook is the one armed slot). The wire send
+ *  itself stays in the picker and is pinned from source. */
+
+const panelMarkup = (lifecycle: ProjectLifecycle): string =>
+  renderToStaticMarkup(<LifecyclePanel lifecycle={lifecycle} onSet={() => {}} />);
+
+/** Button labels out of the markup, in render order — the exact control set. */
+const buttonLabels = (markup: string): string[] =>
+  [...markup.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((m) => m[1]);
+
+describe("LifecyclePanel — the §1.1 button set per state", () => {
+  it("from active: CLOSE PROJECT and ARCHIVE PROJECT, nothing else", () => {
+    expect(buttonLabels(panelMarkup("active"))).toEqual(["CLOSE PROJECT", "ARCHIVE PROJECT"]);
+  });
+
+  it("from closed: REOPEN and ARCHIVE PROJECT — closing never strands the project", () => {
+    expect(buttonLabels(panelMarkup("closed"))).toEqual(["REOPEN", "ARCHIVE PROJECT"]);
+  });
+
+  it("from archived: UNARCHIVE only", () => {
+    expect(buttonLabels(panelMarkup("archived"))).toEqual(["UNARCHIVE"]);
+  });
+
+  it("covers exactly the three lifecycle states — no speculative transitions (§2.4)", () => {
+    expect(Object.keys(LIFECYCLE_TRANSITIONS).sort()).toEqual(["active", "archived", "closed"]);
+    // Delete does not exist (spec :242), and no transition leaves the union.
+    for (const ts of Object.values(LIFECYCLE_TRANSITIONS)) {
+      for (const t of ts) expect(["active", "closed", "archived"]).toContain(t.to);
+    }
+  });
+
+  it("shows the current state beside the buttons, CLOSED in the red badge class", () => {
+    expect(textLines(panelMarkup("active"))).toContain("ACTIVE");
+    expect(panelMarkup("closed")).toContain('<span class="spstate pix sm closed">CLOSED</span>');
+    expect(textLines(panelMarkup("archived"))).toContain("ARCHIVED");
+  });
+});
+
+/* The stateful hooks-shim mount, verbatim from App.test.tsx: `useState`
+ *  setters re-render synchronously (so an arming click actually relabels the
+ *  button), `useEffect` is inert. Returns a live accessor over the current
+ *  element tree. */
+const H_KEY = "__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE";
+type El = { type: unknown; props: Record<string, unknown> };
+
+function mount(Comp: (p: unknown) => unknown, props: unknown) {
+  const internals = (React as unknown as Record<string, { H: unknown }>)[H_KEY];
+  const prevH = internals.H;
+  const hooks: unknown[] = [];
+  let i = 0;
+  let tree: unknown;
+  const runtime = {
+    useRef: (v: unknown) => {
+      const k = i++;
+      if (hooks[k] === undefined) hooks[k] = { current: v };
+      return hooks[k];
+    },
+    useState: (init: unknown) => {
+      const k = i++;
+      if (!(k in hooks)) hooks[k] = typeof init === "function" ? (init as () => unknown)() : init;
+      const set = (nv: unknown) => {
+        hooks[k] = typeof nv === "function" ? (nv as (p: unknown) => unknown)(hooks[k]) : nv;
+        render();
+      };
+      return [hooks[k], set];
+    },
+    useEffect: () => {},
+    useMemo: (f: () => unknown) => f(),
+    useCallback: (f: unknown) => f,
+    useContext: () => undefined,
+    useReducer: (_r: unknown, init: unknown) => [init, () => {}],
+  };
+  function render() {
+    i = 0;
+    internals.H = runtime;
+    try {
+      tree = Comp(props);
+    } finally {
+      internals.H = prevH;
+    }
+  }
+  render();
+  return { nodes: () => collect(tree) };
+}
+
+function collect(tree: unknown): El[] {
+  const out: El[] = [];
+  const visit = (node: unknown) => {
+    if (node == null || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    const n = node as El;
+    if (n.props) {
+      out.push(n);
+      visit(n.props.children);
+    }
+  };
+  visit(tree);
+  return out;
+}
+
+const textOf = (node: unknown): string => {
+  if (node == null) return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join("");
+  const n = node as El;
+  return n.props ? textOf(n.props.children) : "";
+};
+
+/** The panel mounted with a recording onSet, plus click/label accessors over
+ *  its LIVE tree (labels re-read after every click — the armed relabel is the
+ *  whole point). */
+const mountPanel = (lifecycle: ProjectLifecycle) => {
+  const onSet = vi.fn();
+  const mounted = mount(LifecyclePanel as (p: unknown) => unknown, { lifecycle, onSet });
+  const buttons = () => mounted.nodes().filter((n) => n.type === "button");
+  const labels = () => buttons().map((n) => textOf(n));
+  const click = (label: string) => {
+    const b = buttons().find((n) => textOf(n) === label);
+    expect(b, `a button labelled ${label}`).toBeDefined();
+    (b!.props.onClick as () => void)();
+  };
+  return { onSet, labels, click };
+};
+
+describe("LifecyclePanel — arm-and-confirm (plan §1.2)", () => {
+  it("the first click on CLOSE PROJECT arms only — it sends NOTHING", () => {
+    const panel = mountPanel("active");
+    panel.click("CLOSE PROJECT");
+    expect(panel.onSet).not.toHaveBeenCalled();
+    // …and the armed button says so, in place of its old label.
+    expect(panel.labels()).toEqual(["SURE?", "ARCHIVE PROJECT"]);
+  });
+
+  it("the second click on the armed button sends the transition, once", () => {
+    const panel = mountPanel("active");
+    panel.click("CLOSE PROJECT");
+    panel.click("SURE?");
+    expect(panel.onSet).toHaveBeenCalledTimes(1);
+    expect(panel.onSet).toHaveBeenCalledWith("closed");
+    // The slot cleared on send: the label is back, not stuck on SURE?.
+    expect(panel.labels()).toEqual(["CLOSE PROJECT", "ARCHIVE PROJECT"]);
+  });
+
+  it("arms ARCHIVE PROJECT the same way and sends archived on confirm", () => {
+    const panel = mountPanel("closed");
+    panel.click("ARCHIVE PROJECT");
+    expect(panel.onSet).not.toHaveBeenCalled();
+    panel.click("SURE?");
+    expect(panel.onSet).toHaveBeenCalledTimes(1);
+    expect(panel.onSet).toHaveBeenCalledWith("archived");
+  });
+
+  it("REOPEN sends immediately — it restores, it does not destroy", () => {
+    const panel = mountPanel("closed");
+    panel.click("REOPEN");
+    expect(panel.onSet).toHaveBeenCalledTimes(1);
+    expect(panel.onSet).toHaveBeenCalledWith("active");
+  });
+
+  it("UNARCHIVE sends immediately", () => {
+    const panel = mountPanel("archived");
+    panel.click("UNARCHIVE");
+    expect(panel.onSet).toHaveBeenCalledTimes(1);
+    expect(panel.onSet).toHaveBeenCalledWith("active");
+  });
+
+  it("moving to the other destructive button disarms the first — one armed slot", () => {
+    const panel = mountPanel("active");
+    panel.click("CLOSE PROJECT");
+    panel.click("ARCHIVE PROJECT");
+    // Still nothing sent, and CLOSE PROJECT has its label back: the arm moved.
+    expect(panel.onSet).not.toHaveBeenCalled();
+    expect(panel.labels()).toEqual(["CLOSE PROJECT", "SURE?"]);
+  });
+});
+
+/** The picker-side wiring the panel cannot see: gate, send, and the remount
+ *  that disarms on transition. Static rendering never runs the picker's
+ *  socket effect, so these are pinned from source — the house `?raw` pattern
+ *  (same as the INVITE section wiring above). */
+describe("SessionPicker — PROJECT lifecycle section wiring (plan §1.1–§1.2)", () => {
+  it("gates the section on MEMBERSHIP, not actable — a closed project's members must reach REOPEN", () => {
+    // `canAct` answers "not-active" on a closed/archived project, so an
+    // `actable` gate would strand every closed project. The gate is the
+    // membership signal the INVITE section uses, lifecycle-independent.
+    expect(pickerSource).toMatch(
+      /const manageable =\s*project !== null && isProjectMember\(project, props\.userId\) && !membership\.notMember/,
+    );
+    expect(pickerSource).toMatch(/\{manageable !== null && \([\s\S]{0,240}<LifecyclePanel/);
+  });
+
+  it("sends the exact wire message — set_project_lifecycle with the picker's own projectId", () => {
+    expect(pickerSource).toMatch(
+      /JSON\.stringify\(\{ type: "set_project_lifecycle", projectId: props\.projectId, lifecycle \}\)/,
+    );
+  });
+
+  it("remounts the panel on every lifecycle change so an armed SURE? dies with its state", () => {
+    expect(pickerSource).toMatch(/key=\{manageable\.lifecycle\}/);
+  });
+
+  it("sources the current lifecycle from the projects frame the picker already receives", () => {
+    // No new subscription: the section reads the same `projects` state the
+    // entrance list fills, via the `project` memo.
+    expect(pickerSource).toMatch(/lifecycle=\{manageable\.lifecycle\}/);
   });
 });

@@ -65,6 +65,10 @@
 }
 
 html, body, #root { height: 100%; }
+/* The glass IS the page: with the Cabinet retired (full-bleed), #root is the
+   flex column .crt's `flex: 1` was always written for — without it the app
+   shrinks to content height and the room shows below the glass. */
+#root { display: flex; flex-direction: column; }
 body {
   margin: 0;
   background: #07080a;           /* the room around the cabinet */
@@ -247,7 +251,8 @@ code, pre { font-family: var(--fm); }
 .term-header .crumb b { color: var(--fg); font-weight: 600; }
 .term-header .crumb .sep { color: var(--frame); }
 .term-header .rule { flex: 1; border-top: 1px dashed var(--frame); }
-.term-header select {
+.term-header select,
+.pull-setting select {
   background: var(--input); border: 2px solid var(--frame); color: var(--accent);
   padding: 3px 6px; cursor: pointer;
 }

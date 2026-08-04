@@ -31,6 +31,11 @@ export function ProjectPicker(props: {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState<LinkState>("connecting");
+  // SHOW ARCHIVED (spec §4.1): archived projects are off the default list,
+  // never gone — this toggle is the only way back to one short of knowing its
+  // URL. Default OFF: the archived state exists precisely to declutter the
+  // entrance, so the entrance must not reopen it by default.
+  const [showArchived, setShowArchived] = useState(false);
   const [name, setName] = useState("");
   const [pairCode, setPairCode] = useState("");
   const [pairResult, setPairResult] = useState<PairResult | null>(null);
@@ -118,7 +123,12 @@ export function ProjectPicker(props: {
           </div>
         )}
         <div className="panel">
-          <ProjectRows projects={projects} userId={props.userId} />
+          <ProjectRows
+            projects={projects}
+            userId={props.userId}
+            includeArchived={showArchived}
+            onToggleArchived={() => setShowArchived((v) => !v)}
+          />
         </div>
         <div className="panel pix top">NEW PROJECT</div>
         <div className="panel">
@@ -246,12 +256,23 @@ export function pairMessage(result: PairResult): string {
  *  This seam is what lets `ProjectPicker.test.tsx` assert the redaction-safe
  *  count and the isMember-driven SPECTATING badge against real fixtures.
  *
+ *  `includeArchived`/`onToggleArchived` are the entrance's SHOW ARCHIVED
+ *  toggle, taken as props (not internal state) for the same reason: the seam
+ *  lets the test render BOTH arms and assert the badge and the row set each
+ *  draws. ENTER stays live on an archived row — a closed/archived project is
+ *  still readable; `canAct` refuses only ACTING, with truthful copy.
+ *
  *  Both read through the `types.ts` helpers, never off `members` directly: a
  *  redacted non-member sees `members: []` but a true `memberCount`, and its
  *  membership is `isMember: false` — so the count stays honest and the badge
  *  no longer flips on an empty roster (spec A5). */
-export function ProjectRows(props: { projects: ProjectSummary[]; userId: string }) {
-  const rows = sortProjects(props.projects);
+export function ProjectRows(props: {
+  projects: ProjectSummary[];
+  userId: string;
+  includeArchived: boolean;
+  onToggleArchived: () => void;
+}) {
+  const rows = sortProjects(props.projects, { includeArchived: props.includeArchived });
   return (
     <>
       {rows.length === 0 && (
@@ -266,6 +287,12 @@ export function ProjectRows(props: { projects: ProjectSummary[]; userId: string 
                 {p.name}
                 {p.lifecycle === "closed" && (
                   <span className="spstate pix sm closed">CLOSED</span>
+                )}
+                {/* No dedicated class: CLOSED is red because it interrupts work;
+                 *  archived is only put away, so it wears the neutral badge the
+                 *  SPECTATING chip already uses. */}
+                {p.lifecycle === "archived" && (
+                  <span className="spstate pix sm">ARCHIVED</span>
                 )}
                 {!isProjectMember(p, props.userId) && (
                   <span className="spstate pix sm">SPECTATING</span>
@@ -282,6 +309,17 @@ export function ProjectRows(props: { projects: ProjectSummary[]; userId: string 
           </div>
         );
       })}
+      {/* The label names the action the click performs, never the current
+       *  state — and reads the same under both themes (T14: a theme changes
+       *  how things read, never whether a control is there). `aria-pressed`
+       *  carries the state the label doesn't. */}
+      <button
+        className="btn wide"
+        aria-pressed={props.includeArchived}
+        onClick={props.onToggleArchived}
+      >
+        {props.includeArchived ? "HIDE ARCHIVED" : "SHOW ARCHIVED"}
+      </button>
     </>
   );
 }

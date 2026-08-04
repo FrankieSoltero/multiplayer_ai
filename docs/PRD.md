@@ -387,17 +387,18 @@ planes themselves are both enforced end to end, not merely designed.
 
 *What:* the container — create, name, invite, join, leave, close, archive.
 
-*Today:* **shipped (PR #22).** Projects are first-class on the hub: display name, member list,
-lifecycle (open/closed/archived at the store level), `create_project`/`list_projects`/
-`join_project`/`leave_project` over the browser protocol, and the entrance screen listing
-projects with member counts. The standalone server answers the same entrance messages so solo
-mode lands on a one-item entrance. Known plan gap, disclosed in PR #22: `close_project`/
-`archive_project` exist and are tested hub-side but have **no client surface** yet, so archived
-state is unreachable from the UI.
+*Today:* **shipped (PR #22, lifecycle controls on `feature/project-lifecycle`).** Projects are
+first-class on the hub: display name, member list, lifecycle (open/closed/archived at the store
+level), `create_project`/`list_projects`/`join_project`/`leave_project` over the browser
+protocol, and the entrance screen listing projects with member counts. The standalone server
+answers the same entrance messages so solo mode lands on a one-item entrance. The PR-#22 gap is
+closed: `set_project_lifecycle` now has a client surface — close/reopen/archive/un-archive
+controls on the project screen (member-only, arm-and-confirm on the destructive two) and a SHOW
+ARCHIVED toggle on the entrance, so archived state is reachable and reversible; the standalone
+server answers the same message with the same refusal strings.
 
-*Final state:* the invite flow is scoped to projects (shipped on `feature/project-invites` —
-tech-debt §2.5 resolved). The one remaining gap is the close/archive client controls. Everything
-else here is done.
+*Final state:* reached. The invite flow is scoped to projects (`feature/project-invites`), and
+the close/archive client controls are shipped (`feature/project-lifecycle`). §8.2 is complete.
 
 ### 8.3 Machines & repos
 

@@ -80,6 +80,12 @@ export function PromptBar(props: {
       if (e.key === "Enter" && !shouldSubmitOverMenu(text)) { accept(sel.name); return; }
       if (e.key === "Escape") { setDismissed(true); return; }
     }
+    // Menu closed: Esc is the way OUT of the prompt. With text in the box the
+    // caret owns the arrows (yieldsArrows, arrowNav.ts) and Esc was the only
+    // key left — without this blur there was no keyboard path back to session
+    // navigation at all. Focus drops to <body>, where the next arrow press
+    // restarts nav at the first control (useArrowNav's cur < 0 arm).
+    if (e.key === "Escape") { e.currentTarget.blur(); return; }
     if (e.key === "Enter") submit();
   };
 
