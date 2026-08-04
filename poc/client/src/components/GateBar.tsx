@@ -29,7 +29,10 @@ export interface GateBarProps {
  * prefix (`.perm-sub`), and the `btn green`/`btn red`/`btn gold` controls — so
  * it reads as the same gate, pinned. Clicking the bar body (not a button) jumps
  * to the full gate card; the decide/wheel buttons stop that propagation so a
- * decision never doubles as a jump.
+ * decision never doubles as a jump. Keyboard parity with Transcript's
+ * `.subagent-row` compact row (identical click-to-navigate pattern): the bar
+ * body exposes button semantics (`role="button"`, `tabIndex={0}`) and jumps on
+ * Enter and Space through the SAME handler as onClick.
  */
 export function GateBar(props: GateBarProps): JSX.Element | null {
   const { gate } = props;
@@ -38,9 +41,22 @@ export function GateBar(props: GateBarProps): JSX.Element | null {
   // Non-driver frame recedes to the muted amber — the gate is visible, but the
   // "you can act here" wash and the decide controls belong to the driver.
   const cls = props.isDriver ? "gatebar" : "gatebar nondriver";
+  const jump = () => props.onJump(gate.requestId);
 
   return (
-    <div className={cls} onClick={() => props.onJump(gate.requestId)}>
+    <div
+      className={cls}
+      role="button"
+      tabIndex={0}
+      onClick={jump}
+      onKeyDown={(e) => {
+        // Space's default is page-scroll on a button role, so suppress it.
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          jump();
+        }
+      }}
+    >
       <div className="gatebar-info">
         {props.isDriver ? (
           <span className="gatebar-lead">
@@ -48,7 +64,8 @@ export function GateBar(props: GateBarProps): JSX.Element | null {
           </span>
         ) : (
           <span className="gatebar-lead">
-            🔐 waiting on {props.driverGlyph ?? ""} {props.driverName ?? "the driver"}
+            🔐 waiting on {props.driverGlyph ? `${props.driverGlyph} ` : ""}
+            {props.driverName ?? "the driver"}
           </span>
         )}
         {gate.subLabel ? <span className="perm-sub">⚒ {gate.subLabel}</span> : null}

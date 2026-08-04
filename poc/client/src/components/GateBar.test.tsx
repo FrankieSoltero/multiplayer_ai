@@ -138,3 +138,41 @@ describe("GateBar — §8.5 pinned gate bar", () => {
     expect(onDecide).toHaveBeenCalledWith("r1", "allow");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Spot-check rider — the bar body's click-to-jump was mouse-only (onClick),
+// unlike Transcript's `.subagent-row` compact row which got the full keyboard
+// treatment for the identical click-to-navigate pattern (PR #32/Task 5). The
+// bar body must expose button semantics (`role="button"`, `tabIndex={0}`) and
+// jump on Enter and Space through the SAME handler as click.
+// ---------------------------------------------------------------------------
+
+/** A keydown-ish event object for the tree-walked handler: `.key` plus a
+ *  no-op `preventDefault` (the handler suppresses Space's page-scroll
+ *  default, same as Transcript's compact-row handler). */
+const keyEvent = (key: string) => ({ key, preventDefault: () => {} });
+
+describe("GateBar — bar-body keyboard a11y", () => {
+  it("T-keyboard exposes button semantics and jumps on Enter and Space", () => {
+    const onJump = vi.fn();
+    const gate = { requestId: "r1", toolName: "Write" };
+    const nodes = hostNodes(baseProps({ gate, isDriver: true, onJump }));
+    const bar = nodes.find((n) => hasClass(n, "gatebar"));
+    expect(bar).toBeDefined();
+    expect(bar!.props.role).toBe("button");
+    expect(bar!.props.tabIndex).toBe(0);
+
+    // Enter jumps — same handler, same key as click.
+    (bar!.props.onKeyDown as (e: unknown) => void)(keyEvent("Enter"));
+    expect(onJump).toHaveBeenNthCalledWith(1, "r1");
+
+    // Space (" ") jumps too.
+    (bar!.props.onKeyDown as (e: unknown) => void)(keyEvent(" "));
+    expect(onJump).toHaveBeenNthCalledWith(2, "r1");
+    expect(onJump).toHaveBeenCalledTimes(2);
+
+    // An unrelated key does nothing.
+    (bar!.props.onKeyDown as (e: unknown) => void)(keyEvent("x"));
+    expect(onJump).toHaveBeenCalledTimes(2);
+  });
+});
