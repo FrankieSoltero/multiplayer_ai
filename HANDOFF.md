@@ -1,10 +1,23 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-08-01 (Kimi Code CLI session — §8.6 cycle 1 "the wire" shipped on `feature/agent-surface`, stacked on `feature/project-lifecycle`).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-08-03 (Kimi Code CLI session — §8.6 cycle 1 shipped as PR #36; two follow-on plans written, execution PAUSED on Kimi weekly quota).*
 
 ---
 
-## 🚀 START HERE (2026-08-01, Kimi CLI #3) — §8.6 AGENT SURFACE, CYCLE 1 "THE WIRE" **SHIPPED** on `feature/agent-surface` (stacked on `feature/project-lifecycle`; inventory `docs/specs/2026-08-01-agent-surface-gap-inventory.md`, plan `docs/plans/2026-08-01-agent-surface.md`; deferrals recorded in tech-debt §2.9).
+## 🚀 START HERE (2026-08-03, Kimi CLI #4) — §8.6 CYCLE 1 **SHIPPED (PR #36)**; TWO PLANS READY, EXECUTION **PAUSED ON KIMI WEEKLY QUOTA** (403 "usage limit for this billing cycle" — the WEEKLY quota per the docs, not the 5-hour window; check `/usage` or the Kimi Code Console).
+
+**State of play:** the stack is four PRs — #33 (presentation, DRAFT) ← #35 (invites) ← #34 (lifecycle + live-run fixes) ← **#36 (agent-surface cycle 1)**. All suites green at #36 head: server 789 · hub 368 · client 566. Nothing is mid-flight in code; two plans are written and **uncommitted** in the working tree on `feature/agent-surface`:
+
+1. **`docs/plans/2026-08-03-permission-rules.md`** — §8.6 cycle 2: permission ALWAYS. SDK gate enrichments (title/description/suggestions) surface on `permission_request`; a third driver decision `"always"` returns the SDK's suggested rule as `updatedPermissions` with **destination forced to `"session"`** (the multiplayer ruling: a driver's click never writes settings files; rules die with the session; the decision event records rule + decider). Accepted bound recorded: session rules bypass `canUseTool`, so the contested-file withdrawal doesn't run for rule-covered calls. Mode mapping (six SDK modes) still deferred. This was the paused goal — resume with `/goal resume` or by asking.
+2. **`docs/plans/2026-08-03-local-models-shim.md`** — local models (Qwen3-class) via **Path 3** (user's pick after a three-path design discussion): LiteLLM proxy routes the Anthropic API by model id (`claude-*` pass-through, `qwen3-32b` → Ollama); `models.ts` becomes the single-source registry (ids/labels/contextWindow/local+degradedNote), picker groups cloud/local and discloses degradation, cycle-1's additive wire means missing metrics show nothing instead of lying. Proxy ships as `deploy/local-models.md`, not code. Path 2 (backend interface) shelved with a written revisit condition. **Neither Ollama nor LiteLLM is installed on this box** — the live-demo gate needs the user to install Ollama + pull `qwen3:32b` or `qwen3:30b-a3b`, else the demo defers with a note.
+
+**Resume order (suggested):** local-models first (smaller, fresh context), then permission-rules. Neither touches the other's files (models.ts/registry/picker vs permissions/pendingGate/gates).
+
+**Quota traps (both providers, recorded so nobody re-diagnoses):** (a) **Kimi Code** — weekly billing-cycle quota hit 2026-08-03; all devices/API keys share it; Extra Usage balance would have fallen back seamlessly if enabled. (b) **Claude/Anthropic** — the account behind the CLI credentials hit its WEEKLY limit (resets Aug 4 ~7pm ET); every agent turn fails `api_error` in ~300ms until then, so any live proof needing a real successful turn waits for the reset. Also still true from cycle 1: the user's own mpai daemon holds IPv6 `*:3001` — `localhost:3001` talks to THEIR daemon, not a fresh demo server; use another port + explicit 127.0.0.1. Demo server from cycle 1 may still be running on :3005.
+
+---
+
+## (was) START HERE (2026-08-01, Kimi CLI #3) — §8.6 AGENT SURFACE, CYCLE 1 "THE WIRE" **SHIPPED** on `feature/agent-surface` (stacked on `feature/project-lifecycle`; inventory `docs/specs/2026-08-01-agent-surface-gap-inventory.md`, plan `docs/plans/2026-08-01-agent-surface.md`; deferrals recorded in tech-debt §2.9).
 
 **What shipped:** server wire (`e660be7`) — `turn_end` carries outcome/cost/usage/modelUsage/duration (error turns get `agent_error` FIRST with subtype+reason); `stop_turn` driver-gated → `Query.interrupt()`, interrupted ≠ success in the log; `rate_limit` (30s throttle), `agent_status` (compacting/requesting/idle/retrying/refusal_fallback), `compaction` events; `agent_text_delta` gains supersedes/aborted flags; `agentProgressSummaries: true`; `task_event.outputFile`; `commands_changed` → roster refetch, plugin add/remove → `reloadPlugins()`/`reloadSkills()`. Client (`c6db35f`) — ■ STOP on the prompt row (driver+busy only); HUD CONTEXT/elapsed/PARTY XP wired (XP = session token total — cost rejected as account state, not a party counter); turn_stop/error/compaction/rate_limit transcript lines; retracted deltas dim+strike; ThinkingStrip shows compacting/retrying. `?screen=status` design screen RETIRED (bars had no honest feed, tool grid static, no nav).
 
