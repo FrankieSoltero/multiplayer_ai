@@ -12,6 +12,12 @@ in `deploy/`.
 
 ## 1. Install
 
+**One-command path:** everything in this section is automated, idempotently, by
+`deploy/hub/setup.sh` — `sudo HUB_HOSTNAME=<dns-name> REPO_URL=<repo> bash deploy/hub/setup.sh`,
+then fill the vars it names in `/etc/multiplayer-ai/hub.env` and
+`systemctl start multiplayer-ai-hub`. The manual steps below remain the reference
+for what the script does and for correcting a partial run.
+
 Base packages and a Node 22+ runtime:
 
     sudo apt update && sudo apt install -y git curl
