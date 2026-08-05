@@ -58,6 +58,21 @@ export class Overseer {
     return s;
   }
 
+  /** Load persisted state from the hub's durable store at boot (spec §8.6).
+   *  Installs the enabled flag and last summary WITHOUT broadcasting the toggle
+   *  (`onUpdate` is not called) and WITHOUT scheduling a refresh — this is a
+   *  restore, not a change. `seq` is restored from the seeded summary so a later
+   *  refresh continues the counter instead of resetting it to 1, keeping the
+   *  wire's monotonic `seq` unbroken across a hub restart. The seeded state IS
+   *  live: a subsequent `notify` debounces and summarizes exactly as if the
+   *  project had been enabled at runtime. */
+  seed(projectId: string, state: { enabled: boolean; latest: OversightSummary | null }): void {
+    const s = this.state(projectId);
+    s.enabled = state.enabled;
+    s.latest = state.latest;
+    s.seq = state.latest?.seq ?? 0;
+  }
+
   isEnabled(projectId: string): boolean {
     return this.states.get(projectId)?.enabled ?? false;
   }

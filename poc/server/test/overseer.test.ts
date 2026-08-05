@@ -158,6 +158,52 @@ describe("Overseer", () => {
   });
 });
 
+describe("Overseer.seed", () => {
+  it("installs persisted state silently — no onUpdate, no refresh scheduled", async () => {
+    const { overseer, calls, updates } = makeOverseer();
+    const S = { text: "restored summary", ts: "2026-08-04T00:00:00.000Z", seq: 4 };
+    overseer.seed("p1", { enabled: true, latest: S });
+    expect(overseer.isEnabled("p1")).toBe(true);
+    expect(overseer.latest("p1")).toBe(S);
+    // Seeding is a load from the durable store, not a change: it must not
+    // broadcast the toggle nor kick off a summarize call.
+    expect(updates).toEqual([]);
+    await wait(60);
+    expect(calls).toHaveLength(0);
+    expect(updates).toEqual([]);
+  });
+
+  it("seeds a disabled/empty state with seq 0", () => {
+    const { overseer } = makeOverseer();
+    overseer.seed("p1", { enabled: false, latest: null });
+    expect(overseer.isEnabled("p1")).toBe(false);
+    expect(overseer.latest("p1")).toBe(null);
+  });
+
+  it("seeded state is live — a later notify runs a debounced refresh continuing the seq", async () => {
+    const { overseer, calls } = makeOverseer();
+    overseer.seed("p1", {
+      enabled: true,
+      latest: { text: "restored", ts: "2026-08-04T00:00:00.000Z", seq: 5 },
+    });
+    overseer.notify("p1");
+    await wait(60);
+    // The seeded state is not inert: activity summarizes, and seq is restored
+    // from the seeded latest (5) so the next summary is 6, never a reset to 1.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ projectId: "p1", previousSummary: "restored" });
+    expect(overseer.latest("p1")?.seq).toBe(6);
+  });
+
+  it("a notify against a seeded-disabled project never summarizes", async () => {
+    const { overseer, calls } = makeOverseer();
+    overseer.seed("p1", { enabled: false, latest: null });
+    overseer.notify("p1");
+    await wait(60);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe("oversightToolText", () => {
   it("says disabled when disabled", () => {
     expect(oversightToolText(false, null)).toBe("team oversight is disabled");

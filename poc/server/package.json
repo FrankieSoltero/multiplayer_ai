@@ -15,7 +15,9 @@
     "./auth": { "types": "./dist/auth.d.ts", "default": "./dist/auth.js" },
     "./relay": { "types": "./dist/relay.d.ts", "default": "./dist/relay.js" },
     "./session": { "types": "./dist/session.d.ts", "default": "./dist/session.js" },
-    "./workspace": { "types": "./dist/workspace.d.ts", "default": "./dist/workspace.js" }
+    "./workspace": { "types": "./dist/workspace.d.ts", "default": "./dist/workspace.js" },
+    "./overseer": { "types": "./dist/overseer.d.ts", "default": "./dist/overseer.js" },
+    "./digest": { "types": "./dist/digest.d.ts", "default": "./dist/digest.js" }
   },
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",

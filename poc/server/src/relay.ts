@@ -365,6 +365,12 @@ export class Relay {
       return;
     }
 
+    if (frame.t === "oversight_update") {
+      // Additive-ignore for now (spec §8.6). Task 3 replaces this with the real
+      // handler that mirrors the hub's oversight state into the laptop.
+      return;
+    }
+
     // frame.t === "tunnel"
     let conn = this.channels.get(frame.channelId);
     if (!conn) {
