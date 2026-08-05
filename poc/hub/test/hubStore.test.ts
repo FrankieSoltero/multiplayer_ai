@@ -301,7 +301,7 @@ describe("HubStore snapshot assembly", () => {
       arcade: [],
       plugins: [],
       pluginsEnabled: false,
-      oversight: { enabled: false, latest: null },
+      oversight: { enabled: false, latest: null, available: false },
     });
   });
 

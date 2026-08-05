@@ -16,7 +16,14 @@ import {
   parseUpFrame,
   type DownFrame,
 } from "multiplayer-ai-server/relayProtocol";
-import { HubStore, type MachineInfo } from "./hubStore.js";
+import {
+  Overseer,
+  runOversightSummarize,
+  type Summarize,
+  type OversightSummary,
+} from "multiplayer-ai-server/overseer";
+import { oversightSessionDigest } from "multiplayer-ai-server/digest";
+import { HubStore, type MachineInfo, type SnapshotOversight } from "./hubStore.js";
 import { HubDb, type HubInviteStore } from "./hubDb.js";
 import { pairingRoutes, hashToken } from "./pairing.js";
 import {
@@ -32,6 +39,17 @@ import {
 
 const SLUG = /^[a-z0-9-]{1,40}$/;
 const PROJECT_PUSH_INTERVAL_MS = 1000;
+
+/** Event types that count as project activity for the oversight summarizer,
+ *  mirroring `server.ts`'s `OVERSEER_EVENTS`. Any other event (tool_call,
+ *  turn_end, …) is not on its own a reason to re-summarize; a debounced refresh
+ *  fires only when one of these is published to an enabled project. */
+const OVERSEER_EVENT_TYPES = new Set([
+  "user_message",
+  "permission_request",
+  "agent_error",
+  "intent_update",
+]);
 
 /** How often the disk-headroom gate is allowed to consult the filesystem
  *  (spec B1). The verdict is cached between checks, so a hot publish stream
@@ -152,6 +170,20 @@ export interface HubOptions {
    *  browser-hijack defense. Unset → no check (today's behavior). Consumes
    *  `HubOpsConfig.origin`. */
   origin?: string;
+  /** Team-oversight capability (spec §3.7). When true a project's oversight may
+   *  be turned on; when false every enable is refused with the capability
+   *  string and only disable is honored. Defaults to
+   *  `Boolean(process.env.ANTHROPIC_API_KEY?.trim())`, read ONCE at hub
+   *  construction — presence-only, so a bare key needs no `hubEnv` validation.
+   *  A test sets it directly so the gate is exercised without an env var. */
+  oversightAvailable?: boolean;
+  /** Test seam: the oversight summarizer. Production uses
+   *  `runOversightSummarize` (one haiku call via `MODELS.haiku.id`); tests
+   *  inject a fake so no real API call is ever made. */
+  summarize?: Summarize;
+  /** Overseer activity debounce in ms (test seam). Defaults to the Overseer's
+   *  own 30s; a test shortens it so an activity-driven refresh is observable. */
+  oversightDebounceMs?: number;
 }
 
 /** Only `hub-YYYYMMDD-HHmmssZ.db` files — the exact names `backupFileName`
@@ -240,6 +272,12 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
   // admit and decremented on every close.
   const clock = opts.now ?? Date.now;
   const trustProxy = opts.trustProxy ?? false;
+  // Team-oversight capability (spec §3.7), read ONCE here beside the other
+  // boot-config reads. A non-blank ANTHROPIC_API_KEY is the whole gate —
+  // presence-only, no malformed value to reject — and a test overrides it via
+  // the opts seam so the refusal is exercised without touching the environment.
+  const oversightAvailable =
+    opts.oversightAvailable ?? Boolean(process.env.ANTHROPIC_API_KEY?.trim());
   const upgradeBucket = new TokenBucket(UPGRADES_PER_MIN_PER_IP, UPGRADES_PER_MIN_PER_IP / 60_000, clock);
   const httpBucket = new TokenBucket(HTTP_AUTH_PER_MIN_PER_IP, HTTP_AUTH_PER_MIN_PER_IP / 60_000, clock);
   let socketCount = 0;
@@ -492,7 +530,7 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
       clearTimeout(timer);
       pushTimers.delete(projectId);
     }
-    const payload = store.snapshot(projectId);
+    const payload = store.snapshot(projectId, oversightSnapshotState(projectId));
     for (const channel of channels.values()) {
       if (channel.projectId !== projectId) continue;
       // Membership is re-checked at fan-out, not just at watch/join time (spec
@@ -709,6 +747,97 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         pushProject(projectId);
       }, PROJECT_PUSH_INTERVAL_MS - elapsed),
     );
+  }
+
+  // --- Team oversight (spec §3.7, plan 2026-08-04-hub-oversight §2b) ---
+
+  /** Push the current oversight state to every uplink that OWNS a session in
+   *  this project — ONE frame per uplink (deduped), targeted exactly as
+   *  `emitContested` targets: `store.ownerOf` → the live uplink socket. A
+   *  project whose sessions have no online owner reaches no one, which is
+   *  correct — there is no laptop to mirror the state to, and a reconnect
+   *  re-emits it (see the `hello` handler). */
+  function emitOversight(
+    projectId: string,
+    enabled: boolean,
+    latest: OversightSummary | null,
+  ): void {
+    const seen = new Set<string>();
+    for (const session of store.snapshot(projectId).sessions) {
+      const owner = store.ownerOf(projectId, session.id);
+      if (!owner || seen.has(owner)) continue;
+      seen.add(owner);
+      const uplink = uplinks.get(owner);
+      if (!uplink) continue;
+      down(uplink, { t: "oversight_update", projectId, enabled, latest });
+    }
+  }
+
+  const overseer = new Overseer(
+    opts.summarize ?? runOversightSummarize,
+    // Cross-machine digests: `recordInputs` gathers EVERY session of the
+    // project regardless of which laptop owns it, so one summarize input spans
+    // all uplinks. Metadata only — `oversightSessionDigest` never reads
+    // transcript prose (spec §5 digest privacy).
+    (projectId) =>
+      store.recordInputs(projectId).map((input) =>
+        oversightSessionDigest(
+          input.facts.id,
+          input.events,
+          input.facts.ended,
+          input.facts.driverName,
+          input.facts.participants,
+        ),
+      ),
+    // onUpdate: fired by the Overseer on a toggle (setEnabled) and on a fresh
+    // summary (refresh). DURABLE BEFORE VISIBLE (spec §3.3): the record row is
+    // written FIRST, so no browser or laptop ever sees oversight state a
+    // restarted hub would forget.
+    (projectId) => {
+      const enabled = overseer.isEnabled(projectId);
+      const latest = overseer.latest(projectId);
+      db?.setOversightEnabled(projectId, enabled);
+      // A summary is saved only when one exists; a bare enable persists the flag
+      // alone (summary/seq/ts stay at their DDL defaults), so turning oversight
+      // on never invents a summary row.
+      if (latest) db?.saveOversightSummary(projectId, latest.text, latest.seq, latest.ts);
+      // Then visible. The frame nulls `latest` when oversight is OFF — an off
+      // project carries no summary on the wire even though the row retains one
+      // (spec §2b) — and the browser snapshot reflects the change on its
+      // throttled beat.
+      emitOversight(projectId, enabled, enabled ? latest : null);
+      schedulePush(projectId);
+    },
+    opts.oversightDebounceMs,
+  );
+
+  /** The oversight block for a project's snapshot: the Overseer's live state
+   *  plus the hub's capability. `latest` is the retained summary (mirroring the
+   *  solo server's snapshot); the browser reads the toggle from `enabled` and
+   *  `available`, never from `latest`. */
+  function oversightSnapshotState(projectId: string): SnapshotOversight {
+    return {
+      enabled: overseer.isEnabled(projectId),
+      latest: overseer.latest(projectId),
+      available: oversightAvailable,
+    };
+  }
+
+  // Restart restore (spec §8.6): seed each project's persisted oversight WITHOUT
+  // firing onUpdate or a refresh. `seq` is carried inside the seeded summary so
+  // a later refresh continues the counter across a hub restart. Boot itself
+  // triggers no summarize — the seeded state is live but inert until activity or
+  // a toggle. Only a record-backed hub has anything to restore.
+  if (db) {
+    for (const project of store.listProjects()) {
+      const row = db.getOversight(project.id);
+      if (!row) continue;
+      const latest =
+        row.summary !== null && row.ts !== null
+          ? { text: row.summary, ts: row.ts, seq: row.seq }
+          : null;
+      overseer.seed(project.id, { enabled: row.enabled, latest });
+    }
   }
 
   /** `stored` holds the store's own live instances (see `HubStore.publish`) —
@@ -942,6 +1071,18 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
           have: store.resumeOffsets(frame.uplinkId),
         });
         schedulePush(frame.projectId);
+        // Self-heal (spec §4): a laptop clears its oversight map on disconnect,
+        // so if this project's oversight is ON, re-push the current state to
+        // THIS socket alone — the reconnect that restores its team_update view.
+        // Nothing is owed when it is off: off is the laptop's own default.
+        if (overseer.isEnabled(frame.projectId)) {
+          down(socket, {
+            t: "oversight_update",
+            projectId: frame.projectId,
+            enabled: true,
+            latest: overseer.latest(frame.projectId),
+          });
+        }
         return;
       }
       if (!uplinkId || !projectId) {
@@ -997,6 +1138,22 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         if (accepted.length > 0) {
           fanOut(projectId, frame.sessionId, accepted);
           schedulePush(projectId);
+          // Oversight activity hook (spec §3): an INTERESTING event in an
+          // enabled project debounces a re-summarize. `notify` no-ops when
+          // oversight is off, and the debounce is the Overseer's — the hub adds
+          // no second timer. One call per frame is enough (notify coalesces).
+          for (const stored of accepted) {
+            const ev = stored.event as { type?: unknown } | null;
+            if (
+              ev &&
+              typeof ev === "object" &&
+              typeof ev.type === "string" &&
+              OVERSEER_EVENT_TYPES.has(ev.type)
+            ) {
+              overseer.notify(projectId);
+              break;
+            }
+          }
         }
         return;
       }
@@ -1253,6 +1410,33 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         return;
       }
 
+      if (msg?.type === "set_oversight") {
+        // The lifecycle handler's gate ORDER, exactly: identify → slug → value
+        // → membership (spec §2). Team oversight is team infrastructure, so any
+        // MEMBER may toggle it — it is not a driver capability.
+        if (!channel.identity) return error("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) return error("set_oversight requires a valid projectId");
+        if (typeof msg.enabled !== "boolean") {
+          return error("set_oversight requires enabled: true|false");
+        }
+        // Byte-identical to set_project_lifecycle's, and uncoded for the same
+        // reason (spec §2): changing a project needs membership.
+        if (!store.isMember(projectId, channel.identity.userId)) {
+          return error("join this project before changing it");
+        }
+        // Capability gate (spec §3.7): turning oversight ON needs a summarizer,
+        // which needs the hub's ANTHROPIC_API_KEY. Turning it OFF never does —
+        // a member can always disable, even on a hub that could never enable it.
+        if (msg.enabled && !oversightAvailable) {
+          return error(
+            "oversight is unavailable on this hub — no ANTHROPIC_API_KEY configured",
+          );
+        }
+        overseer.setEnabled(projectId, msg.enabled);
+        return;
+      }
+
       if (msg?.type === "join") {
         // The browser-facing protocol is the standalone server's, byte for
         // byte, so a second join is refused exactly as server.ts's join
@@ -1335,7 +1519,7 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         for (const stored of store.eventsFor(projectId, sessionId, 0)) {
           send(socket, { type: "event", event: stored.event });
         }
-        send(socket, store.snapshot(projectId));
+        send(socket, store.snapshot(projectId, oversightSnapshotState(projectId)));
         // Still tunnelled, because presence, the roster and the wheel are
         // laptop-owned facts (spec §3.1) — the hub does not invent them.
         tunnel(msg);
@@ -1487,7 +1671,7 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         // never re-homes — the browser cannot subscribe to a project it is not
         // in.
         if (msg.type === "watch_project" && !channel.sessionId) channel.projectId = projectId;
-        send(socket, store.snapshot(projectId));
+        send(socket, store.snapshot(projectId, oversightSnapshotState(projectId)));
         return;
       }
 
@@ -1639,6 +1823,9 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
     close: () =>
       new Promise<void>((resolve, reject) => {
         if (backupTimer) clearInterval(backupTimer);
+        // Stops the overseer's debounce timers so a closing hub never fires a
+        // late refresh into a torn-down store (mirrors server.ts's dispose).
+        overseer.dispose();
         for (const timer of pushTimers.values()) clearTimeout(timer);
         pushTimers.clear();
         for (const client of wss.clients) client.terminate();
