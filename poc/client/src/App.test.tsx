@@ -411,6 +411,14 @@ describe("App — sub-session rail wiring", () => {
   });
 });
 
+describe("App — join success signal wiring (PRD §10.4b)", () => {
+  it("threads the hook's `joined` through to the Header prop", () => {
+    socket.current = { ...baseSocket(driverEvents(), send), joined: true };
+    const header = nodeOfType(mount(SessionView as (p: unknown) => unknown, baseProps()).nodes(), Header)!;
+    expect(header.props.joined).toBe(true);
+  });
+});
+
 describe("App — games opt-in + clean busy status line (Task 7)", () => {
   const stripOf = (nodes: El[]) => nodes.find((n) => n.type === ThinkingStrip);
   const headerCompOf = (nodes: El[]) => nodes.find((n) => n.type === Header);

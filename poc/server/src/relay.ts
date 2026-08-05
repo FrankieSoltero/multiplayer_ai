@@ -49,6 +49,23 @@ export interface RelayOptions {
    *  reconnect loop has already been stopped by then, and this is where
    *  re-pairing is driven. Optional — its absence must not defeat the stop. */
   onUnauthorized?: () => void;
+  /** Fired ONCE per process, on the FIRST `welcome` — the moment an uplink
+   *  handshake is proven (PRD §10.4a). A socket is `open` a full round trip
+   *  before `welcome` lands, so `open` alone is not attachment; the CLI's
+   *  "attached" line rides this callback rather than printing at launch. Not
+   *  re-fired on a reconnect's welcome. Optional — its absence must change
+   *  nothing (mirror `onUnauthorized`). */
+  onAttached?: () => void;
+  /** Fired ONCE per process when a socket opens but no `welcome` arrives within
+   *  `welcomeTimeoutMs` — the silent half-attach: the socket is open (so `ws`
+   *  reports no error) yet the far end never completed the uplink handshake. The
+   *  timeout it waited (ms) rides along so the CLI can name the number. Re-armed
+   *  per connection but latched to one warning per process, on the same
+   *  log-once discipline as the 1008/4401 latches. Optional. */
+  onNoWelcome?: (ms: number) => void;
+  /** How long an open socket may go without a `welcome` before `onNoWelcome`
+   *  fires. Default 5000ms. Only consulted when `onNoWelcome` is wired. */
+  welcomeTimeoutMs?: number;
   /** Injected so tests get deterministic run ids. */
   newRunId?: () => string;
 }
@@ -140,6 +157,21 @@ export class Relay {
    *  on a successful handshake and on stop(), so a fresh pairing that later
    *  fails again is still reported rather than silenced by a stale latch. */
   private loggedUnauthorized = false;
+  /** Set the moment the FIRST `welcome` proves an uplink handshake, and never
+   *  cleared for the life of the process: `onAttached` fires once, and a
+   *  reconnect's welcome is a re-handshake of an already-attached machine, not a
+   *  fresh attach. */
+  private attachedFired = false;
+  /** Latches `onNoWelcome` to once per process, on the same log-once discipline
+   *  as the 1008/4401 latches — a reconnect that also never welcomes re-arms the
+   *  timer but must not re-warn. Never cleared: the diagnosis ("this is not an
+   *  uplink handshake") is the same for every subsequent silent connection. */
+  private noWelcomeWarned = false;
+  /** Per-connection timer that fires `onNoWelcome` if `welcome` never lands.
+   *  Armed on `open` (only when `onNoWelcome` is wired, so the no-callback path
+   *  arms nothing and stays byte-identical to today), cleared on `welcome`,
+   *  `close`, and `stop`. */
+  private welcomeTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private opts: RelayOptions,
@@ -163,6 +195,10 @@ export class Relay {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    // Cancel any in-flight handshake watchdog; a stopped uplink is not waiting
+    // on a welcome. The `attachedFired`/`noWelcomeWarned` latches are process-
+    // scoped and deliberately NOT reset — both callbacks fire once per process.
+    this.clearWelcomeTimer();
     for (const conn of this.channels.values()) conn.close();
     this.channels.clear();
     // Same reason as the close handler: a stopped uplink holds no trustworthy
@@ -268,12 +304,29 @@ export class Relay {
         // Read HERE, not at construction: see `RelayOptions.repos`.
         repos: this.opts.repos(),
       });
+      // Arm the no-welcome watchdog: the socket is open but not yet handshaken.
+      // Only when `onNoWelcome` is wired, so the no-callback path arms no timer
+      // and stays byte-identical to today (mirror `onUnauthorized`'s posture).
+      if (this.opts.onNoWelcome) {
+        const ms = this.opts.welcomeTimeoutMs ?? 5000;
+        this.welcomeTimer = setTimeout(() => {
+          this.welcomeTimer = null;
+          // Guarded on the current socket (a stale timer must not warn about a
+          // socket that has since been replaced) and latched to once per process.
+          if (!isCurrent() || this.noWelcomeWarned) return;
+          this.noWelcomeWarned = true;
+          this.opts.onNoWelcome?.(ms);
+        }, ms);
+      }
     });
     socket.on("message", (data) => {
       if (isCurrent()) this.onMessage(data);
     });
     socket.on("close", (code) => {
       if (!isCurrent()) return;
+      // The handshake window for THIS socket is over: cancel its watchdog so a
+      // dropped socket never warns late (a reconnect arms a fresh one on open).
+      this.clearWelcomeTimer();
       // 4401 is the hub refusing THIS MACHINE'S CREDENTIALS — a revoked or
       // stale bearer (spec A2). Distinct from 1008 below (a protocol/version
       // mismatch): retrying cannot succeed, since the same bearer is presented
@@ -322,6 +375,13 @@ export class Relay {
     socket.on("error", () => {});
   }
 
+  private clearWelcomeTimer(): void {
+    if (this.welcomeTimer) {
+      clearTimeout(this.welcomeTimer);
+      this.welcomeTimer = null;
+    }
+  }
+
   private scheduleReconnect(): void {
     if (this.stopped || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
@@ -340,6 +400,8 @@ export class Relay {
     const frame = parseDownFrame(raw);
     if (!frame) return;
     if (frame.t === "welcome") {
+      // The handshake landed: cancel the no-welcome watchdog before it fires.
+      this.clearWelcomeTimer();
       // A successful handshake ends the episode the latch above was guarding:
       // a LATER 1008 (e.g. a hub upgrade after this laptop reconnected fine)
       // is a new problem and must be reported again, not silenced by a latch
@@ -368,6 +430,13 @@ export class Relay {
       // the replay so the hub's high-water mark advances in seq order.
       this.ready = true;
       this.flush();
+      // Only NOW is attachment real (PRD §10.4a): the socket handshook and the
+      // replay is on its way. Fired once per process — a reconnect's welcome
+      // re-handshakes an already-attached machine and must not re-announce it.
+      if (!this.attachedFired) {
+        this.attachedFired = true;
+        this.opts.onAttached?.();
+      }
       return;
     }
 

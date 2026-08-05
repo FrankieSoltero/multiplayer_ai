@@ -223,6 +223,12 @@ export async function startServer(opts: {
     /** Fired by the relay on a 4401 credential refusal — where the CLI drops the
      *  stored token so the next launch re-pairs. Forwarded into `new Relay`. */
     onUnauthorized?: () => void;
+    /** Fired once on the first `welcome` (a real uplink handshake) and once if a
+     *  socket opens but never welcomes — the CLI's truthful attach / half-attach
+     *  lines (PRD §10.4a). Forwarded into `new Relay` alongside `onUnauthorized`. */
+    onAttached?: () => void;
+    onNoWelcome?: (ms: number) => void;
+    welcomeTimeoutMs?: number;
   };
 }) {
   const runQuery = opts.runQuery ?? runAgentQuery;
@@ -1326,6 +1332,14 @@ export async function startServer(opts: {
         const from =
           Number.isInteger(msg.lastSeq) && msg.lastSeq >= 0 ? msg.lastSeq : 0;
         if (io.mode === "direct") {
+          // Join success signal (PRD §10.4b, spec F3): tell the joining channel
+          // it is IN before a single event replays, so a browser can
+          // distinguish "joined, nothing to show" from "still connecting". Only
+          // the DIRECT path emits it here — the relay path's browser is joined
+          // by the hub, which sends its own `joined` (a laptop-side one would
+          // duplicate it up the uplink). Sent only on an accepted join: every
+          // refusal above returned already.
+          io.send({ type: "joined", sessionId: msg.sessionId, projectId });
           for (const event of entry.session.eventsFrom(from)) {
             io.send({ type: "event", event });
           }
@@ -1915,6 +1929,12 @@ export async function startServer(opts: {
           // wrapper entirely.
           headers: opts.hub.headers,
           onUnauthorized: opts.hub.onUnauthorized,
+          // The welcome-gate callbacks ride the same conduit (PRD §10.4a): the
+          // relay fires them, the CLI prints the truthful attach / half-attach
+          // lines. Undefined for a solo launch, exactly like the two above.
+          onAttached: opts.hub.onAttached,
+          onNoWelcome: opts.hub.onNoWelcome,
+          welcomeTimeoutMs: opts.hub.welcomeTimeoutMs,
         },
         { createConnection, onContested: applyContested },
       )

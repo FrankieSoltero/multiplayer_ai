@@ -846,3 +846,148 @@ describe("Relay auth", () => {
     vi.useRealTimers();
   });
 });
+
+describe("Relay welcome gate", () => {
+  it("fires onAttached exactly once, on the first welcome — the socket being open is not enough", () => {
+    // The whole point of the gate (PRD §10.4a): a socket is `open` a full round
+    // trip before `welcome` lands, and only `welcome` proves an uplink
+    // handshake. The CLI's "attached" line rides this callback, so it must not
+    // fire on `open` alone.
+    const onAttached = vi.fn();
+    const fake = fakeSocket();
+    const relay = relayWith(fake, { onAttached });
+    relay.start();
+    fake.open();
+    expect(onAttached).not.toHaveBeenCalled(); // open, not yet welcomed
+    fake.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    expect(onAttached).toHaveBeenCalledTimes(1);
+    relay.stop();
+  });
+
+  it("does not re-fire onAttached on a reconnect's welcome (once per process)", () => {
+    // A dropped uplink reconnects and re-handshakes — but the machine was
+    // already attached, so the attach line must print once, not on every
+    // reconnect for the life of the daemon.
+    vi.useFakeTimers();
+    const onAttached = vi.fn();
+    const fake = fakeSocket();
+    const relay = relayWith(fake, { onAttached, reconnectDelayMs: 500 });
+    relay.start();
+    fake.sockets[0]!.open();
+    fake.sockets[0]!.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    expect(onAttached).toHaveBeenCalledTimes(1);
+
+    fake.sockets[0]!.drop();
+    vi.advanceTimersByTime(500);
+    fake.sockets[1]!.open();
+    fake.sockets[1]!.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    expect(onAttached).toHaveBeenCalledTimes(1);
+
+    relay.stop();
+    vi.useRealTimers();
+  });
+
+  it("fires onNoWelcome(ms) once when the hub opens the socket but never welcomes", () => {
+    // The silent half-attach this cycle removes: the socket is open, so `ws`
+    // reports no error, yet no `welcome` ever lands (wrong path, a plain
+    // WebSocket echo server, a hub that is not a hub). The callback carries the
+    // timeout it waited so the CLI can name the number.
+    vi.useFakeTimers();
+    const onNoWelcome = vi.fn();
+    const fake = fakeSocket();
+    const relay = relayWith(fake, { onNoWelcome, welcomeTimeoutMs: 3000 });
+    relay.start();
+    fake.open();
+    vi.advanceTimersByTime(2999);
+    expect(onNoWelcome).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onNoWelcome).toHaveBeenCalledTimes(1);
+    expect(onNoWelcome).toHaveBeenCalledWith(3000);
+    relay.stop();
+    vi.useRealTimers();
+  });
+
+  it("defaults the welcome timeout to 5000ms", () => {
+    vi.useFakeTimers();
+    const onNoWelcome = vi.fn();
+    const fake = fakeSocket();
+    const relay = relayWith(fake, { onNoWelcome });
+    relay.start();
+    fake.open();
+    vi.advanceTimersByTime(4999);
+    expect(onNoWelcome).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onNoWelcome).toHaveBeenCalledWith(5000);
+    relay.stop();
+    vi.useRealTimers();
+  });
+
+  it("does not fire onNoWelcome when welcome arrives before the timeout", () => {
+    vi.useFakeTimers();
+    const onNoWelcome = vi.fn();
+    const fake = fakeSocket();
+    const relay = relayWith(fake, { onNoWelcome, welcomeTimeoutMs: 3000 });
+    relay.start();
+    fake.open();
+    fake.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    vi.advanceTimersByTime(10_000);
+    expect(onNoWelcome).not.toHaveBeenCalled();
+    relay.stop();
+    vi.useRealTimers();
+  });
+
+  it("clears the no-welcome timer on close, so a dropped socket does not warn late", () => {
+    vi.useFakeTimers();
+    const onNoWelcome = vi.fn();
+    const fake = fakeSocket();
+    const relay = relayWith(fake, { onNoWelcome, welcomeTimeoutMs: 3000, reconnectDelayMs: 500 });
+    relay.start();
+    fake.sockets[0]!.open();
+    fake.sockets[0]!.drop(); // closes before the timeout would fire
+    vi.advanceTimersByTime(3000);
+    expect(onNoWelcome).not.toHaveBeenCalled();
+    relay.stop();
+    vi.useRealTimers();
+  });
+
+  it("re-arms the timer per connection but warns only once per process", () => {
+    // A reconnect that also never welcomes re-arms the timer, but the operator
+    // has already been told; a second identical warning per reconnect would be
+    // the console flood the 1008 latch avoids for the same reason.
+    vi.useFakeTimers();
+    const onNoWelcome = vi.fn();
+    const fake = fakeSocket();
+    const relay = relayWith(fake, { onNoWelcome, welcomeTimeoutMs: 3000, reconnectDelayMs: 500 });
+    relay.start();
+    fake.sockets[0]!.open();
+    vi.advanceTimersByTime(3000); // connection 1 times out → one warning
+    expect(onNoWelcome).toHaveBeenCalledTimes(1);
+
+    fake.sockets[0]!.drop();
+    vi.advanceTimersByTime(500);
+    fake.sockets[1]!.open();
+    vi.advanceTimersByTime(3000); // connection 2 also times out → still one
+    expect(onNoWelcome).toHaveBeenCalledTimes(1);
+
+    relay.stop();
+    vi.useRealTimers();
+  });
+
+  it("absent callbacks change nothing — no arm, no throw, behaviour identical to today", () => {
+    // Mirror of onUnauthorized's optional posture: with neither callback wired,
+    // opening a socket and letting the default timeout elapse must do nothing
+    // observable and must not throw, exactly as before the gate existed.
+    vi.useFakeTimers();
+    const fake = fakeSocket();
+    const relay = relayWith(fake); // no onAttached, no onNoWelcome
+    relay.start();
+    fake.open();
+    expect(fake.sent.map((f) => f.t)).toEqual(["hello"]);
+    expect(() => vi.advanceTimersByTime(10_000)).not.toThrow();
+    expect(fake.sent.map((f) => f.t)).toEqual(["hello"]); // still just hello
+    fake.deliver({ t: "welcome", v: RELAY_PROTOCOL_VERSION, have: {} });
+    expect(() => vi.advanceTimersByTime(10_000)).not.toThrow();
+    relay.stop();
+    vi.useRealTimers();
+  });
+});

@@ -240,6 +240,68 @@ describe("hub fan-out", () => {
     up.close();
   });
 
+  it("sends a `joined` ack before any replay to a joining browser (PRD §10.4b)", async () => {
+    // The success signal (spec F3): the joining channel is told it is in
+    // BEFORE the hub replays a single stored event, so a browser can tell
+    // "joined, nothing to show" from "still connecting".
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+    up.send(JSON.stringify({
+      t: "publish", sessionId: "auth", runId: "run-a",
+      events: [{ type: "intent_update", text: "already happened", seq: 0, ts: "2026-07-27T00:00:00.000Z" }],
+    }));
+    await wait(40);
+
+    const { ws: browser, seen } = await member(hub.port, "default");
+    browser.send(join());
+    await wait(50);
+
+    expect(seen[0]).toEqual({ type: "joined", sessionId: "auth", projectId: "default" });
+    const joinedAt = seen.findIndex((m) => m.type === "joined");
+    const firstEventAt = seen.findIndex((m) => m.type === "event");
+    expect(joinedAt).toBeGreaterThanOrEqual(0);
+    expect(firstEventAt).toBeGreaterThan(joinedAt);
+    browser.close();
+    up.close();
+  });
+
+  it("sends `joined` even when the joined session has zero events (PRD §10.4b)", async () => {
+    // The silence this fixes: an empty session replays nothing, so without the
+    // ack a fresh joiner cannot distinguish success from a dead socket.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const { up } = await attachedUplink(hub.port);
+
+    const { ws: browser, seen } = await member(hub.port, "default");
+    browser.send(join());
+    await wait(50);
+
+    expect(seen.some((m) => m.type === "joined" && m.sessionId === "auth" && m.projectId === "default")).toBe(true);
+    expect(seen.some((m) => m.type === "event")).toBe(false);
+    browser.close();
+    up.close();
+  });
+
+  it("sends NO `joined` when the join is refused (PRD §10.4b)", async () => {
+    // Refusals keep today's error surface — the success signal is emitted only
+    // on a join the hub accepts.
+    const hub = await startHub({ port: 0, host: "127.0.0.1" });
+    close = hub.close;
+    const browser = await connect(`ws://127.0.0.1:${hub.port}/`);
+    const seen: any[] = [];
+    collect(browser, seen);
+    browser.send(JSON.stringify({ type: "identify", userId: "ana", name: "ana" }));
+    browser.send(JSON.stringify({ type: "create_project", name: "default" }));
+    await wait(40);
+    browser.send(JSON.stringify({ type: "join", sessionId: "ghost", projectId: "default", userId: "ana", name: "ana" }));
+    await wait(50);
+
+    expect(seen.some((m) => m.type === "error" && /no machine/i.test(m.message))).toBe(true);
+    expect(seen.some((m) => m.type === "joined")).toBe(false);
+    browser.close();
+  });
+
   it("publishes once from the laptop no matter how many browsers watch", async () => {
     const hub = await startHub({ port: 0, host: "127.0.0.1" });
     close = hub.close;

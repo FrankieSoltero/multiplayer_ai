@@ -38,6 +38,13 @@ const k = (n?: number) => (n === undefined ? "—" : n >= 1000 ? `${(n / 1000).t
 
 export function Header(props: {
   projectId: string; sessionId: string; model: string; connected: boolean;
+  /** Whether the server's `joined` success ack has arrived (PRD §10.4b).
+   *  Optional so a caller that has not wired it renders byte-identical to today
+   *  — undefined/false is the still-connecting state, shown with today's exact
+   *  `● ONLINE` idiom; only a true value promotes it to the distinct `● JOINED`.
+   *  An old server never sends the ack, so it stays false there and the header
+   *  reads exactly as before. */
+  joined?: boolean;
   objective: string | null; canSetModel: boolean; onSetModel: (key: string) => void;
   permissionMode: string; canCycleMode: boolean; onCycleMode: () => void;
   arcadeOpen: boolean; canToggleArcade: boolean; onToggleArcade: () => void;
@@ -195,7 +202,11 @@ export function Header(props: {
           ▢ EXIT
         </button>
         <span className={props.connected ? "conn" : "conn off"}>
-          {props.connected ? "● ONLINE" : "○ OFFLINE"}
+          {props.connected
+            ? props.joined
+              ? "● JOINED"
+              : "● ONLINE"
+            : "○ OFFLINE"}
         </span>
         {(props.pulls ?? 0) > 0 &&
           (props.onPullsClick ? (

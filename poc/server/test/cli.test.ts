@@ -11,6 +11,10 @@ import {
   resolveRoots,
   finalizeCandidates,
   prepareHubAuth,
+  normalizeHubUrl,
+  hubDialingLine,
+  hubAttachedLine,
+  hubNoWelcomeLines,
 } from "../src/cli.js";
 import { loadHubToken, saveHubToken } from "../src/hubPairing.js";
 import type { RepoCandidate } from "../src/machineRepos.js";
@@ -229,6 +233,77 @@ describe("--hub", () => {
   // eagerly, which is what would make that spread emit a key unconditionally.
   it("leaves hub undefined when the flag is absent", () => {
     expect(parseArgs([]).hub).toBeUndefined();
+  });
+});
+
+describe("normalizeHubUrl", () => {
+  // PRD §10.4a, Global Constraint 6: a bare origin is the hub's uplink endpoint
+  // with the conventional `/uplink` path appended; anything already carrying a
+  // path is dialed verbatim. This is what makes `mpai --hub wss://hub.example`
+  // reach the uplink instead of opening a socket to `/` that never welcomes.
+  it("appends /uplink to a bare origin", () => {
+    expect(normalizeHubUrl("ws://h:4000")).toBe("ws://h:4000/uplink");
+  });
+
+  it("appends /uplink to an origin with only a trailing slash", () => {
+    expect(normalizeHubUrl("wss://h/")).toBe("wss://h/uplink");
+  });
+
+  it("leaves an explicit non-/uplink path untouched (dialed verbatim)", () => {
+    expect(normalizeHubUrl("wss://h/proxy/up")).toBe("wss://h/proxy/up");
+  });
+
+  it("does not double-append when the path is already /uplink", () => {
+    expect(normalizeHubUrl("ws://h/uplink")).toBe("ws://h/uplink");
+  });
+
+  it("preserves a query string while appending /uplink to a bare origin", () => {
+    expect(normalizeHubUrl("ws://h:4000?x=1")).toBe("ws://h:4000/uplink?x=1");
+  });
+
+  it("preserves a query string on a verbatim custom path", () => {
+    expect(normalizeHubUrl("wss://h/proxy/up?x=1&y=2")).toBe("wss://h/proxy/up?x=1&y=2");
+  });
+
+  it("is only ever fed a ws(s):// value — parseArgs refuses anything else BEFORE it is called", () => {
+    // The order pin: `--hub` validation (ws:// or wss:// only) runs in parseArgs
+    // and leaves `hub` UNSET on a bad value, so a scheme-less or garbage URL can
+    // never reach normalizeHubUrl (which `new URL` would throw on). This is the
+    // "malformed --hub refused before normalization" row of the behavior table.
+    expect(parseArgs(["--hub", "garbage"]).hub).toBeUndefined();
+    expect(parseArgs(["--hub", "garbage"]).error).toBe("--hub requires a ws:// or wss:// url");
+    expect(parseArgs(["--hub", "http://h"]).hub).toBeUndefined();
+    // And the one value that DOES pass is exactly the shape normalizeHubUrl handles.
+    expect(parseArgs(["--hub", "ws://h:4000"]).hub).toBe("ws://h:4000");
+    expect(() => normalizeHubUrl(parseArgs(["--hub", "ws://h:4000"]).hub!)).not.toThrow();
+  });
+});
+
+describe("hub report lines", () => {
+  // Exact-string contracts (Global Constraint 4). The launch/attach/no-welcome
+  // lines are the whole point of the truthful-reporting cycle, so they are
+  // pinned here rather than left to a launch() path that calls the real server.
+  it("the dialing line names the normalized URL that is actually dialed", () => {
+    expect(hubDialingLine("ws://h:4000/uplink")).toBe("dialing hub ws://h:4000/uplink …");
+  });
+
+  it("the attach line carries the dialed URL and repo root", () => {
+    expect(hubAttachedLine("ws://h:4000/uplink", "/repos/api")).toBe(
+      "multiplayer-ai attached to hub ws://h:4000/uplink (repo: /repos/api)",
+    );
+  });
+
+  it("the no-welcome warning is two lines, naming the timeout and the endpoint shape", () => {
+    expect(hubNoWelcomeLines(5000)).toEqual([
+      "hub never welcomed this machine after 5000ms — the socket is open but this is not an uplink handshake",
+      "check the URL: the hub's uplink endpoint is ws(s)://host:port/uplink (bare origins are normalized; a custom path is dialed verbatim), and confirm the hub is running",
+    ]);
+  });
+
+  it("interpolates whatever timeout the relay waited", () => {
+    expect(hubNoWelcomeLines(3000)[0]).toBe(
+      "hub never welcomed this machine after 3000ms — the socket is open but this is not an uplink handshake",
+    );
   });
 });
 

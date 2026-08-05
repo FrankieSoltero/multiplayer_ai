@@ -125,6 +125,65 @@ describe("WebSocket hub", () => {
     ws2.close();
   });
 
+  it("sends a `joined` ack before any replayed event (PRD §10.4b)", async () => {
+    // Solo parity with the hub: the joining connection is told it is in BEFORE
+    // the log replays, so a browser can distinguish success from a dead socket.
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws1 = await connect(server.port);
+    collect(ws1, []);
+    ws1.send(JSON.stringify({ type: "join", sessionId: "js1", userId: "u1", name: "Ana" }));
+    ws1.send(JSON.stringify({ type: "prompt", text: "hello" }));
+    await wait(200);
+
+    const ws2 = await connect(server.port);
+    const seen2: any[] = [];
+    collect(ws2, seen2);
+    ws2.send(JSON.stringify({ type: "join", sessionId: "js1", userId: "u2", name: "Ben", lastSeq: 0 }));
+    await wait(200);
+
+    expect(seen2[0]).toEqual({ type: "joined", sessionId: "js1", projectId: "default" });
+    const joinedAt = seen2.findIndex((m) => m.type === "joined");
+    const firstEventAt = seen2.findIndex((m) => m.type === "event");
+    expect(joinedAt).toBe(0);
+    expect(firstEventAt).toBeGreaterThan(joinedAt);
+    ws1.close();
+    ws2.close();
+  });
+
+  it("sends `joined` on an empty-session join (PRD §10.4b)", async () => {
+    // The silence this fixes: the first joiner replays nothing, so the ack is
+    // the only success signal it gets.
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "jempty", userId: "u1", name: "Ana" }));
+    await wait(100);
+
+    expect(seen[0]).toEqual({ type: "joined", sessionId: "jempty", projectId: "default" });
+    ws.close();
+  });
+
+  it("sends NO `joined` when the join is refused (PRD §10.4b)", async () => {
+    // Refusals keep today's error surface — no success signal on a rejected join.
+    const server = await startServer({ port: 0, runQuery: echoRun });
+    close = server.close;
+
+    const ws = await connect(server.port);
+    const seen: any[] = [];
+    collect(ws, seen);
+    ws.send(JSON.stringify({ type: "join", sessionId: "Bad Slug!", userId: "u1", name: "Ana" }));
+    await wait(100);
+
+    expect(seen.some((m) => m.type === "error")).toBe(true);
+    expect(seen.some((m) => m.type === "joined")).toBe(false);
+    ws.close();
+  });
+
   it("rejects prompts from non-drivers and allows them after take_wheel", async () => {
     const server = await startServer({ port: 0, runQuery: echoRun });
     close = server.close;
