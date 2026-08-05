@@ -229,7 +229,7 @@ export function SessionView(props: {
 }) {
   const { userId, sessionId, projectId, profile } = props;
 
-  const { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, oversight, send } = useSessionSocket({
+  const { events, errors, connected, joined, projectSessions, arcade, plugins, pluginsEnabled, oversight, send } = useSessionSocket({
     sessionId,
     projectId,
     userId,
@@ -656,6 +656,7 @@ export function SessionView(props: {
         model={derived.model}
         models={derived.models}
         connected={connected}
+        joined={joined}
         objective={derived.objective}
         canSetModel={canSetModel}
         onSetModel={onSetModel}
