@@ -644,7 +644,10 @@ HTTP paths), a 200-msg/10s flood closes browser sockets (uplinks exempt), and a 
 carries a Caddyfile, systemd unit, `env.example`, and a RUNBOOK — present but explicitly
 **UNVERIFIED**: written for this section, never exercised against a real box because none exists
 to test on. D12's exposure gate is satisfied at the code level; real-box verification is the one
-item this section leaves open.
+item this section leaves open. **That verification now has a runbook** —
+`deploy/multi-machine-test.md` (this cycle) stages the user's 1-hub/3-machine acceptance test as
+the vehicle: its §8.10 checklist items (TLS via Caddyfile, the systemd unit, backups present,
+retention behavior) are marked "this run verifies," executed at the user's 3-computer test.
 
 *Final state:* a hub that can be exposed to a network beyond a trusted one. **This section is the
 gate on that exposure** (D12) and on nothing else.
@@ -711,10 +714,18 @@ Unresolved and deliberately not invented here.
    list (`--root`/`machine.json` roots), never an arbitrary path.
 3. **Section ordering** — which of §8's sections is picked up first. Not decided by writing this
    document.
-4. **Three v7b1 residuals**, carried: the laptop's uplink fails silently, so a wrong hub URL is
-   indistinguishable from a working one; and a relay join emits no success signal. Both remain
-   unanswered and out of scope for machines & repos (spec §12.3 names the first explicitly as
-   inherited, not fixed). The third — `uplinkId` minted per launch, so sessions did not survive a
+4. **Three v7b1 residuals**, carried: ~~the laptop's uplink fails silently, so a wrong hub URL is
+   indistinguishable from a working one~~ — **resolved** (spec F1/F2, `cli.ts`/`relay.ts`): a
+   bare `--hub` origin is normalized to append `/uplink`, and the CLI's "attached" line now
+   prints only after the relay's `onAttached` fires on a real `welcome` (never at launch), with
+   a loud once-per-process `onNoWelcome` warning if a socket opens but no `welcome` arrives
+   within 5s (commit `3609c16`). ~~and a relay join emits no success signal~~ — **resolved**
+   (spec F3, `hub.ts`/`server.ts`/`useSessionSocket.ts`): the hub and the solo server each send
+   an explicit `{ type: "joined", sessionId, projectId }` message to the joining channel before
+   replay, surfaced in the client Header as `● JOINED` (commits `228c432`, `384d924`). Both were
+   previously out of scope for machines & repos (spec §12.3 names the first explicitly as
+   inherited, not fixed) — resolved instead this cycle (`docs/specs/2026-08-05-prd-finishing-design.md`).
+   The third — `uplinkId` minted per launch, so sessions did not survive a
    laptop restart — **is resolved**: it was directly in D4's path and did resolve with it
    (`docs/tech-debt.md` §2.3). The trap this item used to record — `repoKey` is not a usable
    machine identity, since with an `origin` present it is byte-identical across every clone by
