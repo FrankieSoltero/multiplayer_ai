@@ -74,6 +74,23 @@ describe("deriveState", () => {
     expect(s.permissionMode).toBe("auto");
     expect(s.permissionDecisions.get("r9")).toEqual({ decision: "allow", userId: "u1", auto: true });
   });
+
+  it("carries an always decision's rule through permissionDecisions (§8.6 cycle 2)", () => {
+    const s = deriveState([
+      ev({ type: "permission_request", requestId: "r2", toolName: "Bash", input: {}, ruleSuggestion: "Bash(npm test:*)" }, 0),
+      ev({ type: "permission_decision", requestId: "r2", decision: "always", userId: "u1", rule: "Bash(npm test:*)" }, 1),
+    ]);
+    expect(s.permissionDecisions.get("r2")).toEqual({
+      decision: "always",
+      userId: "u1",
+      rule: "Bash(npm test:*)",
+    });
+    // Additive: an allow/deny without a rule folds exactly as before.
+    const plain = deriveState([
+      ev({ type: "permission_decision", requestId: "r3", decision: "deny", userId: "u1" }, 0),
+    ]);
+    expect(plain.permissionDecisions.get("r3")).toEqual({ decision: "deny", userId: "u1" });
+  });
 });
 
 describe("harness state", () => {

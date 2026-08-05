@@ -22,14 +22,30 @@ const resetClock = (resetsAt: number): string | null => {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 };
 
+/** The permission hotkey → decision mapping (§8.6 cycle 2): pure so the
+ *  keydown handler below stays a thin shell and the mapping is testable
+ *  without a DOM — the same house rule as clientCommands.ts ("inline in the
+ *  keydown handler would ship untested"). `l` maps to "always" ONLY when the
+ *  gate carried a ruleSuggestion; a gate without one has no ALWAYS to press,
+ *  so the key is a no-op. a/d are unchanged. */
+export const permissionHotkey = (
+  key: string,
+  gate: { ruleSuggestion?: string } | undefined,
+): "allow" | "deny" | "always" | null => {
+  if (key === "a") return "allow";
+  if (key === "d") return "deny";
+  if (key === "l" && gate?.ruleSuggestion) return "always";
+  return null;
+};
+
 export function Transcript(props: {
   events: LoggedEvent[]; derived: DerivedState; isDriver: boolean;
   selfId: string;
-  onPermission: (requestId: string, decision: "allow" | "deny") => void;
+  onPermission: (requestId: string, decision: "allow" | "deny" | "always") => void;
   onDecideSkill: (suggestId: string, decision: "run" | "dismiss") => void;
   onDecidePlan: (requestId: string, decision: "approve" | "reject") => void;
   /** v5b final-review: true while an arcade run has the keyboard captured
-   *  (game letters overlap a/d) — mutes the a/d permission hotkeys so
+   *  (game letters overlap a/d/l) — mutes the permission hotkeys so
    *  steering never silently allows/denies a tool call. */
   hotkeysMuted?: boolean;
   /** Which sub-session is projected. null/undefined = the MAIN view, where a
@@ -116,7 +132,7 @@ export function Transcript(props: {
     }
   }
 
-  // a/d keyboard shortcuts for the newest undecided permission (driver only)
+  // a/d/l keyboard shortcuts for the newest undecided permission (driver only)
   const pending = props.events.filter(
     (e) => e.type === "permission_request" && e.requestId && !permissionDecisions.has(e.requestId),
   );
@@ -127,8 +143,10 @@ export function Transcript(props: {
       if (props.hotkeysMuted) return;
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
-      if (e.key === "a") props.onPermission(newest.requestId!, "allow");
-      if (e.key === "d") props.onPermission(newest.requestId!, "deny");
+      // a/d as before; `l` = aLways (§8.6 cycle 2) and only exists when the
+      // gate carried a ruleSuggestion — see permissionHotkey above.
+      const decision = permissionHotkey(e.key, newest);
+      if (decision) props.onPermission(newest.requestId!, decision);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -284,15 +302,35 @@ export function Transcript(props: {
               <span className="rule" />
               <span className="perm-timer">{decided ? "DECIDED" : "WAITING"}</span>
             </div>
-            <div className="perm-what">
-              the agent wants to use <b>{ev.toolName}</b> — not on the auto-approve list
-            </div>
+            {/* Enrichment (§8.6 cycle 2): when the SDK titled the request its
+                title IS the primary prompt line, replacing our reconstructed
+                tool+auto-approve headline; absent, the headline below renders
+                byte-identical to today (additive rule). */}
+            {ev.title ? (
+              <div className="perm-what">{ev.title}</div>
+            ) : (
+              <div className="perm-what">
+                the agent wants to use <b>{ev.toolName}</b> — not on the auto-approve list
+              </div>
+            )}
+            {/* The SDK's description as a sub-line, when it gave one. */}
+            {ev.description ? <div className="perm-desc">{ev.description}</div> : null}
             {/* Why the gate opened, when the server named a reason (spec §6b).
                 Composed server-side and rendered VERBATIM — the client neither
                 composes nor reformats it, so the string is the same end to end.
                 Absent on every gate an older server (or a non-contested path)
                 opens, and then nothing extra renders at all. */}
             {ev.reason ? <div className="perm-why">{ev.reason}</div> : null}
+            {/* The SDK's own why (§8.6 cycle 2): decisionReason verbatim, and
+                the ask-rule it matched as source + content. A quiet dim note —
+                never the contested path's perm-why emphasis. */}
+            {ev.decisionReason ? <div className="perm-note">{ev.decisionReason}</div> : null}
+            {ev.matchedAskRule ? (
+              <div className="perm-note">
+                matched your {ev.matchedAskRule.source} rule
+                {ev.matchedAskRule.ruleContent ? `: ${ev.matchedAskRule.ruleContent}` : ""}
+              </div>
+            ) : null}
             <code className="perm-input">{preview?.slice(0, 300)}</code>
             {decided ? (
               <div className="perm-outcome">
@@ -300,6 +338,14 @@ export function Transcript(props: {
                   <span style={{ color: "var(--amber)" }}>
                     ⚡ auto-approved · AUTO set by {nameOf(decided.userId)}
                   </span>
+                ) : decided.decision === "always" ? (
+                  /* §8.6 cycle 2: a standing approval — the record names the
+                     decider AND the rule, and says plainly where the rule
+                     lives (the session — it dies with it). */
+                  <>
+                    ✅ always allowed by {nameOf(decided.userId)}
+                    {decided.rule ? ` · ${decided.rule}` : ""} · rule lives for this session
+                  </>
                 ) : (
                   <>
                     {decided.decision === "allow" ? "✅ approved" : "⛔ denied"} by {nameOf(decided.userId)}
@@ -314,6 +360,20 @@ export function Transcript(props: {
                 <button className="btn red" onClick={() => props.onPermission(ev.requestId!, "deny")}>
                   [D]ENY
                 </button>
+                {/* §8.6 cycle 2: ALWAYS is offered only when the server held a
+                    rule suggestion for this gate (the server refuses "always"
+                    without one, so the button never offers a dead decision).
+                    The label is the rule's display form — theme-independent
+                    text (T14). Same onPermission path as a/d. */}
+                {ev.ruleSuggestion ? (
+                  <button
+                    className="btn gold"
+                    title="allow for the rest of this session (hotkey: l)"
+                    onClick={() => props.onPermission(ev.requestId!, "always")}
+                  >
+                    ALWAYS {ev.ruleSuggestion}
+                  </button>
+                ) : null}
                 {watchers.length > 0 && (
                   <span className="perm-watchers" title={watchers.map(([, p]) => p.name).join(", ")}>
                     {watchers.slice(0, 5).map(([id, p]) => (
