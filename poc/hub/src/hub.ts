@@ -1512,6 +1512,12 @@ export async function startHub(opts: HubOptions): Promise<RunningHub> {
         // payload into a session that now belongs to a different machine.
         channel.pendingReplyFrom = null;
 
+        // Join success signal (PRD §10.4b, spec F3): tell the joining channel
+        // it is IN before a single stored event replays, so a browser can
+        // distinguish "joined, nothing to show" from "still connecting". Sent
+        // only on an ACCEPTED join — every refusal above returned already, so a
+        // rejected join never reaches this line and keeps today's error surface.
+        send(socket, { type: "joined", sessionId, projectId });
         // Replay from the HUB's store, not from the laptop (spec §3.2). This
         // is what makes a watcher free: the laptop never learns this browser
         // exists, so watchers joining and leaving cost its uplink nothing.

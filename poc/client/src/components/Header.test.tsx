@@ -137,6 +137,31 @@ const themeButton = (over: Partial<HeaderProps> = {}): HostNode | undefined =>
     (n) => n.type === "button" && textOf(n).includes("THEME ▸"),
   );
 
+describe("Header — join success signal (PRD §10.4b)", () => {
+  it("renders a distinct `● JOINED` when connected AND joined", () => {
+    const lines = textLines(render({ joined: true }));
+    expect(lines).toContain("● JOINED");
+    expect(lines).not.toContain("● ONLINE");
+  });
+
+  it("connected-but-not-joined renders `● ONLINE`, byte-identical to today", () => {
+    // The old-server / still-connecting case: joined stays false, so the header
+    // must read exactly as it did before this signal existed.
+    const notJoined = render({ joined: false });
+    const absent = render();
+    expect(absent).toBe(notJoined);
+    expect(textLines(notJoined)).toContain("● ONLINE");
+    expect(textLines(notJoined)).not.toContain("● JOINED");
+  });
+
+  it("disconnected renders `○ OFFLINE` whatever `joined` says", () => {
+    const lines = textLines(render({ connected: false, joined: true }));
+    expect(lines).toContain("○ OFFLINE");
+    expect(lines).not.toContain("● JOINED");
+    expect(lines).not.toContain("● ONLINE");
+  });
+});
+
 describe("Header — CONTESTED badge (spec §5)", () => {
   it("reads exactly `⚠ CONTESTED ▸ N` for the CURRENT session's contested paths", () => {
     const lines = textLines(render({ contested: COLLISIONS }));

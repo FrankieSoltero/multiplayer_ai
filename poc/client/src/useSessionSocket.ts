@@ -12,6 +12,11 @@ export function useSessionSocket(opts: {
   events: LoggedEvent[];
   errors: string[];
   connected: boolean;
+  /** The server's `joined` success ack has arrived (PRD §10.4b). False until
+   *  then, and reset to false on socket close/rejoin. An OLD server never sends
+   *  the message, so this simply stays false there — the UI treats it as the
+   *  still-connecting state and renders exactly as it did before. */
+  joined: boolean;
   projectSessions: ProjectSessionInfo[];
   arcade: ArcadeRecord[];
   plugins: PluginInfo[];
@@ -23,6 +28,7 @@ export function useSessionSocket(opts: {
   const [events, setEvents] = useState<LoggedEvent[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
   const [connected, setConnected] = useState(false);
+  const [joined, setJoined] = useState(false);
   const [projectSessions, setProjectSessions] = useState<ProjectSessionInfo[]>(
     [],
   );
@@ -37,6 +43,10 @@ export function useSessionSocket(opts: {
     wsRef.current = ws;
     ws.onopen = () => {
       setConnected(true);
+      // Reset on every (re)open: this socket is not joined until its own
+      // `joined` ack arrives, so a rejoin never inherits the prior socket's
+      // success state.
+      setJoined(false);
       // No `invite` field (plan 2026-08-01-project-invites §1.4): invites are
       // project-scoped and redeem at join_project; the server ignores unknown
       // fields, but there is nothing left for one to mean here.
@@ -59,6 +69,9 @@ export function useSessionSocket(opts: {
         if (msg.type === "event") {
           setEvents((prev) => [...prev, msg.event]);
         }
+        // Join success ack (PRD §10.4b): flips `joined` true. An old server
+        // never sends it, so `joined` stays false there — no behavior change.
+        if (msg.type === "joined") setJoined(true);
         if (msg.type === "error") setErrors((prev) => [...prev, msg.message]);
         if (msg.type === "project") {
           setProjectSessions(msg.sessions);
@@ -71,7 +84,10 @@ export function useSessionSocket(opts: {
         return;
       }
     };
-    ws.onclose = () => setConnected(false);
+    ws.onclose = () => {
+      setConnected(false);
+      setJoined(false);
+    };
     return () => ws.close();
   }, [projectId, sessionId, userId, profile.name, profile.glyph, profile.color]);
 
@@ -90,5 +106,5 @@ export function useSessionSocket(opts: {
     ws.send(JSON.stringify(msg));
   }, []);
 
-  return { events, errors, connected, projectSessions, arcade, plugins, pluginsEnabled, oversight, send };
+  return { events, errors, connected, joined, projectSessions, arcade, plugins, pluginsEnabled, oversight, send };
 }

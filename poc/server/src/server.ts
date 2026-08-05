@@ -1326,6 +1326,14 @@ export async function startServer(opts: {
         const from =
           Number.isInteger(msg.lastSeq) && msg.lastSeq >= 0 ? msg.lastSeq : 0;
         if (io.mode === "direct") {
+          // Join success signal (PRD §10.4b, spec F3): tell the joining channel
+          // it is IN before a single event replays, so a browser can
+          // distinguish "joined, nothing to show" from "still connecting". Only
+          // the DIRECT path emits it here — the relay path's browser is joined
+          // by the hub, which sends its own `joined` (a laptop-side one would
+          // duplicate it up the uplink). Sent only on an accepted join: every
+          // refusal above returned already.
+          io.send({ type: "joined", sessionId: msg.sessionId, projectId });
           for (const event of entry.session.eventsFrom(from)) {
             io.send({ type: "event", event });
           }
