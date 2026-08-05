@@ -94,6 +94,47 @@ export function parseArgs(argv: string[]): CliArgs {
   return args;
 }
 
+/** The uplink URL actually dialed (PRD §10.4a, Global Constraint 6). A bare
+ *  origin — the natural thing to type, `wss://hub.example` — has no path, so a
+ *  socket opened to it lands on `/`, which is not the hub's uplink endpoint and
+ *  never `welcome`s: the silent half-attach this cycle removes. Appending
+ *  `/uplink` when (and only when) the path is empty or `/` reaches the endpoint;
+ *  any explicit path is a deliberate choice (a reverse proxy mount, say) and is
+ *  dialed verbatim. Query strings are preserved either way.
+ *
+ *  Only ever called on a value `parseArgs` already accepted as `ws://`/`wss://`
+ *  (a scheme-less or garbage `--hub` is refused before this, so `new URL` never
+ *  throws here); the `normalizeHubUrl` order is pinned by a cli.test case. */
+export function normalizeHubUrl(url: string): string {
+  const u = new URL(url);
+  if (u.pathname === "" || u.pathname === "/") u.pathname = "/uplink";
+  return u.toString();
+}
+
+/** Printed at launch, before the relay dials, so the operator sees the exact
+ *  normalized URL being attempted rather than a later, possibly-never "attached"
+ *  line. The trailing ellipsis marks it as in-progress. */
+export function hubDialingLine(url: string): string {
+  return `dialing hub ${url} …`;
+}
+
+/** Printed ONLY once the relay's `onAttached` fires (a real `welcome`), never at
+ *  launch — the truthful attach signal (PRD §10.4a). Names the normalized URL
+ *  that was dialed and the repo this machine offers. */
+export function hubAttachedLine(url: string, repoRoot: string): string {
+  return `multiplayer-ai attached to hub ${url} (repo: ${repoRoot})`;
+}
+
+/** Printed once when the socket opened but no `welcome` arrived within the
+ *  relay's timeout — the diagnosis for a half-attach. Two lines: what happened
+ *  (with the timeout it waited), then how to check the URL. */
+export function hubNoWelcomeLines(ms: number): [string, string] {
+  return [
+    `hub never welcomed this machine after ${ms}ms — the socket is open but this is not an uplink handshake`,
+    "check the URL: the hub's uplink endpoint is ws(s)://host:port/uplink (bare origins are normalized; a custom path is dialed verbatim), and confirm the hub is running",
+  ];
+}
+
 export function findRepoRoot(cwd: string): string | null {
   try {
     return execFileSync("git", ["rev-parse", "--show-toplevel"], {
@@ -280,10 +321,18 @@ async function launch(args: CliArgs): Promise<number | null> {
   // half-attached server. The bearer (`headers`) and the 4401 token-drop
   // (`onUnauthorized`) ride the relay's own conduit via the hub option below;
   // both stay undefined for a solo launch.
+  // Normalize ONCE, and thread the same normalized URL through pairing, the dial,
+  // and every printed line — "printed URL = the URL actually dialed" (PRD §10.4a).
+  // A bare origin gains `/uplink`; an explicit path is dialed verbatim. `args.hub`
+  // is already validated ws(s):// (parseArgs), so `new URL` never throws here.
+  const hubUrl = args.hub ? normalizeHubUrl(args.hub) : undefined;
   let hubHeaders: Record<string, string> | undefined;
   let hubOnUnauthorized: (() => void) | undefined;
-  if (args.hub) {
-    const auth = await prepareHubAuth(args.hub, home, {
+  if (hubUrl) {
+    // At launch, before any hub round trip: the honest in-progress signal. The
+    // attach line no longer prints here — it waits for a real `welcome` (below).
+    console.log(hubDialingLine(hubUrl));
+    const auth = await prepareHubAuth(hubUrl, home, {
       machineId: identity.machineId,
       name: machineName,
     });
@@ -304,25 +353,31 @@ async function launch(args: CliArgs): Promise<number | null> {
       projectId: args.project,
       machine: { machineId: identity.machineId, name: machineName },
       repoCandidates: candidates,
-      ...(args.hub
+      ...(hubUrl
         ? {
             hub: {
-              url: args.hub,
+              url: hubUrl,
               projectId: args.project,
               uplinkId: identity.machineId,
               headers: hubHeaders,
               onUnauthorized: hubOnUnauthorized,
+              // Truthful attach (PRD §10.4a): the "attached" line prints ONLY on
+              // a real `welcome`, and a socket that opens but never welcomes
+              // (wrong path, not a hub) is diagnosed rather than left silent.
+              onAttached: () => console.log(hubAttachedLine(hubUrl, repoRoot)),
+              onNoWelcome: (ms: number) => {
+                for (const line of hubNoWelcomeLines(ms)) console.error(line);
+              },
             },
           }
         : {}),
     });
     const url = localUrlFor(port, args);
-    if (args.hub) {
+    if (hubUrl) {
       // The local URL still works and is still served; it is just not where
-      // the team is. Printing the hub first is the honest ordering, and not
+      // the team is. The attach line is deferred to `onAttached` above; not
       // auto-opening a browser at the local URL avoids sending someone to a
       // single-machine view of a multi-machine session.
-      console.log(`multiplayer-ai attached to hub ${args.hub} (repo: ${repoRoot})`);
       console.log(`open the hub in your browser; this machine is also on ${url}`);
     } else {
       console.log(`multiplayer-ai on ${url} (repo: ${repoRoot})`);
