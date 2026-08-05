@@ -1821,12 +1821,14 @@ describe("oversight wire", () => {
     ws.send(JSON.stringify({ type: "watch_project", projectId: "default" }));
     await wait(50);
     const snap = seen.find((m) => m.type === "project");
-    expect(snap.oversight).toEqual({ enabled: false, latest: null });
+    // `available: true` is the additive solo-capability flag (2026-08-04 hub
+    // oversight §5): a standalone server always has its local overseer.
+    expect(snap.oversight).toEqual({ enabled: false, latest: null, available: true });
     // peek fallback for an unknown project also carries the field
     ws.send(JSON.stringify({ type: "peek", projectId: "nosuch" }));
     await wait(50);
     const peeked = seen.filter((m) => m.type === "project").at(-1);
-    expect(peeked.oversight).toEqual({ enabled: false, latest: null });
+    expect(peeked.oversight).toEqual({ enabled: false, latest: null, available: true });
     ws.close();
   });
 
