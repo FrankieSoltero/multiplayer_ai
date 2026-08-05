@@ -1,10 +1,22 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-08-03 (Kimi Code CLI session — §8.6 cycle 1 shipped as PR #36; two follow-on plans written, execution PAUSED on Kimi weekly quota).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-08-03 (Kimi Code CLI session — local-models Path 3 shipped on `feature/local-models`; permission-rules plan still pending).*
 
 ---
 
-## 🚀 START HERE (2026-08-03, Kimi CLI #4) — §8.6 CYCLE 1 **SHIPPED (PR #36)**; TWO PLANS READY, EXECUTION **PAUSED ON KIMI WEEKLY QUOTA** (403 "usage limit for this billing cycle" — the WEEKLY quota per the docs, not the 5-hour window; check `/usage` or the Kimi Code Console).
+## 🚀 START HERE (2026-08-03, Kimi CLI #5) — LOCAL MODELS (PATH 3, shim routing) **SHIPPED** on `feature/local-models` (stacked on `feature/agent-surface`/PR #36; plan `docs/plans/2026-08-03-local-models-shim.md`).
+
+**What shipped:** `models.ts` is now the single-source registry (`ModelEntry {id,label,contextWindow,local?,degradedNote?}`; the Claude trio's ids byte-identical for proxy pass-through); operators add models via **`MPAI_EXTRA_MODELS`** JSON (warn-and-skip on malformation, never shadows built-ins, never crashes boot); the roster rides an additive `models` field on the **`skill_roster`** frame (per-session, replayed to every joiner, zero hub change) with entries `{key,id,label,local?,degradedNote?}` (`b10ce4b`). Client: picker reads the roster (hardcoded-trio fallback for old servers), local entries get ` · LOCAL` + `degradedNote` tooltip; absent-metric rendering pinned for the local shape (`22ff3f1`). Proxy setup ships as **`deploy/local-models.md`** — LiteLLM config (pass-through + `ollama/qwen3:32b`), env (`ANTHROPIC_BASE_URL`, `MPAI_EXTRA_MODELS`), one-daemon-one-endpoint topology, degradation rules.
+
+**Suites at head:** server **802** · hub **368** · client **575**, tsc ×3 clean.
+
+**➡️ REMAINING FOR A LIVE LOCAL-MODEL SESSION (user action):** install Ollama + LiteLLM (NOT on the box as of 2026-08-03), `ollama pull qwen3:32b` (or `qwen3:30b-a3b` for laptop speed), then follow `deploy/local-models.md` §2–4. The scripted live demo was deferred per the plan's done gate 4 (recorded here, not silently skipped). Claude account weekly-limit reset (Aug 4 ~7pm ET) also unblocks the deferred successful-turn proof from cycle 1.
+
+**Still pending:** permission-rules plan (`docs/plans/2026-08-03-permission-rules.md`, still UNTRACKED — it follows the checkout; commit it as the first commit of its own branch when that cycle starts, per house convention). Stack: #33 ← #35 ← #34 ← #36 ← **#37 `feature/local-models`** (PR OPEN).
+
+---
+
+## (was) START HERE (2026-08-03, Kimi CLI #4) — §8.6 CYCLE 1 **SHIPPED (PR #36)**; TWO PLANS READY, EXECUTION **PAUSED ON KIMI WEEKLY QUOTA** (403 "usage limit for this billing cycle" — the WEEKLY quota per the docs, not the 5-hour window; check `/usage` or the Kimi Code Console).
 
 **State of play:** the stack is four PRs — #33 (presentation, DRAFT) ← #35 (invites) ← #34 (lifecycle + live-run fixes) ← **#36 (agent-surface cycle 1)**. All suites green at #36 head: server 789 · hub 368 · client 566. Nothing is mid-flight in code; two plans are written and **uncommitted** in the working tree on `feature/agent-surface`:
 

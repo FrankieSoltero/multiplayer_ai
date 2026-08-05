@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AsyncQueue } from "./asyncQueue.js";
-import { MODELS, DEFAULT_MODEL, type ModelKey } from "./models.js";
+import { MODELS, DEFAULT_MODEL, modelRoster, type ModelKey } from "./models.js";
 import { buildCanUseTool, contestedWriteReason, FILE_WRITE_TOOLS } from "./permissions.js";
 import type { Session } from "./session.js";
 import type { ModelUsageInfo, SessionEvent, SkillInfo, TodoItem } from "./events.js";
@@ -592,7 +592,10 @@ export class AgentDriver {
         name: c.name,
         description: (c.description ?? "").slice(0, 200),
       }));
-      this.session.append({ type: "skill_roster", skills });
+      // The model roster rides every roster frame, not just the creation-time
+      // one: a refresh replaces the frame the joiner replays last, and the
+      // picker must never lose its `models` to a skills-only refresh.
+      this.session.append({ type: "skill_roster", skills, models: modelRoster() });
       this.onRoster?.(skills);
     } catch {
       // stream died or predates the control request — static roster stands

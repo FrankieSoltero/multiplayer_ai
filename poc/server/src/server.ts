@@ -11,7 +11,7 @@ import {
   remoteTeammateSummary,
   summarizeSession,
 } from "./digest.js";
-import { isModelKey } from "./models.js";
+import { isModelKey, modelRoster, MODELS } from "./models.js";
 import {
   driverNameOf,
   Project,
@@ -588,7 +588,9 @@ export async function startServer(opts: {
       // — built-ins included — once the stream is up. Appended (not
       // side-channeled) so late joiners replay it like everything else.
       const skills = pluginStore.skillsFor(project.id);
-      session.append({ type: "skill_roster", skills });
+      // The model roster rides the same creation-time roster frame (additive
+      // `models`, local-models plan §1.2) so joiners replay it with the rest.
+      session.append({ type: "skill_roster", skills, models: modelRoster() });
       const newEntry: ProjectSessionEntry = {
         session,
         driver: new AgentDriver(
@@ -1589,7 +1591,7 @@ export async function startServer(opts: {
 
       if (msg.type === "set_model") {
         if (!isModelKey(msg.model)) {
-          return sendError("set_model requires model: opus|sonnet|haiku");
+          return sendError(`set_model requires model: ${Object.keys(MODELS).join("|")}`);
         }
         if (!ctx.entry.session.canPrompt(ctx.userId)) {
           return sendError("only the current driver can switch models — take the wheel first");

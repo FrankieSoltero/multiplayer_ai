@@ -2,7 +2,12 @@ import { browserSignOut } from "../signOut";
 import { contestedCountFor } from "../collisionView";
 import type { Collision } from "multiplayer-ai-server/collisions";
 import type { Theme } from "../theme";
+import type { ModelRosterEntry } from "../types";
 
+/** Fallback option labels for an OLD server whose skill_roster carries no
+ *  `models` field yet (local-models plan §1.2) — same old-server tolerance
+ *  posture as every other additive wire field. When the roster arrives the
+ *  picker reads it instead and this constant is unused for options. */
 export const MODEL_LABELS: Record<string, string> = {
   opus: "opus 4.8", sonnet: "sonnet 5", haiku: "haiku 4.5",
 };
@@ -64,6 +69,13 @@ export function Header(props: {
    *  them renders no badge rather than crashing — and so no other call site
    *  has to change. */
   contested?: Collision[];
+  /** The server's model roster (skill_roster's additive `models` field,
+   *  local-models plan §1.2). Absent/empty = an old server: the picker falls
+   *  back to MODEL_LABELS, byte-identical to today. Local entries are tagged
+   *  `· LOCAL` in the option text (theme-independent, T14) and carry their
+   *  `degradedNote` on the option's title — honest at the point of choice,
+   *  not discovered later. */
+  models?: ModelRosterEntry[];
   hud?: HudData;
 }) {
   const hud = props.hud ?? {};
@@ -97,8 +109,15 @@ export function Header(props: {
             onChange={(e) => props.onSetModel(e.target.value)}
             title={props.canSetModel ? "switch model (applies next turn)" : "only the driver can switch, between turns"}
           >
-            {Object.entries(MODEL_LABELS).map(([key, label]) => (
-              <option key={key} value={key}>{label}</option>
+            {(props.models && props.models.length > 0
+              ? props.models
+              : Object.entries(MODEL_LABELS).map(
+                  ([key, label]): ModelRosterEntry => ({ key, id: key, label }),
+                )
+            ).map((m) => (
+              <option key={m.key} value={m.key} title={m.degradedNote}>
+                {m.local ? `${m.label} · LOCAL` : m.label}
+              </option>
             ))}
           </select>
         </span>

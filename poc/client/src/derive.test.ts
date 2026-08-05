@@ -499,3 +499,61 @@ describe("deriveState — agent surface (§8.6)", () => {
     expect(s.sessionTokens).toBeUndefined();
   });
 });
+
+describe("deriveState — model roster from skill_roster (local-models plan §1.2, Task 2)", () => {
+  const ROSTER = [
+    { key: "opus", id: "claude-opus-4-8", label: "opus 4.8" },
+    {
+      key: "qwen3-32b",
+      id: "qwen3-32b",
+      label: "QWEN3 32B (LOCAL)",
+      local: true,
+      degradedNote: "local model — no cost/rate-limit reporting; gates may be noisier",
+    },
+  ];
+
+  it("reads the additive `models` field; absent derives to empty (old-server tolerance)", () => {
+    expect(deriveState([]).models).toEqual([]);
+    const s = deriveState([
+      ev({ type: "skill_roster", skills: [{ name: "review", description: "d" }], models: ROSTER }, 0),
+    ]);
+    expect(s.models).toEqual(ROSTER);
+  });
+
+  it("a skills-only refresh does NOT clear a roster the session already announced", () => {
+    const s = deriveState([
+      ev({ type: "skill_roster", skills: [], models: ROSTER }, 0),
+      ev({ type: "skill_roster", skills: [{ name: "live", description: "d" }] }, 1),
+    ]);
+    expect(s.models).toEqual(ROSTER);
+    expect(s.skills).toEqual([{ name: "live", description: "d" }]);
+  });
+});
+
+describe("deriveState — absent-field honesty for the local-model shape (plan done-gate 3)", () => {
+  it("a local backend's turn_end (duration, no usage/cost/contextWindow) fabricates NO numbers", () => {
+    const s = deriveState([
+      ev({ type: "user_message", userId: "u1", text: "go" }, 0),
+      // The shape a shim-routed local model produces: the SDK still reports a
+      // duration, but the backend answers no usage, no modelUsage (so no
+      // contextWindow), no cost.
+      ev({ type: "turn_end", outcome: "success", duration_ms: 4300, num_turns: 1 }, 1),
+    ]);
+    expect(s.lastTurnDurationMs).toBe(4300);
+    expect(s.contextUsed).toBeUndefined();
+    expect(s.contextMax).toBeUndefined();
+    expect(s.sessionCostUsd).toBeUndefined();
+    expect(s.sessionTokens).toBeUndefined();
+  });
+
+  it("a modelUsage entry WITHOUT contextWindow leaves contextMax unset — never a fabricated window", () => {
+    const s = deriveState([
+      ev({
+        type: "turn_end",
+        modelUsage: { "qwen3-32b": { inputTokens: 100, outputTokens: 50 } },
+      }, 0),
+    ]);
+    expect(s.contextMax).toBeUndefined();
+    expect(s.sessionTokens).toBe(150); // tokens are reported; the window is not
+  });
+});

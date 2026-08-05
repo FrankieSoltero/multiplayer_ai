@@ -22,6 +22,17 @@ export type ModelUsageInfo = {
   contextWindow?: number;
 };
 
+/** One entry of the additive `models` roster on `skill_roster` (local-models
+ *  plan §1.2). `key` is the wire-level set_model/model_change key sent back
+ *  verbatim; `local`/`degradedNote` mark honest local-backend degradation. */
+export type ModelRosterEntry = {
+  key: string;
+  id: string;
+  label: string;
+  local?: boolean;
+  degradedNote?: string;
+};
+
 export type LoggedEvent = {
   seq: number;
   ts: string;
@@ -41,6 +52,10 @@ export type LoggedEvent = {
   toolUseId?: string;
   parentToolUseId?: string;
   skills?: { name: string; description: string }[];
+  /** skill_roster's additive model roster (local-models plan §1.2). Absent on
+   *  an event from an older server — the picker then falls back to its
+   *  hardcoded labels, same as every other old-server tolerance. */
+  models?: ModelRosterEntry[];
   suggestId?: string;
   skill?: string;
   args?: string;

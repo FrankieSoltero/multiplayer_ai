@@ -648,6 +648,7 @@ export function SessionView(props: {
         projectId={projectId}
         sessionId={sessionId}
         model={derived.model}
+        models={derived.models}
         connected={connected}
         objective={derived.objective}
         canSetModel={canSetModel}
@@ -743,7 +744,13 @@ export function SessionView(props: {
         busy={derived.agentBusy}
         open={arcadeOpen || laneAutoOpen}
         onClose={() => setArcadeOpen(false)}
-        modelLabel={MODEL_LABELS[derived.model] ?? derived.model}
+        // The roster's label wins when the server announced one; the
+        // hardcoded table and the raw key are the old-server fallbacks.
+        modelLabel={
+          derived.models.find((m) => m.key === derived.model)?.label ??
+          MODEL_LABELS[derived.model] ??
+          derived.model
+        }
         currentTool={currentTool}
         statusLine={statusLine}
         partyBests={partyBests}
