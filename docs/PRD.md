@@ -568,11 +568,33 @@ and `⚠ shares:` party rows (calm gold, never amber); agents get a tier (a) dig
 (b) auto-approve withdrawal with gate reason `contested with session X`, asked once per (file,
 session). On by default, advisory only — never blocks a write — and disabled wholesale with
 `MPAI_CONTESTED_GATE=0`, which restores today's auto-approve path unchanged. Fork grouping remains
-out of scope (known bound below); oversight configured hub-side is still open — split ruling, spec
-§8a.1, tracked on its own branch.
+out of scope (known bound below).
+
+Hub-side oversight now ships (`docs/specs/2026-08-04-hub-oversight-design.md`, split from the
+collision work by the awareness spec's scope ruling, §8a.1): the hub runs its own `Overseer`
+(imported, not reimplemented) over `OversightSessionDigest`s built from session logs across every
+attached machine, so a project spanning laptops gets one team-wide summary instead of each
+laptop's siloed view. Capability is host-configured — a hub can summarize iff its own process
+carries `ANTHROPIC_API_KEY` (validated for presence at boot, no live probe); without one,
+`set_oversight enabled:true` is refused with the exact string `oversight is unavailable on this
+hub — no ANTHROPIC_API_KEY configured`, and every snapshot carries truthful
+`oversight.available: false` (the solo server always reports `available: true`, since its SDK
+creds are the laptop's own). `set_oversight` is hub-answered and member-gated with the lifecycle
+convention — the same byte-identical refusal `join this project before changing it`, already
+covered by the client's `not_a_member` normalization. HubDb schema v4 adds `project_oversight`
+(enabled + summary + seq), written through before the snapshot push — durable-before-visible,
+matching invites — so a hub restart keeps both posture and the latest summary, with `seq`
+continuing from the stored value so clients never see it move backwards. Agent parity reaches the
+laptops via a new `oversight_update` down-frame pushed to owning uplinks on refresh and toggle
+(reconnect re-emits, so a laptop restart self-heals); the laptop's `team_update` tool text and the
+one-shot `pendingOversight` prompt injection both read the hub-pushed state on a hub-attached
+project, falling back to the local overseer only when running solo. The client's OVERSIGHT screen
+renders unavailability truthfully — a disabled toggle with the reason line — instead of a dead
+switch; `pull_oversight`/PULL and everything else is unchanged.
 
 *Final state:* file-collision detection across sessions grouped by repo — meaningful only once a
-project holds more than one repo, which is why it waited. Oversight configured hub-side.
+project holds more than one repo, which is why it waited — and hub-side oversight, configured per
+project and persisted across restarts. Both reached.
 
 *Known bound, accepted:* forks do not group. Two engineers on forks of one repo produce different
 keys and will not be grouped, though they will conflict upstream.
