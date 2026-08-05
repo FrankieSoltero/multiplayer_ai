@@ -1690,6 +1690,15 @@ export async function startServer(opts: {
         return;
       }
 
+      if (msg.type === "stop_turn") {
+        if (!ctx.entry.session.canPrompt(ctx.userId)) {
+          return sendError("only the current driver can stop the turn — take the wheel first");
+        }
+        const result = ctx.entry.driver.stopTurn(ctx.userId);
+        if (!result.ok) return sendError(result.error);
+        return;
+      }
+
       if (msg.type === "pull_oversight") {
         if (!ctx.entry.session.canPrompt(ctx.userId)) {
           return sendError("only the current driver can pull team updates — take the wheel first");
@@ -1736,6 +1745,10 @@ export async function startServer(opts: {
             skillCount: result.plugin.skills.length,
             userId,
           });
+          // agent-surface §6: hot-reload every live session in the project so
+          // new skills don't wait for a restart. See AgentDriver.reloadPlugins
+          // for the new-path caveat.
+          for (const e of project.sessions.values()) e.driver.reloadPlugins();
           // Registry changes are rare, deliberate user actions (not a hot
           // event stream) — push the updated registry immediately rather
           // than riding the 1s throttle, same rationale as join's immediate
@@ -1758,6 +1771,8 @@ export async function startServer(opts: {
           skillCount: 0,
           userId: ctx.userId,
         });
+        // agent-surface §6: same hot-reload as add_plugin above.
+        for (const e of ctx.project.sessions.values()) e.driver.reloadPlugins();
         // Immediate push — see add_plugin above.
         pushProject(ctx.project);
         return;

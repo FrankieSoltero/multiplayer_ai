@@ -112,6 +112,11 @@ export function ThinkingStrip(props: {
   modelLabel: string;
   partyBests?: Record<string, PartyBest>;
   currentTool?: string;
+  /** Agent-surface §3/§4: the latest agent_status signal rendered into the
+   *  status line ("✦ compacting…", "✦ retrying (2/5)…"), composed in App from
+   *  derived.agentStatus. Optional so a caller that has not wired it renders
+   *  the strip exactly as before. */
+  statusLine?: string;
   onScore?: (game: string, score: number) => void;
   /** v5b final-review: notified whenever a run's key-capturing status
    *  changes (including unmount) so the transcript can mute its a/d
@@ -342,6 +347,7 @@ export function ThinkingStrip(props: {
           <span className="who">▪ ARCADE — INSERT COIN</span>
         )}
         {props.busy && props.currentTool && <span className="tool">tool · {props.currentTool}</span>}
+        {props.busy && props.statusLine && <span className="tool">{props.statusLine}</span>}
         <span className="rule" />
         <span className="thinking-score">SCORE {pad(score)}</span>
         {best ? (

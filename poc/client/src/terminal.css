@@ -300,6 +300,10 @@ code, pre { font-family: var(--fm); }
 .line.red { color: var(--red); }
 .line.green { color: var(--green); }
 .line.done { text-decoration: line-through; opacity: 0.6; }
+/* agent-surface §2/§3 — both token-only (parity: the classes, not the colors,
+   carry the meaning in both themes) */
+.line.stopline { color: var(--amber); }
+.line.retracted { color: var(--dim); text-decoration: line-through; }
 .line .who { font-weight: 600; }
 .cursor { color: var(--accent); animation: blink 1s steps(1, end) infinite; }
 

@@ -495,11 +495,24 @@ else in §8.5 is currently open.
 *What:* Claude Code parity, in the UI (D9).
 
 *Today:* transcript, todos, skills, workflows, oversight, prompt bar, permission gates, agent
-status, thinking strip, slash autocomplete, model picker.
+status, thinking strip, slash autocomplete, model picker — and, after cycle 1 ("the wire",
+`feature/agent-surface`, plan `docs/plans/2026-08-01-agent-surface.md`): the agent's own state is
+visible and controllable. `turn_end` carries the usage/cost payload the HUD was designed for
+(`total_cost_usd`, `usage`, `modelUsage`, durations — CONTEXT, elapsed, and a tokens-based PARTY
+XP are wired, not placeholders); a driver-only ■ STOP interrupts the turn mid-run
+(`Query.interrupt()`), with the interrupted outcome distinguishable from success in the log, not
+just the UI; error turns carry their subtype and reason (`error_max_turns`,
+`error_max_budget_usd`, …); rate limits, api retries, compaction, and refusal-fallbacks surface
+as transcript/status signals instead of silence; subagent progress summaries are on
+(`agentProgressSummaries`); and the skill roster hot-refreshes on `commands_changed`/plugin
+changes. The `?screen=status` design screen was retired in the same cycle — its bars had no
+honest feed and its tool grid was static; the HUD shows the real numbers now.
 
-*Final state:* needs a **gap inventory against Claude Code** as its first task — this section
-cannot be scoped from memory. The likely shape is surfacing SDK capabilities that already exist
-behind the driver rather than building new agent machinery.
+*Final state:* the gap inventory the PRD called for is done
+(`docs/specs/2026-08-01-agent-surface-gap-inventory.md`) and cycle 1 ships the wire. What
+remains is phased and recorded in tech-debt §2.9: permission "always-allow" rules + the six SDK
+modes (the next cycle's natural subject), token-level streaming, rewind/checkpoints, SDK hooks,
+effort controls, background-tasks UI.
 
 ### 8.7 The record
 

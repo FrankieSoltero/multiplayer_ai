@@ -405,3 +405,97 @@ describe("subSessionEvents", () => {
     expect(subSessionEvents(events, "A").map((e) => e.seq)).toEqual([1, 2, 3]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Agent surface (§8.6 cycle 1): the turn_end usage payload + agent_status
+// signal the HUD and thinking strip read. Every field is additive — a log
+// without them derives to undefined/null, never to a fabricated 0.
+// ---------------------------------------------------------------------------
+describe("deriveState — agent surface (§8.6)", () => {
+  it("derives CONTEXT from the latest turn_end: usage prompt-side tokens / modelUsage contextWindow", () => {
+    const s = deriveState([
+      ev({
+        type: "turn_end",
+        usage: { input_tokens: 12000, output_tokens: 900, cache_read_input_tokens: 112000, cache_creation_input_tokens: 400 },
+        modelUsage: { "claude-opus-4-8": { contextWindow: 200000, inputTokens: 12000 } },
+      }, 0),
+    ]);
+    // Prompt-side footprint: input + cache read + cache creation — output
+    // tokens do not occupy the window.
+    expect(s.contextUsed).toBe(124400);
+    expect(s.contextMax).toBe(200000);
+  });
+
+  it("keeps the LATEST turn's context numbers, and tolerates a payload-less turn in between", () => {
+    const s = deriveState([
+      ev({ type: "turn_end", usage: { input_tokens: 1000 }, modelUsage: { m: { contextWindow: 100000 } } }, 0),
+      // An old-shape turn_end (bare) must not blank the last known numbers —
+      // the HUD keeps the latest REAL reading.
+      ev({ type: "turn_end" }, 1),
+      ev({ type: "turn_end", usage: { input_tokens: 5000, cache_read_input_tokens: 95000 } }, 2),
+    ]);
+    expect(s.contextUsed).toBe(100000);
+    expect(s.contextMax).toBe(100000); // still the latest reading that carried one
+  });
+
+  it("sums session tokens and cost across turn_end payloads — usage first, modelUsage as fallback", () => {
+    const s = deriveState([
+      ev({ type: "turn_end", usage: { input_tokens: 100, output_tokens: 50 }, total_cost_usd: 0.02 }, 0),
+      // No usage: the modelUsage sum is the fallback (and is NOT double-counted
+      // with usage when both exist — the turn above used usage only).
+      ev({ type: "turn_end", modelUsage: { m: { inputTokens: 200, outputTokens: 60, costUSD: 0.03 } } }, 1),
+      ev({ type: "turn_end" }, 2), // contributes nothing, not even a 0
+    ]);
+    expect(s.sessionTokens).toBe(410); // 150 + 260
+    expect(s.sessionCostUsd).toBe(0.02); // cost comes from total_cost_usd only
+  });
+
+  it("exposes the latest turn's duration for the TURN elapsed cell", () => {
+    expect(
+      deriveState([ev({ type: "turn_end", duration_ms: 4200 }, 0)]).lastTurnDurationMs,
+    ).toBe(4200);
+    expect(
+      deriveState([
+        ev({ type: "turn_end", duration_ms: 4200 }, 0),
+        ev({ type: "turn_end", duration_ms: 61000 }, 1),
+      ]).lastTurnDurationMs,
+    ).toBe(61000);
+  });
+
+  it("tracks the latest agent_status; idle and turn_end clear it", () => {
+    expect(
+      deriveState([ev({ type: "agent_status", status: "compacting" }, 0)]).agentStatus,
+    ).toEqual({ status: "compacting" });
+    expect(
+      deriveState([ev({ type: "agent_status", status: "retrying", attempt: 2, maxRetries: 5 }, 0)]).agentStatus,
+    ).toEqual({ status: "retrying", attempt: 2, maxRetries: 5 });
+    // idle clears…
+    expect(
+      deriveState([
+        ev({ type: "agent_status", status: "compacting" }, 0),
+        ev({ type: "agent_status", status: "idle" }, 1),
+      ]).agentStatus,
+    ).toBeNull();
+    // …and so does a turn boundary (a finished turn supersedes the signal).
+    expect(
+      deriveState([
+        ev({ type: "agent_status", status: "retrying", attempt: 1, maxRetries: 5 }, 0),
+        ev({ type: "turn_end" }, 1),
+      ]).agentStatus,
+    ).toBeNull();
+  });
+
+  it("old-log regression: a log without the payload derives every new field to undefined/null", () => {
+    const s = deriveState([
+      ev({ type: "user_message", userId: "u1", text: "go" }, 0),
+      ev({ type: "tool_call", toolName: "Read", input: {} }, 1),
+      ev({ type: "turn_end" }, 2),
+    ]);
+    expect(s.agentStatus).toBeNull();
+    expect(s.lastTurnDurationMs).toBeUndefined();
+    expect(s.contextUsed).toBeUndefined();
+    expect(s.contextMax).toBeUndefined();
+    expect(s.sessionCostUsd).toBeUndefined();
+    expect(s.sessionTokens).toBeUndefined();
+  });
+});

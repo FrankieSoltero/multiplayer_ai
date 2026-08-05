@@ -6,7 +6,7 @@ import { AsyncQueue } from "./asyncQueue.js";
 import { MODELS, DEFAULT_MODEL, type ModelKey } from "./models.js";
 import { buildCanUseTool, contestedWriteReason, FILE_WRITE_TOOLS } from "./permissions.js";
 import type { Session } from "./session.js";
-import type { SessionEvent, SkillInfo, TodoItem } from "./events.js";
+import type { ModelUsageInfo, SessionEvent, SkillInfo, TodoItem } from "./events.js";
 
 /**
  * Message pushed into the SDK's streaming-input queue.
@@ -42,11 +42,53 @@ export interface SdkMessage {
   description?: string;
   subagent_type?: string;
   workflow_name?: string;
-  status?: string;
+  // task_notification terminal status, system/status busy state ('compacting'
+  // | 'requesting' | null, sdk.d.ts:4367), or an assistant/api_retry error
+  // category — one loose field, each reader validates the values it accepts.
+  status?: string | null;
   summary?: string;
   last_tool_name?: string;
-  usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
+  usage?: {
+    total_tokens?: number; tool_uses?: number; duration_ms?: number;
+    input_tokens?: number; output_tokens?: number;
+    cache_creation_input_tokens?: number; cache_read_input_tokens?: number;
+  };
   patch?: { status?: string; description?: string; error?: string };
+  // task_notification (sdk.d.ts:4430): path to the subagent's transcript.
+  output_file?: string;
+  // result payloads (SDKResultSuccess/SDKResultError, sdk.d.ts:4239-4290).
+  is_error?: boolean;
+  errors?: string[];
+  terminal_reason?: string;
+  total_cost_usd?: number;
+  num_turns?: number;
+  duration_ms?: number;
+  modelUsage?: Record<string, ModelUsageInfo>;
+  // assistant refusal-fallback signals (sdk.d.ts:2848, 2852): this frame
+  // replaces the named earlier frames / was truncated by an interrupt.
+  supersedes?: string[];
+  aborted?: true;
+  // rate_limit_event (SDKRateLimitEvent/SDKRateLimitInfo, sdk.d.ts:4207-4237).
+  rate_limit_info?: {
+    status?: string;
+    rateLimitType?: string;
+    utilization?: number;
+    resetsAt?: number;
+  };
+  // system/compact_boundary (SDKCompactBoundaryMessage, sdk.d.ts:2922).
+  compact_metadata?: {
+    trigger?: string;
+    pre_tokens?: number;
+    post_tokens?: number;
+    duration_ms?: number;
+  };
+  // system/api_retry (SDKAPIRetryMessage, sdk.d.ts:2821); `error` doubles as
+  // the assistant-frame error category (sdk.d.ts:2837) — both are strings.
+  attempt?: number;
+  max_retries?: number;
+  retry_delay_ms?: number;
+  error_status?: number | null;
+  error?: string;
 }
 
 export interface DriverHooks {
@@ -106,6 +148,11 @@ export type RunQueryResult = AsyncIterable<SdkMessage> & {
   setPermissionMode?(mode: string): Promise<void>;
   /** Present on the real SDK Query (sdk.d.ts Query.stopTask); absent on plain test fakes. */
   stopTask?(taskId: string): Promise<void>;
+  /** Present on the real SDK Query (sdk.d.ts:2274 Query.interrupt); absent on plain test fakes. */
+  interrupt?(): Promise<unknown>;
+  /** Present on the real SDK Query (sdk.d.ts:2446/2452); absent on plain test fakes. */
+  reloadPlugins?(): Promise<unknown>;
+  reloadSkills?(): Promise<unknown>;
   /** Present on the real SDK Query; returns the live skill list (name + description). */
   supportedCommands?(): Promise<{ name: string; description: string }[]>;
 };
@@ -248,6 +295,10 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
       // parent_tool_use_id so the client can render a nested transcript.
       // Default (false) only forwards subagent tool_use/tool_result blocks.
       forwardSubagentText: true,
+      // agent-surface §5: populate task_progress/task_notification summaries
+      // (the task_event.summary path is already wired end to end; without
+      // this flag the SDK leaves it empty).
+      agentProgressSummaries: true,
       cwd: workdir,
     },
     // Cast at the SDK boundary only — see Global Constraints. The real
@@ -331,6 +382,22 @@ export class AgentDriver {
   // cleared when the stream dies so nothing appends after teardown.
   private pendingProgress = new Map<string, SessionEvent & { type: "task_event" }>();
   private progressTimers = new Map<string, NodeJS.Timeout>();
+  // Set when a driver stop_turn request is issued (agent-surface §2) and
+  // consumed by the NEXT result message, which clears it exactly once. It is
+  // only a TIE-BREAKER, not a verdict: the turn_end reads "interrupted" only
+  // when this flag was set AND the result is error-shaped (is_error / error_*
+  // subtype) — the shape a genuinely interrupted turn takes (aborted_streaming/
+  // aborted_tools, sdk.d.ts). The SDK honors the interrupt asynchronously, so
+  // a turn can finish on its own in the race window; a clean success result
+  // then keeps outcome "success" with its real usage/cost. Query.interrupt()
+  // emits no wire message of its own, so the flag is how an error-shaped
+  // interrupt is told apart from an ordinary failure — but the record rule
+  // (§0 constraint 2) forbids overwriting a completed turn's true outcome.
+  private interruptPending = false;
+  // Leading-edge throttle for rate_limit events (agent-surface §1): the SDK
+  // re-emits rate_limit_event on every info change (potentially per request);
+  // the wire gets at most one per rateLimitThrottleMs window per session.
+  private lastRateLimitAt = 0;
 
   constructor(
     private session: Session,
@@ -345,6 +412,7 @@ export class AgentDriver {
     private contestedAsked?: () => ReadonlySet<string>,
     private contestedSessions?: (path: string) => string[],
     private onContestedAnswered?: (path: string) => void,
+    private rateLimitThrottleMs = 30_000,
   ) {
     this.stream = run(this.prompts, {
       onIntent: (text) =>
@@ -725,6 +793,63 @@ export class AgentDriver {
     return { ok: true };
   }
 
+  /**
+   * Human-requested interrupt of the running turn (agent-surface §2). Driver-
+   * gated by the server exactly like stopTask. The attributed turn_stop lands
+   * on the wire BEFORE the SDK call — the request is a recorded fact even if
+   * the turn finishes first. The interrupted OUTCOME is not synthesized here:
+   * the next result decides. Because the SDK honors the interrupt async, the
+   * in-flight turn may complete on its own in the race window; the result
+   * handler stamps `outcome: "interrupted"` only when interruptPending was set
+   * AND the result is error-shaped (the shape an interrupted turn takes —
+   * aborted_streaming/aborted_tools, sdk.d.ts:6864; the interrupted turn
+   * result follows the interrupt receipt, sdk.d.ts:2274/3457). A clean success
+   * in that window is a COMPLETED turn and keeps outcome "success" with its
+   * real usage/cost — the turn_stop event still records the request.
+   * No-op (ok, nothing appended) when no turn is running — there is nothing
+   * to interrupt and an event would claim otherwise. Fire-and-forget like
+   * setModel: SDK rejection surfaces as agent_error.
+   */
+  stopTurn(userId: string): { ok: true } | { ok: false; error: string } {
+    if (this.dead) return { ok: false, error: "agent session has ended" };
+    if (this.pendingTurns === 0) return { ok: true }; // no turn running: no-op
+    if (!this.stream.interrupt)
+      return { ok: false, error: "interrupt not supported by this agent" };
+    this.interruptPending = true;
+    this.session.append({ type: "turn_stop", userId });
+    void this.stream.interrupt().catch((err) => {
+      this.interruptPending = false;
+      this.session.append({
+        type: "agent_error",
+        message: `turn interrupt failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    });
+    return { ok: true };
+  }
+
+  /**
+   * A plugin_change (add/remove) landed in the project registry: ask the live
+   * query to reload skills/plugins (sdk.d.ts:2446/2452) and re-fetch the
+   * roster so a fresh skill_roster event follows the change. Caveat, recorded
+   * per the plan's "document why" clause: the query's plugin PATHS were frozen
+   * at session start, so a newly ADDED plugin is only picked up by sessions
+   * created after the add (server.test.ts pins this) — reload refreshes the
+   * skills/commands of plugins the live query already knows and drops removed
+   * ones where the CLI supports it. Fire-and-forget: failures surface as
+   * agent_error, absent methods (fakes/old streams) degrade to the refetch.
+   */
+  reloadPlugins(): void {
+    if (this.dead) return;
+    const fail = (what: string) => (err: unknown) =>
+      this.session.append({
+        type: "agent_error",
+        message: `${what} failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    void this.stream.reloadSkills?.().catch(fail("skill reload"));
+    void this.stream.reloadPlugins?.().catch(fail("plugin reload"));
+    void this.refreshRoster();
+  }
+
   private async consume(messages: AsyncIterable<SdkMessage>): Promise<void> {
     try {
       for await (const message of messages) {
@@ -834,7 +959,11 @@ export class AgentDriver {
 
   private handleMessage(message: SdkMessage): void {
     if (message.type === "system") {
-      this.handleTaskMessage(message);
+      this.handleSystemMessage(message);
+      return;
+    }
+    if (message.type === "rate_limit_event") {
+      this.handleRateLimit(message);
       return;
     }
     // Docs show content on the message; some SDK versions nest it under .message
@@ -848,6 +977,11 @@ export class AgentDriver {
       content?: string | { type: string; text?: string }[];
     }[];
     const parentId = message.parent_tool_use_id ?? undefined;
+    // Refusal-fallback signals on the assistant frame (agent-surface §3,
+    // sdk.d.ts:2848/2852): carried through as additive flags on this frame's
+    // deltas so the client can mark retracted/truncated content later.
+    const supersedes = Array.isArray(message.supersedes) && message.supersedes.length > 0;
+    const aborted = message.aborted === true;
     if (message.type === "assistant") {
       for (const block of blocks) {
         if (block.type === "text" && block.text) {
@@ -855,6 +989,8 @@ export class AgentDriver {
             type: "agent_text_delta",
             text: block.text,
             ...(parentId ? { parentToolUseId: parentId } : {}),
+            ...(supersedes ? { supersedes: true as const } : {}),
+            ...(aborted ? { aborted: true as const } : {}),
           });
         } else if (block.type === "tool_use" && block.name) {
           if (block.id) this.toolNamesById.set(block.id, block.name);
@@ -927,7 +1063,70 @@ export class AgentDriver {
         // a genuinely queued cycle follows, the client re-raises busy from
         // that cycle's first activity event.
         this.pendingTurns = 0;
-        this.session.append({ type: "turn_end" });
+        // Outcome classification (agent-surface §2/§3). The outcome reflects
+        // what the RESULT says actually happened; a pending stop_turn only
+        // breaks the tie on an ERROR-SHAPED result. The SDK honors an
+        // interrupt asynchronously, so an in-flight turn can complete on its
+        // own in the window between stopTurn() and the abort — record truth
+        // (§0 constraint 2) requires the turn_end to report the real outcome,
+        // not the requested one. The turn_stop event already recorded the
+        // request as a fact regardless (see stopTurn's jsdoc), so nothing is
+        // lost by letting a completed turn read as completed.
+        const interruptPending = this.interruptPending;
+        this.interruptPending = false; // cleared on EVERY result, exactly once
+        const subtype =
+          typeof message.subtype === "string" ? message.subtype : undefined;
+        // An error SUBTYPE is one of the SDK's error_* values. Live proof
+        // (2026-08-03): an API-level failure arrives as subtype "success"
+        // with is_error true and terminal_reason set — composing "turn failed
+        // (success)" from that is nonsense, so only error_* subtypes are
+        // rendered/stamped as subtypes; the reason carries everything else.
+        const isErrorSubtype = subtype?.startsWith("error") === true;
+        // Error-shaped: computed FIRST, without any interrupt guard.
+        const isErrorShaped = message.is_error === true || isErrorSubtype;
+        // An interrupted turn surfaces from the SDK as an error-shaped result
+        // (its terminal_reason is aborted_streaming/aborted_tools, and the
+        // interrupted turn result follows the interrupt receipt — sdk.d.ts
+        // TerminalReason / the interrupt-receipt ordering note). So a stop_turn
+        // request is only rendered as "interrupted" when the result is in fact
+        // error-shaped; a clean success in the race window is a completed turn.
+        const interrupted = interruptPending && isErrorShaped;
+        // A human interrupt is a deliberate act, not a failure: no agent_error,
+        // no error fields. Only a NON-interrupted error-shaped result is "error".
+        const isError = isErrorShaped && !interrupted;
+        const outcome = interrupted ? "interrupted" : isError ? "error" : "success";
+        const errorReason = isError
+          ? message.terminal_reason ??
+            message.errors?.[0] ??
+            (isErrorSubtype ? subtype : undefined)
+          : undefined;
+        if (isError) {
+          // Appended BEFORE the turn_end so record.ts groups the failure with
+          // the turn that produced it, not the next one. The reason is real:
+          // terminal_reason, else the first errors[] entry, else the subtype.
+          this.session.append({
+            type: "agent_error",
+            message:
+              "turn failed" +
+              (isErrorSubtype ? ` (${subtype})` : "") +
+              (errorReason && errorReason !== subtype ? `: ${errorReason}` : ""),
+          });
+        }
+        this.session.append({
+          type: "turn_end",
+          outcome,
+          ...(typeof message.total_cost_usd === "number"
+            ? { total_cost_usd: message.total_cost_usd }
+            : {}),
+          ...(message.usage ? { usage: message.usage } : {}),
+          ...(message.modelUsage ? { modelUsage: message.modelUsage } : {}),
+          ...(typeof message.duration_ms === "number"
+            ? { duration_ms: message.duration_ms }
+            : {}),
+          ...(typeof message.num_turns === "number" ? { num_turns: message.num_turns } : {}),
+          ...(isError && isErrorSubtype ? { errorSubtype: subtype } : {}),
+          ...(errorReason ? { errorReason } : {}),
+        });
       }
       for (const block of blocks) {
         if (block.type === "tool_result") {
@@ -991,6 +1190,91 @@ export class AgentDriver {
     });
   }
 
+  /** Dispatch system messages (agent-surface §3/§4/§6). Task lifecycle
+   *  subtypes fall through to handleTaskMessage; everything else is mapped
+   *  here or ignored (unknown subtypes die quietly, same as before). */
+  private handleSystemMessage(message: SdkMessage): void {
+    switch (message.subtype) {
+      case "compact_boundary": {
+        const meta = message.compact_metadata ?? {};
+        this.session.append({
+          type: "compaction",
+          ...(meta.trigger ? { trigger: meta.trigger } : {}),
+          ...(meta.pre_tokens !== undefined ? { preTokens: meta.pre_tokens } : {}),
+          ...(meta.post_tokens !== undefined ? { postTokens: meta.post_tokens } : {}),
+          ...(meta.duration_ms !== undefined ? { durationMs: meta.duration_ms } : {}),
+        });
+        return;
+      }
+      case "status":
+        // SDKStatus: 'compacting' | 'requesting' | null (sdk.d.ts:4367). null
+        // means the busy state cleared — surfaced as "idle" so clients can
+        // drop the indicator without waiting for the turn_end.
+        this.session.append({
+          type: "agent_status",
+          status:
+            message.status === "compacting" || message.status === "requesting"
+              ? message.status
+              : "idle",
+        });
+        return;
+      case "api_retry":
+        // Folded into the agent_status path (plan §3 "your call"): it IS a
+        // busy-state signal — the agent is mid-turn but stalled on a retry.
+        this.session.append({
+          type: "agent_status",
+          status: "retrying",
+          ...(typeof message.attempt === "number" ? { attempt: message.attempt } : {}),
+          ...(typeof message.max_retries === "number" ? { maxRetries: message.max_retries } : {}),
+          ...(typeof message.retry_delay_ms === "number" ? { retryDelayMs: message.retry_delay_ms } : {}),
+          ...(message.error_status !== undefined ? { errorStatus: message.error_status } : {}),
+          ...(message.error ? { detail: String(message.error) } : {}),
+        });
+        return;
+      case "commands_changed":
+        // The SDK pushed a fresh slash-command list mid-session (sdk.d.ts:2914);
+        // supportedCommands() tracks the push, so re-fetching through the one
+        // roster path emits a fresh skill_roster with the new skills.
+        void this.refreshRoster();
+        return;
+      case "model_refusal_fallback": {
+        // The refused leg's content was already retracted via the supersedes
+        // flags on the replacement frame's deltas; this carries the SDK's
+        // notice so the transcript can show WHY content was retracted.
+        const content = (message as { content?: unknown }).content;
+        this.session.append({
+          type: "agent_status",
+          status: "refusal_fallback",
+          ...(typeof content === "string" && content
+            ? { detail: content.slice(0, 500) }
+            : {}),
+        });
+        return;
+      }
+      default:
+        this.handleTaskMessage(message);
+    }
+  }
+
+  /** rate_limit_event → rate_limit (agent-surface §1), leading-edge
+   *  throttled to one event per rateLimitThrottleMs window. Malformed info
+   *  (no status string) is dropped — the per-message try/catch in consume
+   *  stays the backstop for genuinely broken shapes. */
+  private handleRateLimit(message: SdkMessage): void {
+    const info = message.rate_limit_info;
+    if (!info || typeof info.status !== "string") return;
+    const now = Date.now();
+    if (now - this.lastRateLimitAt < this.rateLimitThrottleMs) return;
+    this.lastRateLimitAt = now;
+    this.session.append({
+      type: "rate_limit",
+      status: info.status,
+      ...(info.rateLimitType ? { rateLimitType: info.rateLimitType } : {}),
+      ...(info.utilization !== undefined ? { utilization: info.utilization } : {}),
+      ...(info.resetsAt !== undefined ? { resetsAt: info.resetsAt } : {}),
+    });
+  }
+
   /** Forward the SDK's task lifecycle onto the wire as task_event (spec §3).
    *  Non-task system subtypes are ignored. */
   private handleTaskMessage(message: SdkMessage): void {
@@ -1037,6 +1321,7 @@ export class AgentDriver {
         type: "task_event", taskId, subtype: "done",
         ...(message.status ? { status: message.status } : {}),
         ...(message.summary ? { summary: message.summary } : {}),
+        ...(message.output_file ? { outputFile: message.output_file } : {}),
         ...(usage.total_tokens !== undefined ? { tokens: usage.total_tokens } : {}),
         ...(usage.tool_uses !== undefined ? { toolUses: usage.tool_uses } : {}),
         ...(usage.duration_ms !== undefined ? { durationMs: usage.duration_ms } : {}),

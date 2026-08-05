@@ -23,6 +23,13 @@ export interface TaskInfo {
   stoppedBy?: string;
 }
 
+export interface AgentStatusInfo {
+  status: string; // "compacting" | "requesting" | "retrying" | "refusal_fallback" (never "idle" — idle clears)
+  attempt?: number;
+  maxRetries?: number;
+  detail?: string;
+}
+
 export interface DerivedState {
   driverId: string | null;
   participants: Map<string, Participant>;
@@ -37,6 +44,51 @@ export interface DerivedState {
   planDecisions: Map<string, { decision: string; userId: string }>;
   permissionMode: string;
   tasks: Map<string, TaskInfo>;
+  /** Latest agent_status signal (agent-surface §3/§4); null when idle or after
+   *  a turn boundary. undefined-fields stay undefined. */
+  agentStatus: AgentStatusInfo | null;
+  /** Latest turn_end's duration_ms, when the payload carried it (§1). */
+  lastTurnDurationMs?: number;
+  /** Prompt-side context footprint of the latest turn_end's `usage`
+   *  (input + cache read + cache creation — the tokens that occupy the
+   *  window; output tokens do not). undefined until a turn reports usage. */
+  contextUsed?: number;
+  /** Context window size from the latest turn_end's `modelUsage`, when any
+   *  model entry carried `contextWindow`. */
+  contextMax?: number;
+  /** Running session totals over turn_end payloads (§1) — undefined until at
+   *  least one turn_end carried the field, so an old log derives exactly as
+   *  before (undefined, never 0). */
+  sessionCostUsd?: number;
+  sessionTokens?: number;
+}
+
+/** Total tokens a turn consumed: the `usage` total when present (it is the
+ *  authoritative per-turn count), else the sum across `modelUsage` entries,
+ *  else undefined — a turn with neither contributes nothing to the session
+ *  total rather than a fabricated 0. */
+function turnTokens(ev: LoggedEvent): number | undefined {
+  const u = ev.usage;
+  if (u) {
+    return (
+      (u.input_tokens ?? 0) +
+      (u.output_tokens ?? 0) +
+      (u.cache_creation_input_tokens ?? 0) +
+      (u.cache_read_input_tokens ?? 0)
+    );
+  }
+  if (ev.modelUsage) {
+    let total = 0;
+    let seen = false;
+    for (const m of Object.values(ev.modelUsage)) {
+      total +=
+        (m.inputTokens ?? 0) + (m.outputTokens ?? 0) +
+        (m.cacheReadInputTokens ?? 0) + (m.cacheCreationInputTokens ?? 0);
+      seen = true;
+    }
+    if (seen) return total;
+  }
+  return undefined;
 }
 
 export function deriveState(events: LoggedEvent[]): DerivedState {
@@ -54,6 +106,7 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
     planDecisions: new Map(),
     permissionMode: "default",
     tasks: new Map(),
+    agentStatus: null,
   };
   for (const ev of events) {
     switch (ev.type) {
@@ -140,9 +193,47 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
       case "agent_text_delta":
         s.agentBusy = true;
         break;
-      case "turn_end":
+      case "turn_end": {
+        s.agentBusy = false;
+        // A finished turn supersedes any in-flight status signal.
+        s.agentStatus = null;
+        if (ev.duration_ms !== undefined) s.lastTurnDurationMs = ev.duration_ms;
+        if (ev.usage) {
+          const u = ev.usage;
+          s.contextUsed =
+            (u.input_tokens ?? 0) +
+            (u.cache_read_input_tokens ?? 0) +
+            (u.cache_creation_input_tokens ?? 0);
+        }
+        if (ev.modelUsage) {
+          for (const m of Object.values(ev.modelUsage)) {
+            if (m.contextWindow !== undefined) {
+              s.contextMax = m.contextWindow;
+              break;
+            }
+          }
+        }
+        if (ev.total_cost_usd !== undefined)
+          s.sessionCostUsd = (s.sessionCostUsd ?? 0) + ev.total_cost_usd;
+        const tokens = turnTokens(ev);
+        if (tokens !== undefined) s.sessionTokens = (s.sessionTokens ?? 0) + tokens;
+        break;
+      }
       case "agent_error":
         s.agentBusy = false;
+        break;
+      case "agent_status":
+        // "idle" (or a status-less event from a mid-upgrade server) clears;
+        // everything else replaces the signal whole.
+        if (!ev.status || ev.status === "idle") {
+          s.agentStatus = null;
+        } else {
+          const info: AgentStatusInfo = { status: ev.status };
+          if (ev.attempt !== undefined) info.attempt = ev.attempt;
+          if (ev.maxRetries !== undefined) info.maxRetries = ev.maxRetries;
+          if (ev.detail !== undefined) info.detail = ev.detail;
+          s.agentStatus = info;
+        }
         break;
     }
   }

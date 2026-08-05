@@ -10,6 +10,11 @@ export function PromptBar(props: {
   onSuggestSkill: (skill: string, args: string) => void;
   onClientCommand: (command: ClientCommand) => void;
   inputRef: React.RefObject<HTMLInputElement | null>;
+  /** Agent-surface §2: interrupt the running turn (`{type:"stop_turn"}`,
+   *  driver-gated server-side). The control renders only for a driver while
+   *  the agent is busy AND this handler is present — hidden otherwise, the
+   *  same posture as the sub-session ■ STOP (App). */
+  onStopTurn?: () => void;
 }) {
   const [text, setText] = useState("");
   const [hint, setHint] = useState<string | null>(null);
@@ -134,6 +139,15 @@ export function PromptBar(props: {
       {!props.isDriver && (
         <button className="btn gold dashed wide" onClick={props.onTakeWheel}>
           🛞 TAKE THE WHEEL
+        </button>
+      )}
+      {props.isDriver && props.agentBusy && props.onStopTurn && (
+        <button
+          className="btn"
+          onClick={props.onStopTurn}
+          title="stop the current turn — completed work stays on the record"
+        >
+          ■ STOP
         </button>
       )}
       <div className="statusline">

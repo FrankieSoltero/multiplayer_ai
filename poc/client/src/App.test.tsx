@@ -748,3 +748,82 @@ describe("App — §8.5 pull badge click-through (Task 11)", () => {
     expect((globalThis as any).window.location.search).toBe(startSearch);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Agent surface (§8.6 cycle 1, Task 6): App's wiring of the new wire payload —
+// the prompt-row ■ STOP sends stop_turn, the HUD reads the turn_end usage
+// numbers through derive, the thinking strip carries the agent_status line.
+// Component-level rendering lives in PromptBar/Header/Transcript tests; these
+// rows pin the wiring only.
+// ---------------------------------------------------------------------------
+describe("App — agent surface wiring (§8.6)", () => {
+  it("T6-stop-turn: PromptBar's onStopTurn sends {type:\"stop_turn\"} — and is wired in both themes", () => {
+    for (const theme of ["arcade", "clean"] as Theme[]) {
+      socket.current = baseSocket(driverEvents(), send); // driver + busy (bare tool_call)
+      const bar = promptBarOf(mount(SessionView as (p: unknown) => unknown, baseProps({ theme })).nodes())!;
+      expect(typeof bar.props.onStopTurn).toBe("function");
+      (bar.props.onStopTurn as () => void)();
+      expect(send).toHaveBeenCalledWith({ type: "stop_turn" });
+    }
+  });
+
+  it("T6-hud-feed: the turn_end usage payload reaches the Header hud prop", () => {
+    const events: LoggedEvent[] = [
+      ...driverEvents(),
+      evt({
+        type: "turn_end",
+        duration_ms: 4200,
+        usage: { input_tokens: 12000, output_tokens: 900, cache_read_input_tokens: 112000, cache_creation_input_tokens: 400 },
+        modelUsage: { "claude-opus-4-8": { contextWindow: 200000 } },
+        total_cost_usd: 0.31,
+      }, 10),
+    ];
+    socket.current = baseSocket(events, send);
+    // nodeOfType, not the file's headerOf: that one finds the sub-session
+    // view header (className), this needs the Header COMPONENT's hud prop.
+    const hud = nodeOfType(mount(SessionView as (p: unknown) => unknown, baseProps()).nodes(), Header)!
+      .props.hud as Record<string, unknown>;
+    expect(hud.elapsed).toBe("4.2s");
+    expect(hud.contextUsed).toBe(124400);
+    expect(hud.contextMax).toBe(200000);
+    expect(hud.partyXp).toBe(125300); // usage total: the session's honest counter
+  });
+
+  it("T6-hud-unfed: a log without the payload hands NO placeholder numbers", () => {
+    socket.current = baseSocket(driverEvents(), send); // no turn_end at all
+    // nodeOfType, not the file's headerOf: that one finds the sub-session
+    // view header (className), this needs the Header COMPONENT's hud prop.
+    const hud = nodeOfType(mount(SessionView as (p: unknown) => unknown, baseProps()).nodes(), Header)!
+      .props.hud as Record<string, unknown>;
+    expect("elapsed" in hud).toBe(false);
+    expect("contextUsed" in hud).toBe(false);
+    expect("contextMax" in hud).toBe(false);
+    expect("partyXp" in hud).toBe(false);
+    // The client-side counters are still there.
+    expect(hud.turn).toBe(1);
+    expect(hud.toolsUsed).toBe(1);
+  });
+
+  it("T6-status-line: compacting/retrying reach the ThinkingStrip statusLine; idle clears it", () => {
+    const compacting: LoggedEvent[] = [
+      ...driverEvents(),
+      evt({ type: "agent_status", status: "compacting" }, 10),
+    ];
+    socket.current = baseSocket(compacting, send);
+    let strip = nodeOfType(mount(SessionView as (p: unknown) => unknown, baseProps()).nodes(), ThinkingStrip)!;
+    expect(strip.props.statusLine).toBe("✦ compacting…");
+
+    const retrying: LoggedEvent[] = [
+      ...driverEvents(),
+      evt({ type: "agent_status", status: "retrying", attempt: 2, maxRetries: 5 }, 10),
+    ];
+    socket.current = baseSocket(retrying, send);
+    strip = nodeOfType(mount(SessionView as (p: unknown) => unknown, baseProps()).nodes(), ThinkingStrip)!;
+    expect(strip.props.statusLine).toBe("✦ retrying (2/5)…");
+
+    // idle (or no signal at all): the strip gets no status line.
+    socket.current = baseSocket(driverEvents(), send);
+    strip = nodeOfType(mount(SessionView as (p: unknown) => unknown, baseProps()).nodes(), ThinkingStrip)!;
+    expect(strip.props.statusLine).toBeUndefined();
+  });
+});
