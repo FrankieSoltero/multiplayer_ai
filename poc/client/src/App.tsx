@@ -340,6 +340,9 @@ export function SessionView(props: {
       requestId: newest.requestId,
       toolName: newest.toolName ?? "",
       ...(subLabel ? { subLabel } : {}),
+      // §8.6 cycle 2: carried through so the bar COULD offer ALWAYS — it
+      // deliberately does not (rule labels are unbounded; see GateBar.tsx).
+      ...(newest.ruleSuggestion ? { ruleSuggestion: newest.ruleSuggestion } : {}),
     };
   }, [events, derived.permissionDecisions]);
 
@@ -553,7 +556,10 @@ export function SessionView(props: {
     send({ type: "set_model", model: key });
   }
 
-  function sendPermission(requestId: string, decision: "allow" | "deny") {
+  function sendPermission(requestId: string, decision: "allow" | "deny" | "always") {
+    // §8.6 cycle 2: "always" sends the decision alone — the server already
+    // holds the gate's raw rule suggestion and refuses "always" when it held
+    // none, so the client never composes a rule itself.
     send({ type: "permission", requestId, decision });
   }
 

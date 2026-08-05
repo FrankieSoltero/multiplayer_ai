@@ -1574,16 +1574,23 @@ export async function startServer(opts: {
       if (msg.type === "permission") {
         if (
           typeof msg.requestId !== "string" ||
-          (msg.decision !== "allow" && msg.decision !== "deny")
+          (msg.decision !== "allow" && msg.decision !== "deny" && msg.decision !== "always")
         ) {
-          return sendError("permission requires requestId and decision allow|deny");
+          return sendError("permission requires requestId and decision allow|deny|always");
         }
         // Validated at DECISION time, not request time: wheel handoffs mid-
         // request are a feature (a teammate can drop in just to approve).
         if (!ctx.entry.session.canPrompt(ctx.userId)) {
           return sendError("only the current driver can decide permissions — take the wheel first");
         }
-        if (!ctx.entry.driver.resolvePermission(msg.requestId, msg.decision, ctx.userId)) {
+        const resolved = ctx.entry.driver.resolvePermission(msg.requestId, msg.decision, ctx.userId);
+        // ALWAYS installs the gate's held rule suggestion; a gate that carried
+        // none cannot be always-allowed — refused like a malformed decision
+        // (we cannot invent a rule). The gate stays pending and answerable.
+        if (resolved === "no_rule") {
+          return sendError("cannot always-allow: this request carried no rule suggestion from the agent");
+        }
+        if (resolved !== true) {
           return sendError("unknown or already-decided permission request");
         }
         return;

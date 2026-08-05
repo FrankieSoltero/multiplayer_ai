@@ -1,4 +1,4 @@
-import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, PermissionUpdate } from "@anthropic-ai/claude-agent-sdk";
 import fs from "node:fs";
 import path from "node:path";
 import type { DriverHooks } from "./agentDriver.js";
@@ -203,6 +203,41 @@ export function contestedWrite(
 const NO_CONTESTED: ReadonlySet<string> = new Set<string>();
 
 /**
+ * §8.6 cycle 2, plan §2.3: the destination of a rule the driver approved with
+ * ALWAYS is FORCED to "session", never taken from the SDK's suggestion. A
+ * suggestion naming userSettings/projectSettings/localSettings would write a
+ * file that outlives the session, affects other projects, and mutates the
+ * operator's own machine state — a driver's click must never do that. Every
+ * PermissionUpdate variant carries `destination` (sdk.d.ts:2114-2141), so the
+ * rewrite is a plain spread-and-override on any variant.
+ */
+export function forceSessionDestination(update: PermissionUpdate): PermissionUpdate {
+  return { ...update, destination: "session" };
+}
+
+/**
+ * The compact display form of the first addRules rule suggestion (e.g.
+ * `Bash(npm test:*)`), or `undefined` when the SDK suggested nothing a driver
+ * could ALWAYS-allow. Derived ONCE, server-side, at gate creation: the
+ * `ruleSuggestion` field it produces rides the `permission_request` event and
+ * the client never re-derives it. A rule with no `ruleContent` displays as the
+ * bare tool name (the whole tool, no qualifier). Suggestions of other types
+ * (setMode, directories, replace/remove) carry no rule text to display and are
+ * skipped — a gate whose suggestions are all non-addRules has no display form,
+ * so `undefined` and no ALWAYS affordance.
+ */
+export function ruleSuggestionDisplay(
+  suggestions: PermissionUpdate[] | undefined,
+): string | undefined {
+  const addRules = suggestions?.find((s) => s.type === "addRules");
+  if (!addRules || addRules.type !== "addRules") return undefined;
+  const rule = addRules.rules[0];
+  if (!rule) return undefined;
+  return rule.ruleContent ? `${rule.toolName}(${rule.ruleContent})` : rule.toolName;
+}
+
+
+/**
  * Why this write must stop being auto-approved, or `null` to leave every
  * existing auto-approval exactly as it was (spec §6b, §8a ruling 4).
  *
@@ -338,12 +373,34 @@ export function buildCanUseTool(hooks: DriverHooks): CanUseTool {
         // this call as display metadata. The driver maps `toolUseId` back to the
         // sub-agent's parent; both are passed verbatim under the SDK's names
         // (`toolUseID`, `agentID`). Never load-bearing — no gate policy reads it.
+        // §8.6 cycle 2: the SDK's gate enrichments (title/description/reason…)
+        // and the raw rule `suggestions` ride the same meta. The driver holds
+        // the suggestions with the pending gate — they are what an ALWAYS
+        // decision returns as session-scoped updatedPermissions below.
         hooks.onPermissionRequest(toolName, input, options.signal, {
           toolUseId: options.toolUseID,
           agentId: options.agentID,
+          suggestions: options.suggestions,
+          title: options.title,
+          displayName: options.displayName,
+          description: options.description,
+          decisionReason: options.decisionReason,
+          blockedPath: options.blockedPath,
+          matchedAskRule: options.matchedAskRule,
         }),
         abortsToDeny(options.signal),
       ]);
+      // ALWAYS (§8.6 cycle 2): the driver accepted the SDK's suggested rule.
+      // Resolve with EVERY suggestion's destination forced to "session"
+      // (plan §2.3 — forced, not suggested: a future SDK default must not leak
+      // rules into settings files). The driver only resolves "always" when it
+      // holds this call's suggestions, so the array is non-empty in practice.
+      if (decision === "always") {
+        return {
+          behavior: "allow",
+          updatedPermissions: (options.suggestions ?? []).map(forceSessionDestination),
+        };
+      }
       if (decision === "allow") return { behavior: "allow" };
       return {
         behavior: "deny",

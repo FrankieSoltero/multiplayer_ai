@@ -66,6 +66,23 @@ export type LoggedEvent = {
   /** Why this permission gate was opened, e.g. `contested with session alpha`
    *  (spec §6b). Optional so an event from an older server still parses. */
   reason?: string | null;
+  /** permission_request enrichments (§8.6 cycle 2, server Task 1): the SDK's
+   *  own title/displayName/decisionReason/blockedPath/matchedAskRule, and
+   *  `ruleSuggestion` — the server-derived display form of the first addRules
+   *  suggestion (e.g. `Bash(npm test:*)`), present only when an ALWAYS answer
+   *  is possible. `description` (above) doubles as the SDK's description.
+   *  All additive: a gate from an older server carries none of them and
+   *  renders exactly as before. */
+  title?: string;
+  displayName?: string;
+  decisionReason?: string;
+  blockedPath?: string;
+  matchedAskRule?: { source: string; ruleContent?: string };
+  ruleSuggestion?: string;
+  /** permission_decision "always" only (§8.6 cycle 2): the standing
+   *  approval's rule display form (the request's ruleSuggestion) — decider +
+   *  rule + timestamp is the record. Absent on allow/deny. */
+  rule?: string;
   game?: string;
   score?: number;
   action?: string;

@@ -350,6 +350,12 @@ code, pre { font-family: var(--fm); }
 }
 .perm-why { display: flex; gap: var(--sp-2); flex-wrap: wrap; color: var(--dim); }
 .perm-why .warn { color: var(--red); }
+/* §8.6 cycle 2: the SDK's own why (decisionReason / matched ask rule) — the
+   same quiet dim as perm-why, without its warn accents. Theme-token only.
+   .perm-desc is the SDK description sub-line under the title headline: same
+   quiet register. */
+.perm-note { color: var(--dim); }
+.perm-desc { color: var(--dim); }
 .perm-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 .perm-watchers { display: flex; gap: 5px; margin-left: auto; }
 .perm-outcome { color: var(--dim); }

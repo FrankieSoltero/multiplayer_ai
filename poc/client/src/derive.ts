@@ -35,7 +35,10 @@ export interface DerivedState {
   participants: Map<string, Participant>;
   objective: string | null;
   lastIntentSeq: number | null;
-  permissionDecisions: Map<string, { decision: string; userId: string; auto?: boolean }>;
+  /** Per-request decision fold. `rule` rides an "always" decision (§8.6
+   *  cycle 2): the standing approval's display form, so the outcome line can
+   *  name the rule beside the decider. Absent on allow/deny. */
+  permissionDecisions: Map<string, { decision: string; userId: string; auto?: boolean; rule?: string }>;
   model: string;
   agentBusy: boolean;
   skills: { name: string; description: string }[];
@@ -141,6 +144,9 @@ export function deriveState(events: LoggedEvent[]): DerivedState {
             decision: ev.decision,
             userId: ev.userId,
             ...(ev.auto ? { auto: true } : {}),
+            // §8.6 cycle 2: an "always" decision carries the rule's display
+            // form; carried through so the outcome line can name it.
+            ...(ev.rule ? { rule: ev.rule } : {}),
           });
         break;
       case "model_change":

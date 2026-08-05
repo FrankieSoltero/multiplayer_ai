@@ -176,3 +176,26 @@ describe("GateBar — bar-body keyboard a11y", () => {
     expect(onJump).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("GateBar — §8.6 cycle 2: ALWAYS stays card-only", () => {
+  it("a gate WITH a ruleSuggestion renders the bar byte-identically — no ALWAYS control here", () => {
+    // Documented in GateBar.tsx: rule labels are unbounded server-derived
+    // strings and the bar is a compact one-line pin, so ALWAYS lives on the
+    // gate card and the l hotkey. This pins that decision: the suggestion is
+    // carried on the gate (the bar COULD offer it) but never rendered.
+    const withRule = markupOf({
+      gate: { requestId: "r1", toolName: "Bash", ruleSuggestion: "Bash(npm test:*)" },
+    });
+    const without = markupOf({ gate: { requestId: "r1", toolName: "Bash" } });
+    expect(withRule).not.toContain("ALWAYS");
+    expect(withRule).toBe(without);
+
+    // The decide controls remain exactly a/d through the same onDecide.
+    const onDecide = vi.fn();
+    const nodes = hostNodes(
+      baseProps({ gate: { requestId: "r1", toolName: "Bash", ruleSuggestion: "Bash(npm test:*)" }, onDecide }),
+    );
+    const buttons = nodes.filter((n) => n.type === "button");
+    expect(buttons).toHaveLength(2); // [A]PPROVE, [D]ENY — nothing else
+  });
+});

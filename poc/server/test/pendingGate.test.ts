@@ -123,3 +123,41 @@ describe("pendingGateOf — the gate reason", () => {
     expect(pendingGateOf(events)?.reason).toBe(atCap);
   });
 });
+
+/** The §8.6 gate display fields (title/description/ruleSuggestion) — same
+ *  carrier discipline as `reason`: read off the permission_request EVENT,
+ *  conditional so an ordinary gate stays byte-identical. */
+describe("pendingGateOf — the §8.6 display fields", () => {
+  test("carries title/description/ruleSuggestion off the event", () => {
+    const event = {
+      type: "permission_request", requestId: "r1", toolName: "Bash", input: {},
+      title: "Claude wants to run npm test",
+      description: "Claude will run the test suite",
+      ruleSuggestion: "Bash(npm test:*)",
+      seq: 0, ts: "2026-08-03T10:00:00.000Z",
+    } as LoggedEvent;
+
+    expect(pendingGateOf([event])).toEqual({
+      toolName: "Bash",
+      sinceTs: "2026-08-03T10:00:00.000Z",
+      reason: null,
+      title: "Claude wants to run npm test",
+      description: "Claude will run the test suite",
+      ruleSuggestion: "Bash(npm test:*)",
+    });
+  });
+
+  test("an ordinary gate gains no new keys", () => {
+    const gate = pendingGateOf([req("r1", "Bash", "2026-08-03T10:00:00.000Z")]);
+    expect(gate).toEqual({ toolName: "Bash", sinceTs: "2026-08-03T10:00:00.000Z", reason: null });
+  });
+
+  test("clamps an over-long title to the 512-char cap", () => {
+    const event = {
+      type: "permission_request", requestId: "r1", toolName: "Bash", input: {},
+      title: "t".repeat(600), seq: 0, ts: "2026-08-03T10:00:00.000Z",
+    } as LoggedEvent;
+
+    expect(pendingGateOf([event])?.title).toBe("t".repeat(512));
+  });
+});

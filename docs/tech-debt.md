@@ -400,13 +400,17 @@ ships the wire (usage/cost, interrupt, error truth, compaction, summaries, roste
 items below were deliberately deferred. None of them rots on its own; the two flagged **watch**
 are the ones where every shipped cycle makes the eventual fix a bigger diff.
 
-- **Permission "always-allow" rules + the six SDK modes** — **watch.** Gate fatigue is the most
-  likely user complaint, and the existing divergence (relay `auto` is answered driver-side, never
-  sent to the SDK; the driver only ever sets `default`/`plan`) grows with every permission
-  feature added on the driver side. **Fixed looks like:** a design cycle for rule storage
-  (per project? per hub? who owns a rule in a multiplayer session?), mapping our three modes
-  onto the SDK's six, and surfacing the gate enrichments the driver currently drops
-  (`suggestions`/`updatedPermissions`, `title`/`displayName`, `matchedAskRule`).
+- **Permission "always-allow" rules + the six SDK modes** — **half shipped (cycle 2,
+  `feature/permission-rules`, 2026-08-04).** Always-allow is done: ALWAYS as a third driver
+  decision, the SDK's suggested rule returned as `updatedPermissions` with destination forced to
+  `"session"` (rule storage RESOLVED: session-scoped always, no files, dies with the session —
+  the multiplayer ruling in the plan), gate enrichments surfaced
+  (`title`/`displayName`/`description`/`decisionReason`/`matchedAskRule`/`ruleSuggestion`).
+  Accepted bound, named in the plan: session rules bypass `canUseTool`, so the contested-file
+  withdrawal does not run for rule-covered calls. **Still deferred — watch:** mapping our three
+  modes onto the SDK's six (`acceptEdits`/`bypassPermissions`/`dontAsk` remain unexposed); the
+  driver-side divergence (relay `auto` answered driver-side, never sent to the SDK) still grows
+  with every driver-side permission feature.
 - **Token-level streaming** (`includePartialMessages`) — safe to defer; guarded by the
   additive-only wire rule so old logs replay. **Fixed looks like:** a record-shape decision —
   streaming multiplies event volume (~50×) into an events table that is unbounded by default

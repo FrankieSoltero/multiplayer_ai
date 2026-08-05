@@ -8,11 +8,11 @@ export interface GateBarProps {
    *  `deriveSubSessions` label map (undefined -> no sub-label). `null` -> the
    *  bar renders nothing at all: sessions without a pending gate keep today's
    *  layout, byte for byte (regression floor). */
-  gate: { requestId: string; toolName: string; subLabel?: string } | null;
+  gate: { requestId: string; toolName: string; subLabel?: string; ruleSuggestion?: string } | null;
   isDriver: boolean;
   driverName?: string;
   driverGlyph?: string;
-  onDecide: (requestId: string, decision: "allow" | "deny") => void;
+  onDecide: (requestId: string, decision: "allow" | "deny" | "always") => void;
   onTakeWheel: () => void;
   /** Jump to the gate card in the transcript. The scroll target lands in Task 9;
    *  this task wires the callback so the bar body is already a jump affordance. */
@@ -33,6 +33,14 @@ export interface GateBarProps {
  * `.subagent-row` compact row (identical click-to-navigate pattern): the bar
  * body exposes button semantics (`role="button"`, `tabIndex={0}`) and jumps on
  * Enter and Space through the SAME handler as onClick.
+ *
+ * §8.6 cycle 2: the bar deliberately does NOT render the ALWAYS control, even
+ * though `ruleSuggestion` is carried on the gate. Rule labels are unbounded
+ * server-derived strings (`Edit(/very/long/path/**)`), and this bar is a
+ * compact one-line pin — a long `ALWAYS …` button would wrap the actions row
+ * (`.gatebar-actions` is flex-wrap) and break the pin's compactness. ALWAYS
+ * lives on the full gate card (and the `l` hotkey), one jump away via the bar
+ * body; the bar's own controls stay byte-identical to before.
  */
 export function GateBar(props: GateBarProps): JSX.Element | null {
   const { gate } = props;

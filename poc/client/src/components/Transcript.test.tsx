@@ -3,7 +3,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { deriveState } from "../derive";
 import type { LoggedEvent } from "../types";
-import { Transcript } from "./Transcript";
+import { Transcript, permissionHotkey } from "./Transcript";
 
 /** The permission gate's WHY line (spec §6b, "The gate's UI line names why").
  *
@@ -211,7 +211,7 @@ interface Over {
   events: LoggedEvent[];
   view?: string | null;
   isDriver?: boolean;
-  onPermission?: (requestId: string, decision: "allow" | "deny") => void;
+  onPermission?: (requestId: string, decision: "allow" | "deny" | "always") => void;
   onOpenSubSession?: (key: string) => void;
   onTakeWheel?: () => void;
 }
@@ -674,5 +674,178 @@ describe("Transcript — agent surface: compaction, rate limit, refusal fallback
       { seq: 3, ts, type: "agent_status", status: "retrying", attempt: 2, maxRetries: 5 },
     ]);
     expect(textLines(markup).some((l) => l.includes("compacting") || l.includes("retrying"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §8.6 cycle 2 — ALWAYS on gates (session-scoped rules) + enrichment text.
+// Everything additive: a gate with no ruleSuggestion and no enrichment fields
+// renders byte-identical to before (the subtraction tests below pin it).
+// ---------------------------------------------------------------------------
+
+const RULE = "Bash(npm test:*)";
+const ALWAYS_BUTTON =
+  '<button class="btn gold" title="allow for the rest of this session (hotkey: l)">ALWAYS Bash(npm test:*)</button>';
+
+describe("Transcript — §8.6 cycle 2: ALWAYS on gates", () => {
+  it("renders the ALWAYS button iff the gate carried a ruleSuggestion, labeled with the rule (driver)", () => {
+    const withRule = markupOfEl({ events: [JOIN, gate({ ruleSuggestion: RULE })], isDriver: true });
+    expect(withRule).toContain(ALWAYS_BUTTON);
+
+    // No suggestion → no ALWAYS control, and the card is byte-identical to
+    // the pre-task render (the subtraction must close the gap exactly).
+    const without = markupOfEl({ events: [JOIN, gate()], isDriver: true });
+    expect(without).not.toContain("ALWAYS");
+    expect(withRule.replace(ALWAYS_BUTTON, "")).toBe(without);
+  });
+
+  it("clicking ALWAYS invokes the SAME onPermission callback with decision 'always'", () => {
+    const onPermission = vi.fn();
+    const events = [JOIN, gate({ ruleSuggestion: RULE })];
+    const nodes = renderTree(element({ events, isDriver: true, onPermission }));
+    // The driver's actions row: green/red as before, plus the gold ALWAYS.
+    const approve = nodes.find((n) => n.type === "button" && hasClass(n, "green"));
+    const deny = nodes.find((n) => n.type === "button" && hasClass(n, "red"));
+    const always = nodes.find((n) => n.type === "button" && hasClass(n, "gold"));
+    expect(approve).toBeDefined();
+    expect(deny).toBeDefined();
+    expect(always).toBeDefined();
+    (always!.props.onClick as () => void)();
+    expect(onPermission).toHaveBeenCalledWith("r1", "always");
+    // …and a/d still hit the identical callback with their own decisions.
+    (approve!.props.onClick as () => void)();
+    expect(onPermission).toHaveBeenCalledWith("r1", "allow");
+    (deny!.props.onClick as () => void)();
+    expect(onPermission).toHaveBeenCalledWith("r1", "deny");
+  });
+
+  it("never offers ALWAYS to a non-driver, even with a suggestion", () => {
+    const events = [JOIN, gate({ ruleSuggestion: RULE })];
+    const markup = markupOfEl({ events, isDriver: false });
+    expect(markup).not.toContain("ALWAYS");
+    expect(markup).toContain("⏳ driver deciding…");
+    const nodes = renderTree(element({ events, isDriver: false }));
+    expect(nodes.some((n) => n.type === "button" && hasClass(n, "gold"))).toBe(false);
+  });
+
+  it("renders no ALWAYS button on a DECIDED gate, suggestion or not", () => {
+    const events = [JOIN, gate({ ruleSuggestion: RULE }), DECISION];
+    expect(markupOfEl({ events, isDriver: true })).not.toContain("ALWAYS");
+  });
+
+  it("an 'always' decision renders the standing-approval outcome line with decider + rule", () => {
+    const ALWAYS_DECISION: LoggedEvent = {
+      seq: 3,
+      ts,
+      type: "permission_decision",
+      requestId: "r1",
+      decision: "always",
+      userId: "frank",
+      rule: RULE,
+    };
+    const events = [JOIN, gate({ ruleSuggestion: RULE }), ALWAYS_DECISION];
+    const text = textLines(markupOf(events)).join("\n");
+    expect(text).toContain(`✅ always allowed by Frank · ${RULE} · rule lives for this session`);
+    expect(text).toContain("DECIDED");
+    // …in the same outcome idiom as approve/deny: no actions row remains.
+    expect(markupOf(events)).toContain("perm-outcome");
+    expect(markupOf(events)).not.toContain("perm-actions");
+  });
+
+  it("an 'always' decision WITHOUT a rule (older server) still names the decider and the session scope", () => {
+    const events: LoggedEvent[] = [
+      JOIN,
+      gate(),
+      { seq: 3, ts, type: "permission_decision", requestId: "r1", decision: "always", userId: "frank" },
+    ];
+    const text = textLines(markupOf(events)).join("\n");
+    expect(text).toContain("✅ always allowed by Frank · rule lives for this session");
+  });
+});
+
+describe("Transcript — §8.6 cycle 2: the l hotkey mapping (permissionHotkey)", () => {
+  it("maps a/d exactly as before", () => {
+    expect(permissionHotkey("a", { ruleSuggestion: RULE })).toBe("allow");
+    expect(permissionHotkey("a", undefined)).toBe("allow");
+    expect(permissionHotkey("d", { ruleSuggestion: RULE })).toBe("deny");
+    expect(permissionHotkey("d", undefined)).toBe("deny");
+  });
+
+  it("l maps to 'always' ONLY when the gate carried a ruleSuggestion — otherwise a no-op", () => {
+    expect(permissionHotkey("l", { ruleSuggestion: RULE })).toBe("always");
+    expect(permissionHotkey("l", undefined)).toBeNull();
+    expect(permissionHotkey("l", {})).toBeNull();
+    expect(permissionHotkey("l", { ruleSuggestion: "" })).toBeNull();
+    expect(permissionHotkey("x", { ruleSuggestion: RULE })).toBeNull();
+  });
+});
+
+describe("Transcript — §8.6 cycle 2: gate enrichment text", () => {
+  const enriched = (over: Partial<LoggedEvent> = {}) =>
+    gate({
+      title: "Run the test suite?",
+      description: "npm test in the project root",
+      decisionReason: "the SDK asked for confirmation",
+      matchedAskRule: { source: "userSettings", ruleContent: "Bash(npm:*)" },
+      ...over,
+    });
+
+  it("the SDK title REPLACES the reconstructed tool+auto-approve headline when present", () => {
+    const text = textLines(markupOf([JOIN, enriched()])).join("\n");
+    expect(text).toContain("Run the test suite?");
+    expect(text).not.toContain(EXISTING_LINE); // "the agent wants to use"
+    // …while an untitled gate keeps the reconstructed headline, byte-identical.
+    const plain = markupOf([JOIN, gate()]);
+    expect(textLines(plain).join("\n")).toContain(EXISTING_LINE);
+    expect(plain).not.toContain("Run the test suite?");
+  });
+
+  it("renders description as a sub-line and decisionReason/matchedAskRule as quiet notes", () => {
+    const markup = markupOf([JOIN, enriched()]);
+    const text = textLines(markup).join("\n");
+    expect(text).toContain("npm test in the project root");
+    expect(markup).toContain('class="perm-desc"');
+    expect(text).toContain("the SDK asked for confirmation");
+    expect(text).toContain("matched your userSettings rule: Bash(npm:*)");
+    expect(markup).toContain('class="perm-note"');
+  });
+
+  it("a matchedAskRule without ruleContent still names the source", () => {
+    const text = textLines(
+      markupOf([JOIN, gate({ matchedAskRule: { source: "projectSettings" } })]),
+    ).join("\n");
+    expect(text).toContain("matched your projectSettings rule");
+  });
+
+  it("a gate with NO enrichment renders byte-identical to today (per-field subtraction)", () => {
+    const base = markupOf([JOIN, gate()]);
+    expect(base).not.toContain("perm-desc");
+    expect(base).not.toContain("perm-note");
+
+    // description: subtracting its node must close the gap exactly.
+    const withDesc = markupOf([JOIN, gate({ description: "npm test in the project root" })]);
+    expect(
+      withDesc.replace('<div class="perm-desc">npm test in the project root</div>', ""),
+    ).toBe(base);
+
+    // decisionReason: same subtraction.
+    const withReason = markupOf([JOIN, gate({ decisionReason: "the SDK asked for confirmation" })]);
+    expect(
+      withReason.replace('<div class="perm-note">the SDK asked for confirmation</div>', ""),
+    ).toBe(base);
+
+    // title: swapping its headline node for the reconstructed one closes the gap.
+    const withTitle = markupOf([JOIN, gate({ title: "Run the test suite?" })]);
+    expect(
+      withTitle.replace(
+        '<div class="perm-what">Run the test suite?</div>',
+        "<div class=\"perm-what\">the agent wants to use <b>Write</b> — not on the auto-approve list</div>",
+      ),
+    ).toBe(base);
+  });
+
+  it("treats empty-string enrichment as absent", () => {
+    const base = markupOf([JOIN, gate()]);
+    expect(markupOf([JOIN, gate({ title: "", description: "", decisionReason: "" })])).toBe(base);
   });
 });

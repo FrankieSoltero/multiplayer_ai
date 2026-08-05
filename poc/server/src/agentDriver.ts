@@ -1,10 +1,11 @@
-import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool, type PermissionUpdate } from "@anthropic-ai/claude-agent-sdk";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AsyncQueue } from "./asyncQueue.js";
 import { MODELS, DEFAULT_MODEL, modelRoster, type ModelKey } from "./models.js";
-import { buildCanUseTool, contestedWriteReason, FILE_WRITE_TOOLS } from "./permissions.js";
+import { buildCanUseTool, contestedWriteReason, ruleSuggestionDisplay, FILE_WRITE_TOOLS } from "./permissions.js";
+import { GATE_REASON_CAP } from "./collisions.js";
 import type { Session } from "./session.js";
 import type { ModelUsageInfo, SessionEvent, SkillInfo, TodoItem } from "./events.js";
 
@@ -91,6 +92,28 @@ export interface SdkMessage {
   error?: string;
 }
 
+/**
+ * Display metadata + rule suggestions handed from `buildCanUseTool` to the
+ * driver-ask hook, verbatim from the SDK's canUseTool options
+ * (sdk.d.ts:206-266). `toolUseId`/`agentID` are the sub-session attribution
+ * ids (§2.2). The rest (§8.6 cycle 2) rides the `permission_request` event as
+ * additive enrichment text; `suggestions` is held RAW with the pending gate —
+ * an ALWAYS decision returns them as session-scoped `updatedPermissions`, and
+ * a gate holding none cannot be ALWAYS-allowed (the server refuses it).
+ * Never load-bearing for gate policy.
+ */
+export interface PermissionRequestMeta {
+  toolUseId?: string;
+  agentId?: string;
+  suggestions?: PermissionUpdate[];
+  title?: string;
+  displayName?: string;
+  description?: string;
+  decisionReason?: string;
+  blockedPath?: string;
+  matchedAskRule?: { source: string; toolName?: string; ruleContent?: string };
+}
+
 export interface DriverHooks {
   onIntent: (text: string) => void;
   /**
@@ -99,13 +122,16 @@ export interface DriverHooks {
    * DIFFERENT user than when the request was raised (wheel handoffs are a
    * feature: a teammate can drop in specifically to approve something).
    * The promise intentionally has no timeout; the agent waits.
+   * "always" (§8.6 cycle 2) resolves only when the gate held rule
+   * suggestions; `buildCanUseTool` maps it to allow + session-forced
+   * updatedPermissions.
    */
   onPermissionRequest: (
     toolName: string,
     input: unknown,
     signal?: AbortSignal,
-    meta?: { toolUseId?: string; agentId?: string },
-  ) => Promise<"allow" | "deny">;
+    meta?: PermissionRequestMeta,
+  ) => Promise<"allow" | "deny" | "always">;
   /** Surface a permission-flow failure into the session log (agent_error). */
   onPermissionError?: (message: string) => void;
   /**
@@ -340,6 +366,12 @@ export class AgentDriver {
   // main-agent gate. Resolved once at request time and stored so every decision
   // path (driver resolve, auto sweep, stream-death/abort deny) inherits the same
   // attribution the request event carried.
+  // `suggestions`/`ruleSuggestion` (§8.6 cycle 2): the SDK's raw rule
+  // suggestions held with the gate, and the compact display form derived from
+  // them at request time. Both absent together — a gate with no addRules
+  // suggestion holds NOTHING, and `resolvePermission` refuses "always" for it
+  // (a rule cannot be invented). The display form is what the decision event
+  // records as `rule`.
   private pendingPermissions = new Map<
     string,
     {
@@ -347,7 +379,9 @@ export class AgentDriver {
       input: unknown;
       contestedPath: string | null;
       parentToolUseId?: string;
-      resolve: (d: "allow" | "deny") => void;
+      suggestions?: PermissionUpdate[];
+      ruleSuggestion?: string;
+      resolve: (d: "allow" | "deny" | "always") => void;
     }
   >();
   private pendingPlans = new Map<string, (d: "approve" | "reject") => void>();
@@ -439,6 +473,16 @@ export class AgentDriver {
         // withdrawal is in `default` mode, and it is this line that puts the
         // reason on its `permission_request` event. `null` = nothing changes.
         const contested = contestedWriteReason(toolName, input, this.contestedHooks());
+        // §8.6 cycle 2: derive the rule's display form ONCE, here, from the raw
+        // suggestions the SDK handed over via meta. The pair is held with the
+        // gate (or neither is): no addRules suggestion → no display form → no
+        // ALWAYS affordance on the wire and "always" is refused at decision
+        // time. The client never re-derives this string.
+        const ruleSuggestion = ruleSuggestionDisplay(meta?.suggestions);
+        // SDK-provided enrichment strings are unbounded; clamp each to the same
+        // cap the gate reason already lives under so the log stays bounded.
+        const gateCap = (s: string): string => s.slice(0, GATE_REASON_CAP);
+        const matchedAskRule = meta?.matchedAskRule;
         if (this.permissionMode === "auto" && contested === null) {
           this.session.append({
             type: "permission_request",
@@ -457,8 +501,8 @@ export class AgentDriver {
           });
           return Promise.resolve("allow" as const);
         }
-        let resolve!: (d: "allow" | "deny") => void;
-        const pending = new Promise<"allow" | "deny">((res) => {
+        let resolve!: (d: "allow" | "deny" | "always") => void;
+        const pending = new Promise<"allow" | "deny" | "always">((res) => {
           resolve = res;
         });
         // Register the resolver BEFORE appending, so a subscriber that
@@ -468,6 +512,10 @@ export class AgentDriver {
           input,
           contestedPath: contested?.path ?? null,
           ...(parentToolUseId ? { parentToolUseId } : {}),
+          // The raw suggestions are held ONLY when a displayable addRules rule
+          // exists among them — that is exactly the set an ALWAYS answer can
+          // install, and the refusal test at decision time.
+          ...(ruleSuggestion ? { suggestions: meta?.suggestions, ruleSuggestion } : {}),
           resolve,
         });
         this.session.append({
@@ -481,6 +529,25 @@ export class AgentDriver {
           ...(contested === null ? {} : { reason: contested.reason }),
           // Same conditional-spread discipline for attribution: absent → no key.
           ...(parentToolUseId ? { parentToolUseId } : {}),
+          // §8.6 cycle 2: the SDK's enrichment text and the derived rule
+          // display, same discipline — a gate the SDK said nothing about is
+          // byte-identical to today's.
+          ...(meta?.title ? { title: gateCap(meta.title) } : {}),
+          ...(meta?.displayName ? { displayName: gateCap(meta.displayName) } : {}),
+          ...(meta?.description ? { description: gateCap(meta.description) } : {}),
+          ...(meta?.decisionReason ? { decisionReason: gateCap(meta.decisionReason) } : {}),
+          ...(meta?.blockedPath ? { blockedPath: gateCap(meta.blockedPath) } : {}),
+          ...(matchedAskRule
+            ? {
+                matchedAskRule: {
+                  source: gateCap(matchedAskRule.source),
+                  ...(matchedAskRule.ruleContent
+                    ? { ruleContent: gateCap(matchedAskRule.ruleContent) }
+                    : {}),
+                },
+              }
+            : {}),
+          ...(ruleSuggestion ? { ruleSuggestion } : {}),
         });
         // The SDK aborts canUseTool calls (e.g. the underlying tool_use
         // was interrupted/superseded) independently of any driver
@@ -653,22 +720,30 @@ export class AgentDriver {
   /**
    * Resolve a pending permission request. Validated by the caller (server)
    * to be the session's CURRENT driver — which may be a different user than
-   * when the request was raised. Returns false for unknown or
-   * already-decided requestIds.
+   * when the request was raised. Returns "unknown" for unknown or
+   * already-decided requestIds, and "no_rule" when the decision is "always"
+   * but the gate held no rule suggestion — ALWAYS installs the SDK's
+   * suggested rule, and a rule cannot be invented for a gate the SDK made no
+   * suggestion on, so that decision is refused like a malformed one (nothing
+   * appended, the gate stays pending and answerable).
    */
   resolvePermission(
     requestId: string,
-    decision: "allow" | "deny",
+    decision: "allow" | "deny" | "always",
     userId: string,
-  ): boolean {
+  ): true | "unknown" | "no_rule" {
     const pending = this.pendingPermissions.get(requestId);
-    if (!pending) return false;
+    if (!pending) return "unknown";
+    if (decision === "always" && pending.ruleSuggestion === undefined) return "no_rule";
     this.pendingPermissions.delete(requestId);
     this.session.append({
       type: "permission_decision",
       requestId,
       decision,
       userId,
+      // ALWAYS is a standing approval: the record (plan §0.3, D11) is decider +
+      // rule display + timestamp. Only "always" carries `rule`.
+      ...(decision === "always" ? { rule: pending.ruleSuggestion } : {}),
       // Inherit the request's sub-session attribution (§2.2); absent → no key.
       ...(pending.parentToolUseId ? { parentToolUseId: pending.parentToolUseId } : {}),
     });
