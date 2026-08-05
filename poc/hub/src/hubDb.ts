@@ -14,8 +14,8 @@ import type {
 /** Bumped only by a migration. A DB stamped higher than this is refused at boot
  *  rather than read with the wrong assumptions (spec §3.2, §3.6); a DB stamped
  *  LOWER is migrated forward at open (v1→v2 adds `devices`, v2→v3 adds the
- *  project-invite tables). */
-export const SCHEMA_VERSION = 3;
+ *  project-invite tables, v3→v4 adds `project_oversight`). */
+export const SCHEMA_VERSION = 4;
 
 /** The v2 addition (spec §A2, §A3): revocable device records for uplink auth,
  *  read per-lookup and never hydrated into `HubStore`. Its own constant so the
@@ -48,6 +48,18 @@ const INVITES_DDL = `CREATE TABLE IF NOT EXISTS invites
 CREATE TABLE IF NOT EXISTS invite_redemptions
                 (invite_id TEXT NOT NULL, user_id TEXT NOT NULL,
                  PRIMARY KEY (invite_id, user_id));`;
+
+/** The v4 addition (plan 2026-08-04-hub-oversight §2a): one row per project
+ *  holding whether oversight is on and the latest rolled-up summary. Like the
+ *  DDL constants above, its own constant so the fresh-file sweep and the v3→v4
+ *  migration create it from ONE source of truth. `enabled` is an integer flag
+ *  (SQLite has no boolean), defaulting off so a project with no row and a
+ *  project explicitly disabled read the same. `summary`/`ts` are nullable —
+ *  no summary has been produced yet — and `seq` monotonically stamps each
+ *  saved summary so a later write cannot be shadowed by a stale one. */
+const OVERSIGHT_DDL = `CREATE TABLE IF NOT EXISTS project_oversight
+                (project_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
+                 summary TEXT, seq INTEGER NOT NULL DEFAULT 0, ts TEXT);`;
 
 /** Verbatim from spec §3.2. `IF NOT EXISTS` because opening an existing record
  *  is the normal case and creating one is the exception.
@@ -82,6 +94,7 @@ CREATE TABLE IF NOT EXISTS events
                  PRIMARY KEY (project_id, session_id, id));
 ${DEVICES_DDL}
 ${INVITES_DDL}
+${OVERSIGHT_DDL}
 `;
 
 const MEMORY_PATH = ":memory:";
@@ -117,6 +130,12 @@ interface EventRowOut {
   id: number;
   run_id: string;
   event_json: string;
+}
+interface OversightRowOut {
+  enabled: number;
+  summary: string | null;
+  seq: number;
+  ts: string | null;
 }
 
 /** The revocable-device record (spec §A2, §A3), served per-lookup and never
@@ -382,8 +401,9 @@ export class HubDb implements HubPersister, DeviceStore, HubInviteStore {
   }
 
   /** Migrates an older record up to `SCHEMA_VERSION`, forward only and additive:
-   *  v1→v2 adds the `devices` table, v2→v3 adds the invite tables, each landing
-   *  with the stamp bump. Two invariants make a crash mid-migration a non-event:
+   *  v1→v2 adds the `devices` table, v2→v3 adds the invite tables, v3→v4 adds
+   *  `project_oversight`, each landing with the stamp bump. Two invariants make
+   *  a crash mid-migration a non-event:
    *
    *  1. **Backup first.** A file (never `:memory:`, which has nothing to lose)
    *     is copied to `<dbPath>.v<found>.bak` while it is still pure v<found> —
@@ -409,6 +429,7 @@ export class HubDb implements HubPersister, DeviceStore, HubInviteStore {
       // picks up BOTH arms on its way to current.
       if (found < 2) this.db.exec(DEVICES_DDL);
       if (found < 3) this.db.exec(INVITES_DDL);
+      if (found < 4) this.db.exec(OVERSIGHT_DDL);
       this.db
         .prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'")
         .run(String(SCHEMA_VERSION));
@@ -809,6 +830,48 @@ export class HubDb implements HubPersister, DeviceStore, HubInviteStore {
       .prepare("UPDATE invites SET revoked = 1 WHERE id = ? AND project_id = ?")
       .run(id, projectId);
     return result.changes > 0;
+  }
+
+  /** The oversight row for a project, or `null` when none has been written —
+   *  the same "unknown is null" contract the device and invite lookups keep.
+   *  `enabled` is decoded from its integer flag back to a boolean here, so no
+   *  caller has to remember SQLite stores it as 0/1. */
+  getOversight(
+    projectId: string,
+  ): { enabled: boolean; summary: string | null; seq: number; ts: string | null } | null {
+    const row = this.db
+      .prepare("SELECT enabled, summary, seq, ts FROM project_oversight WHERE project_id = ?")
+      .get(projectId) as OversightRowOut | undefined;
+    return row
+      ? { enabled: row.enabled !== 0, summary: row.summary, seq: row.seq, ts: row.ts }
+      : null;
+  }
+
+  /** Turn oversight on or off for a project. An upsert on `project_id` that
+   *  touches `enabled` ONLY: a first write mints the row (summary null, seq 0,
+   *  ts null by DDL default), a later write flips the flag and leaves any saved
+   *  summary exactly where it was. */
+  setOversightEnabled(projectId: string, enabled: boolean): void {
+    this.db
+      .prepare(
+        `INSERT INTO project_oversight (project_id, enabled) VALUES (?, ?)
+           ON CONFLICT(project_id) DO UPDATE SET enabled = excluded.enabled`,
+      )
+      .run(projectId, enabled ? 1 : 0);
+  }
+
+  /** Save the latest rolled-up summary for a project. An upsert on `project_id`
+   *  that writes summary, seq and ts together and leaves `enabled` alone (a
+   *  first write mints the row at the DDL default of off), so persisting a
+   *  summary never silently turns oversight on. */
+  saveOversightSummary(projectId: string, summary: string, seq: number, ts: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO project_oversight (project_id, summary, seq, ts) VALUES (?, ?, ?, ?)
+           ON CONFLICT(project_id) DO UPDATE SET
+             summary = excluded.summary, seq = excluded.seq, ts = excluded.ts`,
+      )
+      .run(projectId, summary, seq, ts);
   }
 
   /** Token-shape check first (exactly 32 base64url chars — anything else is
