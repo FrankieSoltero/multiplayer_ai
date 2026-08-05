@@ -1,86 +1,124 @@
-# Multiplayer AI — Research + PoC
+# multiplayer_ai
 
-Exploration of YC's Fall 2026 "Multiplayer AI" RFS: shared live agent sessions
-for dev teams. See `docs/research-report.md` for the research and
-`docs/superpowers/specs/` for the design.
+**A team hub for agent-assisted engineering.** Engineers attach their laptops to one
+shared hub, open the repos they're working in, and run coding agents there. Everyone can
+see what everyone else is doing, drop into anyone's session, and take control of a live
+agent run mid-task.
 
-## Run the PoC
+The thesis (and what makes this different from "shared AI workspace" products): **sessions
+stay isolated — only enough signal is shared for people and agents to avoid colliding.**
+The unit of sharing is *awareness* (who is doing what, right now), not artifact. The
+primitive the whole product defends is **transfer of control over a live agent run between
+people** — the headline case being a teammate who drops in solely to answer a pending 🔐
+permission gate and leaves.
 
-1. `cd poc/server && cp .env.example .env` and set `ANTHROPIC_API_KEY`
-   (or rely on an active `claude` / `ant auth login` credential).
-2. `cd poc/server && npm install && npm run dev` — server on ws://localhost:3001
-3. `cd poc/client && npm install && npm run dev` — UI on http://localhost:5173
-4. Open http://localhost:5173 in **two tabs**. Each tab first hits the
-   **lobby**: pick a name (a glyph + color are auto-assigned, both editable)
-   and join. Appending `?name=...` to the URL bypasses the lobby and joins
-   directly — handy for demo scripts. Tab A is driving; prompt the agent, and
-   optionally switch its model via the header picker (only the current
-   driver can). Tab B watches the same stream live, clicks "Take the wheel",
-   and redirects the agent mid-task.
+Product of record: [`docs/PRD.md`](docs/PRD.md). All feature sections (§8.1–§8.9) are at
+their stated final state; §8.10's real-box verification runs via
+[`deploy/multi-machine-test.md`](deploy/multi-machine-test.md).
 
-## Run the v2 multi-session demo
+## The model
 
-1. `poc/scripts/demo-setup.sh` — creates a demo repo + `ana`/`ben` worktrees.
-2. `cd poc/server && AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees npm run dev`
-3. `cd poc/client && npm run dev`
-4. Tab A: http://localhost:5173/?project=demo&session=ana — prompt: an auth→JWT
-   migration task. The agent declares its intent (✦) and it appears in Tab B's
-   PARTY pane.
-5. Tab B: http://localhost:5173/?project=demo&session=ben — prompt: a
-   rate-limiting task *without mentioning Ana*. Ben's agent should acknowledge
-   Ana's in-flight migration via the injected `<teammates>` digest.
+```
+hub → project → session → sub-session
+                  ↑
+             (one repo, one machine, one git worktree)
+```
 
-## Run the v3 full-capabilities demo
+- **Hub** — one per team, self-hosted. Owns identity (GitHub OAuth + allowlist), the
+  project directory, and the durable record. Runs no agent, holds no API key*, clones no
+  repo. (*except the optional hub-side oversight summarizer's key.)
+- **Machine** — a laptop running `mpai --hub <url>`, headless. It contributes repos and
+  runs the agents on its owner's own credentials. Laptops dial outbound; no inbound ports.
+- **Project** — a bounded piece of work: repos + people + sessions + a record, with a
+  lifecycle (active → closed → archived) and project-scoped invites.
+- **Session** — one agent in one repo in its own worktree: participants, one driver at a
+  time, a transcript, a permission gate. Sessions can spawn sub-agent **sub-sessions**,
+  viewed by swapping within the parent.
 
-Setup is the same as v2 (demo-setup.sh, `AGENT_WORKDIR_ROOT`, two tabs), except
-the server start line for v3 is:
+## What's built
 
-`cd poc/server && AGENT_WORKDIR_ROOT=$(pwd)/../demo-worktrees AGENT_PLUGINS_ROOT=$(pwd)/../demo-plugins npm run dev`
+- **Identity & access** — GitHub OAuth with a fail-closed allowlist; laptops pair via
+  short-lived codes into revocable, hash-stored device bearers.
+- **Control transfer** — watch any session live, take the wheel mid-task (including
+  straight from an undecided permission card), drive an agent running on someone else's
+  machine, proven end to end across the relay.
+- **Permission gates** — driver-gated approve/deny with a pinned gate bar, hotkeys,
+  SDK-enriched gate text, and session-scoped **ALWAYS** rules (a driver's click never
+  writes settings files; rules die with the session and land on the record with decider).
+- **The agent surface** — live usage/cost/context HUD, mid-turn ■ STOP, truthful
+  error/compaction/rate-limit reporting, model picker — including **local models** through
+  a LiteLLM shim ([`deploy/local-models.md`](deploy/local-models.md)).
+- **Awareness** — presence, pull notifications, cross-session contested-file detection
+  (`⚠ CONTESTED` when two sessions touch the same file, with the auto-approve downgraded
+  to an ask), and **hub-side oversight**: a team summarizer running on the hub across all
+  machines, member-toggled, persisted, and fed to every agent's `team_update` tool.
+- **The record** — durable SQLite on the hub (WAL, single-writer lock), hot `VACUUM INTO`
+  backups, opt-in retention with sequence continuity, replay on restart. The record is
+  the product; teardown docs say "keep hub.db" for a reason.
+- **Presentation** — a 90s-terminal arcade theme and a quieter Clean theme over one
+  component tree, switchable per user at runtime; playable mini-games in the thinking
+  strip.
+- **Hub operations** — fail-closed boot config, origin checks, per-IP rate limits,
+  connection caps, backpressure closes, disk-headroom refusal, TLS/systemd/firewall
+  deploy artifacts.
 
-New in v3:
+## Quickstart — solo mode (no hub)
 
-- Agents have the full Claude Code tool set (Bash, subagents, web tools,
-  project skills). Test/type-check/read-only-git commands run without asking;
-  any other Bash command (or Task/WebSearch/WebFetch/...) shows a 🔐 approval
-  card. Only the current driver can Approve/Deny — and taking the wheel lets a
-  teammate decide a pending request (drop in just to approve something).
-- The demo repo ships a project skill (`.claude/skills/auth-migration-guide/`);
-  ask the ana agent to "migrate auth to JWT" and it should consult the skill.
-  As of v6c, skills plugins are imported per-project from the skills screen
-  by git URL (`AGENT_PLUGINS_ROOT` sets where clones land); every session
-  started after an import runs with Claude Code's built-in skills
-  (`skills: "all"`) plus that project's imported plugin skills.
+Plain `mpai` keeps a local single-machine mode: run the server and client from source and
+open two browser tabs to try driving/watching/take-the-wheel.
 
-### Residual risk (PoC scope)
+```bash
+cd poc/server && cp .env.example .env   # set ANTHROPIC_API_KEY, or rely on claude CLI creds
+npm install && npm run dev              # ws://localhost:3001
+cd ../client && npm install && npm run dev   # http://localhost:5173
+```
 
-The Bash auto-approve allowlist (`npm test`, `npx vitest`, `npx tsc`, `git
-status`/`diff`/`log`) runs commands whose *behavior* an agent can still
-steer via config or scripts it authored in its own worktree — e.g. a
-`package.json` test script, `vitest.config`, `tsc --outDir`/`-p`, or a `git
---output` argument — none of which the containment check inspects. So a
-worktree-authored file plus an allowlisted command can reach outside the
-worktree with no driver approval in the loop. OS-level sandboxing
-(containers, restricted filesystem permissions, etc.) is explicitly out of
-scope for this PoC per the spec; this is the residual boundary until that
-lands.
+## Run a team hub
 
-## Run the v4 design pass
+One command on a fresh Ubuntu/Debian box:
 
-Setup is the same as above. New in v4:
+```bash
+sudo HUB_HOSTNAME=hub.yourdomain.com REPO_URL=<this-repo-url> bash deploy/hub/setup.sh
+```
 
-- The client UI is a faithful terminal shell (monospace, box-drawing frames,
-  `⏺`/`⎿`/`✦`/`🛞`/`🔐` glyphs) instead of a plain dark web app.
-- Joining goes through a **lobby**: pick a name, glyph, and color before
-  entering a session (`?name=...` in the URL bypasses it).
-- The **PARTY pane** replaces the old teammates sidebar, showing the session
-  roster with each participant's glyph/color and current quest line.
-- Agent intents render as a `✦` objective quest-log entry in the transcript.
-- Each session's driver can pick the agent's model (opus/sonnet/haiku) from a
-  header select; switches apply between turns and are logged as a visible
-  `model_change` event.
-- While the agent is working, the thinking strip shows a small playable dino
-  mini-game in place of a static spinner.
+Then fill the four secrets it names (`GITHUB_CLIENT_ID/SECRET`, `GITHUB_ALLOWLIST`,
+`ANTHROPIC_API_KEY`) in `/etc/multiplayer-ai/hub.env` and `systemctl start
+multiplayer-ai-hub`. Full reference: [`deploy/hub/RUNBOOK.md`](deploy/hub/RUNBOOK.md)
+(install, pairing, backup/restore, disk-full recovery, revocation, upgrades).
 
-## Tests
+Each laptop then attaches with:
 
-`cd poc/server && npm test`
+```bash
+mpai --hub wss://hub.yourdomain.com/uplink --root <repo-path> --root <repo-path>
+```
+
+approving its pairing code from a signed-in browser. The CLI prints `dialing hub …` and
+reports `attached` only after the hub's real handshake — a wrong URL warns loudly instead
+of failing silently.
+
+There is deliberately no hosted/multi-tenant offering: every team runs its own hub, owns
+its own record, and allowlists its own people (PRD §2, decision D1).
+
+## Development
+
+Three packages, three suites — run them from their own directories:
+
+```bash
+cd poc/server && npx tsc --noEmit && npx vitest run
+cd poc/hub    && npm --prefix ../server run build && npx tsc --noEmit && npx vitest run
+cd poc/client && npx tsc -b && npx vitest run
+```
+
+The hub and client import `poc/server`'s built dist — build the server first.
+
+## Documentation map
+
+| Where | What |
+|---|---|
+| [`docs/PRD.md`](docs/PRD.md) | the product of record — object model, decisions, §8 section states |
+| `docs/specs/` · `docs/plans/` · `docs/plan-reviews/` | per-cycle design specs, implementation plans, and review verdicts |
+| [`docs/tech-debt.md`](docs/tech-debt.md) | accepted debts and deferrals, each with "fixed looks like" |
+| `deploy/hub/` | hub deployment: setup script, runbook, env template, systemd unit, Caddyfile |
+| [`deploy/multi-machine-test.md`](deploy/multi-machine-test.md) | the cross-machine acceptance runbook (doubles as §8.10 verification) |
+| [`deploy/local-models.md`](deploy/local-models.md) | running local models beside Claude via a LiteLLM shim |
+| `docs/superpowers/` · `docs/research-report.md` | historical: the original research and pre-PRD spec chain |
