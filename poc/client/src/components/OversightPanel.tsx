@@ -11,6 +11,14 @@ export function OversightPanel(props: {
   onBack: () => void;
 }) {
   const { oversight } = props;
+  // Additive `available` (hub-oversight plan Task 4): absent or `true` means
+  // capable — same posture as every other optional snapshot field, so an old
+  // server or a solo project renders exactly as before this task. Only an
+  // explicit `false` (hub has no ANTHROPIC_API_KEY) disables the toggle and
+  // shows the truthful reason. PULL's own gating (isDriver / latest) is
+  // untouched either way (spec §5) — with oversight unavailable it never gets
+  // enabled in the first place, so PULL is unreachable, not disabled.
+  const unavailable = oversight.available === false;
   return (
     <div className="screen">
       <div className="screen-head">
@@ -26,7 +34,7 @@ export function OversightPanel(props: {
           <div className="ovhead">
             <span className="line dim">{updatedAtLabel(oversight.latest?.ts ?? null)}</span>
             <span className="spacer" />
-            <button className="btn" onClick={() => props.onToggle(!oversight.enabled)}>
+            <button className="btn" disabled={unavailable} onClick={() => props.onToggle(!oversight.enabled)}>
               {oversight.enabled ? "DISABLE" : "ENABLE"}
             </button>
             {oversight.enabled && (
@@ -46,6 +54,11 @@ export function OversightPanel(props: {
               </button>
             )}
           </div>
+          {unavailable && (
+            <div className="line dim">
+              oversight is unavailable on this hub — no ANTHROPIC_API_KEY configured
+            </div>
+          )}
           {oversight.latest ? (
             <div className="ovtext">{oversight.latest.text}</div>
           ) : (
