@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   MAX_FRAME_BYTES,
   MAX_REPOS,
+  OVERSIGHT_TEXT_CAP,
   RELAY_PROTOCOL_VERSION,
   clampRepoDecl,
   parseDownFrame,
@@ -645,6 +646,113 @@ describe("parseDownFrame — contested", () => {
     // parser must not accept it just because the rest of the shape lines up.
     expect(
       parseDownFrame({ type: "contested", sessionId: "auth", paths: [], collisions: [] }),
+    ).toBeNull();
+  });
+});
+
+/** The hub's `oversight_update` down-frame (Task 1). `latest.text` is the one
+ *  free-text field — a model-authored team summary rendered in the browser — so
+ *  it is length-bounded (control chars are NOT stripped: a multi-line narrative
+ *  is the legitimate shape). Every other field is a slug/boolean/integer. */
+const oversight = (over: Record<string, unknown> = {}) => ({
+  t: "oversight_update",
+  projectId: "default",
+  enabled: true,
+  latest: { text: "the team is shipping", ts: "2026-08-04T00:00:00.000Z", seq: 3 },
+  ...over,
+});
+
+describe("parseDownFrame — oversight_update", () => {
+  test("roundtrips an enabled frame with a summary, parsed to the exact shape", () => {
+    expect(parseDownFrame(oversight())).toEqual({
+      t: "oversight_update",
+      projectId: "default",
+      enabled: true,
+      latest: { text: "the team is shipping", ts: "2026-08-04T00:00:00.000Z", seq: 3 },
+    });
+  });
+
+  test("roundtrips a null-latest frame — enabled with no summary yet, and the disabled toggle", () => {
+    expect(parseDownFrame(oversight({ latest: null }))).toEqual({
+      t: "oversight_update",
+      projectId: "default",
+      enabled: true,
+      latest: null,
+    });
+    expect(parseDownFrame(oversight({ enabled: false, latest: null }))).toEqual({
+      t: "oversight_update",
+      projectId: "default",
+      enabled: false,
+      latest: null,
+    });
+  });
+
+  test("carries ONLY the four wire fields — never a payload the hub tacked on", () => {
+    // Rebuilt from validated fields, like `contested`: an extra key on the wire
+    // cannot ride into the laptop.
+    const frame = parseDownFrame(oversight({ transcript: "secret", digest: ["x"] }));
+    expect(frame && Object.keys(frame).sort()).toEqual([
+      "enabled",
+      "latest",
+      "projectId",
+      "t",
+    ]);
+  });
+
+  test("accepts a summary text exactly at the 4096-char cap and rejects one over it", () => {
+    const atCap = "s".repeat(OVERSIGHT_TEXT_CAP);
+    const frame = parseDownFrame(oversight({ latest: { text: atCap, ts: "t", seq: 1 } }));
+    expect(frame && frame.t === "oversight_update" && frame.latest?.text).toBe(atCap);
+    expect(
+      parseDownFrame(oversight({ latest: { text: "s".repeat(OVERSIGHT_TEXT_CAP + 1), ts: "t", seq: 1 } })),
+    ).toBeNull();
+  });
+
+  test("keeps a multi-line summary intact — newlines are the narrative, not an injection", () => {
+    // Unlike a path or a gate reason, the summary is model prose with one line
+    // per session; control chars are its ordinary shape and must NOT be stripped
+    // or rejected the way `touched`/`contested` reject them.
+    const text = "The team is shipping.\nauth: wiring the gate.\nweb: styling.";
+    const frame = parseDownFrame(oversight({ latest: { text, ts: "t", seq: 2 } }));
+    expect(frame && frame.t === "oversight_update" && frame.latest?.text).toBe(text);
+  });
+
+  test("rejects a frame whose projectId is not a SLUG", () => {
+    expect(parseDownFrame(oversight({ projectId: 7 }))).toBeNull();
+    expect(parseDownFrame(oversight({ projectId: "" }))).toBeNull();
+    expect(parseDownFrame(oversight({ projectId: "Bad Id" }))).toBeNull();
+    expect(parseDownFrame(oversight({ projectId: undefined }))).toBeNull();
+  });
+
+  test("rejects a non-boolean enabled", () => {
+    expect(parseDownFrame(oversight({ enabled: "yes" }))).toBeNull();
+    expect(parseDownFrame(oversight({ enabled: 1 }))).toBeNull();
+    expect(parseDownFrame(oversight({ enabled: undefined }))).toBeNull();
+  });
+
+  test("rejects a malformed latest — missing, mistyped or out-of-range fields", () => {
+    expect(parseDownFrame(oversight({ latest: "summary" }))).toBeNull();
+    expect(parseDownFrame(oversight({ latest: 7 }))).toBeNull();
+    expect(parseDownFrame(oversight({ latest: [] }))).toBeNull();
+    expect(parseDownFrame(oversight({ latest: { text: "x", ts: "t" } }))).toBeNull();
+    expect(parseDownFrame(oversight({ latest: { text: "x", seq: 1 } }))).toBeNull();
+    expect(parseDownFrame(oversight({ latest: { ts: "t", seq: 1 } }))).toBeNull();
+    expect(parseDownFrame(oversight({ latest: { text: 7, ts: "t", seq: 1 } }))).toBeNull();
+    expect(parseDownFrame(oversight({ latest: { text: "x", ts: 7, seq: 1 } }))).toBeNull();
+    expect(parseDownFrame(oversight({ latest: { text: "x", ts: "t", seq: "1" } }))).toBeNull();
+    expect(parseDownFrame(oversight({ latest: { text: "x", ts: "t", seq: 1.5 } }))).toBeNull();
+    expect(parseDownFrame(oversight({ latest: { text: "x", ts: "t", seq: -1 } }))).toBeNull();
+    // …and seq 0 is the ordinary floor (a seeded-but-never-summarized restore).
+    expect(parseDownFrame(oversight({ latest: { text: "x", ts: "t", seq: 0 } }))).not.toBeNull();
+  });
+
+  test("is a DOWN frame only, and does not disturb the unknown-frame path", () => {
+    // Additive, no RELAY_PROTOCOL_VERSION bump: a laptop built before this task
+    // drops it on the unknown-frame path. The up parser never accepts it, and a
+    // `type`-keyed lookalike is unknown, not an oversight_update.
+    expect(parseUpFrame(oversight())).toBeNull();
+    expect(
+      parseDownFrame({ type: "oversight_update", projectId: "default", enabled: true, latest: null }),
     ).toBeNull();
   });
 });

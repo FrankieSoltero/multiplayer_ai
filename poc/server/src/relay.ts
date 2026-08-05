@@ -11,6 +11,7 @@ import {
   type UpFrame,
 } from "./relayProtocol.js";
 import type { Session } from "./session.js";
+import type { OversightSummary } from "./overseer.js";
 import type { ConnectionIO } from "./server.js";
 
 /** Structural socket so the whole module is testable with no network — the
@@ -108,6 +109,15 @@ export class Relay {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private tracked = new Map<string, Tracked>();
   private channels = new Map<string, { handleMessage: (msg: any) => void; close: () => void }>();
+  /** The hub's team-oversight state, per project, as the last `oversight_update`
+   *  frame carried it (spec §4). Memory-only and replaced WHOLESALE per frame —
+   *  the frame is the entire state, never a diff. `server.ts` reads it through
+   *  `hubOversight` at every oversight decision site (injection, `team_update`
+   *  tool text, `pull_oversight` gate) and falls back to the local overseer on a
+   *  null answer. Cleared on socket close (below), so a laptop that loses the hub
+   *  reverts to its local overseer until the hub re-pushes on reconnect — the
+   *  self-heal that makes a laptop restart carry no stale cross-machine state. */
+  private oversight = new Map<string, { enabled: boolean; latest: OversightSummary | null }>();
   /** Frames produced before the socket was ready, each with the JSON size in
    *  BYTES it was measured at. Bounded by MAX_FRAME_BYTES worth of JSON so
    *  a hub that never comes up cannot grow the laptop's memory without limit;
@@ -155,6 +165,10 @@ export class Relay {
     }
     for (const conn of this.channels.values()) conn.close();
     this.channels.clear();
+    // Same reason as the close handler: a stopped uplink holds no trustworthy
+    // hub state, so the next life starts from the local overseer until the hub
+    // re-pushes.
+    this.oversight.clear();
     this.socket?.close();
     this.socket = null;
     this.ready = false;
@@ -188,6 +202,15 @@ export class Relay {
     for (const frame of publishFrames(sessionId, runId, session.eventsFrom(0))) {
       this.emit(frame);
     }
+  }
+
+  /** The hub's pushed oversight state for a project, or null when no frame has
+   *  arrived — solo (this method is only ever reached through a live relay),
+   *  a project this uplink does not speak for, or the window after a disconnect
+   *  before the hub re-pushes. `server.ts` treats null as "read the local
+   *  overseer", which is exactly the solo behaviour. */
+  hubOversight(projectId: string): { enabled: boolean; latest: OversightSummary | null } | null {
+    return this.oversight.get(projectId) ?? null;
   }
 
   publishEvent(sessionId: string, event: LoggedEvent): void {
@@ -288,6 +311,10 @@ export class Relay {
       // stays honest rather than showing ghosts.
       for (const conn of this.channels.values()) conn.close();
       this.channels.clear();
+      // Forget the hub's oversight state: with the uplink down the laptop can no
+      // longer trust it, so every decision site falls back to the local overseer
+      // (solo behaviour) until the hub re-pushes on reconnect (spec §4 self-heal).
+      this.oversight.clear();
       this.scheduleReconnect();
     });
     // Without a listener an "error" is an unhandled EventEmitter error and
@@ -362,6 +389,18 @@ export class Relay {
       // handler is reached through `deps`, so the frame lands in the laptop's
       // session map without this module knowing anything about one.
       this.deps.onContested(frame);
+      return;
+    }
+
+    if (frame.t === "oversight_update") {
+      // The hub's team-oversight state for one project (spec §4), mirrored into
+      // the laptop so `team_update`, the injection site and `pull_oversight` read
+      // the cross-machine truth rather than this one laptop's local overseer —
+      // which knows only its own sessions and would be the lie this cycle
+      // removes. Replaced wholesale: the frame carries the whole state (a
+      // disable arrives as enabled:false + latest:null), so a second frame for a
+      // project overwrites the first with no merge.
+      this.oversight.set(frame.projectId, { enabled: frame.enabled, latest: frame.latest });
       return;
     }
 

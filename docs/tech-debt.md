@@ -429,6 +429,24 @@ are the ones where every shipped cycle makes the eventual fix a bigger diff.
   scripts)** — out by product shape, recorded in the inventory §10 so the rejection is a
   decision on file, not an oversight.
 
+### 2.10 §8.8 hub-side oversight — accepted minors (2026-08-04 final review)
+
+**Status, 2026-08-04:** the §8.8 hub-oversight final review verdicted "Ready to merge" with 5
+Minors, all ACCEPTED. Three need durable recording here because the SDD ledger they were
+triaged in is deleted at cycle end; the other two are already covered elsewhere or resolved
+inline and are not repeated.
+
+- **`ProjectMessage.oversight` (`poc/server/src/project.ts`) lacks `available?: boolean`** —
+  `hubStore.ts` and `server.ts` ride it as runtime object literals (compiles via
+  variable-assignment escaping excess-property checks; serializes; test-asserted). **Fixed
+  looks like:** add the optional field to the shared type and drop nothing.
+- **`OVERSEER_EVENT_TYPES` (`poc/hub/src/hub.ts:761`) is a hand-copied duplicate of solo's
+  `OVERSEER_EVENTS`** (`poc/server/src/server.ts:135`) — identical today, can silently drift.
+  **Fixed looks like:** export one shared constant from the server package.
+- **`relayProtocol.ts:152`'s comment says `seq` lets a laptop drop stale out-of-order frames,
+  but `relay.ts` replaces the stored frame wholesale with no seq check** (harmless on in-order
+  WebSocket). **Fixed looks like:** either implement the seq guard or correct the comment.
+
 ---
 
 ## 3. Test coverage gaps

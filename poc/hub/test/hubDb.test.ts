@@ -91,7 +91,7 @@ function raw<T>(dbPath: string, fn: (db: Database.Database) => T): T {
 const isDir = (p: string) => fs.statSync(p).isDirectory();
 
 describe("HubDb — fresh file", () => {
-  it("creates the file, the v3 schema, WAL mode and a 0700 parent dir", () => {
+  it("creates the file, the v4 schema, WAL mode and a 0700 parent dir", () => {
     const dbPath = path.join(tmp(), "nested", "deep", "hub.db");
     openDb(dbPath);
 
@@ -122,6 +122,7 @@ describe("HubDb — fresh file", () => {
         "machines",
         "meta",
         "project_members",
+        "project_oversight",
         "projects",
         "sessions",
       ]);
@@ -603,14 +604,14 @@ describe("HubDb — boot refusals (spec §3.6)", () => {
   it("refuses a DB whose schema is newer than it understands", () => {
     const dbPath = path.join(tmp(), "hub.db");
     openDb(dbPath).close();
-    // A stamp ABOVE the current version: migration runs forward only, so a v4
+    // A stamp ABOVE the current version: migration runs forward only, so a v5
     // record is refused with the existing message shape rather than downgraded.
     const bump = new Database(dbPath);
-    bump.prepare("UPDATE meta SET value = '4' WHERE key = 'schema_version'").run();
+    bump.prepare("UPDATE meta SET value = '5' WHERE key = 'schema_version'").run();
     bump.close();
 
     expect(() => openDb(dbPath)).toThrow(
-      `hub.db schema is v4; this hub understands v${SCHEMA_VERSION} — refusing to start`,
+      `hub.db schema is v5; this hub understands v${SCHEMA_VERSION} — refusing to start`,
     );
     // And it did not consume its own lock on the way out.
     expect(fs.existsSync(`${dbPath}.lock`)).toBe(false);
@@ -620,7 +621,7 @@ describe("HubDb — boot refusals (spec §3.6)", () => {
       const meta = db
         .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
         .get() as { value: string };
-      expect(meta.value).toBe("4");
+      expect(meta.value).toBe("5");
     });
   });
 
@@ -861,6 +862,146 @@ describe("HubDb — v2→v3 forward migration", () => {
     } finally {
       bak.close();
     }
+  });
+});
+
+/** The v3 schema, VERBATIM as it shipped — the v2 table set plus the two invite
+ *  tables — so a test can forge a genuine v3 record with raw SQL and prove the
+ *  v3→v4 forward migration adds `project_oversight` and nothing else. */
+const V3_SCHEMA_DDL = `${V2_SCHEMA_DDL}
+CREATE TABLE IF NOT EXISTS invites
+                (id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL,
+                 project_id TEXT NOT NULL, created_by TEXT NOT NULL,
+                 created_by_name TEXT NOT NULL, created_at INTEGER NOT NULL,
+                 expires_at INTEGER NOT NULL, max_uses INTEGER NOT NULL,
+                 revoked INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS invite_redemptions
+                (invite_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                 PRIMARY KEY (invite_id, user_id));
+`;
+
+/** Forges a v3 record on disk with raw SQL and a representative row in every
+ *  prior table — projects, members, sessions, devices AND an invite — then
+ *  closes it: exactly the file a pre-oversight hub left behind. */
+function writeV3File(dbPath: string): void {
+  const db = new Database(dbPath);
+  try {
+    db.exec(V3_SCHEMA_DDL);
+    db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '3')").run();
+    db.prepare(
+      "INSERT INTO projects (id, name, created_by, created_at, lifecycle) VALUES (?, ?, ?, ?, ?)",
+    ).run("acme", "Acme", "ana", "2026-07-29T10:00:00.000Z", "active");
+    db.prepare("INSERT INTO project_members (project_id, user_id) VALUES (?, ?)").run("acme", "ana");
+    db.prepare(
+      "INSERT INTO sessions (project_id, session_id, uplink_id, facts_json, last_run_id, last_seq) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("acme", "auth", "lap-1", JSON.stringify(facts()), "run-a", 1);
+    db.prepare(
+      "INSERT INTO devices (machine_id, name, token_hash, approved_by, approved_at, revoked) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("lap-1", "ana-mbp", "hash-a", "ana", "2026-07-29T10:00:00.000Z", 0);
+    db.prepare(
+      `INSERT INTO invites
+         (id, token, project_id, created_by, created_by_name, created_at, expires_at, max_uses, revoked)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run("inv-1", "t".repeat(32), "acme", "ana", "ana", 1_000_000, 9_999_999_999_999, 10, 0);
+  } finally {
+    db.close();
+  }
+}
+
+describe("HubDb — v3→v4 forward migration", () => {
+  it("migrates a genuine v3 record: adds project_oversight, bumps meta, leaves every v3 row untouched", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    writeV3File(dbPath);
+
+    const db = openDb(dbPath);
+
+    // The stamp is now current and `project_oversight` exists — empty, because a
+    // migration is additive and invents no rows.
+    raw(dbPath, (rdb) => {
+      const meta = rdb
+        .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+        .get() as { value: string };
+      expect(meta.value).toBe(String(SCHEMA_VERSION));
+      expect(
+        rdb
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_oversight'")
+          .get(),
+      ).toBeDefined();
+      expect(
+        (rdb.prepare("SELECT count(*) AS n FROM project_oversight").get() as { n: number }).n,
+      ).toBe(0);
+      // Every prior table's rows survive intact.
+      expect((rdb.prepare("SELECT count(*) AS n FROM projects").get() as { n: number }).n).toBe(1);
+      expect(
+        (rdb.prepare("SELECT count(*) AS n FROM project_members").get() as { n: number }).n,
+      ).toBe(1);
+      expect((rdb.prepare("SELECT count(*) AS n FROM sessions").get() as { n: number }).n).toBe(1);
+      expect((rdb.prepare("SELECT count(*) AS n FROM devices").get() as { n: number }).n).toBe(1);
+      expect((rdb.prepare("SELECT count(*) AS n FROM invites").get() as { n: number }).n).toBe(1);
+    });
+
+    // load() hands back exactly what the v3 record held, and the pre-oversight
+    // stores still answer against the migrated file — nothing was disturbed.
+    const h = db.load();
+    expect(h.projects.map((p) => p.id)).toEqual(["acme"]);
+    expect(h.projects[0]?.members).toEqual(["ana"]);
+    expect(h.sessions.map((s) => s.sessionId)).toEqual(["auth"]);
+    expect(db.deviceByTokenHash("hash-a")).toEqual({ machineId: "lap-1", name: "ana-mbp" });
+    expect(db.listFor("acme").map((v) => v.id)).toEqual(["inv-1"]);
+    // And the store the migration made room for is empty until written.
+    expect(db.getOversight("acme")).toBeNull();
+  });
+
+  it("copies the pure-v3 file to <dbPath>.v3.bak BEFORE migrating (blast radius / rollback)", () => {
+    const dbPath = path.join(tmp(), "hub.db");
+    writeV3File(dbPath);
+
+    openDb(dbPath);
+
+    const bakPath = `${dbPath}.v3.bak`;
+    expect(fs.existsSync(bakPath)).toBe(true);
+    // Owner-only, same rule as the earlier backups (spec §8a.7).
+    expect((fs.statSync(bakPath).mode & 0o777).toString(8)).toBe("600");
+    // A PRE-migration snapshot: still stamped v3, still without project_oversight
+    // — a rollback restores an intact v3 record.
+    const bak = new Database(bakPath);
+    try {
+      const meta = bak
+        .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+        .get() as { value: string };
+      expect(meta.value).toBe("3");
+      expect(
+        bak
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_oversight'")
+          .get(),
+      ).toBeUndefined();
+      expect((bak.prepare("SELECT count(*) AS n FROM invites").get() as { n: number }).n).toBe(1);
+    } finally {
+      bak.close();
+    }
+  });
+});
+
+describe("HubDb — project_oversight accessors", () => {
+  it("roundtrips enabled + summary and reports null for an unknown project", () => {
+    const db = openDb(":memory:");
+
+    // Unknown project is null before anything is written.
+    expect(db.getOversight("acme")).toBeNull();
+
+    db.setOversightEnabled("acme", true);
+    db.saveOversightSummary("acme", "two agents converged on auth", 5, "2026-08-04T10:00:00.000Z");
+
+    // Exact values back — enabled decoded to a boolean, seq/ts intact.
+    expect(db.getOversight("acme")).toEqual({
+      enabled: true,
+      summary: "two agents converged on auth",
+      seq: 5,
+      ts: "2026-08-04T10:00:00.000Z",
+    });
+
+    // A different, never-written project is still null — no cross-project leak.
+    expect(db.getOversight("other")).toBeNull();
   });
 });
 

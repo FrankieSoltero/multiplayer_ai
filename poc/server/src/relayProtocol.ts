@@ -85,6 +85,15 @@ export interface RepoDecl {
  *  identical number rather than a second magic constant that could drift. */
 export const MAX_REPOS = 100;
 
+/** The one bound on the `oversight_update` frame's summary text (Task 1). The
+ *  text is a model-authored team narrative rendered in the browser, capped here
+ *  so a hostile or buggy hub cannot push an unbounded string into every watching
+ *  laptop. Unlike a path or a gate reason, its control characters are NOT
+ *  stripped: the summary is multi-line prose (one line per active session), so a
+ *  newline is its ordinary shape, not a forged boundary. Length alone is the
+ *  bound. */
+export const OVERSIGHT_TEXT_CAP = 4096;
+
 /** Laptop → hub. */
 export type UpFrame =
   /** `uplinkId` IS the machine id (spec §5.2), and `name` is what a person
@@ -150,6 +159,28 @@ export type DownFrame =
       sessionId: string;
       paths: string[];
       collisions: { path: string; sessionIds: string[] }[];
+    }
+  /** The hub's team-oversight state for ONE project, pushed to every uplink
+   *  whenever the enabled toggle flips or a fresh summary lands (spec §8.6). The
+   *  laptop mirrors it so the `team_update` tool and the project screen can read
+   *  the current summary without a round-trip to the hub.
+   *
+   *  `enabled` and `latest` together are the whole state: `latest` is null both
+   *  when oversight is off and when it is on but has produced no summary yet, so
+   *  a consumer reads the toggle from `enabled`, never from `latest === null`.
+   *  `seq` is the same monotonic counter `Overseer` maintains, carried so a
+   *  laptop can drop a stale frame that arrives out of order.
+   *
+   *  Like `contested`, `RELAY_PROTOCOL_VERSION` is NOT bumped for it: a laptop
+   *  built before the type existed drops the frame on the unknown-frame path
+   *  (`parseDownFrame` returns null and `relay.ts`'s `onMessage` returns), so the
+   *  uplink stays up and nothing surfaces — the additive-frame argument, same as
+   *  `contested`. */
+  | {
+      t: "oversight_update";
+      projectId: string;
+      enabled: boolean;
+      latest: { text: string; ts: string; seq: number } | null;
     };
 
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -268,6 +299,27 @@ function collisionList(raw: unknown): { path: string; sessionIds: string[] }[] |
     out.push({ path: c.path, sessionIds });
   }
   return out;
+}
+
+/** The `oversight_update` frame's `latest` summary (Task 1). Null is a first-
+ *  class value — oversight is on but has produced nothing yet, OR it is off — so
+ *  a plain null passes through as null. Anything present rebuilds field by field
+ *  (never a spread): `text` is length-bounded but NOT control-stripped, because
+ *  the summary is multi-line model prose; `ts` is any string; `seq` is a
+ *  non-negative integer, the monotonic counter's floor of 0 (a seeded-but-never-
+ *  summarized restore). One malformed field rejects the whole frame — the
+ *  `{ ok }` shape distinguishes "valid null" from "invalid", which a bare null
+ *  return could not. */
+function oversightLatest(
+  raw: unknown,
+): { ok: true; value: { text: string; ts: string; seq: number } | null } | { ok: false } {
+  if (raw === null) return { ok: true, value: null };
+  const l = obj(raw);
+  if (!l) return { ok: false };
+  if (typeof l.text !== "string" || l.text.length > OVERSIGHT_TEXT_CAP) return { ok: false };
+  if (typeof l.ts !== "string") return { ok: false };
+  if (!Number.isInteger(l.seq) || (l.seq as number) < 0) return { ok: false };
+  return { ok: true, value: { text: l.text, ts: l.ts, seq: l.seq as number } };
 }
 
 /** Structural check only. The laptop still validates every tunnelled payload
@@ -438,6 +490,15 @@ export function parseDownFrame(raw: unknown): DownFrame | null {
     // frame carries a session id, paths and peer ids — nothing else.
     if (!sessionId || !paths || !collisions) return null;
     return { t: "contested", sessionId, paths, collisions };
+  }
+  if (f.t === "oversight_update") {
+    const projectId = str(f.projectId, SLUG);
+    const latest = oversightLatest(f.latest);
+    // Rebuilt field by field like `contested`, never spread: nothing here is
+    // meant to ride through unread, so an extra key the hub tacked on cannot
+    // reach the laptop.
+    if (!projectId || typeof f.enabled !== "boolean" || !latest.ok) return null;
+    return { t: "oversight_update", projectId, enabled: f.enabled, latest: latest.value };
   }
   return null;
 }

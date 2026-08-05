@@ -261,4 +261,10 @@ export const SERVER_URL = import.meta.env.DEV
 export type OversightState = {
   enabled: boolean;
   latest: { text: string; ts: string; seq: number } | null;
+  /** Whether this hub can run oversight at all (hub-oversight plan Task 2b/3:
+   *  gated on the hub host's `ANTHROPIC_API_KEY`). Optional so a snapshot from
+   *  an older server — or a solo project with no hub in the picture — still
+   *  parses; absent is treated the same as `true` (capable), same posture as
+   *  every other additive snapshot field in this file. */
+  available?: boolean;
 };

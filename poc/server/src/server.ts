@@ -33,7 +33,13 @@ import { lifecycleOf } from "./lifecycle.js";
 import { ensureExcluded, slugify, WorkspaceManager, type WorkspaceLike } from "./workspace.js";
 import { staticHandler } from "./staticFiles.js";
 import { touchedFiles } from "./touched.js";
-import { Overseer, oversightToolText, runOversightSummarize, type Summarize } from "./overseer.js";
+import {
+  Overseer,
+  oversightToolText,
+  runOversightSummarize,
+  type OversightSummary,
+  type Summarize,
+} from "./overseer.js";
 import { InviteStore } from "./invites.js";
 import { authRoutes, requireAuth, type AuthConfig } from "./auth.js";
 
@@ -395,12 +401,39 @@ export async function startServer(opts: {
   );
 
   function snapshotFor(project: Project) {
-    return projectSnapshot(
+    const snapshot = projectSnapshot(
       project,
       { plugins: pluginStore.list(project.id), enabled: pluginStore.enabled },
       machineView(),
       { enabled: overseer.isEnabled(project.id), latest: overseer.latest(project.id) },
     );
+    // Additive `available` (spec §5): a standalone server always HAS its local
+    // overseer, so oversight is available here. The hub reports `available:false`
+    // when it has no API key (Task 2b); the client reads an absent field as
+    // available (old-server compatibility), so this is purely additive on the
+    // wire — the shared `ProjectMessage.oversight` type does not carry it yet,
+    // hence the widened literal rather than a signature change.
+    return {
+      ...snapshot,
+      oversight: { ...snapshot.oversight, available: true },
+    };
+  }
+
+  /** The oversight state a decision site must read for THIS project: the
+   *  hub-pushed state when the project is hub-attached (the relay is holding a
+   *  frame for it), the local overseer otherwise. Hub-attached, the local
+   *  overseer is deliberately NOT consulted — it knows only this one laptop, so
+   *  answering from it would be the cross-machine lie this cycle removes
+   *  (spec §4). `relay` is null in solo mode and returns null for any project it
+   *  holds no frame for, so both paths collapse to the local overseer exactly as
+   *  before. Read on every decision — never cached — so a fresh push or a
+   *  disconnect changes the answer immediately. */
+  function effectiveOversight(
+    projectId: string,
+  ): { enabled: boolean; latest: OversightSummary | null } {
+    const hub = relay?.hubOversight(projectId);
+    if (hub) return hub;
+    return { enabled: overseer.isEnabled(projectId), latest: overseer.latest(projectId) };
   }
 
   function pushProject(project: Project): void {
@@ -603,7 +636,12 @@ export async function startServer(opts: {
             schedulePush(project);
           },
           undefined,
-          () => oversightToolText(overseer.isEnabled(project.id), overseer.latest(project.id)),
+          () => {
+            // Precedence (spec §4): a hub-attached project reads the hub-pushed
+            // state; solo reads the local overseer, byte-identically to before.
+            const o = effectiveOversight(project.id);
+            return oversightToolText(o.enabled, o.latest);
+          },
           () => recomputeTouched(project, sessionId),
           // The contested wiring (spec §6b, Task 8b). All four close over data
           // this call site already holds; `server.ts` is the only module with a
@@ -1340,7 +1378,11 @@ export async function startServer(opts: {
                 machines: machine
                   ? [{ machineId: machine.machineId, name: machine.name, repos: machine.repos, online: true }]
                   : undefined,
-                oversight: { enabled: false, latest: null },
+                // Additive `available` on the same footing as `snapshotFor` — a
+                // standalone server always has its local overseer, so the empty
+                // fallback snapshot reports the capability too rather than
+                // reading as an incapable server.
+                oversight: { enabled: false, latest: null, available: true },
               },
         );
         return;
@@ -1505,9 +1547,11 @@ export async function startServer(opts: {
         let contextBlock = digest || undefined;
         if (ctx.entry.pendingOversight) {
           // One-shot (spec §5): consumed by this prompt whether or not a
-          // summary still exists.
+          // summary still exists. Reads the EFFECTIVE state (spec §4): a
+          // hub-attached project injects the hub-pushed summary; solo injects the
+          // local overseer's, exactly as before.
           ctx.entry.pendingOversight = false;
-          const latest = overseer.latest(ctx.project.id);
+          const latest = effectiveOversight(ctx.project.id).latest;
           if (latest) {
             const block = `<oversight>\n${latest.text}\n</oversight>`;
             contextBlock = contextBlock ? `${contextBlock}\n\n${block}` : block;
@@ -1712,10 +1756,14 @@ export async function startServer(opts: {
         if (!ctx.entry.session.canPrompt(ctx.userId)) {
           return sendError("only the current driver can pull team updates — take the wheel first");
         }
-        if (!overseer.isEnabled(ctx.project.id)) {
+        // PULL gates on the EFFECTIVE state (spec §4/§5): on a hub project the
+        // summary is already pushed down, so it reads the hub-pushed state; solo
+        // reads the local overseer, with the same two locked refusal strings.
+        const effective = effectiveOversight(ctx.project.id);
+        if (!effective.enabled) {
           return sendError("team oversight is disabled");
         }
-        const latest = overseer.latest(ctx.project.id);
+        const latest = effective.latest;
         if (!latest) return sendError("no team summary yet");
         ctx.entry.pendingOversight = true;
         ctx.entry.session.append({

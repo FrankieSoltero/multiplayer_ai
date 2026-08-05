@@ -2,6 +2,19 @@ import type { LoggedEvent } from "multiplayer-ai-server/events";
 import { arcadeRecordsFrom, type ProjectMessage } from "multiplayer-ai-server/project";
 import type { RecordSessionInput } from "multiplayer-ai-server/record";
 import type { RepoDecl, SessionFacts } from "multiplayer-ai-server/relayProtocol";
+import type { OversightSummary } from "multiplayer-ai-server/overseer";
+
+/** The oversight block a `snapshot` carries (plan 2026-08-04-hub-oversight §2b).
+ *  `enabled`/`latest` are the same pair the wire's `oversight_update` frame and
+ *  the solo server's snapshot use; `available` is the hub capability — false
+ *  when no `ANTHROPIC_API_KEY` is configured, so the browser can render the
+ *  toggle as un-toggleable rather than let a click fail. Additive: an old
+ *  reader that never learned the field simply ignores it. */
+export interface SnapshotOversight {
+  enabled: boolean;
+  latest: OversightSummary | null;
+  available: boolean;
+}
 
 export interface StoredEvent {
   /** The hub's own monotonic id, per session. Browsers resume from this, NOT
@@ -606,7 +619,17 @@ export class HubStore {
    *  read-only: this is the value that leaves the hub toward browsers, and
    *  the caller (Task 7) is expected to normalize it further before
    *  serializing — so nothing it mutates may reach back into stored state. */
-  snapshot(projectId: string): ProjectMessage {
+  /** `oversight` is supplied by the caller (hub.ts, from its `Overseer` and the
+   *  hub's capability flag), not held by the store: the store persists sessions
+   *  and events, while oversight state lives in the hub's overseer and its own
+   *  `project_oversight` row. Defaults to off/unavailable so a store used
+   *  without a hub (unit tests, `recordInputs` callers) still answers a
+   *  well-formed snapshot. `available` rides the wire on top of the
+   *  `ProjectMessage` type as an additive field. */
+  snapshot(
+    projectId: string,
+    oversight: SnapshotOversight = { enabled: false, latest: null, available: false },
+  ): ProjectMessage {
     const sessions = [...(this.readSessionsOf(projectId)?.values() ?? [])];
     return {
       type: "project",
@@ -628,8 +651,10 @@ export class HubStore {
       // hub-attached; surfacing per-laptop plugin rosters is v7b3.
       plugins: [],
       pluginsEnabled: false,
-      // Oversight is host-configured and hub-side (spec §3.7) — v7b3.
-      oversight: { enabled: false, latest: null },
+      // Oversight is host-configured and hub-side (spec §3.7): the caller passes
+      // the current enabled/latest/available, so the snapshot reports the real
+      // state rather than a hard-coded off.
+      oversight,
     };
   }
 
