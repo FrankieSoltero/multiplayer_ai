@@ -16,7 +16,11 @@ mpai daemon (agentDriver) → claude-agent-sdk → ANTHROPIC_BASE_URL → LiteLL
 - [Ollama](https://ollama.com) installed and running; a model pulled, e.g.
   `ollama pull qwen3:32b` (dense, best quality) or `ollama pull qwen3:30b-a3b` (MoE, ~3B active —
   much faster on a laptop, and agent loops are latency-sensitive).
-- LiteLLM proxy: `pip install 'litellm[proxy]'` (in a venv).
+- LiteLLM proxy: `pip install 'litellm[proxy]'` (in a venv). **Version pins (2026-08-03,
+  litellm 1.95.0):** `pip install 'fastapi<0.116' 'sse-starlette<3'` — the proxy imports
+  `get_flat_dependant`, removed in newer FastAPI, and sse-starlette 3.x wants a newer starlette
+  than FastAPI 0.115 allows. (`pip check` still flags the `mcp` package's starlette want —
+  unused by this setup; the proxy boots and serves regardless.)
 
 ## 2. LiteLLM config (`litellm.config.yaml`)
 
