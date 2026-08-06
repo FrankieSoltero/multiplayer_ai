@@ -38,12 +38,24 @@ added through the product and routed through a harness-managed proxy, not hand-e
   trio references left; `docs/tech-debt.md` §2.9 gained a RESOLVED annotation for the local-models
   deferrals this cycle closes.
 
-**State:** branch `feature/model-agnostic-models`, PR pending (not yet opened as of this commit).
+**State:** **PR #46 OPEN** (https://github.com/FrankieSoltero/multiplayer_ai/pull/46 — user
+merges, never us). Final whole-branch review: Ready to merge, 0 Critical, 0 Important; suites at
+head server 966 · hub 388 · client 622, tsc ×3 clean. Merge-order note: PR #44 also touches
+`deploy/multi-machine-test.md` — whichever merges second may need a trivial conflict fix.
 
-**NEXT (ordered):** (1) final whole-branch review → `soltero-skills:lean-finishing` → open PR.
-(2) The PC-box test, `deploy/multi-machine-test.md` §7 — a real box running Ollama + the daemon,
-driven from a laptop over the hub, exercising key-less boot, add-via-UI, fallback default, a real
-turn, and remove-in-use refusal. This is the ordered next step once the PR lands.
+**Live walk (2026-08-06, this Mac) — everything verified EXCEPT the final local-model reply:**
+model added VIA UI (id derivation `qwen3.6:27b`→`qwen3.6-27b` observed), models.json persisted,
+LiteLLM config generated + proxy SPAWNED by the daemon (:4010, health 200), roster re-emitted
+live, model selected, turn dispatched, qwen3.6:27b loaded+generating on GPU through the proxy;
+SIGTERM teardown left no orphaned litellm (new shutdown handler proven). The final streamed
+reply/turn_end was deliberately NOT captured — **user ruling: local-LLM runtime testing is the
+user's, never automated** (now in project memory).
+
+**NEXT (ordered):** (1) user merges PR #46 (and #44/#45). (2) **The PC-box test,
+`deploy/multi-machine-test.md` §7** — PC box runs Ollama + the daemon (managed proxy), the
+user's laptop drives via the hub: key-less boot, add-via-UI from the laptop, fallback default,
+a real local turn, remove-in-use refusal. This completes the live-proof gate the user took
+ownership of.
 
 **Gotchas:**
 
