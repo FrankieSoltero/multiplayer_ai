@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import WebSocket from "ws";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -11,8 +12,18 @@ import {
   parseExtraModels,
   type ModelEntry,
 } from "../src/models.js";
+import { initRegistry } from "../src/modelsConfig.js";
 import { startServer } from "../src/server.js";
 import type { RunQuery } from "../src/agentDriver.js";
+
+// The registry is now credential-annotated and models.json-influenced at module
+// load, so reset it to a clean, credential-present, empty-store baseline before
+// each test — otherwise ambient ANTHROPIC_API_KEY / ~/.mpai/models.json would
+// make the byte-pins non-deterministic.
+beforeEach(() => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mpai-models-"));
+  initRegistry({ ANTHROPIC_API_KEY: "sk-test", MPAI_HOME: home } as NodeJS.ProcessEnv, () => {});
+});
 
 /** Local-models plan §1.1 / Task 1: models.ts is the single-source registry.
  *  Pins: the Claude trio's ids are byte-identical (LiteLLM pass-through
