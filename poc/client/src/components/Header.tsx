@@ -9,7 +9,7 @@ import type { ModelRosterEntry } from "../types";
  *  posture as every other additive wire field. When the roster arrives the
  *  picker reads it instead and this constant is unused for options. */
 export const MODEL_LABELS: Record<string, string> = {
-  opus: "opus 4.8", sonnet: "sonnet 5", haiku: "haiku 4.5",
+  opus: "opus 5", sonnet: "sonnet 5", haiku: "haiku 4.5", fable: "fable 5",
 };
 
 /** Every hud field is optional. turn/toolsUsed/gated are derived client-side
