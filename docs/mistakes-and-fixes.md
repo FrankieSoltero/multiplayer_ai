@@ -85,3 +85,35 @@ Running log of non-obvious problems hit in this project and how they were fixed.
 - **Fix:** Both rounds re-routed to the id verified against the implementer's own completion notification; controller discipline added to HANDOFF ("do NOT route fixes to reviewers")
 - **Lesson:** Before any SendMessage that resumes an agent for a fix round, verify the target id against the notification where THAT agent reported the original implementation — never trust adjacency in context. Also: subagents refusing out-of-scope redirects is load-bearing; prompt future reviewers with the same scope-refusal discipline. No deterministic hook can discriminate message routing (a controller judgment), so this stays a lesson + HANDOFF line rather than a corrections-ledger rule
 - **Regression test:** none — process lesson
+
+## 2026-08-06 — Client black-screened on http:// LAN hub (192.168.1.92:4000) with no console error visible to the user; same build worked on localhost
+
+- **Symptom:** Client black-screened on http:// LAN hub (192.168.1.92:4000) with no console error visible to the user; same build worked on localhost
+- **Root cause:** crypto.randomUUID is secure-context-only — it exists on localhost and https:// but is undefined on plain http:// over LAN, so identity bootstrapping threw before first render
+- **Fix:** randomId() fallback in poc/client/src/identity.ts:26 (crypto.getRandomValues-based) — PR #43, merged; rebuilt on the lab box
+- **Lesson:** localhost is a secure context, so dev never exercises the insecure-context branch of any Web API; anything deployed reachable over plain http:// (LAN trials) must be smoke-tested there, and secure-context-only APIs (crypto.randomUUID, clipboard, SW) need explicit fallbacks or a served-over-https requirement
+- **Regression test:** identity fallback covered in PR #43's client tests (randomId path)
+
+## 2026-08-06 — setup.sh first real run (WSL2 Ubuntu-24.04) failed at the hub build: better-sqlite3's native compile has no toolchain on a fresh minimal box
+
+- **Symptom:** setup.sh first real run (WSL2 Ubuntu-24.04) failed at the hub build: better-sqlite3's native compile has no toolchain on a fresh minimal box
+- **Root cause:** deploy/hub/setup.sh phase 1 installed only git/curl/openssl/node; npm ci for poc/hub needs make+g++ (node-gyp) for better-sqlite3 and fresh Ubuntu server/WSL images ship without build-essential
+- **Fix:** Installed build-essential by hand on the box; setup.sh phase 1 patched to install it (this branch)
+- **Lesson:** A provisioning script exercised only on dev machines silently inherits their toolchains; any npm dependency tree with native modules makes build-essential (or equivalent) part of the script's own package list, not an assumption
+- **Regression test:** none — provisioning script; the guard is setup.sh's own package list
+
+## 2026-08-06 — setup.sh clone step failed with a local-path REPO_URL even though the path existed and the operator could read it
+
+- **Symptom:** setup.sh clone step failed with a local-path REPO_URL even though the path existed and the operator could read it
+- **Root cause:** setup.sh runs git clone as the mpai system user (sudo -u mpai), which has no read access to the invoking user's home directory — a local REPO_URL under ~/ is unreachable for the service account by design
+- **Fix:** Used the GitHub https URL as REPO_URL instead (which also surfaced that the repo was private — it was made public for the lab)
+- **Lesson:** Provisioning that drops privileges to a service user cannot consume operator-home paths; document REPO_URL as a network URL (or a world-readable path), and test scripts as the user they actually run as, not as the operator
+- **Regression test:** none — documented in deploy/home-lab.md and setup.sh header instead
+
+## 2026-08-06 — Hub on WSL2 went unreachable whenever the last WSL terminal window closed, despite an active systemd unit inside the distro
+
+- **Symptom:** Hub on WSL2 went unreachable whenever the last WSL terminal window closed, despite an active systemd unit inside the distro
+- **Root cause:** WSL2's utility VM shuts down shortly after its last client process exits — systemd inside the distro cannot keep the VM itself alive; closing the window kills the whole box
+- **Fix:** %UserProfile%\.wslconfig gains vmIdleTimeout=-1 plus a Windows logon scheduled task ('WSL keepalive') holding a persistent wsl.exe process, so the VM survives window close and reboots
+- **Lesson:** WSL2 is a per-user utility VM, not a server platform: an in-distro service manager only runs while something keeps the VM alive; any 'server on WSL2' setup needs a host-side keepalive as part of the deployment, or it will die the first time the operator closes a window
+- **Regression test:** none — host-OS configuration; codified in deploy/home-lab.md

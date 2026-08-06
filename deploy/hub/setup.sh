@@ -7,6 +7,11 @@
 #   sudo HUB_HOSTNAME=hub.example.com REPO_URL=https://github.com/YOU/multiplayer_ai.git \
 #        bash deploy/hub/setup.sh
 #
+# REPO_URL must be reachable AS THE mpai SERVICE USER — the clone runs
+# `sudo -u mpai git clone`, so a local path under your home directory will fail
+# with a permission error; use the https git URL (a private repo needs
+# credentials the mpai user can present, or make it public).
+#
 # Optional env:
 #   BRANCH=main            git ref to deploy (default main)
 #   SKIP_CADDY=1           skip TLS/reverse-proxy install (e.g. LAN-only trial run)
@@ -36,7 +41,9 @@ BACKUPS=/var/backups/multiplayer-ai
 
 say "1/7 base packages"
 apt-get update -qq
-apt-get install -y -qq git curl openssl >/dev/null
+# build-essential: better-sqlite3 (poc/hub) compiles natively via node-gyp, and
+# fresh minimal images (Ubuntu server, WSL2) ship without make/g++.
+apt-get install -y -qq git curl openssl build-essential >/dev/null
 if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]; then
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
   apt-get install -y -qq nodejs >/dev/null

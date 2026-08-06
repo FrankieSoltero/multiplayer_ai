@@ -447,6 +447,35 @@ inline and are not repeated.
   but `relay.ts` replaces the stored frame wholesale with no seq check** (harmless on in-order
   WebSocket). **Fixed looks like:** either implement the seq guard or correct the comment.
 
+### 2.11 Home-lab run findings (2026-08-05) — feature gaps hit live
+
+Found during the first real multi-machine lab (`deploy/home-lab.md`); the operational
+gotchas went to `docs/mistakes-and-fixes.md`, these are the product gaps:
+
+- **No way to end or delete a dead session from the hub UI** — no `end_session`/
+  `delete_session` message exists anywhere in `poc/server/src/server.ts` or
+  `poc/hub/src/hub.ts` (grep-verified 2026-08-05). Dead sessions accumulate in the project
+  screen forever. **User-requested feature.** **Fixed looks like:** a member-gated
+  `end_session` (hub-answered, persisted, relayed) plus client control; product call on
+  end-vs-delete semantics for the record (§8.7 says the log is durable — probably "ended"
+  state, never row deletion).
+- **Hub-attached plugin import is a known v7b3 deferral, but the UI message lies about
+  why** — `poc/hub/src/hubStore.ts:653` hardcodes `plugins: [], pluginsEnabled: false`
+  (deliberate, commented), while `poc/client/src/components/SkillsPanel.tsx:91` renders
+  "plugin import is off — set AGENT_PLUGINS_ROOT on the server", which cannot help a
+  hub-attached browser. **Fixed looks like:** either the v7b3 aggregation itself, or (cheap,
+  now) a mode-aware message ("plugin import from the hub UI isn't available yet — install
+  into the machine's registry", pointing at the workaround in
+  `deploy/multi-machine-test.md` §2).
+- **Session-create UX has no "attach a repo first" hint** — with zero `(repo, machine)`
+  pairs the create form gives no clue why it's empty; the operator got stuck here live.
+  **Fixed looks like:** an empty-state line naming the cause ("no machine is attached with
+  a repo — launch `mpai --hub … --root <repo>`").
+- **Daemon logs are noisy with the SDK's `canUseTool` warning** (bare `allowedTools`
+  Read/Glob/Grep shadowing) on every session. Cosmetic but it buries real lines during
+  live debugging. **Fixed looks like:** pass the allowlist in the shape the SDK expects or
+  filter the known-benign warning at the log layer.
+
 ---
 
 ## 3. Test coverage gaps
