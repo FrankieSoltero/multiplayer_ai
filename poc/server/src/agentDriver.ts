@@ -145,6 +145,11 @@ export interface DriverHooks {
     signal?: AbortSignal,
   ) => Promise<"approve" | "reject">;
   workdir?: string;
+  /** The routing id the SDK query should START on (local-models §2.4). Absent
+   *  ⇒ the built-in default (`MODELS[DEFAULT_MODEL].id`). Set by the driver from
+   *  its resolved initial model key so a credential-less first run boots
+   *  straight onto the fallback model instead of opus. */
+  initialModel?: string;
   /** Absolute paths of the project's registered plugin clones (v6c). */
   pluginPaths?: string[];
   /** Latest team oversight summary text, or the spec §6 fallback strings.
@@ -276,7 +281,7 @@ export const runAgentQuery: RunQuery = (prompts, hooks) => {
   return query({
     prompt: prompts,
     options: {
-      model: MODELS[DEFAULT_MODEL].id,
+      model: hooks.initialModel ?? MODELS[DEFAULT_MODEL].id,
       systemPrompt:
         `You are a shared agent in a multiplayer project. Multiple teammates watch this session live and may hand control between them mid-task; other teammates run their own sessions in the same project. Keep responses focused. The FIRST thing you do when given a new task — before any other tool call — is call the set_intent tool with one short sentence describing what you are about to work on. Update it whenever your direction changes. Do this without being asked. Your working directory is your own git worktree on your own branch — you may implement changes directly with Write/Edit when asked to build; your edits never touch teammates' worktrees, but overlapping changes will collide later at merge time. A <teammates> block in a prompt describes what other sessions in the project are doing — take it into account: avoid conflicting with in-flight work, keep your footprint on shared files minimal when a teammate is mid-change there, and say so when a merge conflict looks likely. You have the full tool set including Bash, subagents, and web tools. Most Bash commands and other powerful tools pause until the teammate currently driving approves them in the UI — the whole session sees each request and decision, so prefer batching related commands and say briefly what a command is for before running it. Test/type-check/read-only-git commands run without approval. If a request is denied, adapt your approach or explain what you need instead of retrying the same call. If the project provides skills, use the Skill tool when one clearly matches the task. Your worktree root is ${workdir} — create and edit files ONLY inside it, using relative paths or absolute paths under that root. File edits inside your worktree run without approval; writes outside it require driver approval.`,
       allowedTools: [
@@ -432,6 +437,16 @@ export class AgentDriver {
   // re-emits rate_limit_event on every info change (potentially per request);
   // the wire gets at most one per rateLimitThrottleMs window per session.
   private lastRateLimitAt = 0;
+  // The session's currently-selected model KEY (local-models §2.4). Initialized
+  // to the resolved default (opus, or the credential-less fallback the caller
+  // resolved) and advanced on every successful setModel — the in-use check that
+  // guards remove_model reads it (server.ts).
+  private _currentModel: ModelKey = DEFAULT_MODEL;
+  // Whether THIS session's CLI routes through a proxy: captured once, at
+  // construction, from the boot-fixed ANTHROPIC_BASE_URL (local-models §2.2).
+  // A session spawned before the proxy came up keeps direct routing for life,
+  // so routed-model selection refuses it (server.ts predates-proxy edge).
+  readonly proxied: boolean = Boolean(process.env.ANTHROPIC_BASE_URL);
 
   constructor(
     private session: Session,
@@ -447,8 +462,11 @@ export class AgentDriver {
     private contestedSessions?: (path: string) => string[],
     private onContestedAnswered?: (path: string) => void,
     private rateLimitThrottleMs = 30_000,
+    initialModelKey: ModelKey = DEFAULT_MODEL,
   ) {
+    this._currentModel = initialModelKey;
     this.stream = run(this.prompts, {
+      initialModel: MODELS[initialModelKey].id,
       onIntent: (text) =>
         this.session.append({ type: "intent_update", text: text.slice(0, 200) }),
       onPermissionRequest: (toolName, input, signal, meta) => {
@@ -619,8 +637,25 @@ export class AgentDriver {
       contestedSessions: this.contestedSessions,
       onContestedAnswered: this.onContestedAnswered,
     });
+    // Default-fallback logging (local-models §2.4): when the resolved default
+    // is NOT opus, the harness chose it (no Anthropic credentials → first
+    // routed model). Record that as a system-attributed, auto model_change so
+    // the transcript shows the session did not silently start off-default.
+    if (initialModelKey !== DEFAULT_MODEL) {
+      this.session.append({
+        type: "model_change",
+        model: initialModelKey,
+        userId: "system",
+        auto: true,
+      });
+    }
     void this.consume(this.stream);
     void this.refreshRoster();
+  }
+
+  /** The session's currently-selected model key (local-models §2.4). */
+  get currentModel(): ModelKey {
+    return this._currentModel;
   }
 
   get isDead(): boolean {
@@ -650,7 +685,7 @@ export class AgentDriver {
    * supportedCommands keep the static roster; failures degrade silently for
    * the same reason (roster is a UI nicety, not a correctness surface).
    */
-  private async refreshRoster(): Promise<void> {
+  async refreshRoster(): Promise<void> {
     const fetchSkills = this.stream.supportedCommands?.bind(this.stream);
     if (!fetchSkills) return;
     try {
@@ -844,6 +879,7 @@ export class AgentDriver {
         message: `model switch failed: ${err instanceof Error ? err.message : String(err)}`,
       }),
     );
+    this._currentModel = key;
     this.session.append({ type: "model_change", model: key, userId });
     return { ok: true };
   }

@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import type { IncomingMessage } from "node:http";
+import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
@@ -11,7 +12,19 @@ import {
   remoteTeammateSummary,
   summarizeSession,
 } from "./digest.js";
-import { isModelKey, modelRoster, MODELS } from "./models.js";
+import { isModelKey, modelRoster, MODELS, type ModelEntry } from "./models.js";
+// IMPORTANT (Task 2 review): models.js MUST be imported before modelsConfig.js
+// in any file that imports the latter — modelsConfig's top-level consts are in
+// TDZ until models.js has evaluated its `initRegistry()` bottom call, so the
+// wrong order boot-crashes with a ReferenceError. Keep the line above first.
+import {
+  isRouted,
+  managedModels,
+  registerModel,
+  resolveDefaultModel,
+  unregisterModel,
+} from "./modelsConfig.js";
+import type { ProxyManager } from "./proxyManager.js";
 import {
   driverNameOf,
   Project,
@@ -208,6 +221,12 @@ export async function startServer(opts: {
    *  (list_projects) offers the launch project instead of an empty list. The
    *  CLI passes its --project value here. */
   projectId?: string;
+  /** The harness-managed LiteLLM proxy (local-models §2.2), constructed and
+   *  started by main.ts (Task 4) and threaded here. ABSENT ⇒ the handlers
+   *  behave as proxy status `"absent"`: routed set_model gets no proxy-status
+   *  refusal and add/remove_model skip the `reload()` call. Only `status` and
+   *  `reload` are used, so tests inject a fake with just those. */
+  proxyManager?: Pick<ProxyManager, "status" | "reload">;
   /** When set, this process also dials the hub and relays its sessions
    *  (spec §3.1). Absent, `mpai` behaves exactly as it always has — the hub
    *  is strictly additive (spec §6). */
@@ -573,6 +592,20 @@ export async function startServer(opts: {
     return project;
   }
 
+  /** After the model registry changed (add/remove_model), re-append a fresh
+   *  skill_roster — carrying the current `models` roster — to EVERY live
+   *  session (projects-map order, then session-map insertion order). Open
+   *  pickers update live off the subscribed event, and because the frame lands
+   *  in each session log the existing join path replays it to late joiners with
+   *  no extra work. */
+  async function reemitModelRoster(): Promise<void> {
+    for (const project of projects.values()) {
+      for (const entry of project.sessions.values()) {
+        await entry.driver.refreshRoster();
+      }
+    }
+  }
+
   /** `init` carries what a CALLER already resolved: `create_session` has both
    *  provisioned a worktree and picked the repo, and passes them in. A
    *  deep-link `join` knows neither, so this resolves them — and can only do so
@@ -660,6 +693,13 @@ export async function startServer(opts: {
           () => newEntry.contestedAsked,
           (contestedPath) => contestedSessionsFor(project, sessionId, contestedPath),
           (contestedPath) => void newEntry.contestedAsked.add(contestedPath),
+          // rateLimitThrottleMs — keep the constructor default.
+          undefined,
+          // The session's initial model key (local-models §2.4): opus normally,
+          // or the first routed model when this machine has no Anthropic
+          // credentials. A non-opus resolution makes the driver log an auto
+          // model_change and boot the CLI straight onto the fallback id.
+          resolveDefaultModel(process.env, fs.existsSync),
         ),
         skills,
         pendingSuggests: new Map(),
@@ -929,7 +969,7 @@ export async function startServer(opts: {
         invites: invites.listFor(projectId),
       });
 
-    const handleMessage = (msg: any): void => {
+    const handleMessage = async (msg: any): Promise<void> => {
       // Guard for the message types that are reachable BEFORE `ctx` exists
       // and therefore sit above the "join a session first" choke point.
       // Without it, one cookie-less frame from anyone on the internet could
@@ -1188,6 +1228,93 @@ export async function startServer(opts: {
             return { ...summary, memberCount: summary.members.length, isMember: true };
           }),
         });
+        return;
+      }
+
+      // Per-machine model registry management (local-models §2.1). All three
+      // messages are member-gated on projectId EXACTLY like the invite/
+      // lifecycle handlers above: reads expose infrastructure detail (baseUrl
+      // endpoints, provider ids, env-var NAMES — never secrets), so the read
+      // gate matches the write gate. `add`/`remove` mutate the shared registry
+      // (synchronous validate→mutate→persist, atomic on Node's single thread),
+      // then reload the proxy and re-emit the roster to every live session.
+      if (msg.type === "list_models") {
+        if (denyUnauthed()) return;
+        if (!identity) return sendError("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) {
+          return sendError("list_models requires a valid projectId");
+        }
+        const project = projects.get(projectId);
+        if (!project || !isProjectMember(project, identity.userId)) {
+          return denyMember("join this project before managing models");
+        }
+        io.send({ type: "models_list", models: managedModels() });
+        return;
+      }
+
+      if (msg.type === "add_model") {
+        if (denyUnauthed()) return;
+        if (!identity) return sendError("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) {
+          return sendError("add_model requires a valid projectId");
+        }
+        const project = projects.get(projectId);
+        if (!project || !isProjectMember(project, identity.userId)) {
+          return denyMember("join this project before managing models");
+        }
+        // Task 2's registerModel is the single validate→mutate→persist gate; its
+        // exact skip/collision strings pass straight through via sendError.
+        const result = registerModel(msg.entry as ModelEntry, process.env);
+        if (!result.ok) return sendError(result.error);
+        // Regenerate proxy config + respawn against the now-current registry.
+        // Absent proxyManager (old callers/most tests) ⇒ nothing to reload.
+        await opts.proxyManager?.reload();
+        // Re-emit the roster to EVERY live session so open pickers gain the new
+        // model; the re-appended skill_roster also sits in each session log, so
+        // late joiners replay it through the existing join path.
+        await reemitModelRoster();
+        const key = (msg.entry as ModelEntry).id;
+        console.log(`[models] ${identity.userId} added "${key}"`);
+        io.send({ type: "models_list", models: managedModels() });
+        return;
+      }
+
+      if (msg.type === "remove_model") {
+        if (denyUnauthed()) return;
+        if (!identity) return sendError("identify first");
+        const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+        if (!SLUG.test(projectId)) {
+          return sendError("remove_model requires a valid projectId");
+        }
+        const project = projects.get(projectId);
+        if (!project || !isProjectMember(project, identity.userId)) {
+          return denyMember("join this project before managing models");
+        }
+        const key = typeof msg.key === "string" ? msg.key : "";
+        // Built-in refusal is a static property of the key, checked before the
+        // dynamic in-use scan so removing `opus` always reads as the built-in
+        // refusal even if a session happens to be on it.
+        if (managedModels().some((m) => m.key === key && m.builtin)) {
+          return sendError("cannot remove a built-in model");
+        }
+        // In-use scan: the FIRST live session (projects-map order, then
+        // session-map insertion order — the same order the roster re-emit walks)
+        // whose driver is currently on this key blocks removal.
+        for (const p of projects.values()) {
+          for (const [sid, e] of p.sessions) {
+            if (e.driver.currentModel === key) {
+              return sendError(`model in use by session ${sid}`);
+            }
+          }
+        }
+        const result = unregisterModel(key, process.env);
+        if (!result.ok) return sendError(result.error);
+        await opts.proxyManager?.reload();
+        await reemitModelRoster();
+        console.log(`[models] ${identity.userId} removed "${key}"`);
+        io.send({ type: "models_list", models: managedModels() });
         return;
       }
 
@@ -1660,6 +1787,28 @@ export async function startServer(opts: {
         }
         if (!ctx.entry.session.canPrompt(ctx.userId)) {
           return sendError("only the current driver can switch models — take the wheel first");
+        }
+        // Routed-model selection rules (local-models §2.4). Only routed
+        // (ollama / openai-compatible) models depend on the proxy; Claude
+        // built-ins route direct and are always selectable (credential-less
+        // selection stays allowed — the annotation is advisory, turn-time
+        // error is the truth). Status `absent` (no proxyManager injected, or no
+        // routed models) applies NO refusal at all — including the predates
+        // check, which is only meaningful once a proxy is actually up.
+        if (isRouted(MODELS[msg.model])) {
+          const status = opts.proxyManager?.status() ?? "absent";
+          if (status === "unavailable") {
+            return sendError("proxy unavailable — install litellm (pip install 'litellm[proxy]')");
+          } else if (status === "down" || status === "starting") {
+            return sendError("proxy is down — restarting");
+          } else if (status !== "absent" && !ctx.entry.driver.proxied) {
+            // Proxy healthy/external, but this session's CLI was spawned before
+            // it came up: its base URL is fixed at spawn, so routing it now
+            // would silently misroute. Refuse rather than mislead.
+            return sendError(
+              "this session predates the proxy — start a new session to use local models",
+            );
+          }
         }
         const result = ctx.entry.driver.setModel(msg.model, ctx.userId);
         if (!result.ok) return sendError(result.error);
