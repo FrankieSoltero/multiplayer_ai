@@ -16,3 +16,26 @@ describe("hashIdentity", () => {
     expect(seen.size).toBeGreaterThan(1);
   });
 });
+
+describe("randomId — insecure-context fallback (home-lab kink #5)", () => {
+  // crypto.randomUUID exists ONLY in secure contexts (https/localhost). A hub
+  // served over plain http on a LAN IP (deploy/multi-machine-test.md topology)
+  // has crypto WITHOUT randomUUID — the first real-box run black-screened on it.
+  it("falls back to a well-formed v4 uuid when crypto.randomUUID is absent", async () => {
+    const { randomId } = await import("./identity");
+    const original = crypto.randomUUID;
+    // Simulate the insecure context: the property is simply not there.
+    (crypto as { randomUUID?: unknown }).randomUUID = undefined;
+    try {
+      const id = randomId();
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(randomId()).not.toBe(id);
+    } finally {
+      (crypto as { randomUUID?: unknown }).randomUUID = original;
+    }
+  });
+  it("uses the native randomUUID when present", async () => {
+    const { randomId } = await import("./identity");
+    expect(randomId()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  });
+});
