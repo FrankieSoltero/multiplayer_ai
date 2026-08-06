@@ -933,7 +933,7 @@ export async function startServer(opts: {
    *  Closes over everything `startServer` already has in scope, so both the
    *  direct WebSocket adapter below and the relay uplink share one handler. */
   function createConnection(io: ConnectionIO): {
-    handleMessage: (msg: any) => void;
+    handleMessage: (msg: any) => Promise<void>;
     close: () => void;
   } {
     let ctx: ClientContext | null = null;
@@ -2119,7 +2119,25 @@ export async function startServer(opts: {
         ws.send(JSON.stringify({ type: "error", message: "invalid JSON" }));
         return;
       }
-      conn.handleMessage(msg);
+      // `handleMessage` is async (add/remove_model can `await` a proxy
+      // reload) and this listener cannot be async itself, so a rejection
+      // here would otherwise be an unhandled promise rejection — Node kills
+      // the whole daemon on that, not just this connection. Caught and
+      // turned into an ordinary error frame instead, on the same shape as
+      // the "invalid JSON" reply above.
+      void conn.handleMessage(msg).catch((err) => {
+        console.error("[server] message handler failed:", err);
+        try {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "error", message: "internal error handling message" }));
+          }
+        } catch (sendErr) {
+          // A send can itself throw (e.g. socket torn down mid-flight); it
+          // must not escape and re-trigger the crash this handler exists to
+          // prevent.
+          console.error("[server] failed to send error frame:", sendErr);
+        }
+      });
     });
 
     ws.on("close", () => conn.close());

@@ -456,6 +456,41 @@ describe("set_model proxy-status selection", () => {
 });
 
 // ===========================================================================
+// async handleMessage rejection (proxyManager.reload() throwing)
+// ===========================================================================
+
+describe("handleMessage rejection handling", () => {
+  it("add_model surfaces an internal-error frame when reload() rejects, and the daemon survives", async () => {
+    const reload = vi.fn(async () => {
+      throw new Error("boom: proxy reload failed");
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const server = await startServer({
+      port: 0,
+      runQuery: makeRun(),
+      proxyManager: fakeProxy("healthy", reload),
+    });
+    closers.push(server.close);
+    const c = await openClient(server.port);
+    await join(c, "p1", "s1");
+    c.ws.send(JSON.stringify({ type: "add_model", projectId: "p1", entry: OLLAMA }));
+    const err = await waitFor(c.sink, (m) => m.type === "error");
+    expect(err.message).toBe("internal error handling message");
+    expect(reload).toHaveBeenCalledTimes(1);
+    // the rejection was logged rather than left to crash the process
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[server] message handler failed:",
+      expect.any(Error),
+    );
+    // daemon survives: the same connection still answers an unrelated request
+    c.ws.send(JSON.stringify({ type: "list_models", projectId: "p1" }));
+    const reply = await waitFor(c.sink, (m) => m.type === "models_list");
+    expect(reply.models.some((m: ManagedModelEntry) => m.key === "opus")).toBe(true);
+    errorSpy.mockRestore();
+  });
+});
+
+// ===========================================================================
 // joiner-after-add replay
 // ===========================================================================
 
