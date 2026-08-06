@@ -6,11 +6,19 @@ import {
   LIFECYCLE_TRANSITIONS,
   LifecyclePanel,
   MEMBERSHIP_IDLE,
+  MODELS_MEMBER_REFUSAL,
+  ModelsPanel,
   SessionGroups,
   membershipStep,
 } from "./SessionPicker";
 import pickerSource from "./SessionPicker.tsx?raw";
-import type { MachineInfo, ProjectLifecycle, ProjectSessionInfo, ProjectSummary } from "../types";
+import type {
+  MachineInfo,
+  ManagedModelEntry,
+  ProjectLifecycle,
+  ProjectSessionInfo,
+  ProjectSummary,
+} from "../types";
 
 /** The session list's contested surfaces (spec §5): a per-repo chip on the
  *  group head and a per-session marker beside the state badge.
@@ -563,5 +571,236 @@ describe("SessionPicker — PROJECT lifecycle section wiring (plan §1.1–§1.2
     // No new subscription: the section reads the same `projects` state the
     // entrance list fills, via the `project` memo.
     expect(pickerSource).toMatch(/lifecycle=\{manageable\.lifecycle\}/);
+  });
+});
+
+/** ── MODELS section (model-agnostic plan §2.1 client MANAGE view, Task 7).
+ *  Two seams, both house-standard: the panel's RENDER + form/arm interactions
+ *  run through props-only static markup and the stateful hooks-shim mount
+ *  (verbatim from the LifecyclePanel tests above), and the picker's socket
+ *  wiring (list on mount, add/remove sends, member+reply gate, refusal
+ *  degrade) is pinned from source — the house `?raw` pattern. */
+
+/** A managed-model roster entry as `models_list` delivers it. `id` defaults to
+ *  `key` (the extras invariant key === id) and a sane context window, so a
+ *  fixture names only what a case is about. */
+const mm = (over: Partial<ManagedModelEntry> & { key: string }): ManagedModelEntry => ({
+  id: over.key,
+  label: over.key,
+  contextWindow: 200000,
+  ...over,
+});
+
+const renderModels = (models: ManagedModelEntry[], error: string | null = null): string =>
+  renderToStaticMarkup(
+    <ModelsPanel models={models} error={error} onAdd={() => {}} onRemove={() => {}} />,
+  );
+
+/** The panel mounted through the stateful hooks-shim, with accessors over its
+ *  LIVE tree: fields addressed by `aria-label`, buttons by label. Every setter
+ *  re-renders synchronously (the whole point — id derivation and the armed
+ *  relabel are re-read after each edit). */
+const mountModels = (models: ManagedModelEntry[], error: string | null = null) => {
+  const onAdd = vi.fn();
+  const onRemove = vi.fn();
+  const mounted = mount(ModelsPanel as (p: unknown) => unknown, { models, error, onAdd, onRemove });
+  const find = (aria: string): El | undefined =>
+    mounted.nodes().find((n) => n.props["aria-label"] === aria);
+  const setField = (aria: string, value: string) => {
+    const node = find(aria);
+    expect(node, `a field labelled ${aria}`).toBeDefined();
+    (node!.props.onChange as (e: unknown) => void)({ target: { value } });
+  };
+  const buttons = () => mounted.nodes().filter((n) => n.type === "button");
+  const labels = () => buttons().map((n) => textOf(n));
+  const click = (label: string) => {
+    const b = buttons().find((n) => textOf(n) === label);
+    expect(b, `a button labelled ${label}`).toBeDefined();
+    (b!.props.onClick as () => void)();
+  };
+  const texts = () => mounted.nodes().map((n) => textOf(n));
+  return { onAdd, onRemove, find, setField, labels, click, texts };
+};
+
+/** A complete, valid ollama form except for the field a case wants to poke. */
+const fillOllama = (m: ReturnType<typeof mountModels>) => {
+  m.setField("label", "qwen");
+  m.setField("provider", "ollama");
+  m.setField("provider model", "qwen3.6:27b");
+  m.setField("base URL", "http://127.0.0.1:11434");
+  m.setField("context window", "40000");
+};
+
+describe("ModelsPanel — roster render (Task 7 behavior table)", () => {
+  it("lists every entry; built-ins are marked and carry NO remove button", () => {
+    const models = [
+      mm({ key: "opus", label: "opus 5", contextWindow: 1000000, builtin: true }),
+      mm({
+        key: "qwen3.6-27b",
+        label: "qwen",
+        provider: "ollama",
+        baseUrl: "http://127.0.0.1:11434",
+        providerModel: "qwen3.6:27b",
+      }),
+    ];
+    const markup = renderModels(models);
+    const lines = textLines(markup);
+    expect(lines).toContain("opus 5");
+    expect(lines).toContain("qwen");
+    // The built-in is marked as such…
+    expect(lines).toContain("built-in");
+    // …and only the ONE non-builtin row offers REMOVE.
+    expect(buttonLabels(markup).filter((l) => l === "REMOVE")).toHaveLength(1);
+  });
+
+  it("surfaces a server refusal on the panel's own red line", () => {
+    const markup = renderModels(
+      [mm({ key: "opus", label: "opus 5", builtin: true })],
+      "cannot remove a built-in model",
+    );
+    expect(textLines(markup)).toContain("cannot remove a built-in model");
+  });
+});
+
+describe("ModelsPanel — ADD form (Task 7 behavior table)", () => {
+  it("adds a valid ollama entry with the derived id", () => {
+    const m = mountModels([]);
+    fillOllama(m);
+    m.click("ADD");
+    expect(m.onAdd).toHaveBeenCalledTimes(1);
+    expect(m.onAdd).toHaveBeenCalledWith({
+      id: "qwen3.6-27b",
+      label: "qwen",
+      contextWindow: 40000,
+      provider: "ollama",
+      baseUrl: "http://127.0.0.1:11434",
+      providerModel: "qwen3.6:27b",
+    });
+  });
+
+  it("derives the id from the provider model (lowercase, `:`→`-`)", () => {
+    const m = mountModels([]);
+    m.setField("provider model", "qwen3.6:27b");
+    expect(m.find("model id")!.props.value).toBe("qwen3.6-27b");
+  });
+
+  it("lets the id field override the derivation, and keeps the override sticky", () => {
+    const m = mountModels([]);
+    m.setField("provider model", "qwen3.6:27b");
+    m.setField("model id", "my-qwen");
+    expect(m.find("model id")!.props.value).toBe("my-qwen");
+    // A later provider-model edit does NOT clobber a hand-typed id.
+    m.setField("provider model", "llama3:8b");
+    expect(m.find("model id")!.props.value).toBe("my-qwen");
+    // …and the override is what gets sent.
+    m.setField("label", "x");
+    m.setField("base URL", "http://h");
+    m.setField("context window", "10");
+    m.click("ADD");
+    expect(m.onAdd).toHaveBeenCalledWith(expect.objectContaining({ id: "my-qwen" }));
+  });
+
+  it("blocks submit with the exact ollama message when base URL is empty", () => {
+    const m = mountModels([]);
+    m.setField("label", "x");
+    m.setField("provider", "ollama");
+    m.setField("provider model", "q");
+    m.setField("context window", "10");
+    m.click("ADD");
+    expect(m.onAdd).not.toHaveBeenCalled();
+    expect(m.texts()).toContain("base URL is required for ollama");
+  });
+
+  it("substitutes the provider name in the validation message", () => {
+    const m = mountModels([]);
+    m.setField("label", "x");
+    m.setField("provider", "openai-compatible");
+    m.setField("provider model", "q");
+    m.setField("context window", "10");
+    m.click("ADD");
+    expect(m.onAdd).not.toHaveBeenCalled();
+    expect(m.texts()).toContain("base URL is required for openai-compatible");
+  });
+
+  it("exposes the API key env field only for openai-compatible and forwards it", () => {
+    const m = mountModels([]);
+    // Ollama has no key field.
+    m.setField("provider", "ollama");
+    expect(m.find("api key env")).toBeUndefined();
+    // Switching to openai-compatible reveals it and its value rides the entry.
+    m.setField("provider", "openai-compatible");
+    m.setField("label", "gpt");
+    m.setField("provider model", "gpt-4o");
+    m.setField("base URL", "http://127.0.0.1:4000");
+    m.setField("context window", "128000");
+    m.setField("api key env", "MY_KEY");
+    m.click("ADD");
+    expect(m.onAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openai-compatible", apiKeyEnv: "MY_KEY" }),
+    );
+  });
+});
+
+describe("ModelsPanel — REMOVE arm-and-confirm (Task 7 behavior table)", () => {
+  const extra = () => [
+    mm({
+      key: "qwen3.6-27b",
+      label: "qwen",
+      provider: "ollama",
+      baseUrl: "http://h",
+      providerModel: "q",
+    }),
+  ];
+
+  it("the first REMOVE click only arms — it sends nothing", () => {
+    const m = mountModels(extra());
+    m.click("REMOVE");
+    expect(m.onRemove).not.toHaveBeenCalled();
+    expect(m.labels()).toContain("SURE?");
+  });
+
+  it("the second click confirms and sends remove_model with the entry key", () => {
+    const m = mountModels(extra());
+    m.click("REMOVE");
+    m.click("SURE?");
+    expect(m.onRemove).toHaveBeenCalledTimes(1);
+    expect(m.onRemove).toHaveBeenCalledWith("qwen3.6-27b");
+  });
+});
+
+/** The picker-side wiring the panel cannot see. Static rendering never runs the
+ *  picker's socket effect, so these are pinned from source — the house `?raw`
+ *  pattern (same as the INVITE and PROJECT section wiring above). */
+describe("SessionPicker — MODELS section wiring (Task 7)", () => {
+  it("asks for the models list project-scoped, on open and again after a JOIN lands", () => {
+    const asks = pickerSource.match(/"list_models", projectId: props\.projectId/g);
+    // Once in onopen, once beside the post-join re-watch — a fresh member's
+    // first ask was refused as not_a_member before the join (mirrors invites).
+    expect(asks).toHaveLength(2);
+  });
+
+  it("renders the panel ONLY for a member AND only after a models_list reply", () => {
+    // `manageable` is the membership gate (non-member ⇒ no panel); `models !==
+    // null` is the reply gate (old server never replies ⇒ no panel).
+    expect(pickerSource).toMatch(
+      /\{manageable !== null && models !== null && \([\s\S]{0,240}<ModelsPanel/,
+    );
+  });
+
+  it("fills the roster from every models_list reply", () => {
+    expect(pickerSource).toMatch(/msg\.type === "models_list"[\s\S]{0,80}setModels\(msg\.models/);
+  });
+
+  it("sends add_model / remove_model with the picker's own projectId", () => {
+    expect(pickerSource).toMatch(/"add_model", projectId: props\.projectId, entry/);
+    expect(pickerSource).toMatch(/"remove_model", projectId: props\.projectId, key/);
+  });
+
+  it("degrades the models member-refusal quietly, like the lifecycle gate", () => {
+    // The standalone models handlers refuse a non-member with a plain (uncoded)
+    // error; normalizing that string into `not_a_member` keeps it OFF the red
+    // line and in the quiet membership flow.
+    expect(pickerSource).toMatch(/msg\.message === MODELS_MEMBER_REFUSAL/);
+    expect(MODELS_MEMBER_REFUSAL).toBe("join this project before managing models");
   });
 });
