@@ -39,9 +39,10 @@ export interface ModelRosterEntry {
 const RESERVED_MODEL_IDS = new Set(["__proto__", "constructor", "prototype"]);
 
 const BUILTIN_MODELS: Record<string, ModelEntry> = {
-  opus: { id: "claude-opus-4-8", label: "opus 4.8", contextWindow: 200000 },
-  sonnet: { id: "claude-sonnet-5", label: "sonnet 5", contextWindow: 200000 },
+  opus: { id: "claude-opus-5", label: "opus 5", contextWindow: 1000000 },
+  sonnet: { id: "claude-sonnet-5", label: "sonnet 5", contextWindow: 1000000 },
   haiku: { id: "claude-haiku-4-5-20251001", label: "haiku 4.5", contextWindow: 200000 },
+  fable: { id: "claude-fable-5", label: "fable 5", contextWindow: 1000000 },
 };
 
 /** Parse MPAI_EXTRA_MODELS (JSON array of ModelEntry-shaped objects, e.g.
