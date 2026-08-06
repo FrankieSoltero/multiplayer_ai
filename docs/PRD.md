@@ -509,12 +509,19 @@ changes. The `?screen=status` design screen was retired in the same cycle — it
 honest feed and its tool grid was static; the HUD shows the real numbers now.
 
 *Final state:* the gap inventory the PRD called for is done
-(`docs/specs/2026-08-01-agent-surface-gap-inventory.md`) and cycle 1 ships the wire. Local
-models ride the same surface (`feature/local-models`): the model registry is the single source
-(`poc/server/src/models.ts`), operators add entries via `MPAI_EXTRA_MODELS`, and a LiteLLM proxy
-routes the Anthropic API by model id (`claude-*` pass-through, local ids to Ollama) so a session
-can pick a local model from the same picker with gates and record intact
-(`deploy/local-models.md`). Cycle 2 (`feature/permission-rules`, plan
+(`docs/specs/2026-08-01-agent-surface-gap-inventory.md`) and cycle 1 ships the wire. Any model
+rides the same surface now (`feature/model-agnostic-models`,
+`docs/specs/2026-08-06-model-agnostic-models-design.md`): the model registry persists per
+machine at `$MPAI_HOME/models.json`, members add and remove models from a member-gated MODELS
+panel on the project screen (`list_models`/`add_model`/`remove_model`, roster re-emitted to
+every live session on change) instead of hand-editing JSON, and the harness itself generates the
+proxy config and spawns/supervises a health-gated LiteLLM proxy whenever a routed (Ollama or
+openai-compatible) model is registered — Claude built-ins keep talking straight to Anthropic
+when no routed model exists. `MPAI_EXTRA_MODELS` still works but is deprecated, back-compat-only,
+applied after the registry. A machine with no `ANTHROPIC_API_KEY` still boots: Claude entries
+carry a no-credentials note, selection stays allowed, and a new session's default falls back to
+the first routed model when one is registered (`deploy/local-models.md`). Cycle 2
+(`feature/permission-rules`, plan
 `docs/plans/2026-08-03-permission-rules.md`) ships permission **always-allow**: a driver answers
 a gate with ALWAYS (gate card + `l` hotkey, offered only when the SDK suggested a rule) and the
 SDK's suggested rule comes back as `updatedPermissions` with destination **forced to `session`**
