@@ -55,7 +55,43 @@ user's, never automated** (now in project memory).
 `deploy/multi-machine-test.md` §7** — PC box runs Ollama + the daemon (managed proxy), the
 user's laptop drives via the hub: key-less boot, add-via-UI from the laptop, fallback default,
 a real local turn, remove-in-use refusal. This completes the live-proof gate the user took
-ownership of.
+ownership of. (3) After merge: delete `.soltero/lean-sdd/2026-08-06-model-agnostic-models/`
+(house precedent) and remove the worktree.
+
+**Key decisions + why (full audit trail: spec §2.5 + the 11-round review file):** member-gated
+list_models (reads expose baseUrl/apiKeyEnv names → same gate as writes, no auth asymmetry);
+key-less boot = "any usable model" gate (Anthropic creds are one way to power the harness,
+never a requirement — the north-star ruling); SSRF NOT range-blocked (LAN endpoints ARE the
+product; members already hold a gated agent, a strictly stronger primitive); reload keeps the
+child serving pass-through when the last routed model is removed (live drivers' base URL is
+fixed at boot); id-route uniqueness checked against entry VALUES incl. `claude-*` ids (blocks
+Anthropic-traffic hijack); no orphan-killing (never kill a process we didn't spawn — occupied
+port warns with the pkill remedy); local-LLM runtime testing is the USER's, never automated
+(user ruling mid-live-walk, saved to project memory).
+
+**Files (touchpoints with line refs, at 7e4ed9a):** registry `poc/server/src/models.ts:56`
+(BUILTIN_MODELS quartet) · config store `poc/server/src/modelsConfig.ts:286` (registerModel),
+`:312` (unregisterModel), `:336` (resolveDefaultModel), `:36` (reserved apiKeyEnv set) · proxy
+`poc/server/src/proxyManager.ts:100` (class), `:72` (generateLitellmConfig), `:228` (scopedEnv)
+· wire `poc/server/src/server.ts:1241/:1256/:1284` (list/add/remove_model handlers) · boot
+`poc/server/src/main.ts:86` (resolveBaseUrl applied), `:123` (installShutdownHandlers);
+`poc/server/src/config.ts:108/:118` · driver `poc/server/src/agentDriver.ts:449` (proxied),
+`:657` (currentModel) · panel `poc/client/src/components/SessionPicker.tsx:675` (ModelsPanel),
+`:663` (deriveModelId).
+
+**Open questions (surfaced, not blocking):** (a) three council items were resolved strict-ward
+by the controller without a user round-trip — live proof REQUIRED, list_models member-gated,
+apiKeyEnv deny-list — disclosed in PR #46 for ratification; (b) fable-5 inclusion + opus id
+REPLACE (not add) were flagged defaults in the approved spec §2.3 — user eyeballed the design
+but never singled these out; (c) PR #44/#46 both touch `deploy/multi-machine-test.md` —
+merge-order conflict is the user's call.
+
+**Resume & verify:** worktree `/Users/franciscosoltero/Desktop/Code/multiplayer_ai/.claude/worktrees/model-agnostic-models`
+(branch `feature/model-agnostic-models`, head `7e4ed9a`). `gh pr list` → #44 #45 #46 open.
+Suites: `cd poc/server && npm run build && npx vitest run` → 966; `cd poc/hub && npx vitest run`
+→ 388 (hub REQUIRES the server build first — package exports point at dist/); `cd poc/client &&
+npx vitest run` → 622; `npx tsc -b` clean in all three. sdd ledger:
+`.soltero/lean-sdd/2026-08-06-model-agnostic-models/progress.md` (keep until merge).
 
 **Gotchas:**
 
@@ -66,6 +102,14 @@ ownership of.
 - **`models.json` is per-machine, not per-project or per-hub.** Model availability is a property
   of the machine (its GPU, its Ollama install) — registering a model on one machine does not make
   it appear on another, even inside the same hub/project.
+- **TDZ import-order trap:** in ANY file importing `modelsConfig.js`, an import of `models.js`
+  MUST come first (models.ts calls initRegistry() at module bottom; wrong order = ReferenceError
+  boot crash). Guard comments sit at `poc/server/src/main.ts:4-9` — do not "clean them up".
+- **Production mode (`CLIENT_DIST` set) still requires the four GitHub auth vars** — discovered
+  live; local no-auth testing must use dev mode (vite hardcodes `ws://localhost:3001`, so port
+  3001 must be free — check `lsof -nP -iTCP:3001`).
+- **Sessions created BEFORE the proxy comes up can't use routed models** (predates-proxy
+  refusal, by design): add the model from the project screen FIRST, then create the session.
 
 ---
 
