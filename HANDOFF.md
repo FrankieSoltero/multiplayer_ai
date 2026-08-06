@@ -150,7 +150,7 @@ turn, and remove-in-use refusal. This is the ordered next step once the PR lands
 2. **Dispatch Task 5's review** (sonnet FULL; package `scripts/review-package PLAN c4fa4c0 cd1a44a` — careful: if 4/7 commits interleaved, build the package from cd1a44a's parent instead).
 3. **Task 3 fix round 1/3** after Task 7 is landed+reviewed: fresh implementer (opus), told "a prior implementer attempted this; read task-3-report.md", findings verbatim from the Task-3 review (in the old session transcript — summarized in the ledger line), scoped re-review after.
 4. **Continue the pipeline** (plan `docs/plans/2026-07-31-presentation.md`, dependency table): 6 after 4 → 8 after 6+7 → 9→10→11 · 13 after 8 (12 done) ‖ 9–11 · 14‖15 after 1–13 → final whole-branch review (opus) → ONE fix wave → **objective live walk per Plan done gate step 2** → lean-finishing: fresh suites → push → **open PR, user merges**.
-5. lean-sdd contract: briefs via `scripts/task-brief`, packages via `scripts/review-package` (never HEAD~1 — use recorded BASE), tiering mechanical→sonnet/haiku · standard→opus/sonnet · judgment→opus/opus (opus alias = claude-opus‑4-8 via `.claude/settings.json`), one writer per file set, path-scoped staging, commit trailers Co-Authored-By + Claude-Session.
+5. lean-sdd contract: briefs via `scripts/task-brief`, packages via `scripts/review-package` (never HEAD~1 — use recorded BASE), tiering mechanical→sonnet/haiku · standard→opus/sonnet · judgment→opus/opus (opus alias = claude-opus-4-8 via `.claude/settings.json`), one writer per file set, path-scoped staging, commit trailers Co-Authored-By + Claude-Session.
 
 **Council record (docs/plan-reviews/2026-07-31-presentation-review.md):** rounds 1–3 BLOCKED (84.2 / 82.2 / 85.2-with-1-blocking) → re-authored per max-round rule → cycle 2 **PASS 85.3**; post-PASS mechanical fixes applied. Disclose to user when relevant: ruling R5 extended spec §2.2's Clean overrides with the four derived alpha tokens (rgba() derivations of the re-pointed solids) — logged, not user-confirmed.
 
@@ -167,7 +167,7 @@ the D6 catch: /400 divisor means 200px — not 400px — spans the full drag ran
 
 **Execution facts:** 15 tasks; serial 1→2→3, then 4/5/7 concurrent, 6 after 4, 8 after 6+7,
 9→10→11 serial, 12 anytime, 13 after 8+12 (‖ 9–11), 14‖15 trailing. terminal.css chokepoint
-chain: 3→4→6→8→13. Model policy unchanged: `.claude/settings.json` pins opus→claude-opus‑4-8;
+chain: 3→4→6→8→13. Model policy unchanged: `.claude/settings.json` pins opus→claude-opus-4-8;
 tiering mechanical→sonnet/haiku, standard→opus/sonnet, judgment→opus/opus; fix rounds to the
 ORIGINAL implementer. Done gate: three suites at baseline (server 762 · hub 352 · client
 ≥430) + the OBJECTIVE live-walk (both themes screenshotted per state) BEFORE the PR. Then
@@ -182,7 +182,7 @@ lean-finishing → push → **open PR, user merges**.
 **➡️ ORDERED NEXT STEPS (fresh session):**
 1. **Apply the round-1 fix list** in `docs/plan-reviews/2026-07-31-presentation-review.md` §"Findings → fix list" to the PLAN (all mechanical; the 2 owner-decision items are already RESOLVED by controller rulings logged there — trailing parity test justified+kept, lane base pinned to `--fs` 13px). Includes splitting Task 5 → three tasks and Task 3 → two (renumber dependency table accordingly).
 2. **Re-convene the council (round 2)** via soltero-skills:plan-review workflow (`round: 2`; round 1 runId `wf_739a7244-4e8` had one dead agent — councilComplete false, disclosed in the review file; round 2 runs fresh). Append round 2 to the review file.
-3. On PASS: branch `feature/presentation` off main (`20c40fd`), first docs commit = spec + plan + review + this HANDOFF edit, execute via **soltero-skills:lean-sdd** (model policy unchanged: opus→claude-opus‑4-8 via `.claude/settings.json`; fix rounds to ORIGINAL implementer), then lean-finishing → push → **open PR, user merges**.
+3. On PASS: branch `feature/presentation` off main (`20c40fd`), first docs commit = spec + plan + review + this HANDOFF edit, execute via **soltero-skills:lean-sdd** (model policy unchanged: opus→claude-opus-4-8 via `.claude/settings.json`; fix rounds to ORIGINAL implementer), then lean-finishing → push → **open PR, user merges**.
 
 **Key facts for the plan fixes (verified this session, save re-deriving):** client presentation inventory is embedded in the spec §1 (terminal.css 810 lines, tokens :18-65, NO theme mechanism exists, full-bleed HALF-DONE — no 1296px pin anymore, Cabinet marquee/legend still outside glass at Crt.tsx:39-66/App.tsx:172-174); `.lane` (css:446-450) sets NO font-size — that's why the lane base needed pinning; hooks-shim test pattern lives in `poc/client/src/components/Transcript.test.tsx` (renderTree helper) — cite it by path in Tasks 6/7; pulls navigation helper is `sessionUrlFrom` in `poc/client/src/pickerUrl.ts`; Header.test.tsx EXISTS, ThinkingStrip.test.tsx does NOT (Task 6 creates it).
 
@@ -196,7 +196,7 @@ lean-finishing → push → **open PR, user merges**.
 
 **➡️ ON MERGE OF #32:** delete `.soltero/lean-sdd/2026-07-31-sub-sessions/`; then the user picks the next PRD §8 section (remaining: §8.5 remainder + §8.9 themes pair naturally as one presentation cycle — natural home for PR #32's named CSS follow-up (unstyled `subsession-*`/`subagent-row`/`badge` classes) + compact-row a11y; §8.6 needs a Claude-Code gap inventory as its first task; §8.8 hub-side oversight second half).
 
-**Carry-forward facts:** model policy unchanged (`.claude/settings.json` pins opus→claude-opus‑4-8; lean-sdd tiering held; fix rounds to the ORIGINAL implementer — worked again this session). Session #26's demo background processes (dev hub :4000, dev-demo :3005, demo-buddy :3006) were STOPPED during session #27 — no demo state of ours is running. The user's own daemon (:3001) was never ours to touch and may still be up. User's checkout still has legacy `mpai/test` branch + `.mpai/worktrees/test` blocking project `test` (their call: `git worktree remove .mpai/worktrees/test && git branch -D mpai/test`). User WIP untouched: `poc/client/src/game/tetris.test.ts` modified + the usual untracked files. L7 no-LICENSE still deferred — ask first.
+**Carry-forward facts:** model policy unchanged (`.claude/settings.json` pins opus→claude-opus-4-8; lean-sdd tiering held; fix rounds to the ORIGINAL implementer — worked again this session). Session #26's demo background processes (dev hub :4000, dev-demo :3005, demo-buddy :3006) were STOPPED during session #27 — no demo state of ours is running. The user's own daemon (:3001) was never ours to touch and may still be up. User's checkout still has legacy `mpai/test` branch + `.mpai/worktrees/test` blocking project `test` (their call: `git worktree remove .mpai/worktrees/test && git branch -D mpai/test`). User WIP untouched: `poc/client/src/game/tetris.test.ts` modified + the usual untracked files. L7 no-LICENSE still deferred — ask first.
 
 ## 🟡 (superseded this session) previous session-#26 wrap block below
 
@@ -207,7 +207,7 @@ lean-finishing → push → **open PR, user merges**.
 **➡️ ORDERED NEXT STEPS (fresh session):**
 1. **Apply the 7 post-PASS mechanical fixes** listed at the END of the review file (§Round 3, "Post-PASS mechanical fixes") to the PLAN — house precedent, no re-review needed; the two owner-decision split suggestions are DECLINED with rationale recorded there.
 2. Branch `feature/sub-sessions` off fresh `main` (currently `0a5ae4a` — PRs #30/#31 both merged session #26). First docs commit = spec + plan + review + this HANDOFF edit (standing convention).
-3. Execute via **soltero-skills:lean-sdd** (model policy unchanged: `.claude/settings.json` pins opus→claude-opus‑4-8; tiering mechanical→sonnet/haiku, standard→opus/sonnet, judgment→opus/opus; controller fable never dispatched; fix rounds go to the ORIGINAL implementer).
+3. Execute via **soltero-skills:lean-sdd** (model policy unchanged: `.claude/settings.json` pins opus→claude-opus-4-8; tiering mechanical→sonnet/haiku, standard→opus/sonnet, judgment→opus/opus; controller fable never dispatched; fix rounds go to the ORIGINAL implementer).
 4. Then lean-finishing: fresh suites → push → **open PR, user merges** (though note: user said "go ahead and merge in the open prs" for #30/#31 this session — still ASK before merging new ones).
 
 **Key §8.4 technical facts (verified this session, save re-deriving):** driver already sets `forwardSubagentText: true` (agentDriver.ts:246) and stamps `parentToolUseId` on agent_text_delta/tool_call/tool_result (:815/:824/:895); SDK `canUseTool` options carry `toolUseID`+`agentID` (buildCanUseTool at permissions.ts:277, driver-ask :337); SDK `task_started` carries `tool_use_id` (sdk.d.ts:4466) — currently dropped by handleTaskMessage; client derive.ts:172 `deriveTranscriptGroups` already groups subagent runs; client types.ts LoggedEvent is loose/all-optional (no type changes needed); hub relays events opaquely (zero hub changes); NO App.test.tsx exists (T4 creates it); Transcript mounts at App.tsx:561 in `<div className="row">` (:560) — there is NO "stats bar".
@@ -235,7 +235,7 @@ Diagnosed via lean-debugging (scratch-repo repro FIRST, exact error reproduced),
 
 **Final state:** all 13 tasks + one fix wave executed and reviewed; final whole-branch review "Ready to merge", 0 Critical; scoped re-review clean. Fresh suites at `268ab23`: server 748 · hub 266 · client 390, tsc ×3 clean. Branch pushed; **PR #29** (https://github.com/FrankieSoltero/multiplayer_ai/pull/29) carries the full disclosure list. SDD workspace (`.soltero/lean-sdd/2026-07-31-identity-and-access/`) kept until merge, then delete (session-#22 precedent). Follow-ups parked in the PR body + ledger (WAL-v1 backup test, projectAccess/RecordPanel comment sweeps). This HANDOFF edit is uncommitted on the branch — fold into the next branch's first docs commit as usual.
 
-**BRANCH B (§8.10) IS PLANNED AND GATED — execution waits ONLY on the PR #29 merge.** Plan: `docs/plans/2026-07-31-operating-a-hub.md` (9 tasks; hub.ts serial chain 2→3→4→5→6→7; canonical boot order open/migrate → backup → prune → load; the id-continuity trap — publish-after-prune PK collision, fix = `nextEventId` seeded from MAX(id)+1 — is pinned in Task 3). Council verdict: **PASS 85.9** round 1, `docs/plan-reviews/2026-07-31-operating-a-hub-review.md`; all mechanical fixes applied post-PASS. **Both files are UNTRACKED on purpose** (they'd pollute PR #29) — they become the first docs commit of the Branch B branch. ONE open owner question, non-blocking, user not yet asked directly: pull `staticFiles.ts` security headers into Branch B as a ride-along, or keep headers Caddyfile-only (plan currently keeps them out, flagged in its Global Constraints). **On merge of #29:** delete the old SDD workspace, branch `feature/operating-a-hub` off fresh `main`, commit plan+review, execute with lean-sdd (model policy unchanged: opus alias → claude-opus‑4-8).
+**BRANCH B (§8.10) IS PLANNED AND GATED — execution waits ONLY on the PR #29 merge.** Plan: `docs/plans/2026-07-31-operating-a-hub.md` (9 tasks; hub.ts serial chain 2→3→4→5→6→7; canonical boot order open/migrate → backup → prune → load; the id-continuity trap — publish-after-prune PK collision, fix = `nextEventId` seeded from MAX(id)+1 — is pinned in Task 3). Council verdict: **PASS 85.9** round 1, `docs/plan-reviews/2026-07-31-operating-a-hub-review.md`; all mechanical fixes applied post-PASS. **Both files are UNTRACKED on purpose** (they'd pollute PR #29) — they become the first docs commit of the Branch B branch. ONE open owner question, non-blocking, user not yet asked directly: pull `staticFiles.ts` security headers into Branch B as a ride-along, or keep headers Caddyfile-only (plan currently keeps them out, flagged in its Global Constraints). **On merge of #29:** delete the old SDD workspace, branch `feature/operating-a-hub` off fresh `main`, commit plan+review, execute with lean-sdd (model policy unchanged: opus alias → claude-opus-4-8).
 
 ## (was mid-flight) session #24 — ON `feature/identity-and-access`, EXECUTION MID-FLIGHT. THE SDD LEDGER IS THE AUTHORITY.
 
@@ -255,7 +255,7 @@ Diagnosed via lean-debugging (scratch-repo repro FIRST, exact error reproduced),
 - **NOT STARTED:** 13 (docs sweep — mechanical/sonnet, haiku review; fold in Task 1's deferred PRD D12 ~`docs/PRD.md:311`/`:531` stale payload-limit cites), then the final whole-branch review.
 
 **Decisions locked (why):**
-1. **Model policy:** `.claude/settings.json` sets `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus‑4-8` (user directive; in effect since session #24's start). lean-sdd tiering: mechanical→sonnet impl/haiku SPEC_ONLY review; standard→opus impl/sonnet FULL review; judgment→opus/opus. Controller (fable) never dispatched. Task tiers are in the plan's dependency table.
+1. **Model policy:** `.claude/settings.json` sets `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-8` (user directive; in effect since session #24's start). lean-sdd tiering: mechanical→sonnet impl/haiku SPEC_ONLY review; standard→opus impl/sonnet FULL review; judgment→opus/opus. Controller (fable) never dispatched. Task tiers are in the plan's dependency table.
 2. **Task 6 deviation KEPT:** explicit `wal_checkpoint(TRUNCATE)` before the `.v1.bak` copy — reviewer CONFIRMED the plan's "WAL is checkpointed by the open" premise is false in SQLite; do not revert toward plan text.
 3. **Task 10 parked (ledger has the ruling):** cli.ts uses a custom `hubConnect` ConnectFn for bearer/4401 because `startServer`'s `hub` option forwards neither `headers` nor `onUnauthorized` (plan gap; server.ts was out of scope and concurrently owned). Reviewer-approved for the task; **final fix wave must add the 2-field forward through server.ts (`server.ts:208-213` type, `:1663-1680` Relay construction), switch cli.ts to `RelayOptions.headers`/`onUnauthorized`, delete `hubConnect` — strictly AFTER Task 5 lands (server.ts writer conflict).**
 4. Fix rounds go to the ORIGINAL implementer (resume it with findings; it appends to its report file) — never a reviewer, never the controller (twice-made historical error).
@@ -295,15 +295,15 @@ cd ../client && npx tsc -b && npx vitest run          # 378+ passed
 
 **User's two directives this session:**
 1. **"lets do 8.1 and 8.10"** — the paired section is APPROVED. Recommendation on record was §8.1+§8.10 as a pair; the user took it.
-2. **"lets make sure we don't use opus 5 — can we use opus 4.8 for this next cycle"** — see the model block below. **Partly actioned; needs a session restart to take effect.**
+2. **"lets make sure we don't use opus 5 — can we use opus 4.8 for this next cycle"** — see the model block below. **Partly actioned; needs a session restart to take effect.**
 
 ### ⚠️ MODEL POLICY — actioned but NOT yet in effect
 
-- **`claude-opus‑4-8` is a real, current model ID** (verified via the `claude-api` skill's model table; Opus-tier, $5/$25, 1M ctx).
-- **The Agent tool's `model` parameter is ENUM-ONLY** — `sonnet` | `opus` | `haiku` | `fable`. Passing `"claude-opus‑4-8"` was probed live and **rejected**: `InputValidationError: expected one of "sonnet"|"opus"|"haiku"|"fable"`. Do not retry this; it is settled.
-- **Fix applied:** wrote `.claude/settings.json` (NEW FILE, untracked) with `{"env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus‑4-8"}}`. This repoints what the `opus` alias resolves to **while preserving the haiku/sonnet/opus tiering** the lean-sdd model policy depends on.
+- **`claude-opus-4-8` is a real, current model ID** (verified via the `claude-api` skill's model table; Opus-tier, $5/$25, 1M ctx).
+- **The Agent tool's `model` parameter is ENUM-ONLY** — `sonnet` | `opus` | `haiku` | `fable`. Passing `"claude-opus-4-8"` was probed live and **rejected**: `InputValidationError: expected one of "sonnet"|"opus"|"haiku"|"fable"`. Do not retry this; it is settled.
+- **Fix applied:** wrote `.claude/settings.json` (NEW FILE, untracked) with `{"env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-8"}}`. This repoints what the `opus` alias resolves to **while preserving the haiku/sonnet/opus tiering** the lean-sdd model policy depends on.
 - **It does NOT take effect in the session that wrote it** — `env` is read at session start. **The user must `/clear` or relaunch before any dispatch-heavy phase (plan-review, lean-sdd).** The brainstorm itself is controller-only work, so it was safe to continue.
-- **Rejected alternative, with WHY:** `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus‑4-8` has top priority in the resolution order and would override *every* per-dispatch `model:` choice — flattening mechanical/haiku and sonnet-tier work onto Opus 4.8. More expensive and contrary to the tiering. `ANTHROPIC_DEFAULT_OPUS_MODEL` is the correct knob.
+- **Rejected alternative, with WHY:** `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-8` has top priority in the resolution order and would override *every* per-dispatch `model:` choice — flattening mechanical/haiku and sonnet-tier work onto Opus 4.8. More expensive and contrary to the tiering. `ANTHROPIC_DEFAULT_OPUS_MODEL` is the correct knob.
 - Resolution order, for reference: `CLAUDE_CODE_SUBAGENT_MODEL` → per-invocation `model` → agent frontmatter `model:` → main-conversation model.
 
 ### 🔑 EXPLORATION FINDINGS — the expensive part. Do not re-derive.
@@ -366,7 +366,7 @@ cd /Users/franciscosoltero/Desktop/Code/multiplayer_ai
 git branch --show-current   # main
 git log --oneline -1        # 6f31010 docs: HANDOFF — post-merge reset, next-section recommendation
 git status --short          # M poc/client/src/game/tetris.test.ts  +  ?? .claude/ .soltero/ market-research.md poc/demo-plugins/ tour-skill-suggest.png walk-step8-labels.png
-cat .claude/settings.json   # {"env":{"ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus‑4-8"}}  — written this session, untracked
+cat .claude/settings.json   # {"env":{"ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-8"}}  — written this session, untracked
 ls docs/specs/2026-07-31-*  # NO SUCH FILE — that is the next thing to write
 cd poc/server && npx tsc --noEmit && npx vitest run   # 725 passed
 cd ../hub    && npx tsc --noEmit && npx vitest run    # 195 passed
