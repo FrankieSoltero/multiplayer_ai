@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SERVER_URL, isProjectMember } from "../types";
-import type { InviteView, MachineInfo, ProjectLifecycle, ProjectSessionInfo, ProjectSummary } from "../types";
+import type {
+  InviteView,
+  MachineInfo,
+  ManagedModelEntry,
+  ProjectLifecycle,
+  ProjectSessionInfo,
+  ProjectSummary,
+} from "../types";
 import { slugPreview, sortSessions } from "../sessionRow";
 import { sessionBadgeLabel, sessionStateClass } from "../sessionState";
 import { groupByRepo } from "../repoGroups";
@@ -45,6 +52,14 @@ export type MembershipState = { notMember: boolean; joining: boolean };
  *  named constant because the string is the protocol — the standalone server
  *  answers with the same one (plan §2.1). */
 export const LIFECYCLE_MEMBER_REFUSAL = "join this project before changing it";
+
+/** The standalone models handlers' non-member refusal, verbatim from the server
+ *  (list/add/remove_model, plan §2.1 Task 5). Like `set_project_lifecycle`'s
+ *  refusal it is a PLAIN error with no `code: "not_a_member"`, so the handler
+ *  normalizes this string into the membership flow too: a spectator's on-mount
+ *  `list_models` degrades quietly (the panel simply never appears), never as a
+ *  red toast. Named because the string is the protocol. */
+export const MODELS_MEMBER_REFUSAL = "join this project before managing models";
 
 export const MEMBERSHIP_IDLE: MembershipState = { notMember: false, joining: false };
 
@@ -108,6 +123,11 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
   // The INVITE section's list. Filled by `invite_list`, which only ever
   // answers the requesting socket (it carries secret tokens — plan §2.2).
   const [invites, setInvites] = useState<InviteView[]>([]);
+  // The MODELS section's roster. `null` until a `models_list` reply lands, which
+  // is the whole gate for the panel: an old server never sends one (the message
+  // is new — plan §2.1 wire back-compat), so the panel simply never renders
+  // there. Filled fresh from every reply, so an add/remove repaints the list.
+  const [models, setModels] = useState<ManagedModelEntry[] | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const createTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Mirrors `recordState` for the socket handler, which is installed once per
@@ -172,6 +192,11 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
       // below turns into the JOIN affordance, so the INVITE section degrades
       // by disappearing, never by showing a red error (plan §1.8).
       ws.send(JSON.stringify({ type: "list_invites", projectId: props.projectId }));
+      // Ask for the managed-model roster up front. A spectator's request draws
+      // the plain member refusal, which the membership flow below normalizes
+      // like the lifecycle gate's — so the MODELS section degrades by never
+      // appearing, never by a red error (plan §2.1).
+      ws.send(JSON.stringify({ type: "list_models", projectId: props.projectId }));
     };
     ws.onmessage = (e) => {
       try {
@@ -195,12 +220,18 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
           if (step.watch) {
             ws.send(JSON.stringify({ type: "watch_project", projectId: props.projectId }));
             // A fresh member's first list was refused above; ask again now
-            // that membership (and with it the INVITE section) exists.
+            // that membership (and with it the INVITE and MODELS sections) exists.
             ws.send(JSON.stringify({ type: "list_invites", projectId: props.projectId }));
+            ws.send(JSON.stringify({ type: "list_models", projectId: props.projectId }));
           }
         }
         if (msg.type === "invite_list") {
           setInvites(msg.invites ?? []);
+        }
+        // The reply is also the panel's render gate: the first one flips the
+        // section on, and every later one (after an add/remove) repaints it.
+        if (msg.type === "models_list") {
+          setModels(msg.models ?? []);
         }
         if (msg.type === "session_created") {
           clearCreateTimer();
@@ -214,7 +245,9 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
           // Normalize the lifecycle gate's UNCODED member refusal into the
           // coded one, so it degrades through the same quiet membership flow.
           const code: string | undefined =
-            msg.code ?? (msg.message === LIFECYCLE_MEMBER_REFUSAL ? "not_a_member" : undefined);
+            msg.code ??
+            (msg.message === LIFECYCLE_MEMBER_REFUSAL ? "not_a_member" : undefined) ??
+            (msg.message === MODELS_MEMBER_REFUSAL ? "not_a_member" : undefined);
           if (code !== "not_a_member") setError(msg.message);
           // A membership refusal shows the JOIN affordance below, NOT a toast
           // (spec A5); every other error surfaces on the one red line above.
@@ -316,6 +349,21 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
     );
   };
 
+  // ADD/REMOVE from the MODELS panel. The server re-answers the requesting
+  // socket with a fresh `models_list` on success (plan §2.1), so neither sends
+  // a follow-up list — the reply repaints the roster. A refusal (a validation
+  // skip string, or "cannot remove a built-in model") lands on the shared error
+  // line the panel renders. Clearing `error` first drops any stale refusal.
+  const addModel = (entry: AddModelEntry) => {
+    setError(null);
+    wsRef.current?.send(JSON.stringify({ type: "add_model", projectId: props.projectId, entry }));
+  };
+
+  const removeModel = (key: string) => {
+    setError(null);
+    wsRef.current?.send(JSON.stringify({ type: "remove_model", projectId: props.projectId, key }));
+  };
+
   // Lifecycle transitions are answered by a fresh projects push that repaints
   // every screen (hub `pushProjects`), so the send needs no follow-up and no
   // pending state — and this screen's section re-reads the new lifecycle from
@@ -409,6 +457,20 @@ export function SessionPicker(props: { projectId: string; userId: string; name: 
               lifecycle={manageable.lifecycle}
               onSet={setLifecycle}
             />
+          </>
+        )}
+        {/* MODELS (model-agnostic plan §2.1, Task 7) — the per-machine model
+         *  registry: add a local/openai-compatible backend, remove a non-builtin.
+         *  Member-gated (`manageable`, same as PROJECT) AND reply-gated
+         *  (`models !== null`): the panel renders only once a `models_list`
+         *  arrives, so an old server that never sends one shows nothing, and a
+         *  spectator — whose `list_models` was refused into the membership flow —
+         *  sees no section either. Refusals surface on the picker's shared error
+         *  line, which the panel renders. */}
+        {manageable !== null && models !== null && (
+          <>
+            <div className="panel pix top">MODELS</div>
+            <ModelsPanel models={models} error={error} onAdd={addModel} onRemove={removeModel} />
           </>
         )}
         {/* RECORD (spec §5) — collapsed by default: the record is a read a
@@ -575,6 +637,181 @@ export function LifecyclePanel(props: {
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** The add_model wire payload's `entry` (a server `ModelEntry` subset — the
+ *  server derives the registry key from `id`, so no `key` here). Only the two
+ *  routed providers are ever added from the UI; the four Claude built-ins are
+ *  fixed and unremovable. `apiKeyEnv` is an env var NAME, never a secret
+ *  (plan Global Constraints), and only openai-compatible carries one. */
+export type AddModelEntry = {
+  id: string;
+  label: string;
+  contextWindow: number;
+  provider: "ollama" | "openai-compatible";
+  baseUrl: string;
+  providerModel: string;
+  apiKeyEnv?: string;
+};
+
+/** Derive the registry id from a provider model string: lowercased, every `:`
+ *  turned to `-` (e.g. `qwen3.6:27b` → `qwen3.6-27b`). The exact rule the server
+ *  applies, mirrored so the id field can preview it before the round-trip and
+ *  the client never guesses wrong about what will be registered. */
+export const deriveModelId = (providerModel: string): string =>
+  providerModel.toLowerCase().replace(/:/g, "-");
+
+/** The project screen's MODELS section (model-agnostic plan §2.1 MANAGE view).
+ *  Same seam as `LifecyclePanel`: props-only except for the genuinely local
+ *  form + armed-remove state, so the picker owns the wire send (and the refusal
+ *  degrade) while this owns the form. The ADD form validates client-side —
+ *  base URL is required for BOTH routed providers, mirroring the server rule so
+ *  an obviously-incomplete entry never costs a round-trip — and the id field
+ *  previews the derived id until the user types over it. REMOVE is arm-and-
+ *  confirm (SURE?), the `LifecyclePanel` idiom, and only non-builtin rows carry
+ *  it: the four Claude defaults are marked `built-in` and cannot be removed. */
+export function ModelsPanel(props: {
+  models: ManagedModelEntry[];
+  error: string | null;
+  onAdd: (entry: AddModelEntry) => void;
+  onRemove: (key: string) => void;
+}) {
+  const [label, setLabel] = useState("");
+  const [provider, setProvider] = useState<"ollama" | "openai-compatible">("ollama");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [providerModel, setProviderModel] = useState("");
+  const [contextWindow, setContextWindow] = useState("");
+  const [apiKeyEnv, setApiKeyEnv] = useState("");
+  // `null` = the id field tracks the derivation; any string = a hand-typed
+  // override that a later provider-model edit must NOT clobber.
+  const [idOverride, setIdOverride] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  // One armed slot across the whole list (the LifecyclePanel discipline): the
+  // key mid-confirm, or null. Arming a different row disarms the first.
+  const [armed, setArmed] = useState<string | null>(null);
+
+  const idValue = idOverride ?? deriveModelId(providerModel);
+
+  const submit = () => {
+    const cw = Number(contextWindow);
+    if (!label.trim()) return setFormError("label is required");
+    if (!providerModel.trim()) return setFormError("provider model is required");
+    // Mirrors the server's routed-provider rule (both providers need a base
+    // URL); the message names the selected provider so it reads true either way.
+    if (!baseUrl.trim()) return setFormError(`base URL is required for ${provider}`);
+    if (!Number.isInteger(cw) || cw <= 0) {
+      return setFormError("context window must be a whole number greater than 0");
+    }
+    setFormError(null);
+    props.onAdd({
+      id: idValue.trim(),
+      label: label.trim(),
+      contextWindow: cw,
+      provider,
+      baseUrl: baseUrl.trim(),
+      providerModel: providerModel.trim(),
+      ...(provider === "openai-compatible" && apiKeyEnv.trim() ? { apiKeyEnv: apiKeyEnv.trim() } : {}),
+    });
+  };
+
+  const clickRemove = (key: string) => {
+    if (armed === key) {
+      setArmed(null);
+      props.onRemove(key);
+      return;
+    }
+    setArmed(key);
+  };
+
+  return (
+    <div className="panel">
+      {props.models.map((m) => (
+        <div className="sprow" key={m.key}>
+          <div className="spbody">
+            <div className="spname">
+              {m.label}
+              {m.builtin && <span className="spstate pix sm">built-in</span>}
+            </div>
+            <div className="spwho pix sm">
+              {[m.provider ?? "anthropic", m.providerModel ?? m.id, `${m.contextWindow} ctx`].join(
+                "  ·  ",
+              )}
+            </div>
+          </div>
+          {/* Built-ins are fixed (plan §2.3) — no REMOVE, so the arm-and-confirm
+           *  can only ever fire on a member-added routed entry. */}
+          {!m.builtin && (
+            <button className="btn" onClick={() => clickRemove(m.key)}>
+              {armed === m.key ? "SURE?" : "REMOVE"}
+            </button>
+          )}
+        </div>
+      ))}
+      <div className="spform">
+        <input
+          className="spinput"
+          aria-label="label"
+          placeholder="label"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+        />
+        <span className="spinput" style={{ padding: 0 }}>
+          <select
+            aria-label="provider"
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as "ollama" | "openai-compatible")}
+          >
+            <option value="ollama">ollama</option>
+            <option value="openai-compatible">openai-compatible</option>
+          </select>
+        </span>
+        <input
+          className="spinput"
+          aria-label="provider model"
+          placeholder="provider model"
+          value={providerModel}
+          onChange={(e) => setProviderModel(e.target.value)}
+        />
+        <input
+          className="spinput"
+          aria-label="model id"
+          placeholder="id"
+          value={idValue}
+          onChange={(e) => setIdOverride(e.target.value)}
+        />
+        <input
+          className="spinput"
+          aria-label="base URL"
+          placeholder="base URL"
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+        />
+        <input
+          className="spinput"
+          aria-label="context window"
+          type="number"
+          placeholder="context window"
+          value={contextWindow}
+          onChange={(e) => setContextWindow(e.target.value)}
+        />
+        {provider === "openai-compatible" && (
+          <input
+            className="spinput"
+            aria-label="api key env"
+            placeholder="API key env name"
+            value={apiKeyEnv}
+            onChange={(e) => setApiKeyEnv(e.target.value)}
+          />
+        )}
+        <button className="btn" onClick={submit}>ADD</button>
+      </div>
+      {/* Client-side validation (inline, no round-trip) and the server's own
+       *  refusal share the panel's red line — one place a member looks after
+       *  pressing ADD or REMOVE. */}
+      {formError && <div className="line red">{formError}</div>}
+      {props.error && <div className="line red">{props.error}</div>}
     </div>
   );
 }

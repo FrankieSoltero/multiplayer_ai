@@ -400,6 +400,18 @@ ships the wire (usage/cost, interrupt, error truth, compaction, summaries, roste
 items below were deliberately deferred. None of them rots on its own; the two flagged **watch**
 are the ones where every shipped cycle makes the eventual fix a bigger diff.
 
+- **Local models: env-var-only add + operator-run proxy — RESOLVED (this cycle,
+  `feature/model-agnostic-models`, `docs/specs/2026-08-06-model-agnostic-models-design.md`).**
+  Two informal deferrals from the earlier local-models shim are closed: model registration is no
+  longer env-var-only (`MPAI_EXTRA_MODELS` hand-edited JSON, applied at boot only) — members now
+  add and remove models from a member-gated MODELS panel, persisted per machine to
+  `$MPAI_HOME/models.json` and hot-applied to every live session. The proxy is no longer purely
+  an **operator-run proxy** hand-configured from `deploy/local-models.md`'s old LiteLLM config —
+  the harness itself generates the config from the registry and spawns/supervises the process,
+  health-gated with crash-restart backoff. `MPAI_EXTRA_MODELS` and a fully operator-run proxy
+  (`MPAI_PROXY_EXTERNAL`) both still work, kept as deliberate escape hatches (the deprecated
+  env-var path for back-compat, the operator-run proxy for the cross-machine topology where the
+  backend lives on a different box than the daemon) — neither is the primary path anymore.
 - **Permission "always-allow" rules + the six SDK modes** — **half shipped (cycle 2,
   `feature/permission-rules`, 2026-08-04).** Always-allow is done: ALWAYS as a third driver
   decision, the SDK's suggested rule returned as `updatedPermissions` with destination forced to

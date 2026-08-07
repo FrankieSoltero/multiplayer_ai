@@ -1,3 +1,5 @@
+import { initRegistry } from "./modelsConfig.js";
+
 /** The model registry — the SINGLE source for every selectable model
  *  (local-models plan §1.1). `set_model` validation, the client roster, and
  *  labels all derive from this module; nothing else in src may hardcode the
@@ -12,6 +14,16 @@ export interface ModelEntry {
   id: string;
   label: string;
   contextWindow: number;
+  /** Routing family. Absent = anthropic pass-through (the built-ins). ollama
+   *  and openai-compatible entries route through the managed LiteLLM proxy. */
+  provider?: "anthropic" | "ollama" | "openai-compatible";
+  /** Provider endpoint (required for ollama / openai-compatible). */
+  baseUrl?: string;
+  /** The model name the provider knows (`qwen3.6:27b`); `id` stays the routing key. */
+  providerModel?: string;
+  /** Name of an env var holding the provider's API key (openai-compatible only).
+   *  The key itself is NEVER stored in models.json. */
+  apiKeyEnv?: string;
   /** Local backends report no cost/rate-limit; the picker marks them. */
   local?: boolean;
   /** Honest degradation note, surfaced where the model is picked. */
@@ -38,10 +50,14 @@ export interface ModelRosterEntry {
  *  so the warn-and-skip contract holds regardless of how `extra` is built. */
 const RESERVED_MODEL_IDS = new Set(["__proto__", "constructor", "prototype"]);
 
-const BUILTIN_MODELS: Record<string, ModelEntry> = {
-  opus: { id: "claude-opus-4-8", label: "opus 4.8", contextWindow: 200000 },
-  sonnet: { id: "claude-sonnet-5", label: "sonnet 5", contextWindow: 200000 },
+/** The refreshed Claude defaults (spec §2.3). Exported so modelsConfig.ts can
+ *  layer the persisted registry on top (builtins → models.json → env) and flag
+ *  built-ins in `managedModels()`. */
+export const BUILTIN_MODELS: Record<string, ModelEntry> = {
+  opus: { id: "claude-opus-5", label: "opus 5", contextWindow: 1000000 },
+  sonnet: { id: "claude-sonnet-5", label: "sonnet 5", contextWindow: 1000000 },
   haiku: { id: "claude-haiku-4-5-20251001", label: "haiku 4.5", contextWindow: 200000 },
+  fable: { id: "claude-fable-5", label: "fable 5", contextWindow: 1000000 },
 };
 
 /** Parse MPAI_EXTRA_MODELS (JSON array of ModelEntry-shaped objects, e.g.
@@ -111,12 +127,12 @@ export function parseExtraModels(
   return extra;
 }
 
-export const MODELS: Record<string, ModelEntry> = {
-  ...BUILTIN_MODELS,
-  ...parseExtraModels(process.env.MPAI_EXTRA_MODELS, (msg) =>
-    console.warn(`[models] ${msg}`),
-  ),
-};
+/** The live, mutable registry — the single object every importer shares. It is
+ *  MUTATED in place (never reassigned) by `initRegistry`/`registerModel`/
+ *  `unregisterModel` in modelsConfig.ts, so the reference stays stable across
+ *  `import { MODELS }`. Populated at module load by the `initRegistry` call
+ *  below (builtins → $MPAI_HOME/models.json → MPAI_EXTRA_MODELS). */
+export const MODELS: Record<string, ModelEntry> = {};
 
 export type ModelKey = string;
 export const DEFAULT_MODEL: ModelKey = "opus";
@@ -136,3 +152,8 @@ export function modelRoster(): ModelRosterEntry[] {
     return entry;
   });
 }
+
+// Populate MODELS at module load: builtins → $MPAI_HOME/models.json →
+// MPAI_EXTRA_MODELS (deprecated back-compat), with credential annotation of the
+// Claude built-ins. Never crashes boot (warn-and-skip on any bad config).
+initRegistry(process.env, (msg) => console.warn(`[models] ${msg}`));

@@ -1,6 +1,115 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-08-04 (Claude Code / Fable 5 session — PR sweep + fixes; permission-rules is MID-FLIGHT with uncommitted client work, see below).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-08-06 (model-agnostic model surface — docs sweep, this task).*
+
+---
+
+## 🚀 START HERE (2026-08-06) — MODEL-AGNOSTIC MODEL SURFACE SHIPPED on `feature/model-agnostic-models`.
+
+**Goal:** make model choice a first-class, operator-friendly, model-agnostic surface — models
+added through the product and routed through a harness-managed proxy, not hand-edited config.
+
+**What shipped this cycle** (spec `docs/specs/2026-08-06-model-agnostic-models-design.md`, plan
+`docs/plans/2026-08-06-model-agnostic-models.md`):
+
+- **Registry:** persistent per-machine `$MPAI_HOME/models.json` (JSON array, `.bak` kept on every
+  write). Load order builtins → models.json → deprecated `MPAI_EXTRA_MODELS` (still works,
+  back-compat only, never shadows).
+- **Managed proxy:** the daemon generates `$MPAI_HOME/litellm/config.yaml` from the registry and
+  spawns/supervises `litellm` on `127.0.0.1:4010` (`MPAI_PROXY_PORT` overrides) whenever a routed
+  (Ollama/openai-compatible) model is registered — health-gated, crash-restart backoff, a scoped
+  child env (never the daemon's full `process.env`). `MPAI_PROXY_EXTERNAL=<url>` keeps the
+  fully operator-run-proxy escape hatch for the cross-machine topology.
+- **Wire surface:** member-gated `list_models`/`add_model`/`remove_model`, roster re-emitted to
+  every live session on change.
+- **Models panel:** project-screen UI to add (label/provider/baseUrl/providerModel/context
+  window/apiKeyEnv) and remove (arm-and-confirm) models; built-ins un-removable; an in-use model
+  refuses removal, naming the session.
+- **Refreshed defaults:** built-ins are now opus 5 / sonnet 5 / haiku 4.5 / fable 5
+  (`claude-opus-5`/`claude-sonnet-5`/`claude-haiku-4-5-20251001`/`claude-fable-5`), 1M-token
+  windows except haiku's 200k.
+- **Key-less first run:** boot requires only SOME usable model (Anthropic creds OR a routed
+  model), not `ANTHROPIC_API_KEY` specifically; credential-less Claude entries carry a roster
+  note instead of silently failing every turn; a new session's default falls back to the first
+  routed model when Claude is credential-less.
+- **Docs (this task):** `deploy/local-models.md` rewritten around the managed flow (manual/
+  `MPAI_PROXY_EXTERNAL` setup demoted to an appendix); `deploy/multi-machine-test.md` gained a
+  PC-box section (§7); `docs/PRD.md` §8.6 *Final state* rewritten to the shipped flow, no stale
+  trio references left; `docs/tech-debt.md` §2.9 gained a RESOLVED annotation for the local-models
+  deferrals this cycle closes.
+
+**State:** **PR #46 OPEN** (https://github.com/FrankieSoltero/multiplayer_ai/pull/46 — user
+merges, never us). Final whole-branch review: Ready to merge, 0 Critical, 0 Important; suites at
+head server 966 · hub 388 · client 622, tsc ×3 clean. Merge-order note: PR #44 also touches
+`deploy/multi-machine-test.md` — whichever merges second may need a trivial conflict fix.
+
+**Live walk (2026-08-06, this Mac) — everything verified EXCEPT the final local-model reply:**
+model added VIA UI (id derivation `qwen3.6:27b`→`qwen3.6-27b` observed), models.json persisted,
+LiteLLM config generated + proxy SPAWNED by the daemon (:4010, health 200), roster re-emitted
+live, model selected, turn dispatched, qwen3.6:27b loaded+generating on GPU through the proxy;
+SIGTERM teardown left no orphaned litellm (new shutdown handler proven). The final streamed
+reply/turn_end was deliberately NOT captured — **user ruling: local-LLM runtime testing is the
+user's, never automated** (now in project memory).
+
+**NEXT (ordered):** (1) user merges PR #46 (and #44/#45). (2) **The PC-box test,
+`deploy/multi-machine-test.md` §7** — PC box runs Ollama + the daemon (managed proxy), the
+user's laptop drives via the hub: key-less boot, add-via-UI from the laptop, fallback default,
+a real local turn, remove-in-use refusal. This completes the live-proof gate the user took
+ownership of. (3) After merge: delete `.soltero/lean-sdd/2026-08-06-model-agnostic-models/`
+(house precedent) and remove the worktree.
+
+**Key decisions + why (full audit trail: spec §2.5 + the 11-round review file):** member-gated
+list_models (reads expose baseUrl/apiKeyEnv names → same gate as writes, no auth asymmetry);
+key-less boot = "any usable model" gate (Anthropic creds are one way to power the harness,
+never a requirement — the north-star ruling); SSRF NOT range-blocked (LAN endpoints ARE the
+product; members already hold a gated agent, a strictly stronger primitive); reload keeps the
+child serving pass-through when the last routed model is removed (live drivers' base URL is
+fixed at boot); id-route uniqueness checked against entry VALUES incl. `claude-*` ids (blocks
+Anthropic-traffic hijack); no orphan-killing (never kill a process we didn't spawn — occupied
+port warns with the pkill remedy); local-LLM runtime testing is the USER's, never automated
+(user ruling mid-live-walk, saved to project memory).
+
+**Files (touchpoints with line refs, at 7e4ed9a):** registry `poc/server/src/models.ts:56`
+(BUILTIN_MODELS quartet) · config store `poc/server/src/modelsConfig.ts:286` (registerModel),
+`:312` (unregisterModel), `:336` (resolveDefaultModel), `:36` (reserved apiKeyEnv set) · proxy
+`poc/server/src/proxyManager.ts:100` (class), `:72` (generateLitellmConfig), `:228` (scopedEnv)
+· wire `poc/server/src/server.ts:1241/:1256/:1284` (list/add/remove_model handlers) · boot
+`poc/server/src/main.ts:86` (resolveBaseUrl applied), `:123` (installShutdownHandlers);
+`poc/server/src/config.ts:108/:118` · driver `poc/server/src/agentDriver.ts:449` (proxied),
+`:657` (currentModel) · panel `poc/client/src/components/SessionPicker.tsx:675` (ModelsPanel),
+`:663` (deriveModelId).
+
+**Open questions (surfaced, not blocking):** (a) three council items were resolved strict-ward
+by the controller without a user round-trip — live proof REQUIRED, list_models member-gated,
+apiKeyEnv deny-list — disclosed in PR #46 for ratification; (b) fable-5 inclusion + opus id
+REPLACE (not add) were flagged defaults in the approved spec §2.3 — user eyeballed the design
+but never singled these out; (c) PR #44/#46 both touch `deploy/multi-machine-test.md` —
+merge-order conflict is the user's call.
+
+**Resume & verify:** worktree `/Users/franciscosoltero/Desktop/Code/multiplayer_ai/.claude/worktrees/model-agnostic-models`
+(branch `feature/model-agnostic-models`, head `7e4ed9a`). `gh pr list` → #44 #45 #46 open.
+Suites: `cd poc/server && npm run build && npx vitest run` → 966; `cd poc/hub && npx vitest run`
+→ 388 (hub REQUIRES the server build first — package exports point at dist/); `cd poc/client &&
+npx vitest run` → 622; `npx tsc -b` clean in all three. sdd ledger:
+`.soltero/lean-sdd/2026-08-06-model-agnostic-models/progress.md` (keep until merge).
+
+**Gotchas:**
+
+- **`litellm` is not on `PATH` in a typical venv install** — it commonly lives at
+  `~/.mpai/litellm/venv/bin/litellm`. The proxy manager's binary check is a plain `which litellm`;
+  if you installed litellm into a venv, either activate it before launching the daemon or symlink
+  the binary onto `PATH`, or the daemon will report `unavailable` for routed models.
+- **`models.json` is per-machine, not per-project or per-hub.** Model availability is a property
+  of the machine (its GPU, its Ollama install) — registering a model on one machine does not make
+  it appear on another, even inside the same hub/project.
+- **TDZ import-order trap:** in ANY file importing `modelsConfig.js`, an import of `models.js`
+  MUST come first (models.ts calls initRegistry() at module bottom; wrong order = ReferenceError
+  boot crash). Guard comments sit at `poc/server/src/main.ts:4-9` — do not "clean them up".
+- **Production mode (`CLIENT_DIST` set) still requires the four GitHub auth vars** — discovered
+  live; local no-auth testing must use dev mode (vite hardcodes `ws://localhost:3001`, so port
+  3001 must be free — check `lsof -nP -iTCP:3001`).
+- **Sessions created BEFORE the proxy comes up can't use routed models** (predates-proxy
+  refusal, by design): add the model from the project screen FIRST, then create the session.
 
 ---
 

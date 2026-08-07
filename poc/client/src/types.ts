@@ -33,6 +33,36 @@ export type ModelRosterEntry = {
   degradedNote?: string;
 };
 
+/** Client mirror of the server's managed-model shape (model-agnostic plan §2.1,
+ *  server Task 2's `ManagedModelEntry`). Carried by the standalone `models_list`
+ *  reply the models panel (Task 7) reads. A superset of `ModelRosterEntry`:
+ *  it adds the persisted/managed registry fields (provider routing, per-machine
+ *  config) and the `builtin` marker the four Claude defaults carry. `apiKeyEnv`
+ *  is an env var NAME, never a secret (plan Global Constraints — no secrets on
+ *  disk or on the wire). All routing fields optional so an anthropic/builtin
+ *  entry parses with none of them. */
+export interface ManagedModelEntry {
+  key: string;
+  id: string;
+  label: string;
+  contextWindow: number;
+  provider?: "anthropic" | "ollama" | "openai-compatible";
+  baseUrl?: string;
+  providerModel?: string;
+  apiKeyEnv?: string;
+  local?: boolean;
+  degradedNote?: string;
+  builtin?: boolean;
+}
+
+/** The standalone `models_list` reply (model-agnostic plan §2.1, server Task 5).
+ *  Sent in answer to `list_models` and after every successful add/remove; the
+ *  models panel renders only once one arrives (old servers never send it). */
+export type ModelsListMessage = {
+  type: "models_list";
+  models: ManagedModelEntry[];
+};
+
 export type LoggedEvent = {
   seq: number;
   ts: string;
