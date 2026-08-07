@@ -4,7 +4,47 @@
 
 ---
 
-## 🚀 START HERE (2026-08-06) — MODEL-AGNOSTIC MODEL SURFACE SHIPPED on `feature/model-agnostic-models`.
+## 🚀 START HERE (2026-08-07 morning) — PR #46 MERGED (`3a8b13e`), TOMORROW = THE TWO-MACHINE RUN.
+
+**Where we are, exactly:** the model-agnostic cycle below is DONE and MERGED to main
+(user-directed merge, evening of 2026-08-06). The user stopped mid-walkthrough of the
+two-machine dev setup — nothing has been RUN yet; the plan below is agreed and ready to
+execute. PRs **#44 and #45 are still open** (user merges; #44 very likely conflicts now on
+`deploy/multi-machine-test.md` + `HANDOFF.md` after #46 — expect a small conflict fix).
+The model-agnostic worktree's sdd workspace is deleted (post-merge precedent); the worktree
+at `.claude/worktrees/model-agnostic-models` now sits on main and can be removed.
+
+**TOMORROW'S PLAN (agreed 2026-08-06 evening, both machines pull post-#46 main first):**
+Dev two-machine session — hub on the PC's Ubuntu (auth off ⇒ hub binds LOOPBACK ONLY,
+`poc/hub/src/hubEnv.ts:86-88` fail-closed — that is WHY the ssh tunnel, not LAN, is used):
+
+1. PC (ssh, inside tmux — `tmux new -s hub`, `Ctrl-b c` for a 2nd window):
+   `git checkout main && git pull`; `cd poc/server && npm ci && npm run build`;
+   `cd ../hub && npm ci`; `cd ../client && npm ci && npm run build`.
+   Hub: `cd poc/hub && CLIENT_DIST=~/multiplayer_ai/poc/client/dist npx tsx src/main.ts`
+   (expect: listening 127.0.0.1:4000, sqlite store path, serving client).
+   PC daemon: `cd poc/server && npx mpai --hub ws://127.0.0.1:4000/uplink --root ~/multiplayer_ai --machine-name pc-ubuntu`
+   (expect `attached to hub`; auth off ⇒ pairing auto-skipped). For Claude turns on the PC
+   export `ANTHROPIC_API_KEY` first — or, now that #46 is merged, add a LOCAL model instead:
+   MODELS panel on the project screen → ollama, provider model `qwen3.6:27b` (or a smaller
+   qwen3 for the 16GB GPU), base URL `http://127.0.0.1:11434` — the daemon spawns the managed
+   proxy itself. Ollama must be installed+model pulled on the box; litellm too
+   (`pip install 'litellm[proxy]'`, must be on PATH — `which litellm`).
+2. Mac (LOCAL terminals, no ssh): tunnel `ssh -N -L 4000:127.0.0.1:4000 <pc-alias>`
+   (alias in untracked `.soltero/lab-box.md`, main checkout); Mac daemon:
+   `cd poc/server && npm ci && npx mpai --hub ws://127.0.0.1:4000/uplink --root <mac repo> --machine-name mac`.
+3. Browser on the Mac: http://127.0.0.1:4000 → expect 2 MACHINES → create a project (NOT
+   named `test` if using the Mac's main checkout — legacy `mpai/test` worktree collider) →
+   one session on `(repo, mac)`, one on `(repo, pc-ubuntu)`; drive the PC session from the
+   Mac browser. Add models BEFORE creating the session that will use them (predates-proxy
+   refusal is by design). `--root` list is fixed at daemon launch — restart to pick up new clones.
+
+**User rulings in force:** local-LLM runtime testing is the USER's (never automate);
+PR merges are the user's except when explicitly directed (as #46 was).
+
+---
+
+## (was) 🚀 2026-08-06 — MODEL-AGNOSTIC MODEL SURFACE SHIPPED on `feature/model-agnostic-models`.
 
 **Goal:** make model choice a first-class, operator-friendly, model-agnostic surface — models
 added through the product and routed through a harness-managed proxy, not hand-edited config.
@@ -38,8 +78,7 @@ added through the product and routed through a harness-managed proxy, not hand-e
   trio references left; `docs/tech-debt.md` §2.9 gained a RESOLVED annotation for the local-models
   deferrals this cycle closes.
 
-**State:** **PR #46 OPEN** (https://github.com/FrankieSoltero/multiplayer_ai/pull/46 — user
-merges, never us). Final whole-branch review: Ready to merge, 0 Critical, 0 Important; suites at
+**State:** **PR #46 MERGED `3a8b13e`** (2026-08-06 evening, user-directed). Final whole-branch review: Ready to merge, 0 Critical, 0 Important; suites at
 head server 966 · hub 388 · client 622, tsc ×3 clean. Merge-order note: PR #44 also touches
 `deploy/multi-machine-test.md` — whichever merges second may need a trivial conflict fix.
 
