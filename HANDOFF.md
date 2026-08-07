@@ -14,14 +14,13 @@ execute. PRs **#44 and #45 are still open** (user merges; #44 very likely confli
 The model-agnostic worktree's sdd workspace is deleted (post-merge precedent); the worktree
 at `.claude/worktrees/model-agnostic-models` now sits on main and can be removed.
 
-**STEP 0 (added 19:45 after the box died mid-ssh):** the PC's Ubuntu broadcast "The system
-will power off now!" at 19:44 CDT and dropped the ssh (Tailscale 100.87.x). Cause unknown —
-either a Windows restart/Update, or the known WSL2 idle-reclaim (ssh-into-WSL doesn't count
-as activity when no Windows-side WSL terminal is open). Before ANY hub work: power the box,
-start Ubuntu, run `last -x | head` + `journalctl -b -1 -e` to identify the initiator, and
-pin the VM alive — leave a Windows terminal running `wsl` open, or set `vmIdleTimeout=-1`
-under `[wsl2]` in `.wslconfig` then `wsl --shutdown` once. Tailscale comes back only after
-WSL+tailscaled are up. Nothing is lost: the hub record persists in `~/.mpai`.
+**STEP 0 (resolved same evening):** the PC's 19:44 "power off" broadcast + ssh drop was the
+USER shutting the box down deliberately — nothing broken, no diagnosis needed. Morning start:
+power the PC, start Ubuntu, confirm tailscaled is up (the 100.87.x Tailscale address only
+answers after WSL+tailscaled start), then proceed. Optional precaution for long unattended
+hub runs: pin the WSL VM alive (a Windows terminal running `wsl` left open, or
+`vmIdleTimeout=-1` under `[wsl2]` in `.wslconfig`) so idle-reclaim can't take the hub down
+mid-test. The hub record persists in `~/.mpai` across power cycles regardless.
 
 **TOMORROW'S PLAN (agreed 2026-08-06 evening, both machines pull post-#46 main first):**
 Dev two-machine session — hub on the PC's Ubuntu (auth off ⇒ hub binds LOOPBACK ONLY,
