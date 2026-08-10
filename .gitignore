@@ -9,3 +9,6 @@ poc/demo-worktrees/
 # demo stack runtime (pids, logs) — see poc/demo-hub-relay.sh
 poc/.demo-run/
 poc/demo-project-b/
+
+# local agent workspace (SDD ledgers, lab box notes) — never commit
+.soltero/

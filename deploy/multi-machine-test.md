@@ -67,6 +67,17 @@ mpai --hub wss://YOUR.HUB.HOSTNAME/uplink --root <repo-A-path> --root <repo-B-pa
 - `--root` (repeatable) scans for candidate repos at launch; the create-session form on the
   hub UI lists real `(repo, machine)` pairs. The candidate list is fixed for the daemon's
   lifetime (spec §12.5) — a freshly cloned repo needs a restart to appear.
+- **Plugins need `AGENT_PLUGINS_ROOT` set on each machine** (e.g.
+  `AGENT_PLUGINS_ROOT=$HOME/mpai-plugins mpai --hub …`) or the agent runs with no plugin
+  loadout at all. Found the hard way in the 2026-08-05 lab run — it was undocumented.
+- **Hub-attached plugin import via the UI is deferred (v7b3):** the hub snapshot hardcodes
+  `pluginsEnabled: false` (`poc/hub/src/hubStore.ts:653`), and the SkillsPanel's "set
+  AGENT_PLUGINS_ROOT on the server" message is misleading in this mode — the env var won't
+  help. **Workaround** (verified in the lab): install into the machine's registry by hand —
+  clone the plugin repo to `<AGENT_PLUGINS_ROOT>/<projectId>/<name>/` and write a sibling
+  `<name>.meta.json` containing `{"url":"<https git url>","addedBy":"<who>"}`
+  (`pluginStore.ts`'s boot rescan picks it up); sessions created after the machine launch
+  get the plugin's skills.
 
 ---
 
@@ -227,27 +238,32 @@ failure is expensive to reconstruct later.
 Fill in during the run. PASS/FAIL/DEFERRED, with a one-line note (what you saw, or what
 blocked it).
 
+**Run in progress — 2026-08-05 home lab** (`deploy/home-lab.md`): hub on WSL2
+Ubuntu-24.04 in LAN mode (`SKIP_CADDY=1 SKIP_UFW=1`, http:// origins), ONE machine attached
+so far (the Mac). Rows marked PARTIAL passed for what a 1-machine topology can exercise; the
+cross-machine rows wait on the full 3-laptop matrix (lab repos 2–4 not yet chosen).
+
 | # | Item | Result | Notes |
 |---|---|---|---|
-| 1 | Pairing / membership | | |
-| 2 | Per-repo sessions | | |
-| 3 | Cross-machine watch | | |
-| 4 | Take-the-wheel | | |
-| 5 | Approval handoff | | |
-| 6 | Contested badges on shared repos | | |
-| 7 | Hub oversight summary spanning machines | | |
-| 8 | The record | | |
-| 9 | Attach-truth lines (dialing / attached / no-welcome) | | |
-| 10 | Joined signal | | |
-| 11a | §8.10 TLS via Caddyfile | | |
-| 11b | §8.10 systemd unit | | |
-| 11c | §8.10 backups present | | |
-| 11d | §8.10 retention behavior | | |
-| 12a | PC box — key-less boot | | |
-| 12b | PC box — add model via UI | | |
-| 12c | PC box — fallback default | | |
-| 12d | PC box — run a turn | | |
-| 12e | PC box — remove-in-use refusal | | |
+| 1 | Pairing / membership | PARTIAL | 2026-08-05: OAuth round trip + allowlist sign-in ✓, pairing code flow ✓, silent bearer re-attach on relaunch ✓; device revocation NOT yet exercised |
+| 2 | Per-repo sessions | PARTIAL | 2026-08-05: project + repo attach + session create ✓ on 1 machine; multi-machine picker overlap untested |
+| 3 | Cross-machine watch | | needs machine 2 |
+| 4 | Take-the-wheel | | needs machine 2 |
+| 5 | Approval handoff | | first agent turn + 🔐 gate queued for lab resume |
+| 6 | Contested badges on shared repos | | needs the repo-overlap topology |
+| 7 | Hub oversight summary spanning machines | DEFERRED | no `ANTHROPIC_API_KEY` on the hub yet (operator has no key) — refusal path is the expected state |
+| 8 | The record | | hub.db + wal ~1.2MB of session history retained through teardown; restart-survival check queued for lab resume |
+| 9 | Attach-truth lines (dialing / attached / no-welcome) | PASS | 2026-08-05: `dialing hub …` → `attached to hub` ordering ✓ over the real relay |
+| 10 | Joined signal | | queued for lab resume (fresh session join) |
+| 11a | §8.10 TLS via Caddyfile | DEFERRED | LAN mode ran `SKIP_CADDY=1` by design; TLS check needs a hostname-mode run |
+| 11b | §8.10 systemd unit | PASS | 2026-08-05: unit active as `mpai`, `/healthz` ok, journal names `hub store: sqlite /var/lib/multiplayer-ai/hub.db` (not in-memory) |
+| 11c | §8.10 backups present | PARTIAL | boot backup lands in `/var/backups/multiplayer-ai` (2 present); interval + `HUB_BACKUP_KEEP` cap not yet exercised |
+| 11d | §8.10 retention behavior | | not yet exercised |
+| 12a | PC box — key-less boot | PASS | 2026-08-07: PC daemon attached with no `ANTHROPIC_API_KEY` / no Claude CLI creds, clean boot, no fatal refusal |
+| 12b | PC box — add model via UI | | see §7 note: the MODELS panel does not render on the hub project screen (hub does not route `list_models`/`add_model`) — add via the PC daemon's own UI instead |
+| 12c | PC box — fallback default | | not yet exercised |
+| 12d | PC box — run a turn | | not yet exercised (local-model turn is run by the operator) |
+| 12e | PC box — remove-in-use refusal | | not yet exercised |
 
 ## 7. PC-box local-model test (model-agnostic-models cycle)
 
