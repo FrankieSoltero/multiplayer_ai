@@ -93,6 +93,9 @@ open an issue describing the impact rather than posting a working exploit.
 
 ## Quickstart — solo mode (no hub)
 
+**Prerequisites:** Node.js v22+ and npm, git, and either an `ANTHROPIC_API_KEY` or working
+`claude` CLI credentials (or a local model — see [below](#local-models)).
+
 Plain `mpai` keeps a local single-machine mode: run the server and client from source and
 open two browser tabs to try driving/watching/take-the-wheel.
 
@@ -112,8 +115,14 @@ sudo HUB_HOSTNAME=hub.yourdomain.com REPO_URL=<this-repo-url> bash deploy/hub/se
 
 Then fill the four secrets it names (`GITHUB_CLIENT_ID/SECRET`, `GITHUB_ALLOWLIST`,
 `ANTHROPIC_API_KEY`) in `/etc/multiplayer-ai/hub.env` and `systemctl start
-multiplayer-ai-hub`. Full reference: [`deploy/hub/RUNBOOK.md`](deploy/hub/RUNBOOK.md)
-(install, pairing, backup/restore, disk-full recovery, revocation, upgrades).
+multiplayer-ai-hub`. Registering the GitHub OAuth app (homepage + callback URLs) and the
+rest of the flow — install, pairing, backup/restore, disk-full recovery, revocation,
+upgrades — is in [`deploy/hub/RUNBOOK.md`](deploy/hub/RUNBOOK.md).
+
+No domain or TLS? [`deploy/home-lab.md`](deploy/home-lab.md) is the cheap real-box variant:
+the hub on a LAN box (e.g. WSL2 on a Windows PC) over plain `http://`, TLS/firewall skipped.
+**Trusted home network only** — no TLS means plaintext on the wire; never port-forward it to
+the internet.
 
 Each laptop then attaches with:
 
@@ -127,6 +136,14 @@ of failing silently.
 
 There is deliberately no hosted/multi-tenant offering: every team runs its own hub, owns
 its own record, and allowlists its own people (PRD §2, decision D1).
+
+## Local models
+
+Claude is the default, but any OpenAI-compatible or Ollama backend works — the harness
+routes through a managed LiteLLM proxy it spawns itself. Add a model from the project
+screen's MODELS panel (label, provider, base URL, provider model) and it is available with
+no restart. Full setup, version pins, and the operator-run-proxy escape hatch:
+[`deploy/local-models.md`](deploy/local-models.md).
 
 ## Development
 
@@ -148,6 +165,7 @@ The hub and client import `poc/server`'s built dist — build the server first.
 | `docs/specs/` · `docs/plans/` · `docs/plan-reviews/` | per-cycle design specs, implementation plans, and review verdicts |
 | [`docs/tech-debt.md`](docs/tech-debt.md) | accepted debts and deferrals, each with "fixed looks like" |
 | `deploy/hub/` | hub deployment: setup script, runbook, env template, systemd unit, Caddyfile |
+| [`deploy/home-lab.md`](deploy/home-lab.md) | LAN-mode hub on a home box (WSL2/Windows PC), plain `http://`, no TLS — trusted networks only |
 | [`deploy/multi-machine-test.md`](deploy/multi-machine-test.md) | the cross-machine acceptance runbook (doubles as §8.10 verification) |
 | [`deploy/local-models.md`](deploy/local-models.md) | running local models beside Claude via a LiteLLM shim |
 | `docs/superpowers/` · `docs/research-report.md` | historical: the original research and pre-PRD spec chain |
