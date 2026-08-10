@@ -62,6 +62,35 @@ hub → project → session → sub-session
   connection caps, backpressure closes, disk-headroom refusal, TLS/systemd/firewall
   deploy artifacts.
 
+## Status & security
+
+This is a **proof-of-concept and research project**, not a hardened production service.
+It is single-tenant and self-hosted by design, ships with no warranty, and has known
+security gaps documented below. **Do not expose it to the untrusted internet** — run the
+hub on a network you control, behind TLS and its GitHub allowlist, and treat every attached
+machine as a trusted operator.
+
+Known limitations, as of the latest security review — read these before deploying:
+
+- **Solo/standalone mode trusts the client-claimed identity.** The team *hub* path verifies
+  identity via GitHub OAuth against a fail-closed allowlist. The standalone single-machine
+  server (the [solo-mode quickstart](#quickstart--solo-mode-no-hub)) does **not** re-bind a
+  client-claimed user id to a verified login — use it only in local/trusted contexts, never
+  facing an untrusted network.
+- **Auth-off and LAN modes bind without authentication.** Convenience flags for local
+  testing (auth disabled, `HOST=0.0.0.0`, plain `http://`/`ws://`) intentionally skip auth
+  and TLS. They are for a trusted LAN or loopback only — never an untrusted network.
+- **Member-added model endpoints are not range-restricted.** A project member can point the
+  model proxy at any URL, including loopback/LAN addresses (this is deliberate — local
+  Ollama/LAN GPUs are the intended use). Every member already drives an agent with local
+  tool access, so this adds no privilege beyond what membership already grants; treat
+  project membership accordingly.
+- **TLS is terminated by an operator-configured reverse proxy** (e.g. the provided
+  Caddyfile), not by the app itself. There is no application-layer TLS enforcement.
+
+Contributions that harden any of these are welcome. If you find a security issue, please
+open an issue describing the impact rather than posting a working exploit.
+
 ## Quickstart — solo mode (no hub)
 
 Plain `mpai` keeps a local single-machine mode: run the server and client from source and
