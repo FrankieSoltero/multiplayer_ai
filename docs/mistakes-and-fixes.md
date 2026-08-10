@@ -86,9 +86,9 @@ Running log of non-obvious problems hit in this project and how they were fixed.
 - **Lesson:** Before any SendMessage that resumes an agent for a fix round, verify the target id against the notification where THAT agent reported the original implementation — never trust adjacency in context. Also: subagents refusing out-of-scope redirects is load-bearing; prompt future reviewers with the same scope-refusal discipline. No deterministic hook can discriminate message routing (a controller judgment), so this stays a lesson + HANDOFF line rather than a corrections-ledger rule
 - **Regression test:** none — process lesson
 
-## 2026-08-06 — Client black-screened on http:// LAN hub (192.168.1.92:4000) with no console error visible to the user; same build worked on localhost
+## 2026-08-06 — Client black-screened on http:// LAN hub (`<PC-LAN-IP>:4000`) with no console error visible to the user; same build worked on localhost
 
-- **Symptom:** Client black-screened on http:// LAN hub (192.168.1.92:4000) with no console error visible to the user; same build worked on localhost
+- **Symptom:** Client black-screened on http:// LAN hub (`<PC-LAN-IP>:4000`) with no console error visible to the user; same build worked on localhost
 - **Root cause:** crypto.randomUUID is secure-context-only — it exists on localhost and https:// but is undefined on plain http:// over LAN, so identity bootstrapping threw before first render
 - **Fix:** randomId() fallback in poc/client/src/identity.ts:26 (crypto.getRandomValues-based) — PR #43, merged; rebuilt on the lab box
 - **Lesson:** localhost is a secure context, so dev never exercises the insecure-context branch of any Web API; anything deployed reachable over plain http:// (LAN trials) must be smoke-tested there, and secure-context-only APIs (crypto.randomUUID, clipboard, SW) need explicit fallbacks or a served-over-https requirement
