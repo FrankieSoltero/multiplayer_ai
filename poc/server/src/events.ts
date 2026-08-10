@@ -79,7 +79,12 @@ export type SessionEvent =
    *  are the record of the standing approval (plan §0.3, D11). Only present on
    *  "always". */
   | { type: "permission_decision"; requestId: string; decision: "allow" | "deny" | "always"; userId: string; auto?: true; parentToolUseId?: string; rule?: string }
-  | { type: "model_change"; model: string; userId: string }
+  /** `auto: true` marks a model change the harness made on the session's
+   *  behalf (never a human's set_model) — today only the default-fallback
+   *  session-create emits it, when `resolveDefaultModel` picked a non-opus
+   *  model because Anthropic credentials were absent (local-models §2.4).
+   *  Absent on every driver-initiated switch. */
+  | { type: "model_change"; model: string; userId: string; auto?: true }
   /** Turn boundary (agent-surface §1–§3). All fields optional and additive:
    *  events logged before this payload existed are the bare `{type}` shape.
    *  `outcome` distinguishes the three ways a turn can end — "success",

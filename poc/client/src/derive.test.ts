@@ -573,4 +573,19 @@ describe("deriveState — absent-field honesty for the local-model shape (plan d
     expect(s.contextMax).toBeUndefined();
     expect(s.sessionTokens).toBe(150); // tokens are reported; the window is not
   });
+
+  it("takes a 1M-token contextWindow verbatim as the HUD denominator (Task 6, spec §4)", () => {
+    // The refreshed opus/sonnet/fable defaults carry a 1M window; the HUD's
+    // CONTEXT denominator must be the reported window verbatim, not a capped or
+    // hardcoded 200k (mechanism at derive.ts:222-229 is what this pins).
+    const s = deriveState([
+      ev({
+        type: "turn_end",
+        usage: { input_tokens: 50000 },
+        modelUsage: { "claude-opus-5": { contextWindow: 1000000, inputTokens: 50000 } },
+      }, 0),
+    ]);
+    expect(s.contextMax).toBe(1000000);
+    expect(s.contextUsed).toBe(50000);
+  });
 });

@@ -259,3 +259,49 @@ cross-machine rows wait on the full 3-laptop matrix (lab repos 2–4 not yet cho
 | 11b | §8.10 systemd unit | PASS | 2026-08-05: unit active as `mpai`, `/healthz` ok, journal names `hub store: sqlite /var/lib/multiplayer-ai/hub.db` (not in-memory) |
 | 11c | §8.10 backups present | PARTIAL | boot backup lands in `/var/backups/multiplayer-ai` (2 present); interval + `HUB_BACKUP_KEEP` cap not yet exercised |
 | 11d | §8.10 retention behavior | | not yet exercised |
+| 12a | PC box — key-less boot | PASS | 2026-08-07: PC daemon attached with no `ANTHROPIC_API_KEY` / no Claude CLI creds, clean boot, no fatal refusal |
+| 12b | PC box — add model via UI | | see §7 note: the MODELS panel does not render on the hub project screen (hub does not route `list_models`/`add_model`) — add via the PC daemon's own UI instead |
+| 12c | PC box — fallback default | | not yet exercised |
+| 12d | PC box — run a turn | | not yet exercised (local-model turn is run by the operator) |
+| 12e | PC box — remove-in-use refusal | | not yet exercised |
+
+## 7. PC-box local-model test (model-agnostic-models cycle)
+
+**Topology for this section:** a fourth box — the **PC box** — runs Ollama plus its own `mpai`
+daemon, with NO `ANTHROPIC_API_KEY` configured on it. A laptop (any of computers 1–3, or a
+separate machine) attaches to the same hub and acts purely as the **driver**: it opens the
+project screen, adds the model, and runs the turn, but the agent itself runs on the PC box. This
+is the topology the harness-managed proxy is FOR — GPU/local-model hardware on one machine, a
+thin driver anywhere else on the hub.
+
+**Setup on the PC box:**
+
+1. Install [Ollama](https://ollama.com) and pull a model, e.g. `ollama pull qwen3.6:27b`.
+2. Install `litellm` (`pip install 'litellm[proxy]'`, version pins per
+   `deploy/local-models.md` §1) so the daemon can spawn the managed proxy — do NOT set
+   `ANTHROPIC_API_KEY` on this box; that is the point of this test.
+3. Launch `mpai --hub wss://YOUR.HUB.HOSTNAME/uplink --root <repo-path> --machine-name
+   "pc-box"` and pair it from an allowlisted browser, same as any other machine (§2 above).
+
+**Checklist (map to the results table's item 12 rows):**
+
+1. **Key-less boot** — confirm the PC box's daemon boots cleanly with no `ANTHROPIC_API_KEY` and
+   no Claude CLI credentials present. The console shows no fatal refusal; this is the "at least
+   one usable model" gate relaxed for local-only operation.
+2. **Add model via UI from the laptop** — from the driving laptop's browser, open the project
+   screen for a session on the PC box and use the MODELS panel to register the Ollama model:
+   provider `ollama`, base URL `http://127.0.0.1:11434` (the PC box's own loopback — the daemon
+   runs ON that box, so its Ollama is always local to it even though you're driving from a
+   laptop), provider model `qwen3.6:27b`. Confirm the entry appears in the picker without
+   restarting anything.
+3. **Fallback default** — before adding the model, confirm the Claude built-ins on the PC box
+   carry the `no Anthropic credentials` note and a new session's default model is NOT a mute
+   opus. After the model is added, confirm a NEW session's default resolves to the routed model
+   automatically (first routed entry in registration order).
+4. **Run a turn** — from the driving laptop, start a session on the PC box, select the routed
+   model (if not already the default), and run a real turn end to end. Confirm the response
+   comes back through the managed proxy (`$MPAI_HOME/litellm/config.yaml` on the PC box was
+   generated, not hand-written) and gates/record behave identically to a Claude session.
+5. **Remove-in-use refusal** — while the session from step 4 is still open with the routed model
+   selected, try to REMOVE that model from the MODELS panel. Confirm the server refuses, naming
+   the in-use session, instead of silently deleting a model a live session depends on.

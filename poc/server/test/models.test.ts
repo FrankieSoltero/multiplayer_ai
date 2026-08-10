@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import WebSocket from "ws";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -11,8 +12,18 @@ import {
   parseExtraModels,
   type ModelEntry,
 } from "../src/models.js";
+import { initRegistry } from "../src/modelsConfig.js";
 import { startServer } from "../src/server.js";
 import type { RunQuery } from "../src/agentDriver.js";
+
+// The registry is now credential-annotated and models.json-influenced at module
+// load, so reset it to a clean, credential-present, empty-store baseline before
+// each test — otherwise ambient ANTHROPIC_API_KEY / ~/.mpai/models.json would
+// make the byte-pins non-deterministic.
+beforeEach(() => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mpai-models-"));
+  initRegistry({ ANTHROPIC_API_KEY: "sk-test", MPAI_HOME: home } as NodeJS.ProcessEnv, () => {});
+});
 
 /** Local-models plan §1.1 / Task 1: models.ts is the single-source registry.
  *  Pins: the Claude trio's ids are byte-identical (LiteLLM pass-through
@@ -23,9 +34,10 @@ import type { RunQuery } from "../src/agentDriver.js";
 
 describe("model registry — the Claude trio is byte-identical (plan constraint 3)", () => {
   it("keeps the exact pass-through ids and labels", () => {
-    expect(MODELS.opus).toEqual({ id: "claude-opus-4-8", label: "opus 4.8", contextWindow: 200000 });
-    expect(MODELS.sonnet).toEqual({ id: "claude-sonnet-5", label: "sonnet 5", contextWindow: 200000 });
+    expect(MODELS.opus).toEqual({ id: "claude-opus-5", label: "opus 5", contextWindow: 1000000 });
+    expect(MODELS.sonnet).toEqual({ id: "claude-sonnet-5", label: "sonnet 5", contextWindow: 1000000 });
     expect(MODELS.haiku).toEqual({ id: "claude-haiku-4-5-20251001", label: "haiku 4.5", contextWindow: 200000 });
+    expect(MODELS.fable).toEqual({ id: "claude-fable-5", label: "fable 5", contextWindow: 1000000 });
     expect(DEFAULT_MODEL).toBe("opus");
   });
 
@@ -37,7 +49,7 @@ describe("model registry — the Claude trio is byte-identical (plan constraint 
     for (const file of fs.readdirSync(srcDir)) {
       if (!file.endsWith(".ts")) continue;
       const text = fs.readFileSync(path.join(srcDir, file), "utf8");
-      if (/claude-(opus-4-8|sonnet-5|haiku-4-5)/.test(text)) offenders.push(file);
+      if (/claude-(opus-5|sonnet-5|haiku-4-5|fable-5)/.test(text)) offenders.push(file);
     }
     expect(offenders).toEqual(["models.ts"]);
   });
@@ -122,7 +134,7 @@ describe("parseExtraModels — the operator env seam (MPAI_EXTRA_MODELS)", () =>
     expect(extra).toEqual({ "dup-7b": { id: "dup-7b", label: "FIRST", contextWindow: 1 } });
     expect(warn).toHaveBeenCalledTimes(2);
     // The built-in registry itself is untouched by the parse attempt.
-    expect(MODELS.opus.label).toBe("opus 4.8");
+    expect(MODELS.opus.label).toBe("opus 5");
   });
 
   it("reserved ids (__proto__, constructor, prototype) warn and are skipped — never silently vanish", () => {
@@ -154,9 +166,10 @@ describe("modelRoster — the additive `models` field shape", () => {
   it("carries key/id/label for every registry entry, optional fields omitted not nulled", () => {
     const roster = modelRoster();
     expect(roster).toEqual([
-      { key: "opus", id: "claude-opus-4-8", label: "opus 4.8" },
+      { key: "opus", id: "claude-opus-5", label: "opus 5" },
       { key: "sonnet", id: "claude-sonnet-5", label: "sonnet 5" },
       { key: "haiku", id: "claude-haiku-4-5-20251001", label: "haiku 4.5" },
+      { key: "fable", id: "claude-fable-5", label: "fable 5" },
     ]);
     for (const entry of roster) {
       expect("local" in entry).toBe(false);
@@ -200,7 +213,7 @@ describe("roster on the wire — skill_roster carries `models`", () => {
         expect(frame!.event!.models).toEqual(modelRoster());
         // And the trio is really in it — not vacuous against an empty roster.
         const keys = (frame!.event!.models as { key: string }[]).map((m) => m.key);
-        expect(keys).toEqual(["opus", "sonnet", "haiku"]);
+        expect(keys).toEqual(["opus", "sonnet", "haiku", "fable"]);
       });
       ws.close();
     } finally {
@@ -222,7 +235,7 @@ describe("roster on the wire — skill_roster carries `models`", () => {
       await vi.waitFor(() => {
         const err = sink.find((m) => m.type === "error" && /set_model requires model/.test(m.message ?? ""));
         expect(err).toBeTruthy();
-        expect(err!.message).toContain("opus|sonnet|haiku");
+        expect(err!.message).toContain("opus|sonnet|haiku|fable");
       });
       ws.close();
     } finally {

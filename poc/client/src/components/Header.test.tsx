@@ -384,6 +384,43 @@ describe("Header — model picker reads the server roster (local-models plan §1
 });
 
 // ---------------------------------------------------------------------------
+// Model-agnostic model surface (Task 6, spec §2.3): the fallback labels the
+// picker offers when an OLD server sends no roster are refreshed to the current
+// Claude defaults — opus 5 / sonnet 5 / haiku 4.5 / fable 5. fable is new.
+// ---------------------------------------------------------------------------
+describe("Header — refreshed model fallback (Task 6, spec §2.3)", () => {
+  it("an old server with no roster falls back to opus 5 / sonnet 5 / haiku 4.5 / fable 5", () => {
+    const markup = render();
+    const lines = textLines(markup);
+    // The four refreshed default labels — fable now among them.
+    expect(lines).toContain("opus 5");
+    expect(lines).toContain("sonnet 5");
+    expect(lines).toContain("haiku 4.5");
+    expect(lines).toContain("fable 5");
+    // fable is a real selectable option, keyed by its model key.
+    expect(markup).toContain('<option value="fable"');
+    // The retired opus label is gone from the fallback.
+    expect(markup).not.toContain("opus 4.8");
+    // Not vacuous — the header really did render.
+    expect(lines).toContain("● ONLINE");
+  });
+
+  it("the server roster still wins — the refreshed fallback is unused when models arrive", () => {
+    const markup = render({
+      models: [
+        { key: "opus", id: "claude-opus-5", label: "opus 5" },
+        { key: "qwen3-32b", id: "qwen3-32b", label: "QWEN3 32B", local: true },
+      ],
+    });
+    // Only the roster's options — the fallback's fable/haiku/sonnet never appear.
+    expect(markup).toContain('<option value="qwen3-32b"');
+    expect(markup).not.toContain('<option value="fable"');
+    expect(markup).not.toContain('<option value="haiku"');
+    expect(markup).not.toContain('<option value="sonnet"');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Agent surface (§8.6): the HUD segments the turn_end usage payload now feeds.
 // Plan §2.4 — no placeholder without a feed: CONTEXT and PARTY XP render NO
 // segment until a real value arrives, never an em dash.

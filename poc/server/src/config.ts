@@ -1,8 +1,28 @@
+import path from "node:path";
 import type { AuthConfig } from "./auth.js";
+import { mpaiHome } from "./machineIdentity.js";
 
 export type ConfigResult =
   | { ok: true; staticDir: string | undefined; auth: AuthConfig | undefined }
   | { ok: false; error: string };
+
+/** What boot knows about whether ANY model can run (local-models §2.4).
+ *  `hasAnthropicCreds` powers the Claude built-ins direct; `hasRoutedModels`
+ *  means at least one model is served through the managed proxy. main.ts
+ *  computes both from the registry and injects them (like `hasIndexHtml`) so
+ *  this stays a pure function. */
+export interface BootCapabilities {
+  hasAnthropicCreds: boolean;
+  hasRoutedModels: boolean;
+}
+
+/** The boot-time "no usable model" message, with `$MPAI_HOME` resolved to the
+ *  runtime `models.json` path. Shared by the production boot refusal (below)
+ *  and the development advisory warning (main.ts, prefixed `[boot] `), so the
+ *  two can never drift. */
+export function noUsableModelMessage(env: Record<string, string | undefined>): string {
+  return `no usable model: set ANTHROPIC_API_KEY or add a model to ${path.join(mpaiHome(env), "models.json")}`;
+}
 
 const AUTH_VARS = [
   "GITHUB_CLIENT_ID",
@@ -25,6 +45,7 @@ const AUTH_VARS = [
 export function validateProductionConfig(
   env: Record<string, string | undefined>,
   hasIndexHtml: (dir: string) => boolean,
+  capabilities: BootCapabilities,
 ): ConfigResult {
   const staticDir = env.CLIENT_DIST;
   // Auth intent is signalled by GITHUB_CLIENT_ID alone (spec §4.5), not by
@@ -69,11 +90,39 @@ export function validateProductionConfig(
       error: `CLIENT_DIST=${staticDir} has no index.html — build the client first (cd poc/client && npm run build)`,
     };
   }
-  if (!env.ANTHROPIC_API_KEY) {
-    return {
-      ok: false,
-      error: "ANTHROPIC_API_KEY is required when CLIENT_DIST is set (production mode)",
-    };
+  // Usable-model gate (local-models §2.4): the old hard ANTHROPIC_API_KEY
+  // requirement is REMOVED. Production boots when EITHER Anthropic credentials
+  // are present (the built-ins route direct) OR at least one routed model is
+  // registered (served through the managed proxy). Only a box with neither is
+  // refused — a local-only, key-less deployment is now first-class.
+  if (!capabilities.hasAnthropicCreds && !capabilities.hasRoutedModels) {
+    return { ok: false, error: noUsableModelMessage(env) };
   }
   return { ok: true, staticDir, auth };
+}
+
+/** Pure: which base URL the AgentDriver should route through (local-models
+ *  §2.2). An active proxy's URL wins; otherwise the operator's own
+ *  `ANTHROPIC_BASE_URL` passes through unchanged. `undefined` when neither is
+ *  set, so main.ts leaves the env var untouched. */
+export function resolveBaseUrl(
+  operatorBaseUrl: string | undefined,
+  proxyBaseUrl: string | undefined,
+): string | undefined {
+  return proxyBaseUrl !== undefined ? proxyBaseUrl : operatorBaseUrl;
+}
+
+/** Register graceful-shutdown handlers (local-models §2.2). SIGTERM and SIGINT
+ *  both stop the managed proxy child, then exit 0. Extracted from main.ts and
+ *  process-injected so the wiring is unit-testable without real signals. */
+export function installShutdownHandlers(
+  proc: { on(ev: string, fn: () => void): void; exit(code: number): void },
+  proxyManager: { stop(): void },
+): void {
+  const shutdown = (): void => {
+    proxyManager.stop();
+    proc.exit(0);
+  };
+  proc.on("SIGTERM", shutdown);
+  proc.on("SIGINT", shutdown);
 }
