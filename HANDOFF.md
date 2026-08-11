@@ -1,10 +1,117 @@
 # HANDOFF — multiplayer_ai
 
-*Living resume packet. Update in place; don't recreate. Last update: 2026-08-06 (model-agnostic model surface — docs sweep, this task).*
+*Living resume packet. Update in place; don't recreate. Last update: 2026-08-10 (pre-LinkedIn publicity prep — audit + 4 docs PRs merged; two-machine test attempted then aborted).*
 
 ---
 
-## 🚀 START HERE (2026-08-07 morning) — PR #46 MERGED (`3a8b13e`), TOMORROW = THE TWO-MACHINE RUN.
+## 🚀 START HERE (2026-08-10) — PRE-LINKEDIN PREP DONE, REPO PUBLIC & CLEAN. Two-machine test still INCOMPLETE.
+
+**Goal:** the user is about to announce multiplayer_ai on LinkedIn. This session got the PUBLIC
+repo post-ready (license, honest security framing, discoverable setup docs, no leaked lab/PII)
+and fact-checked the draft post. Separately, the model-agnostic two-machine live test remains
+unfinished (only step 1 passed) and surfaced a real product gap.
+
+**Status of the publicity prep — ALL MERGED to main, zero open PRs:**
+- **#45** MIT `LICENSE` at root · **#47** README **Status & security** section (honest PoC / not-for-
+  untrusted-internet framing + known gaps) · **#44** home-lab docs with the home LAN IP scrubbed to a
+  `<PC-LAN-IP>` placeholder (it had leaked in `docs/mistakes-and-fixes.md`) and its merge conflicts
+  resolved · **#48** README setup-doc links (home-lab, local-models, OAuth-app pointer, prerequisites
+  line). Main head after: `bfe706d`.
+- **Verified clean:** grepped `origin/main` for the home LAN IP / Tailscale IP / hostname / ssh user /
+  personal email → empty; no committed secrets. Commit author email is GitHub noreply. Only `sk-…`
+  strings are dummy test fixtures (`sk-anthropic`/`sk-together` in `proxyManager.test.ts`). The exact
+  scrubbed values live ONLY in untracked `.soltero/lab-box.md` — never write them into a tracked file.
+- **`.soltero/` stays untracked-local** (lab-box.md holds the real machine details; the repo is public).
+
+**LinkedIn draft fact-check (user was writing the post; NOT yet posted) — two things to fix:**
+1. **URL TYPO (critical):** draft says `github.com/FrankieSoltero/multiplayer-ai` (hyphen). Real repo is
+   `multiplayer_ai` (**underscore**) — the hyphen link 404s.
+2. **AFK claim is mis-stated, not absent.** Draft: "set an AFK time → your team is notified YOU need a
+   takeover." What's actually BUILT is the *pull threshold* (`poc/client/src/pulls.ts:49-77`,
+   `poc/client/src/App.tsx:255-275`): user sets a time threshold → THEY get notified when ANOTHER
+   session's permission gate has waited longer than it. Direction/trigger are flipped (you're alerted
+   to cover others; it does not broadcast your own absence). Offered two honest rewrites; user deciding.
+   Everything else verified TRUE: games dino/doodle/snake/tetris all exist
+   (`poc/client/src/game/*.ts`); cross-player leaderboard is real (`game_score` event
+   `poc/server/src/events.ts:139`, best-per-game `poc/server/src/project.ts:139-168`); take-the-wheel,
+   BYOT, first-write-wins-from-worktree-diffs, PC-as-host-with-2-machines all accurate.
+
+**Pre-LinkedIn security audit (audit-swarm):** report at **`Docs/audit-2026-08-10.md`** (untracked),
+16 confirmed findings (2 high, 4 med, 10 low), no criticals, no committed secrets. The README's
+security section already discloses the operator-facing ones. The two HIGHs, if the repo gets traffic
+and you want to harden: **H1** standalone-server `identify` never re-binds a client-claimed `userId` to
+the verified GitHub login (the HUB path does — `poc/hub/src/hub.ts` identify handler ~:1306) → identity
+spoofing / REQUIRE_INVITE bypass in solo/standalone mode; **H2** no fail-closed guard against a
+non-loopback bind with auth off — the hub HAS this (`poc/hub/src/hubEnv.ts:86-88`), the server daemon
+does not.
+
+**Two-machine local-model test — INCOMPLETE (attempted 2026-08-07, aborted at teardown by user):**
+- **Step 1 (key-less boot) PASSED:** PC daemon attached as `pc-ubuntu` with NO `ANTHROPIC_API_KEY` /
+  no Claude CLI creds, clean boot. Recorded in `deploy/multi-machine-test.md` §6 row 12a (via #44).
+- **REAL GAP FOUND:** the §7 "add a model from the hub project screen" flow **does not work** — the hub
+  never routes `list_models`/`add_model`; a browser channel that hasn't joined a session gets
+  `"join a session first"` (`poc/hub/src/hub.ts:1273` tunnel() gate). The model wire handlers live only
+  in the standalone server (`poc/server/src/server.ts:1241` list_models, `:1256` add_model) and the
+  panel only renders once a `models_list` arrives (`poc/client/src/components/SessionPicker.tsx:462-475`),
+  which never happens on the hub project screen. Solo mode masked this in the 2026-08-06 walk.
+  **Fix = a design decision** (add-model wire message needs a `machineId`; panel needs a machine
+  selector — mirror `create_session`/`attach_repo` machine routing at `poc/hub/src/hub.ts:1620/:1656`).
+  **Workaround for finishing the test:** add the model via the PC daemon's OWN local UI (port 3001,
+  tunnel `ssh -N -L 3002:127.0.0.1:3001 <pc>`), which writes machine-wide `~/.mpai/models.json`.
+- **Items 2–5 (add-model, fallback default, real local turn, remove-in-use refusal) NOT run.** Per
+  standing ruling the real local turn is the USER's to run, never automated.
+- **Everything torn down:** Mac daemon, PC hub+daemon (tmux `hub` killed), both ssh tunnels. The user's
+  **systemd production hub on :4000 and Ollama were left running** (never ours to stop).
+
+**Ordered next steps:**
+1. **(User)** Fix the two draft items (URL underscore; AFK wording) → post to LinkedIn.
+2. **(User, optional)** Merge nothing pending — no open PRs. If hardening for traffic, address audit
+   H1/H2 first (biggest bang; both are auth-bypass footguns in solo/LAN modes).
+3. **To finish the two-machine test:** re-bring-up per §"Resume the two-machine test" below, then use the
+   PC-daemon-UI workaround to add the Ollama model, create a FRESH session on pc-ubuntu (predates-proxy
+   refusal is by design), user runs the local turn, then remove-in-use refusal. Fill `deploy/multi-machine-test.md`
+   §6 rows 12b–12e.
+4. **Product decision** on the hub-mode MODELS panel gap (route model messages by machineId) — its own cycle.
+5. **Remove this worktree** from the main checkout when done: `git worktree remove .claude/worktrees/model-agnostic-models`.
+
+**Toolchain state on the PC (durable, survives power cycles):** litellm installed in a venv at
+`~/.mpai/litellm/venv`, symlinked to `~/.local/bin/litellm` (on PATH in fresh login shells only). Ollama
+has `qwen3-coder:latest` (30B-A3B MoE, 18.5GB Q4 — the right fit for the 16GB GPU via expert offload;
+fallback `ollama pull qwen3:14b` fits fully on-GPU). `python3-venv` installed. litellm pins must be
+installed in TWO steps (co-resolving `litellm[proxy]==1.95.0` with `fastapi<0.116` fails): install
+litellm first, then `fastapi<0.116 sse-starlette<3`.
+
+**Resume the two-machine test (exact — port 4001 because the prod hub owns 4000):**
+- PC: `ssh <lab-box>` (exact user@host + alias in untracked `.soltero/lab-box.md` — never inline it here); `tmux new -s hub`;
+  win1 `cd ~/multiplayer_ai/poc/hub && PORT=4001 CLIENT_DIST=$HOME/multiplayer_ai/poc/client/dist npx tsx src/main.ts`
+  (expect `listening 127.0.0.1:4001`, `hub store: sqlite`, serving client, `auth OFF`); win2 (`Ctrl-b c`)
+  `cd ~/multiplayer_ai/poc/server && npx mpai --hub ws://127.0.0.1:4001/uplink --root ~/multiplayer_ai --machine-name pc-ubuntu`.
+- Mac (this worktree; deps present): tunnels `ssh -N -L 4001:127.0.0.1:4001 <pc>` and `ssh -N -L 3002:127.0.0.1:3001 <pc>`;
+  daemon `cd poc/server && npx mpai --hub ws://127.0.0.1:4001/uplink --root /Users/franciscosoltero/Desktop/Code/multiplayer_ai --machine-name mac`.
+- Browser `http://127.0.0.1:4001` → 2 MACHINES → project NOT named `test` → MACHINES panel `ATTACH ▸` the repo under pc-ubuntu.
+
+**GOTCHAS specific to this session:**
+- **`gh pr merge` is intermittently blocked by Claude Code's auto-mode permission classifier** — it refused
+  the FIRST attempt (#45) with a "Blocked by classifier" error, but later merges went through. If a merge
+  is refused, the USER runs `gh pr merge <n> --merge` themselves; do not try to work around the denial.
+- **This session is worktree-isolated** to `.claude/worktrees/model-agnostic-models` (on `main`). Bash REFUSES
+  `git -C <other-checkout>` and "too complex" compound commands (`$(...)`, multi-`&&` with cd) — break them into
+  plain single commands. **cwd resets to this worktree after every Bash call**, so cd-into-another-worktree does
+  NOT persist; prefix each command with the `cd`. Temp worktrees for PR fixes were made under scratchpad and removed.
+- **audit-swarm workflow has a namespacing bug:** its script references agent types `security-auditor`/
+  `finding-skeptic` WITHOUT the `soltero-skills:` prefix → dies instantly ("agent type not found"). Patched copy
+  ran from `<scratchpad>/audit-patched.mjs`; the installed plugin at
+  `~/.claude/plugins/cache/soltero-skills-marketplace/soltero-skills/0.19.1/skills/audit-swarm/workflows/audit.mjs`
+  still has the bug — worth an upstream fix.
+- **No code was changed this session** — docs only. Suites unchanged from the #46 baselines (server 966 · hub 388 · client 622, tsc ×3 clean); no need to re-run to claim done on the doc PRs.
+
+**Open questions:** (a) hub-mode MODELS panel routing — product decision, unowned; (b) whether the user wants
+audit H1/H2 fixed before the post gains traction (raised, user's call); (c) two-machine test items 2–5 still
+unproven end-to-end (the live-proof gate the user owns).
+
+---
+
+## (was) 🚀 START HERE (2026-08-07 morning) — PR #46 MERGED (`3a8b13e`), TOMORROW = THE TWO-MACHINE RUN.
 
 **Where we are, exactly:** the model-agnostic cycle below is DONE and MERGED to main
 (user-directed merge, evening of 2026-08-06). The user stopped mid-walkthrough of the
